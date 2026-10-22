@@ -16,8 +16,11 @@ collect_ignore = []
 if sys.platform == "win32":
     # test_sigint.py sends SIGINT to a child process, which Windows cannot deliver
     collect_ignore.append("test_sigint.py")
-if not os.path.isdir(os.path.join(os.path.dirname(os.path.dirname(__file__)), "docs")):
-    # the upstream pull request branch has no docs/ directory
+if not os.path.isfile(
+    os.path.join(os.path.dirname(os.path.dirname(__file__)), "docs", "index.md")
+):
+    # the user documentation site (docs/index.md and its pages) is not in this repository;
+    # docs/ alone is not enough, it also holds design notes (docs/superpowers)
     collect_ignore.append("test_docs_examples.py")
 
 
