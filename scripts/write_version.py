@@ -5,7 +5,7 @@ import io
 import sys
 from pathlib import Path
 
-from extract_version import extract_version_from_pom
+from extract_version import default_jars_dir, extract_version
 
 # Ensure UTF-8 output on Windows
 if sys.platform == "win32":
@@ -16,7 +16,7 @@ if sys.platform == "win32":
 def write_version_file(ver, out_path):
     """Write version to _version.py"""
     version_file_content = f'''"""Version information for arcadedb_embedded package.
-Generated automatically during build from parent pom.xml.
+Generated automatically during build from the bundled ArcadeDB engine jar.
 """
 
 __version__ = "{ver}"
@@ -29,17 +29,17 @@ __version__ = "{ver}"
 
 
 if __name__ == "__main__":
-    # Get pom.xml path from command line or use default
+    # Get the jars directory from the command line or use the package's own
     script_dir = Path(__file__).parent
     bindings_dir = script_dir.parent
-    pom_path = script_dir / "../../../pom.xml"
+    jars_dir = default_jars_dir()
 
     if len(sys.argv) > 1:
-        pom_path = Path(sys.argv[1])
+        jars_dir = Path(sys.argv[1])
 
-    # Extract version from pom.xml
+    # Extract version from the engine jar
     try:
-        version = extract_version_from_pom(pom_path)
+        version = extract_version(jars_dir)
 
         # Write to src/arcadedb_embedded/_version.py
         output_path = bindings_dir / "src/arcadedb_embedded/_version.py"

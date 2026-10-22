@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
-"""Extract ArcadeDB version from parent pom.xml
+"""Extract ArcadeDB version from the bundled arcadedb-engine jar
 
 ArcadeDB Python Bindings Versioning Strategy
 ============================================
 
 This script implements the automated versioning system for ArcadeDB Python bindings.
-It extracts versions from the main ArcadeDB pom.xml and converts them to PEP 440
+It reads the version from the arcadedb-engine-<version>.jar name in the jars taken
+from the arcadedata/arcadedb image, and converts it to PEP 440
 compliant Python versions, supporting both development and release workflows.
 
 ## Key Principles
 
-1. **Single Source of Truth**: Version is only defined in pom.xml - everything else
-   extracts it
+1. **Single Source of Truth**: Version is the one of the engine jar the wheel ships -
+   everything else extracts it
 2. **PEP 440 Compliance**: All Python versions follow Python packaging standards
 3. **Development/Release Distinction**: Different handling for -SNAPSHOT vs release
    versions
@@ -20,7 +21,7 @@ compliant Python versions, supporting both development and release workflows.
 
 ## Version Conversion Rules
 
-| Maven Version (pom.xml) | Python Version | Use Case |
+| Maven Version (jar)     | Python Version | Use Case |
 |-------------------------|----------------|----------|
 | 25.10.1-SNAPSHOT (1st)  | 25.10.1.dev0   | First development build |
 | 25.10.1-SNAPSHOT (2nd)  | 25.10.1.dev1   | Second development build |
@@ -32,14 +33,14 @@ compliant Python versions, supporting both development and release workflows.
 ## Development Mode vs Release Mode
 
 **Development Mode** (SNAPSHOT versions):
-- Triggered by: -SNAPSHOT suffix in pom.xml
+- Triggered by: -SNAPSHOT suffix in the engine jar version
 - Conversion: X.Y.Z-SNAPSHOT → X.Y.Z.devN (N auto-increments)
 - Purpose: Pre-release development builds
 - Example: 25.10.1-SNAPSHOT → 25.10.1.dev0 (first), 25.10.1.dev1 (second), etc.
 - Tracking: Dev numbers stored in .dev_version_tracker.json
 
 **Release Mode** (clean versions):
-- Triggered by: No -SNAPSHOT suffix in pom.xml
+- Triggered by: No -SNAPSHOT suffix in the engine jar version
 - Conversion: X.Y.Z → X.Y.Z (or X.Y.Z.postN for Python patches)
 - Purpose: Official releases to PyPI
 - Example: 25.9.1 → 25.9.1 or 25.9.1.post1
@@ -63,7 +64,7 @@ python extract_version.py --python-patch 2
 ```bash
 # Basic usage (development mode)
 python extract_version.py
-# Output: 25.10.1.dev0 (from 25.10.1-SNAPSHOT in pom.xml, first build)
+# Output: 25.10.1.dev0 (from arcadedb-engine-25.10.1-SNAPSHOT.jar, first build)
 
 # Increment dev version for next build
 python extract_version.py --increment-dev
@@ -71,7 +72,7 @@ python extract_version.py --increment-dev
 
 # Basic usage (release mode)
 python extract_version.py
-# Output: 25.9.1 (from 25.9.1 in pom.xml)
+# Output: 25.9.1 (from arcadedb-engine-25.9.1.jar)
 
 # With Python patch for release
 python extract_version.py --python-patch 1
@@ -81,8 +82,8 @@ python extract_version.py --python-patch 1
 python extract_version.py --format=docker
 # Output: 25.10.1-SNAPSHOT (no conversion)
 
-# Custom pom.xml path
-python extract_version.py /path/to/pom.xml --format=pep440
+# Custom jars directory (default: src/arcadedb_embedded/jars)
+python extract_version.py /path/to/jars --format=pep440
 ```
 
 ## Integration Points
@@ -95,13 +96,13 @@ This script is used by:
 
 ## Error Handling
 
-- Validates pom.xml file exists and is readable
+- Fails when the jars directory holds no engine jar, or engine jars of two versions
 - Ensures version tag is found in expected location
 - Validates command-line arguments
 - Provides clear error messages for debugging
 
 Usage:
-    python extract_version.py [pom_path] [--format=pep440|docker] [--python-patch=N] [--increment-dev]
+    python extract_version.py [jars_dir] [--format=pep440|docker] [--python-patch=N] [--increment-dev]
 
     --format=pep440  : Convert to PEP 440 for Python packaging (default)
                        25.10.1-SNAPSHOT -> 25.10.1.devN (development, N from tracker)
@@ -172,38 +173,48 @@ def increment_dev_version_number(base_version):
     return new_version
 
 
-def extract_raw_version_from_pom(pom_file):
-    """Extract the raw version string from pom.xml (no conversion)"""
-    with open(pom_file, "r", encoding="utf-8") as f:
-        content = f.read()
-
-    # Find the first <version> tag after <artifactId>arcadedb-parent</artifactId>
-    pattern = r"<artifactId>arcadedb-parent</artifactId>.*?<version>(.*?)</version>"
-    match = re.search(pattern, content, re.DOTALL)
-
-    if match:
-        return match.group(1).strip()
-
-    raise ValueError("Could not find version in pom.xml")
+ENGINE_JAR_PATTERN = re.compile(r"^arcadedb-engine-(.+)\.jar$")
 
 
-def extract_version_from_pom(
-    pom_file, fmt="pep440", patch_version=0, increment_dev=False
-):
-    """Extract version from Maven pom.xml
+def default_jars_dir():
+    """The jars bundled into the package: src/arcadedb_embedded/jars"""
+    return Path(__file__).resolve().parent.parent / "src" / "arcadedb_embedded" / "jars"
+
+
+def extract_raw_version_from_jars(jars_dir):
+    """Extract the raw Maven version from the arcadedb-engine jar name (no conversion)
+
+    Raises ValueError when the directory holds no engine jar, or engine jars of
+    more than one version: either way the wheel would carry a wrong version.
+    """
+    jars_dir = Path(jars_dir)
+    if not jars_dir.is_dir():
+        raise FileNotFoundError(f"Jars directory not found: {jars_dir}")
+
+    versions = sorted(
+        {
+            match.group(1)
+            for match in (ENGINE_JAR_PATTERN.match(p.name) for p in jars_dir.iterdir())
+            if match
+        }
+    )
+    if not versions:
+        raise ValueError(f"No arcadedb-engine-<version>.jar found in {jars_dir}")
+    if len(versions) > 1:
+        raise ValueError(
+            f"Engine jars of more than one version in {jars_dir}: {', '.join(versions)}"
+        )
+    return versions[0]
+
+
+def maven_to_pep440(raw_version, patch_version=0, increment_dev=False):
+    """Convert a Maven version to PEP 440
 
     Args:
-        pom_file: Path to pom.xml file
-        fmt: 'pep440' for Python packaging, 'docker' for Docker tags
+        raw_version: Maven version, e.g. 25.10.1-SNAPSHOT or 25.9.1
         patch_version: For released versions, add .postN suffix (0 = no suffix)
         increment_dev: If True, increment dev version number in tracker
     """
-    raw_version = extract_raw_version_from_pom(pom_file)
-
-    if fmt == "docker":
-        # Return raw Maven version for Docker tags
-        return raw_version
-
     # Convert Maven version to PEP 440 compatible version
     is_snapshot = "-SNAPSHOT" in raw_version
 
@@ -236,10 +247,26 @@ def extract_version_from_pom(
             return base_version
 
 
+def extract_version(jars_dir, fmt="pep440", patch_version=0, increment_dev=False):
+    """Extract the version from the engine jar in jars_dir
+
+    Args:
+        jars_dir: Directory holding the ArcadeDB jars
+        fmt: 'pep440' for Python packaging, 'docker' for Docker tags
+        patch_version: For released versions, add .postN suffix (0 = no suffix)
+        increment_dev: If True, increment dev version number in tracker
+    """
+    raw_version = extract_raw_version_from_jars(jars_dir)
+
+    if fmt == "docker":
+        # Return raw Maven version for Docker tags
+        return raw_version
+
+    return maven_to_pep440(raw_version, patch_version, increment_dev)
+
+
 if __name__ == "__main__":
-    # Default to parent pom.xml from bindings/python/scripts
-    script_dir = Path(__file__).parent
-    pom_path = script_dir / "../../../pom.xml"
+    jars_dir = default_jars_dir()
     output_format = "pep440"
     python_patch = 0
     increment_dev = False
@@ -267,7 +294,7 @@ if __name__ == "__main__":
         elif arg == "--increment-dev":
             increment_dev = True
         elif not arg.startswith("--"):
-            pom_path = Path(arg)
+            jars_dir = Path(arg)
 
     # If tag version is provided, use it directly without any conversion
     if tag_version:
@@ -275,8 +302,8 @@ if __name__ == "__main__":
         sys.exit(0)
 
     try:
-        extracted_version = extract_version_from_pom(
-            pom_path, output_format, python_patch, increment_dev
+        extracted_version = extract_version(
+            jars_dir, output_format, python_patch, increment_dev
         )
         print(extracted_version)
     except (ValueError, FileNotFoundError, OSError) as e:
