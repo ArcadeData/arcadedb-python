@@ -190,8 +190,6 @@ COPY scripts/verify_wheel_platform_tag.py ./scripts/
 COPY pyproject.toml ./
 COPY README.md ./
 
-# Also copy repository pom.xml so scripts/extract_version.py can read it
-COPY pom.xml /arcadedb/pom.xml
 
 # Install Python build dependencies
 RUN uv pip install --system build wheel setuptools jpype1
@@ -207,12 +205,12 @@ ARG TARGET_PLATFORM
 RUN echo "📌 Package name: ${PACKAGE_NAME}" && \
     echo "📌 Docker tag used: ${ARCADEDB_TAG}" && \
     echo "📌 Target platform: ${TARGET_PLATFORM}" && \
-    python3 scripts/write_version.py /arcadedb/pom.xml && \
+    python3 scripts/write_version.py /build/jars && \
     python3 scripts/setup_jars.py && \
     echo "📦 JAR files and JRE copied"
 
 # Build the wheel
-# Extract PEP 440 version from pom.xml or use BUILD_VERSION if provided.
+# Extract PEP 440 version from the engine jar or use BUILD_VERSION if provided.
 #
 # Wheel platform tag must match the highest glibc symbol version required by the
 # bundled JRE. amazoncorretto:25 (Amazon Linux 2023, glibc 2.34) ships a JRE
@@ -228,8 +226,8 @@ RUN if [ -n "${BUILD_VERSION}" ]; then \
         export ARCADEDB_VERSION="${BUILD_VERSION}"; \
         echo "📌 Using provided version: ${ARCADEDB_VERSION}"; \
     else \
-        export ARCADEDB_VERSION=$(python3 scripts/extract_version.py --format=pep440 /arcadedb/pom.xml); \
-        echo "📦 Extracted version from pom.xml: ${ARCADEDB_VERSION}"; \
+        export ARCADEDB_VERSION=$(python3 scripts/extract_version.py --format=pep440 /build/jars); \
+        echo "📦 Extracted version from engine jar: ${ARCADEDB_VERSION}"; \
     fi && \
     echo "📦 Python package version: ${ARCADEDB_VERSION}" && \
     echo "📦 Package name: ${PACKAGE_NAME}" && \

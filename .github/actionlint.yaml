@@ -1,0 +1,12 @@
+# actionlint configuration, picked up automatically by the pre-commit hook (.pre-commit-config.yaml).
+#
+# The ignores below are the shellcheck findings the two workflows carried when they moved here from
+# ArcadeData/arcadedb, scoped to the exact file and rule. They are style findings in `run:` scripts, not
+# schema errors, and the list is meant to shrink: fix the script and delete its entry.
+paths:
+  .github/workflows/test-python-bindings.yml:
+    ignore:
+      - 'shellcheck reported issue in this script: SC(2001|2010|2012|2086|2129):'
+  .github/workflows/test-python-examples.yml:
+    ignore:
+      - 'shellcheck reported issue in this script: SC(2010|2012|2086|2129|2188):'

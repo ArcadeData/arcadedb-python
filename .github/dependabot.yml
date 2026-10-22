@@ -1,0 +1,26 @@
+version: 2
+
+# Every update block carries `cooldown: default-days: 3`, so Dependabot will not
+# propose a release until it has been public for three days: a compromised
+# release is usually pulled well inside that window. Security updates ignore
+# the cooldown and still open the moment an advisory lands.
+updates:
+  # pyproject.toml is the package definition (`[tool.uv] managed = false`, no
+  # uv.lock), so it is tracked as a pip project rather than a uv one.
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: "sunday"
+    cooldown:
+      default-days: 3
+    open-pull-requests-limit: 10
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: "sunday"
+    cooldown:
+      default-days: 3
+    open-pull-requests-limit: 10

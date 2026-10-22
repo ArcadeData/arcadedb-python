@@ -148,9 +148,10 @@ if [[ -z "$PLATFORM" ]]; then
     echo ""
 fi
 
-# Auto-detect Docker tag from pom.xml
-echo -e "${CYAN}🔍 Detecting version from pom.xml...${NC}"
-DOCKER_TAG=$(python3 "$SCRIPT_DIR/extract_version.py" --format=docker)
+# ArcadeDB image tag: `latest` follows upstream's current snapshot; set
+# ARCADEDB_TAG (e.g. 26.11.1-SNAPSHOT) to pin one. The package version is read
+# from the engine jar inside the image, not from this tag.
+DOCKER_TAG="${ARCADEDB_TAG:-latest}"
 echo -e "${CYAN}📌 Docker tag: ${YELLOW}${DOCKER_TAG}${NC}"
 echo ""
 
@@ -401,7 +402,7 @@ else
 
     if [[ -n "$JAR_LIB_DIR" ]]; then
         echo -e "${CYAN}🔎 Verifying embedded local integration JAR...${NC}"
-        ARCADEDB_VERSION="$DOCKER_TAG" BUILD_VERSION="${BUILD_VERSION:-}" NEW_WHEELS="${NEW_WHEELS:-}" python3 - << 'PY'
+        ARCADEDB_VERSION="$(python3 "$SCRIPT_DIR/extract_version.py" "$LOCAL_JARS_DIR" --format=docker)" BUILD_VERSION="${BUILD_VERSION:-}" NEW_WHEELS="${NEW_WHEELS:-}" python3 - << 'PY'
 import hashlib
 import os
 import re

@@ -308,7 +308,7 @@ echo -e "${CYAN}📝 Writing version...${NC}"
 if [[ -n "${BUILD_VERSION}" ]]; then
     PYTHON_VERSION="${BUILD_VERSION}"
 else
-    PYTHON_VERSION=$(python3 "$SCRIPT_DIR/extract_version.py" --format=pep440)
+    PYTHON_VERSION=$(python3 "$SCRIPT_DIR/extract_version.py" "$JARS_DIR" --format=pep440)
 fi
 echo -e "${CYAN}📦 Python package version: ${YELLOW}${PYTHON_VERSION}${NC}"
 
@@ -327,7 +327,7 @@ fi
 
 # Step 5: Generate version file
 echo -e "${CYAN}📝 Generating _version.py...${NC}"
-python3 "$SCRIPT_DIR/write_version.py" "$PY_BINDINGS_DIR/../../pom.xml"
+python3 "$SCRIPT_DIR/write_version.py" "$JARS_DIR"
 
 # Step 6: Build wheel with proper platform tag
 echo -e "${CYAN}🔨 Building wheel...${NC}"
