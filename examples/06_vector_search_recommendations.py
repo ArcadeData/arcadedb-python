@@ -47,8 +47,9 @@ import sys
 import time
 from pathlib import Path
 
-import arcadedb_embedded as arcadedb
 import numpy as np
+
+import arcadedb_embedded as arcadedb
 
 # Try to import sentence_transformers
 try:

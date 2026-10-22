@@ -10,8 +10,9 @@ The lossiness tests below are therefore the reason this method exists, and they
 assert against `to_columns` directly so the difference cannot quietly go away.
 """
 
-import arcadedb_embedded as arcadedb
 import pytest
+
+import arcadedb_embedded as arcadedb
 
 pa = pytest.importorskip("pyarrow")
 

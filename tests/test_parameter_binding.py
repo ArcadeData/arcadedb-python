@@ -7,9 +7,10 @@ explicitly typed argument: an ``Object[]`` for positional parameters and a
 raised "Ambiguous overloads" instead of binding null; ``(None, 1)`` did too.
 """
 
-import arcadedb_embedded as arcadedb
 import jpype
 import pytest
+
+import arcadedb_embedded as arcadedb
 
 # Three spellings of "one positional parameter, bound to null".
 LONE_NULL = [

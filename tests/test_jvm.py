@@ -1,8 +1,9 @@
 """Tests for start_jvm() re-entry behavior once the JVM is running."""
 
-import arcadedb_embedded as arcadedb
 import jpype
 import pytest
+
+import arcadedb_embedded as arcadedb
 from arcadedb_embedded import jvm
 from arcadedb_embedded.exceptions import ArcadeDBError
 

@@ -9,8 +9,9 @@ a benchmark harness that reads the server's Java sources to find out.
 
 import time
 
-import arcadedb_embedded as arcadedb
 import pytest
+
+import arcadedb_embedded as arcadedb
 from tests.conftest import TEST_PASSWORD
 
 

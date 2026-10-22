@@ -15,6 +15,7 @@ These tests require server support (available in our base package).
 import time
 
 import pytest
+
 from arcadedb_embedded import ArcadeDBServer
 from tests.conftest import TEST_PASSWORD
 

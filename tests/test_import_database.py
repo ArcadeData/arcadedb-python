@@ -4,8 +4,9 @@ import os
 import tempfile
 from pathlib import Path
 
-import arcadedb_embedded as arcadedb
 import pytest
+
+import arcadedb_embedded as arcadedb
 
 
 @pytest.fixture

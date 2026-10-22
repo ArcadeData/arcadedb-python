@@ -16,8 +16,9 @@ for a fractional bound as if it were rounded; fixed in 26.10.1 by PR #9126).
 
 import math
 
-import arcadedb_embedded as arcadedb
 import pytest
+
+import arcadedb_embedded as arcadedb
 
 
 def _five_records_one_without_v(db, name):

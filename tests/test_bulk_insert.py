@@ -443,8 +443,9 @@ class TestVectorColumns:
     """f4v/f8v columnar export: embedding columns as 2-D numpy arrays."""
 
     def test_float_array_column_to_columns(self, temp_db):
-        import arcadedb_embedded as arcadedb
         import numpy as np
+
+        import arcadedb_embedded as arcadedb
 
         temp_db.command("sql", "CREATE DOCUMENT TYPE Emb")
         temp_db.command("sql", "CREATE PROPERTY Emb.vid INTEGER")

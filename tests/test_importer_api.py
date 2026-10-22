@@ -1,8 +1,9 @@
 import os
 from pathlib import Path
 
-import arcadedb_embedded as arcadedb
 import pytest
+
+import arcadedb_embedded as arcadedb
 
 
 def _write_people_csv(csv_path: Path) -> None:

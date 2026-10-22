@@ -15,6 +15,7 @@ import os
 import zipfile
 
 import pytest
+
 from arcadedb_embedded import jvm
 
 RES = "fixture_res"  # a name the package itself never ships, so the fallback runs

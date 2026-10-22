@@ -120,6 +120,7 @@ def test_offset_datetime_conversion(temp_db_path):
     OffsetDateTime (e.g. from an expression, not storage) converts directly.
     """
     import jpype
+
     from arcadedb_embedded import convert_java_to_python
 
     with arcadedb.create_database(temp_db_path) as db:  # starts the JVM
@@ -494,6 +495,7 @@ def test_scalar_list_crosses_as_one_array_with_the_same_types(temp_db_path):
     """
     import jpype
     import pytest
+
     from arcadedb_embedded.type_conversion import convert_python_to_java
 
     with arcadedb.create_database(temp_db_path) as db:
@@ -580,6 +582,7 @@ class TestPrimitiveArrayFormats:
 
     def test_int_array(self):
         import jpype
+
         from arcadedb_embedded.type_conversion import convert_java_to_python
 
         assert convert_java_to_python(jpype.JArray(jpype.JInt)([1, 2, 3])) == [1, 2, 3]
@@ -588,6 +591,7 @@ class TestPrimitiveArrayFormats:
 
     def test_long_array(self):
         import jpype
+
         from arcadedb_embedded.type_conversion import convert_java_to_python
 
         big = 2**40

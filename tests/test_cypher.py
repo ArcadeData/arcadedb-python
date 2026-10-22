@@ -1,7 +1,8 @@
 """Tests for OpenCypher query language support."""
 
-import arcadedb_embedded as arcadedb
 import pytest
+
+import arcadedb_embedded as arcadedb
 
 
 def _ensure_opencypher(db) -> None:

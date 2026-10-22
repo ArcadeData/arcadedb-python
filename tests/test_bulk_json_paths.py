@@ -9,8 +9,9 @@ keeps the call off the bulk path, so every entry point stores the same value or 
 import json
 import math
 
-import arcadedb_embedded as arcadedb
 import pytest
+
+import arcadedb_embedded as arcadedb
 from arcadedb_embedded import type_conversion
 
 ENTRY_POINTS = ["insert_many", "create_vertices", "new_edges"]

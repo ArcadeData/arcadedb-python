@@ -48,7 +48,9 @@ def test_snapshot_engine_jar_gives_raw_version(tmp_path):
 
 def test_snapshot_converts_to_dev(tmp_path, monkeypatch):
     # The tracker lives in tmp_path so the repository's own tracker is untouched.
-    monkeypatch.setattr(mod, "get_dev_version_tracker_path", lambda: tmp_path / "t.json")
+    monkeypatch.setattr(
+        mod, "get_dev_version_tracker_path", lambda: tmp_path / "t.json"
+    )
     d = _jars(tmp_path, "arcadedb-engine-26.11.1-SNAPSHOT.jar")
     assert mod.extract_version(d) == "26.11.1.dev0"
 

@@ -11,10 +11,11 @@ import datetime as dt
 import math
 from decimal import Decimal
 
-import arcadedb_embedded as arcadedb
 import jpype
 import numpy as np
 import pytest
+
+import arcadedb_embedded as arcadedb
 from arcadedb_embedded import results
 from arcadedb_embedded.exceptions import ArcadeDBError
 

@@ -24,8 +24,9 @@ unlabelled node with the first node as the target), fixed by #9299 (the push-dow
 to the verified shape).
 """
 
-import arcadedb_embedded as arcadedb
 import pytest
+
+import arcadedb_embedded as arcadedb
 
 # ---------------------------------------------------------------------------------------------
 # #9277: another label at the far end of the chain (fixed in 26.10.2, #9288)

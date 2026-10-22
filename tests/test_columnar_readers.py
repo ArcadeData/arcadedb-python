@@ -12,8 +12,9 @@ Like test_bridge_fixes.py, they need the bridge jar built from this tree.
 import math
 from decimal import Decimal
 
-import arcadedb_embedded as arcadedb
 import pytest
+
+import arcadedb_embedded as arcadedb
 
 pa = pytest.importorskip("pyarrow")
 pd = pytest.importorskip("pandas")

@@ -21,8 +21,9 @@ database with the engine's `newLightEdge`.
 
 import time
 
-import arcadedb_embedded as arcadedb
 import pytest
+
+import arcadedb_embedded as arcadedb
 from arcadedb_embedded.exceptions import ArcadeDBError
 
 # ---------------------------------------------------------------------------------------------

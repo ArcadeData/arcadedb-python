@@ -164,8 +164,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import arcadedb_embedded as arcadedb
 import numpy as np
+
+import arcadedb_embedded as arcadedb
 
 # Edge statements with every value bound as a ? parameter: the two endpoint
 # RIDs, then the edge properties. One statement text for every edge also lets

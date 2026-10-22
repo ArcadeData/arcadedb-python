@@ -17,8 +17,9 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from statistics import mean
 
-import arcadedb_embedded as arcadedb
 import pytest
+
+import arcadedb_embedded as arcadedb
 from arcadedb_embedded.exceptions import ArcadeDBError
 
 

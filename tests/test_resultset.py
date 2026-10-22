@@ -2,8 +2,9 @@
 Tests for enhanced ResultSet and Result functionality.
 """
 
-import arcadedb_embedded as arcadedb
 import pytest
+
+import arcadedb_embedded as arcadedb
 
 
 def test_resultset_to_list(temp_db_path):
@@ -692,6 +693,7 @@ class TestSmallResultsCostOneBridgeCall:
         """Straight at the Java side: nextRows and nextJsonBatch close a result set when it
         has fewer rows than asked for, and leave one alone that still has rows."""
         import jpype
+
         from arcadedb_embedded import results
 
         interface = jpype.JClass("com.arcadedb.query.sql.executor.ResultSet")

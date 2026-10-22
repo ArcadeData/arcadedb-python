@@ -2,8 +2,9 @@
 Tests for NumPy support in ArcadeDB Python bindings.
 """
 
-import arcadedb_embedded as arcadedb
 import pytest
+
+import arcadedb_embedded as arcadedb
 
 np = pytest.importorskip("numpy")
 

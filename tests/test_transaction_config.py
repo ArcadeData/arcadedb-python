@@ -5,6 +5,7 @@ Priority 7: Transaction Configuration
 """
 
 import pytest
+
 from arcadedb_embedded import ArcadeDBError, create_database
 
 

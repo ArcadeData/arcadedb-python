@@ -7,10 +7,11 @@ built in Python) gives: the same bound values with the same Java classes, the sa
 choice, the same errors, and the same result-set state after ``first()``.
 """
 
-import arcadedb_embedded as arcadedb
 import jpype
 import numpy as np
 import pytest
+
+import arcadedb_embedded as arcadedb
 from arcadedb_embedded import core, results
 from arcadedb_embedded.core import Database
 from arcadedb_embedded.exceptions import ArcadeDBError

@@ -35,8 +35,9 @@ the very thing under test. `RESTORE ... RID :rid` is not an option at all: the
 RID is statement syntax there and the parser rejects a bound parameter.
 """
 
-import arcadedb_embedded as arcadedb
 import pytest
+
+import arcadedb_embedded as arcadedb
 
 
 def _count_two_ways(db, type_name):

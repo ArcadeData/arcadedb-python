@@ -25,8 +25,9 @@ import shutil
 import statistics
 import time
 
-import arcadedb_embedded as arcadedb
 import jpype.types as jtypes
+
+import arcadedb_embedded as arcadedb
 
 DIMENSIONS = 30_000
 TOKENS_PER_DOC = 40

@@ -26,8 +26,9 @@ fired, the graph node count did not change, and the delta buffer is not empty.
 import math as _math
 import random as _random
 
-import arcadedb_embedded as arcadedb
 import pytest
+
+import arcadedb_embedded as arcadedb
 
 DIM = 8
 BASE = 300  # threshold = max(100, min(300*0.2, 50_000)) = 100

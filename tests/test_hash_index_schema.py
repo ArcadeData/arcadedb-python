@@ -1,7 +1,8 @@
 """Hash index schema API coverage for Python bindings."""
 
-import arcadedb_embedded as arcadedb
 import pytest
+
+import arcadedb_embedded as arcadedb
 
 
 def test_hash_index_schema_create_discover_and_query(temp_db_path):

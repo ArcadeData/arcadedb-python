@@ -2,9 +2,10 @@
 beam argument: three engine features the vector guide documents and the
 benchmark harness depends on (guide/vectors.md, 2026-09-07)."""
 
-import arcadedb_embedded as arcadedb
 import jpype.types as jtypes
 import pytest
+
+import arcadedb_embedded as arcadedb
 
 DIMS = 512
 

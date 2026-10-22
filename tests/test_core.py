@@ -5,8 +5,9 @@ These tests work with our base package (includes SQL, OpenCypher, Studio).
 
 import json
 
-import arcadedb_embedded as arcadedb
 import pytest
+
+import arcadedb_embedded as arcadedb
 
 
 def test_database_creation(temp_db_path):

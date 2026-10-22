@@ -8,8 +8,9 @@ import json
 import subprocess  # nosec B404 - test-controlled child process
 import sys
 
-import arcadedb_embedded as arcadedb
 import pytest
+
+import arcadedb_embedded as arcadedb
 
 
 def test_insert_many_nested_values_read_as_python_in_the_same_transaction(

@@ -18,8 +18,9 @@ import threading
 import time
 import urllib.request
 
-import arcadedb_embedded as arcadedb
 import pytest
+
+import arcadedb_embedded as arcadedb
 from tests.conftest import TEST_PASSWORD
 
 

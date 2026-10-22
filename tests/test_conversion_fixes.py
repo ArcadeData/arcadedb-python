@@ -5,8 +5,9 @@ Each section names its issue in this repository.
 
 from datetime import date, datetime
 
-import arcadedb_embedded as arcadedb
 import pytest
+
+import arcadedb_embedded as arcadedb
 from arcadedb_embedded import type_conversion
 from arcadedb_embedded.schema import PropertyType
 from arcadedb_embedded.vector import to_java_int_array

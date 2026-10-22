@@ -1449,9 +1449,7 @@ def run_in_docker(args):
 
     arcadedb_wheel_mount_path = None
     if args.db == "arcadedb_sql":
-        wheel_candidates = sorted(
-            (repo_root / "dist").glob("*embed*.whl")
-        )
+        wheel_candidates = sorted((repo_root / "dist").glob("*embed*.whl"))
         if not wheel_candidates:
             if os.environ.get("GITHUB_ACTIONS", "").lower() == "true":
                 raise RuntimeError(
@@ -1462,9 +1460,7 @@ def run_in_docker(args):
                 "skipping Docker wrapper and running natively."
             )
             return False
-        arcadedb_wheel_mount_path = (
-            f"/workspace/dist/{wheel_candidates[0].name}"
-        )
+        arcadedb_wheel_mount_path = f"/workspace/dist/{wheel_candidates[0].name}"
 
     packages = ["lxml"]
     if args.db == "duckdb":

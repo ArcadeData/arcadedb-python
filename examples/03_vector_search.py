@@ -45,9 +45,10 @@ import shutil
 import time
 import zlib
 
-import arcadedb_embedded as arcadedb
 import jpype.types as jtypes
 import numpy as np
+
+import arcadedb_embedded as arcadedb
 
 # Parse command line arguments
 parser = argparse.ArgumentParser(

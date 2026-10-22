@@ -6,8 +6,9 @@ import threading
 import time
 from pathlib import Path
 
-import arcadedb_embedded as arcadedb
 import pytest
+
+import arcadedb_embedded as arcadedb
 
 # Submissions used by the record-loss tests. 9,742 is the count from the
 # original report: 9,742 Movie vertices submitted, 2,436 stored.

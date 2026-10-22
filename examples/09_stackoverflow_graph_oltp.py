@@ -9747,9 +9747,7 @@ def run_in_docker(args) -> bool:
 
     arcadedb_wheel_mount_path = None
     if args.db.startswith("arcadedb_"):
-        wheel_candidates = sorted(
-            (repo_root / "dist").glob("*embed*.whl")
-        )
+        wheel_candidates = sorted((repo_root / "dist").glob("*embed*.whl"))
         if not wheel_candidates:
             if os.environ.get("GITHUB_ACTIONS", "").lower() == "true":
                 raise RuntimeError(
@@ -9760,9 +9758,7 @@ def run_in_docker(args) -> bool:
                 "skipping Docker wrapper and running natively."
             )
             return False
-        arcadedb_wheel_mount_path = (
-            f"/workspace/dist/{wheel_candidates[0].name}"
-        )
+        arcadedb_wheel_mount_path = f"/workspace/dist/{wheel_candidates[0].name}"
 
     if args.db == "neo4j":
         inner_cmd_parts = [

@@ -73,8 +73,9 @@ def main():
     ap.add_argument("--shapes", default="numeric,strings,mixed")
     args = ap.parse_args()
 
-    import arcadedb_embedded as arcadedb
     import pandas as pd
+
+    import arcadedb_embedded as arcadedb
 
     try:
         import pyarrow  # noqa: F401

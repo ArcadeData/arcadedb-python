@@ -12,6 +12,7 @@ Tests cover:
 """
 
 import pytest
+
 from arcadedb_embedded import ArcadeDBError, IndexType, PropertyType, create_database
 
 

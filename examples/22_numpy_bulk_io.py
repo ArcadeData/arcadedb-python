@@ -32,8 +32,9 @@ import shutil
 import time
 from pathlib import Path
 
-import arcadedb_embedded as arcadedb
 import numpy as np
+
+import arcadedb_embedded as arcadedb
 
 
 def bulk_documents(db, n_rows: int) -> None:
