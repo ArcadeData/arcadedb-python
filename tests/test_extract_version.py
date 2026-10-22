@@ -8,7 +8,7 @@ This repository has no ArcadeDB pom.xml to read, so the version is taken from th
 from __future__ import annotations
 
 import importlib.util
-import subprocess
+import subprocess  # nosec B404 - test-controlled child process
 import sys
 from pathlib import Path
 
@@ -79,7 +79,7 @@ def test_two_engine_versions_raise(tmp_path):
 
 def test_cli_prints_docker_format(tmp_path):
     d = _jars(tmp_path, "arcadedb-engine-26.11.1-SNAPSHOT.jar")
-    out = subprocess.run(
+    out = subprocess.run(  # nosec B603 - fixed argv, no shell
         [sys.executable, str(SCRIPT_PATH), str(d), "--format=docker"],
         capture_output=True,
         text=True,
