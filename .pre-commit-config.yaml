@@ -1,0 +1,30 @@
+repos:
+- repo: https://github.com/psf/black
+  rev: 26.10.1
+  hooks:
+  - id: black
+    language_version: python3
+- repo: https://github.com/pycqa/isort
+  rev: 9.0.2
+  hooks:
+  - id: isort
+    args: [--profile, black]
+- repo: https://github.com/macisamuele/language-formatters-pre-commit-hooks
+  rev: v2.16.0
+  hooks:
+  - id: pretty-format-yaml
+    args:
+    - --autofix
+    - --indent=2
+        # Workflows are linted by actionlint, not reformatted (as upstream).
+    exclude: ^\.github/
+- repo: https://github.com/scop/pre-commit-shfmt
+  rev: v3.14.1-1
+  hooks:
+  - id: shfmt
+    args: [-i, '4', -ci, -sr, -w]
+  # actionlint runs shellcheck over every `run:` block; per-file ignores live in .github/actionlint.yaml.
+- repo: https://github.com/rhysd/actionlint
+  rev: v1.7.12
+  hooks:
+  - id: actionlint
