@@ -421,7 +421,10 @@ ARCADEDB_VERSION = os.environ["ARCADEDB_VERSION"]
 # (NEW_WHEELS), else the newest wheel of the version this run asked for
 # (BUILD_VERSION when set, as the wheel's own version follows it), and assert
 # the version, so picking the wrong file fails loudly.
-_want = (os.environ.get("BUILD_VERSION") or ARCADEDB_VERSION).replace("-SNAPSHOT", "").replace("-", ".")
+# The wheel version's base, by extract_version.py's maven_to_pep440 rules:
+# 26.11.1-SNAPSHOT -> 26.11.1 (.devN follows), 26.11.1-RC1 -> 26.11.1rc1 (#7).
+_want = (os.environ.get("BUILD_VERSION") or ARCADEDB_VERSION).replace("-SNAPSHOT", "")
+_want = _want.replace("-RC", "rc").replace("-", "")
 
 
 def _is_wanted(wheel_path):
