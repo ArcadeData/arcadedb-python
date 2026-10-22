@@ -402,7 +402,10 @@ else
 
     if [[ -n "$JAR_LIB_DIR" ]]; then
         echo -e "${CYAN}🔎 Verifying embedded local integration JAR...${NC}"
-        ARCADEDB_VERSION="$(python3 "$SCRIPT_DIR/extract_version.py" "$LOCAL_JARS_DIR" --format=docker)" BUILD_VERSION="${BUILD_VERSION:-}" NEW_WHEELS="${NEW_WHEELS:-}" python3 - << 'PY'
+        # Its own line: as a prefix assignment (VAR="$(...)" python3 ...) its
+        # failure would not stop set -e, and the check would run with no version (#4)
+        ARCADEDB_VERSION="$(python3 "$SCRIPT_DIR/extract_version.py" "$LOCAL_JARS_DIR" --format=docker)"
+        ARCADEDB_VERSION="$ARCADEDB_VERSION" BUILD_VERSION="${BUILD_VERSION:-}" NEW_WHEELS="${NEW_WHEELS:-}" python3 - << 'PY'
 import hashlib
 import os
 import re
