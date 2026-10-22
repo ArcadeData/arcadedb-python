@@ -37,10 +37,10 @@ dependencies = [
 
 [tool.uv]
 # This pyproject is the *package definition* consumed by the wheel build
-# (scripts/build.sh via Docker). It is not a uv project: the dev/test
-# environment lives in the repo-root pyproject.toml, which installs the built
-# wheel from dist/. `managed = false` makes uv skip this directory during
-# project discovery, so `uv run` from here resolves to the repo-root project.
+# (scripts/build.sh). It is not a uv project: tests run against the built wheel,
+# installed with its `test` extra into a virtual environment (see README,
+# Testing). `managed = false` makes uv skip it during project discovery, so
+# `uv run` uses that environment instead of trying to sync this package.
 managed = false
 
 [project.optional-dependencies]

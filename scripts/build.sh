@@ -517,9 +517,7 @@ fi
 echo ""
 
 echo -e "${BLUE}💡 Next steps:${NC}"
-echo -e "   🧪 Run tests (from the repository root):"
+echo -e "   🧪 Run tests against this wheel (from the repository root; uv venv once first):"
+echo -e "      ${YELLOW}uv pip install --reinstall-package arcadedb-embedded \"<the wheel above>[test]\"${NC}"
 echo -e "      ${YELLOW}uv run pytest${NC}"
-echo ""
-echo -e "   📤 Releases publish through the release workflow (docs/development/release.md);"
-echo -e "      do not upload wheels by hand"
 echo ""
