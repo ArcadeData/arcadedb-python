@@ -279,7 +279,13 @@ echo ""
 if [[ "$USE_NATIVE" == true ]]; then
     # Native build
     echo -e "${YELLOW} Building natively on ${PLATFORM}...${NC}"
-    "$SCRIPT_DIR/build-native.sh" "$PLATFORM" "$PACKAGE_NAME" "$DESCRIPTION" "$DOCKER_TAG" "${BUILD_VERSION:-}"
+    # The jars build.sh was given (staged into local-jars); none: the native build
+    # pulls arcadedata/arcadedb:$DOCKER_TAG itself, never reusing a previous build's (#9)
+    NATIVE_JARS_SOURCE=""
+    if [[ -n "$JAR_LIB_DIR" ]]; then
+        NATIVE_JARS_SOURCE="$LOCAL_JARS_DIR"
+    fi
+    "$SCRIPT_DIR/build-native.sh" "$PLATFORM" "$PACKAGE_NAME" "$DESCRIPTION" "$DOCKER_TAG" "${BUILD_VERSION:-}" "$NATIVE_JARS_SOURCE"
 else
     # Docker build
     echo -e "${YELLOW} 🐳 Building in Docker...${NC}"
