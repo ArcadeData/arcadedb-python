@@ -282,3 +282,6 @@ src/**/*.egg-info/
 # the JRE and the jars scripts/build-native.sh bundles into the package
 src/arcadedb_embedded/jre/
 src/arcadedb_embedded/jars/
+
+# git worktrees for issue branches
+.worktrees/
