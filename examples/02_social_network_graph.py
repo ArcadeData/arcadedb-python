@@ -31,7 +31,7 @@ Requirements:
 
 Usage:
 - Run this example from the examples/ directory:
-  cd bindings/python/examples && python 02_social_network_graph.py
+  cd examples && python 02_social_network_graph.py
 - Database files will be created in ./my_test_databases/social_network_db/
 """
 

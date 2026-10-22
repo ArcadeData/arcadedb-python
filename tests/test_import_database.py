@@ -63,14 +63,7 @@ def _file_url(path: str) -> str:
 
 
 def _resource_path(name: str) -> Path:
-    return (
-        Path(__file__).resolve().parents[3]
-        / "integration"
-        / "src"
-        / "test"
-        / "resources"
-        / name
-    )
+    return Path(__file__).resolve().parent / "fixtures" / name
 
 
 def _import_result_ok(result_set):

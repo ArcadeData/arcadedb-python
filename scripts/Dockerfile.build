@@ -17,7 +17,7 @@ ARG PACKAGE_DESCRIPTION="ArcadeDB embedded multi-model database with bundled JRE
 # Deterministic placeholder. The wrapper build script must pass the real ArcadeDB tag.
 ARG ARCADEDB_TAG=build-arg-required
 ARG TARGET_PLATFORM=linux-x64
-# When set to 1, prefer jars provided in bindings/python/local-jars/lib from the build context.
+# When set to 1, prefer jars provided in local-jars/lib from the build context.
 # If no local jars are present, the build fails fast to avoid silently falling back.
 ARG USE_LOCAL_JARS=0
 ARG LOCAL_JARS_HASH=none
@@ -50,8 +50,8 @@ WORKDIR /build
 RUN mkdir -p /build/upstream-jars /build/jars /build/local-jars
 COPY --from=java-builder /home/arcadedb/lib /build/upstream-jars/
 
-# Optionally bring in locally built jars from the repo (bindings/python/local-jars/lib)
-COPY bindings/python/local-jars/lib/ /build/local-jars/
+# Optionally bring in locally built jars from the repo (local-jars/lib)
+COPY local-jars/lib/ /build/local-jars/
 
 # Make local-jar content changes part of Docker's cache key for this stage.
 RUN echo "LOCAL_JARS_HASH=${LOCAL_JARS_HASH}"
@@ -61,14 +61,14 @@ RUN if [ "$USE_LOCAL_JARS" = "1" ]; then \
             if [ -d /build/local-jars ] && [ "$(ls -1 /build/local-jars | wc -l)" -gt 0 ]; then \
                 echo "📦 Using local jars from build context" && cp /build/local-jars/* /build/jars/; \
             else \
-                echo "❌ USE_LOCAL_JARS=1 but no jars found in bindings/python/local-jars/lib" && exit 1; \
+                echo "❌ USE_LOCAL_JARS=1 but no jars found in local-jars/lib" && exit 1; \
             fi; \
         else \
             echo "📦 Using ArcadeDB image jars" && cp /build/upstream-jars/* /build/jars/; \
         fi
 
 # Copy JAR exclusion list
-COPY bindings/python/scripts/jar_exclusions.txt /build/jar_exclusions.txt
+COPY scripts/jar_exclusions.txt /build/jar_exclusions.txt
 
 # Remove excluded JARs based on jar_exclusions.txt
 RUN echo "🗑️  Removing excluded JARs..." && \
@@ -84,8 +84,8 @@ RUN echo "🗑️  Removing excluded JARs..." && \
     echo "📋 JAR count after exclusion: $(ls -1 /build/jars/*.jar | wc -l)"
 
 # Build the Python-bindings bridge jar (batched row transport; see
-# bindings/python/src/java/com/arcadedb/python/RowBatcher.java)
-COPY bindings/python/src/java /build/bridge-src
+# src/java/com/arcadedb/python/RowBatcher.java)
+COPY src/java /build/bridge-src
 RUN echo "🔨 Building arcadedb-python-bridge.jar..." && \
     mkdir -p /build/bridge-classes && \
     javac -cp "/build/jars/*" -d /build/bridge-classes \
@@ -180,15 +180,15 @@ COPY --from=jre-builder /build/jars /build/jars/
 COPY --from=jre-builder /build/jre /build/jre/
 
 # Copy Python bindings source
-COPY bindings/python/src ./src
-COPY bindings/python/tests ./tests
-COPY bindings/python/setup.py .
-COPY bindings/python/scripts/setup_jars.py ./scripts/
-COPY bindings/python/scripts/extract_version.py ./scripts/
-COPY bindings/python/scripts/write_version.py ./scripts/
-COPY bindings/python/scripts/verify_wheel_platform_tag.py ./scripts/
-COPY bindings/python/pyproject.toml ./
-COPY bindings/python/README.md ./
+COPY src ./src
+COPY tests ./tests
+COPY setup.py .
+COPY scripts/setup_jars.py ./scripts/
+COPY scripts/extract_version.py ./scripts/
+COPY scripts/write_version.py ./scripts/
+COPY scripts/verify_wheel_platform_tag.py ./scripts/
+COPY pyproject.toml ./
+COPY README.md ./
 
 # Also copy repository pom.xml so scripts/extract_version.py can read it
 COPY pom.xml /arcadedb/pom.xml

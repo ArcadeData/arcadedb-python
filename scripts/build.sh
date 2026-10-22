@@ -5,11 +5,11 @@
 # otherwise JARs are pulled from the arcadedata/arcadedb image.
 #
 # Quick local-jar workflow (no host Java install required):
-#   1) Build ArcadeDB JARs in Docker:
+#   1) Build ArcadeDB JARs in Docker (from an ArcadeData/arcadedb checkout):
 #        docker run --rm -v "$PWD":/src -w /src maven:3.9-amazoncorretto-25 \
 #          sh -c "git config --global --add safe.directory /src && ./mvnw -DskipTests -pl package -am package"
 #   2) Point the build at the full assembly's lib directory:
-#        cd bindings/python && ./scripts/build.sh linux/amd64 3.12 ../../package/target/arcadedb-<version>.dir/arcadedb-<version>/lib
+#        ./scripts/build.sh linux/amd64 3.12 /path/to/arcadedb/package/target/arcadedb-<version>.dir/arcadedb-<version>/lib
 
 set -euo pipefail
 
@@ -323,7 +323,7 @@ else
         --target export \
         -t arcadedb-python-package-export \
         -f "$SCRIPT_DIR/Dockerfile.build" \
-        ../..
+        "$PY_BINDINGS_DIR"
 
     # Run tests
     echo -e "${CYAN}🧪 Running tests in Docker...${NC}"
@@ -340,7 +340,7 @@ else
         --target tester \
         -t arcadedb-python-package \
         -f "$SCRIPT_DIR/Dockerfile.build" \
-        ../..
+        "$PY_BINDINGS_DIR"
 
     # Create dist directory if it doesn't exist
     mkdir -p dist
@@ -519,7 +519,9 @@ echo ""
 # the wheel that was just built. Skipped in CI, which installs wheels itself.
 if [ -z "${CI:-}" ] && command -v uv > /dev/null 2>&1; then
     REPO_ROOT=$(git rev-parse --show-toplevel 2> /dev/null || true)
-    if [ -n "$REPO_ROOT" ] && [ -f "$REPO_ROOT/pyproject.toml" ]; then
+    # Only when a separate dev project wraps this package: at this repo's root the
+    # pyproject IS the package, `[tool.uv] managed = false`, so `uv lock` refuses it.
+    if [ -n "$REPO_ROOT" ] && [ "$REPO_ROOT" != "$PY_BINDINGS_DIR" ] && [ -f "$REPO_ROOT/pyproject.toml" ]; then
         echo -e "${CYAN}🔄 Refreshing uv dev environment at repo root...${NC}"
         (
             cd "$REPO_ROOT" &&
@@ -531,7 +533,7 @@ fi
 
 echo ""
 echo -e "${BLUE}💡 Next steps:${NC}"
-echo -e "   🧪 Run tests (from the repository root or bindings/python):"
+echo -e "   🧪 Run tests (from the repository root):"
 echo -e "      ${YELLOW}uv run pytest${NC}"
 echo ""
 echo -e "   📤 Releases publish through the release workflow (docs/development/release.md);"

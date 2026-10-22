@@ -74,7 +74,7 @@ def _jclasses(*names):
     NOT through JPype's ``java`` import hook. That hook resolves the top-level
     name ``java`` through ``sys.path`` like any other Python import, so a
     directory called ``java/`` anywhere on the path shadows it: a mixed
-    Java/Python project's own source folder, or ``bindings/python/src/java``
+    Java/Python project's own source folder, or ``src/java``
     when running from a checkout of this repository. ``from java.lang import
     String`` then raised ImportError, the type lookups below returned None,
     every typed branch in ``_convert_and_register`` was skipped, and a Java

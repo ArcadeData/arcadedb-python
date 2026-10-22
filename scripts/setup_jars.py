@@ -141,7 +141,6 @@ def main():
     if not copy_jars_to_package():
         print("\n❌ Setup failed!")
         print("💡 Make sure to run this via scripts/build.sh:")
-        print("   cd bindings/python")
         print("   ./scripts/build.sh")
         return 1
 

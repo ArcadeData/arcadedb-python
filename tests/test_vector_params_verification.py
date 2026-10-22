@@ -47,7 +47,7 @@ class TestVectorParams:
         # In Java: index.getMetadata().quantizationType
         # JPype allows attribute access for getters or fields
         # Note: the exact field name depends on the Java class implementation of metadata
-        # Given bindings/python/src/arcadedb_embedded/vector.py uses .quantizationType:
+        # Given src/arcadedb_embedded/vector.py uses .quantizationType:
         assert str(idx_to_check.getMetadata().quantizationType) == "INT8"
 
     def test_store_vectors_in_graph_param(self, test_db):

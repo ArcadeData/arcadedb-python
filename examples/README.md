@@ -8,7 +8,7 @@ This directory contains hands-on examples demonstrating ArcadeDB Python bindings
 
 ```bash
 # Navigate to the examples directory first
-cd bindings/python/examples
+cd examples
 
 # Then run the basic document store example
 python 01_simple_document_store.py
@@ -128,7 +128,7 @@ Table-oriented Stack Overflow OLTP benchmark:
 Table-oriented Stack Overflow OLAP benchmark:
 - Loads all Stack Overflow XML tables and runs a fixed OLAP query suite
 - Re-launches itself in a Docker container when `docker` is available (and, for
-  ArcadeDB, a wheel is present in `bindings/python/dist`); otherwise it runs natively,
+  ArcadeDB, a wheel is present in `dist`); otherwise it runs natively,
   and no container enforces `--mem-limit`
 - Reports load/index timing and repeated query runs
 
@@ -393,7 +393,7 @@ half-applied after an interruption
 
 ## 💡 Tips
 
-- **Run from examples/ directory** - Always execute examples from `bindings/python/examples/` for correct file paths
+- **Run from examples/ directory** - Always execute examples from `examples/` for correct file paths
 - **Start with Example 01** - Foundation for all ArcadeDB concepts
 - **Use directed graph assumptions** - Graph examples keep edge direction semantics.
   Every graph example stores both directions of each edge (the engine default). Load

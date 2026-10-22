@@ -1868,7 +1868,7 @@ def run_in_docker(args) -> bool:
     if not docker:
         return False
 
-    repo_root = Path(__file__).resolve().parents[3]
+    repo_root = Path(__file__).resolve().parents[1]
     host_uid = os.getuid() if hasattr(os, "getuid") else None
     host_gid = os.getgid() if hasattr(os, "getgid") else None
     user_spec = (
@@ -1878,12 +1878,12 @@ def run_in_docker(args) -> bool:
     )
     workspace_mount_src = str(repo_root)
     workspace_mount_dst = "/workspace"
-    work_dir = "/workspace/bindings/python/examples"
+    work_dir = "/workspace/examples"
     extra_run_args: List[str] = []
 
     if args.backend in {"milvus", "qdrant"}:
         workspace_mount_dst = str(repo_root)
-        work_dir = str(repo_root / "bindings/python/examples")
+        work_dir = str(repo_root / "examples")
         extra_run_args.extend(
             [
                 "-v",
@@ -1956,20 +1956,20 @@ def run_in_docker(args) -> bool:
     arcadedb_wheel_mount_path = None
     if args.backend == "arcadedb_sql":
         wheel_candidates = sorted(
-            (repo_root / "bindings/python/dist").glob("*embed*.whl")
+            (repo_root / "dist").glob("*embed*.whl")
         )
         if not wheel_candidates:
             if os.environ.get("GITHUB_ACTIONS", "").lower() == "true":
                 raise RuntimeError(
-                    "ArcadeDB wheel not found in bindings/python/dist during GitHub Actions run"
+                    "ArcadeDB wheel not found in dist during GitHub Actions run"
                 )
             print(
-                "[info] No local ArcadeDB wheel found in bindings/python/dist; "
+                "[info] No local ArcadeDB wheel found in dist; "
                 "skipping Docker wrapper and running natively."
             )
             return False
         arcadedb_wheel_mount_path = (
-            f"/workspace/bindings/python/dist/{wheel_candidates[0].name}"
+            f"/workspace/dist/{wheel_candidates[0].name}"
         )
 
     image = args.docker_image or default_docker_image(args.backend)

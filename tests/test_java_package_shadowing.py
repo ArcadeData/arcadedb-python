@@ -14,7 +14,7 @@ No error, in the SHIPPED wheel. The trigger is ordinary: running a script from
 the root of any mixed Java/Python project, whose Java sources live in
 ``java/``, or a Maven tree whose packages start at ``com/``. It also hit every
 test run from a checkout of this repository, whose bridge sources live at
-``bindings/python/src/java`` -- which is how it was found, as eleven failing
+``src/java`` -- which is how it was found, as eleven failing
 vector tests that had twice been blamed on something else.
 
 These run in a SUBPROCESS on purpose. In-process, JPype's ``java`` module is
@@ -69,7 +69,7 @@ def test_a_java_or_com_folder_on_the_path_does_not_break_conversion(tmp_path, fo
     (shadow / "App.java").write_text("class App {}\n")
 
     # THE CHILD MUST RUN THE CODE UNDER TEST. The first version inherited the
-    # parent's environment, whose PYTHONPATH was relative ("bindings/python/src")
+    # parent's environment, whose PYTHONPATH was relative ("src")
     # and so resolved to nothing from the child's temp working directory: the
     # child quietly imported the installed, unfixed wheel, and the test measured
     # the wrong code in both directions. Pin it to the parent's package by

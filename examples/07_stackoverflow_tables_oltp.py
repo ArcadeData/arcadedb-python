@@ -2124,7 +2124,7 @@ def run_in_docker(args):
     if not docker:
         return False
 
-    repo_root = Path(__file__).resolve().parents[3]
+    repo_root = Path(__file__).resolve().parents[1]
     host_uid = os.getuid() if hasattr(os, "getuid") else None
     host_gid = os.getgid() if hasattr(os, "getgid") else None
     user_spec = (
@@ -2149,20 +2149,20 @@ def run_in_docker(args):
     arcadedb_wheel_mount_path = None
     if args.db == "arcadedb_sql":
         wheel_candidates = sorted(
-            (repo_root / "bindings/python/dist").glob("*embed*.whl")
+            (repo_root / "dist").glob("*embed*.whl")
         )
         if not wheel_candidates:
             if os.environ.get("GITHUB_ACTIONS", "").lower() == "true":
                 raise RuntimeError(
-                    "ArcadeDB wheel not found in bindings/python/dist during GitHub Actions run"
+                    "ArcadeDB wheel not found in dist during GitHub Actions run"
                 )
             print(
-                "[info] No local ArcadeDB wheel found in bindings/python/dist; "
+                "[info] No local ArcadeDB wheel found in dist; "
                 "skipping Docker wrapper and running natively."
             )
             return False
         arcadedb_wheel_mount_path = (
-            f"/workspace/bindings/python/dist/{wheel_candidates[0].name}"
+            f"/workspace/dist/{wheel_candidates[0].name}"
         )
 
     packages = ["lxml"]
@@ -2199,7 +2199,7 @@ def run_in_docker(args):
             f"{python_cmd} -u 07_stackoverflow_tables_oltp.py {' '.join(filtered_args)} "
             "|| status=$?; "
             "chown -R $HOST_UID:$HOST_GID "
-            f"/workspace/bindings/python/examples/my_test_databases/{db_name} || true; "
+            f"/workspace/examples/my_test_databases/{db_name} || true; "
             "exit $status"
         )
     else:
@@ -2237,7 +2237,7 @@ def run_in_docker(args):
             "-v",
             f"{repo_root}:/workspace",
             "-w",
-            "/workspace/bindings/python/examples",
+            "/workspace/examples",
             docker_image,
             "sh",
             "-lc",
