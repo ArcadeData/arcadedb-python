@@ -73,9 +73,10 @@ jobs:
         shell: bash
         run: |
           # Download JARs from the official Docker image. `latest` follows
-          # upstream's current snapshot; the version this run builds against is
-          # read from the engine jar and handed to every later job, so a snapshot
-          # published mid-run cannot mix two versions in one run.
+          # upstream's current snapshot. Every build job, Linux included, builds
+          # from these jars (the artifact below), not from its own pull: upstream
+          # re-pushes the snapshot tag on every deploy, so a pull per job could put
+          # two different engine builds under one version in a single run.
           echo "📦 Downloading JARs from arcadedata/arcadedb:latest..."
 
           # Create output directory
@@ -196,11 +197,14 @@ jobs:
       - name: Build arcadedb-embedded (${{ matrix.platform }})
         shell: bash
         env:
-          # The version download-jars resolved from `latest`, so every job in this run builds the same one
+          # The version download-jars resolved from `latest`; the Docker build still
+          # takes its base image by tag, but the jars come from the artifact
           ARCADEDB_TAG: ${{ needs.download-jars.outputs.arcadedb-tag }}
         run: |
           echo "🔨 Building arcadedb-embedded for ${{ matrix.platform }} with Python ${{ matrix.python-version }}..."
-          ./scripts/build.sh ${{ matrix.platform }} ${{ matrix.python-version }}
+          # The jars download-jars fetched, on every platform, so all wheels of this
+          # run carry the same engine build (and build.sh checks the integration jar)
+          ./scripts/build.sh ${{ matrix.platform }} ${{ matrix.python-version }} src/arcadedb_embedded/jars
 
       # Note: Java is NOT required - arcadedb-embedded has bundled JRE!
 
