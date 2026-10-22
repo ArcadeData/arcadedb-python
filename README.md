@@ -88,7 +88,7 @@ Of that, the optional **server stack is 12 JARs, 8.58MB uncompressed**. [Server
 Mode](https://docs.humem.ai/arcadedb/latest/guide/server/) breaks the cost down and
 explains what you pay at runtime (nothing, until you start a server).
 
-**Note**: Some JARs are excluded to optimize package size (e.g., gRPC wire protocol). See [`scripts/jar_exclusions.txt`](https://github.com/humemai/arcadedb-embedded-python/blob/main/bindings/python/scripts/jar_exclusions.txt) for details.
+**Note**: Some JARs are excluded to optimize package size (e.g., gRPC wire protocol). See [`scripts/jar_exclusions.txt`](scripts/jar_exclusions.txt) for details.
 
 Import: `import arcadedb_embedded as arcadedb`
 
@@ -116,8 +116,6 @@ See [testing documentation](https://docs.humem.ai/arcadedb/latest/development/te
 Linux uses Docker. macOS and Windows use a native Java 25+ JDK with jlink.
 
 ```bash
-cd bindings/python/
-
 # Install uv (one-time)
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
@@ -125,9 +123,8 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 ./scripts/build.sh
 ```
 
-Built wheels will be in `dist/`. The build script also refreshes the uv dev
-environment at the repo root, so `uv run pytest` immediately tests the wheel
-you just built.
+Built wheels will be in `dist/`. To test one, install it together with the
+`test` extra into a virtual environment and run `pytest tests`.
 
 **[Build instructions](https://docs.humem.ai/arcadedb/latest/getting-started/installation/#building-from-source)**
 
@@ -135,7 +132,19 @@ you just built.
 
 ## Development
 
-Versions are automatically extracted from the main ArcadeDB `pom.xml`. See [versioning strategy](https://docs.humem.ai/arcadedb/latest/development/release/#python-versioning-strategy) for details on development vs release mode handling.
+The ArcadeDB jars come from the `arcadedata/arcadedb` Docker image: `latest` by
+default, which follows ArcadeDB's current snapshot, or the tag in `ARCADEDB_TAG`
+to pin one (`ARCADEDB_TAG=26.11.1-SNAPSHOT ./scripts/build.sh`). The package
+version is taken from the `arcadedb-engine-<version>.jar` in that image, so
+`26.11.1-SNAPSHOT` builds `26.11.1.devN`. CI does the same, and also runs every
+night so each new snapshot is tested. See [versioning strategy](https://docs.humem.ai/arcadedb/latest/development/release/#python-versioning-strategy) for details on development vs release mode handling.
+
+## Origin
+
+This code moved here from the `bindings/python` directory of
+[ArcadeData/arcadedb](https://github.com/ArcadeData/arcadedb) at
+`ee04bd202abce0183c6263a3c4d8a61a4d526960`, with its git history. Issue
+references in imported commit messages point at `ArcadeData/arcadedb`.
 
 ---
 
