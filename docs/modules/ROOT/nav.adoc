@@ -2,6 +2,5 @@
 * xref:installation.adoc[Installation]
 * xref:packages.adoc[Which package for which mode]
 * xref:quickstart.adoc[Quickstart]
-* xref:coming-from-postgres-or-sqlite.adoc[Coming from Postgres or SQLite]
 * How-to
 ** xref:how-to/databases-and-queries.adoc[Databases and queries]

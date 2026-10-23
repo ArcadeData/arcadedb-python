@@ -7,7 +7,7 @@ Several PyPI packages mention ArcadeDB, and two of them look alike. This page sa
 
 * One Python process owns the database and you want the simplest setup: install `{pkg-name}`. It runs the engine on the JVM, inside your process, and bundles its own Java runtime.
 * A short-lived process, or one where memory and start-up time matter: install `{native-pkg-name}`. It runs the engine as a GraalVM native image. It is a preview.
-* Several processes, or several services, share one database: run an ArcadeDB server and talk to it with `{driver-pkg-name}` (HTTP) or `{grpc-driver-pkg-name}` (gRPC).
+* Several processes, or several services, share one database: run an ArcadeDB server and talk to it with a driver (see <<drivers>>).
 
 == Rule of thumb
 
@@ -22,12 +22,12 @@ Several PyPI packages mention ArcadeDB, and two of them look alike. This page sa
 | The JVM build, `{pkg-name}`. The JVM warms up and then runs long scans and bulk loads faster than the native build.
 
 | Several processes or services read and write the same database
-| The server, with a driver. An embedded database is owned by one process.
+| The server, with a driver. An embedded database is owned by one process; see xref:index.adoc#embedded-vs-http[Embedded bindings or the HTTP driver].
 |===
 
-The two builds differ in speed in both directions: which one is ahead depends on whether you measure the first pass after a start or the warm passes. Measure with your own data before you commit to one. The two embedded packages expose the same API, so changing from one to the other is a change of package name and import name.
+Which build is ahead depends on whether you measure the first pass after a start or the warm passes, so measure with your own data before you commit to one. The two embedded packages expose the same API; xref:index.adoc#jvm-vs-native[JVM build or native build] compares them.
 
-== The packages
+== The embedded packages
 
 [cols="2,2,3"]
 |===
@@ -35,44 +35,30 @@ The two builds differ in speed in both directions: which one is ahead depends on
 
 | `{pkg-name}`
 | Embedded, JVM build
-| The ArcadeDB engine inside your Python process, through https://jpype.readthedocs.io/[JPype]. The wheel carries a Java runtime. Import it as `{import-name}`. This is the package this documentation covers.
+| The engine inside your Python process, through https://jpype.readthedocs.io/[JPype], with a bundled Java runtime. Import it as `{import-name}`. This is the package this component documents.
 
 | `{native-pkg-name}`
 | Embedded, GraalVM native build (preview)
-| The same API, with the engine compiled ahead of time: no JVM and no JPype at run time, fast start and a small footprint. Import it as `{native-import-name}`.
+| The same API with the engine compiled ahead of time: no JVM and no JPype. Import it as `{native-import-name}`.
 
 | `{short-pkg-name}`
 | Embedded, JVM build
-| The name this package moves to in the middle of November. Until then it is a placeholder on PyPI that installs `{pkg-name}`.
+| The name `{pkg-name}` moves to in the middle of November. Until then a placeholder on PyPI that installs `{pkg-name}`.
 
 | `{short-native-pkg-name}`
 | Embedded, native build (preview)
-| The name the native package moves to at the same time. Until then it is an alias that installs `{native-pkg-name}`.
+| The name `{native-pkg-name}` moves to at the same time. Until then an alias that installs it.
 
 | `{jvm-pkg-name}`
 | Embedded, JVM build
-| A reserved name for the JVM build. Until the move it installs `{pkg-name}`, the same as `{short-pkg-name}`.
-
-| `{driver-pkg-name}`
-| Server client, HTTP
-| The official Python HTTP client for a running ArcadeDB server, generated from the server's OpenAPI contract. It is part of {drivers-repo-url}[ArcadeData/arcadedb-drivers]. It does not contain the engine.
-
-| `{grpc-driver-pkg-name}`
-| Server client, gRPC
-| The official Python gRPC client for the server's data plane, generated from its protobuf contract. Same repository as above. It does not contain the engine.
-
-| `{community-driver-pkg-name}`
-| Server client, HTTP (community)
-| A community HTTP driver by Steve Reiner and others, at https://github.com/stevereiner/arcadedb-python[stevereiner/arcadedb-python]. It is *not* related to this repository, whose name is also `arcadedb-python`, and it does not contain the engine. Check which one a tutorial installs before you copy its code.
+| A reserved name for the JVM build. Until the move it installs `{pkg-name}`.
 |===
 
-The names `{pkg-name}` and `{native-pkg-name}` are the current ones. After the move in the middle of November the embedded packages are `{short-pkg-name}` and `{short-native-pkg-name}`. Check this page again after the move.
+[[drivers]]
+== Packages that talk to a server
 
-== Embedded or server
+None of these contains the engine. They connect to a running ArcadeDB server.
 
-Embedded means the database is a directory that your process opens. There is no network hop and no server to run. It fits one application with one database. When a second process needs the same data, switch to the server: you run ArcadeDB itself and connect with `{driver-pkg-name}` or `{grpc-driver-pkg-name}`. The query languages, SQL and openCypher, are the same in both. You can also start the server from inside an embedded process with `create_server()` to open the Studio UI; the xref:installation.adoc[installation page] says what that adds to the wheel.
-
-== See also
-
-* xref:installation.adoc[Installation]
-* xref:coming-from-postgres-or-sqlite.adoc[Coming from Postgres or SQLite]
+* `{driver-pkg-name}`: the official HTTP client. See xref:arcadedb::how-to/connectivity/drivers/python-http.adoc[Python -- HTTP driver].
+* `{grpc-driver-pkg-name}`: the official gRPC client. See xref:arcadedb::how-to/connectivity/drivers/python-grpc.adoc[Python -- gRPC driver].
+* `{community-driver-pkg-name}`: a community HTTP driver by Steve Reiner and others ({community-repo-url}[stevereiner/arcadedb-python]). It is not related to this repository, whose name is also `arcadedb-python`. Check which one a tutorial installs before you copy its code.

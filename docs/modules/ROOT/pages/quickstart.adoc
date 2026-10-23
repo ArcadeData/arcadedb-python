@@ -7,7 +7,7 @@ This page builds a small database from scratch. You need the package from xref:i
 
 == Embedded mode
 
-The database runs in your Python process. You use SQL for the schema and for CRUD, through two calls:
+The database runs in your Python process. You use SQL for the schema and for CRUD, through two calls. ArcadeDB SQL is its own dialect, and it has no JOINs: records link to each other and a query follows the links (see xref:arcadedb::reference/sql/sql-introduction.adoc#no-joins[No JOINs]).
 
 * `db.command(language, statement, *params)` runs a statement that can change data or schema.
 * `db.query(language, statement, *params)` runs a read.

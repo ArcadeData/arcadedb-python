@@ -20,6 +20,6 @@ asciidoc:
     driver-pkg-name: arcadedb-driver
     grpc-driver-pkg-name: arcadedb-driver-grpc
     community-driver-pkg-name: arcadedb-python
-    drivers-repo-url: https://github.com/ArcadeData/arcadedb-drivers
+    community-repo-url: https://github.com/stevereiner/arcadedb-python
     repo-url: https://github.com/ArcadeData/arcadedb-python
     pypi-url: https://pypi.org/project/arcadedb-embedded/

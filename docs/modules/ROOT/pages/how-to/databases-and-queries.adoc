@@ -204,7 +204,7 @@ total: 2
 
 === Parameters
 
-Bind values as parameters instead of pasting them into the statement text. A pasted value can change the statement (SQL injection), and a quote in a name breaks it. ArcadeDB also caches parsed statements by their text, so every distinct pasted value is parsed again. Identifiers such as type and property names cannot be bound and belong in the text.
+Bind values as parameters instead of pasting them into the statement text. Identifiers such as type and property names cannot be bound and belong in the text.
 
 * Positional: one `?` per value, from the extra arguments (`db.query("sql", q, "Alice", 25)`) or from one list or tuple (`db.query("sql", q, ["Alice", 25])`).
 * Named: `:name` in the statement and a dict as the one extra argument. A named parameter can hold a collection, as in `age IN :ages`.
@@ -219,15 +219,17 @@ Bind values as parameters instead of pasting them into the statement text. A pas
 
 === Pagination
 
-For a large type, page by `@rid` instead of `SKIP`. Each page is `WHERE @rid > ? LIMIT ?`, and the cursor is the `@rid` of the last row of the previous page. Start with `"#-1:-1"`. The script above shows the loop with a page size of one so that two short pages print.
+Page a large type by `@rid` instead of `SKIP`: each page is `WHERE @rid > ? LIMIT ?`, and the cursor is the `@rid` of the last row of the previous page. Start with `"#-1:-1"`. The script above runs the loop with a page size of one so that two short pages print.
 
 === SQLScript
 
-`db.command("sqlscript", script)` runs several statements in one call. Without an explicit `RETURN`, the result set holds the last executed statement, DDL such as `CREATE` and `ALTER` included. That is why the script above reports the `ALTER TYPE` statement.
+`db.command("sqlscript", script)` runs several statements in one call, and the result set holds the last executed statement, which is why the script above reports the `ALTER TYPE` statement. The script syntax is in the xref:arcadedb::reference/sql/sql-script.adoc[SQLScript reference].
 
 === openCypher
 
-The same two calls run openCypher: pass `"opencypher"` as the language. The script creates an edge with a `CREATE` pattern and reads it back with `MATCH`.
+The same two calls run openCypher: pass `"opencypher"` as the language. The script creates an edge with a `CREATE` pattern and reads it back with `MATCH`. The language is documented in the xref:arcadedb::reference/cypher/chapter.adoc[openCypher reference].
+
+NOTE: ArcadeDB SQL has no JOINs, so SQLAlchemy and other ORMs, and tools that generate `JOIN` queries, do not work with these two calls. Write the statements yourself, following links as in xref:arcadedb::reference/sql/sql-introduction.adoc#no-joins[No JOINs], or use openCypher for relationships.
 
 == Next steps
 
