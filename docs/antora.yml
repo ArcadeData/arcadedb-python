@@ -13,5 +13,13 @@ asciidoc:
     import-stmt: import arcadedb_embedded as arcadedb
     native-pkg-name: arcadedb-embedded-native
     native-import-name: arcadedb_native
+    # Other names a reader meets on PyPI (the pages that compare packages use these).
+    short-pkg-name: arcadedb
+    short-native-pkg-name: arcadedb-native
+    jvm-pkg-name: arcadedb-jvm
+    driver-pkg-name: arcadedb-driver
+    grpc-driver-pkg-name: arcadedb-driver-grpc
+    community-driver-pkg-name: arcadedb-python
+    drivers-repo-url: https://github.com/ArcadeData/arcadedb-drivers
     repo-url: https://github.com/ArcadeData/arcadedb-python
     pypi-url: https://pypi.org/project/arcadedb-embedded/
