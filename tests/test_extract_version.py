@@ -86,3 +86,46 @@ def test_cli_prints_docker_format(tmp_path):
         check=True,
     )
     assert out.stdout.strip() == "26.11.1-SNAPSHOT"
+
+
+# Release and release-candidate jars, end to end from the file name: the
+# package version (write_version.py writes it) and the --format=docker string,
+# which download-jars passes on as ARCADEDB_TAG and build.sh's local-jars check
+# reads (#7). None of these touches the .devN tracker, which only SNAPSHOT
+# versions use. --python-patch is for manual runs: no build path passes it.
+JAR_NAME_CASES = [
+    # jar version,  --python-patch, pep440,           docker
+    ("26.10.2", 0, "26.10.2", "26.10.2"),
+    ("26.10.2", 1, "26.10.2.post1", "26.10.2"),
+    ("26.11.1-RC1", 0, "26.11.1rc1", "26.11.1-RC1"),
+    ("26.11.1-RC2", 1, "26.11.1rc2.post1", "26.11.1-RC2"),
+]
+
+
+@pytest.mark.parametrize("raw, patch, pep440, docker", JAR_NAME_CASES)
+def test_release_jar_name_through_extract_version(tmp_path, raw, patch, pep440, docker):
+    d = _jars(
+        tmp_path,
+        f"arcadedb-engine-{raw}.jar",
+        f"arcadedb-server-{raw}.jar",
+        "jline-3.30.0.jar",
+    )
+    assert mod.extract_version(d, patch_version=patch) == pep440
+    assert mod.extract_version(d, fmt="docker") == docker
+
+
+@pytest.mark.parametrize("raw, patch, pep440, docker", JAR_NAME_CASES)
+def test_release_jar_name_through_the_cli(tmp_path, raw, patch, pep440, docker):
+    d = _jars(tmp_path, f"arcadedb-engine-{raw}.jar")
+
+    def cli(*args):
+        return subprocess.run(  # nosec B603 - fixed argv, no shell
+            [sys.executable, str(SCRIPT_PATH), str(d), *args],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+
+    assert cli("--format=pep440", f"--python-patch={patch}") == pep440
+    # --python-patch only shapes the PEP 440 version, never the image tag
+    assert cli("--format=docker", f"--python-patch={patch}") == docker
