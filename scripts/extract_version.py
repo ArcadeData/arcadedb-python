@@ -173,7 +173,14 @@ def increment_dev_version_number(base_version):
     return new_version
 
 
-ENGINE_JAR_PATTERN = re.compile(r"^arcadedb-engine-(.+)\.jar$")
+# The version is read by its shape (26.11.1, 26.11.1-SNAPSHOT, 26.11.1-RC1,
+# 26.11.1-RC1-SNAPSHOT); anything after it is a Maven classifier
+# (arcadedb-engine-<v>-tests.jar, -sources, -shaded, ...). A classifier jar counts
+# under its own version: one of another version is a second engine, and it would
+# ship on the classpath, so it must fail the check, not be skipped (#8).
+ENGINE_JAR_PATTERN = re.compile(
+    r"^arcadedb-engine-(\d+(?:\.\d+)*(?:-RC\d+)?(?:-SNAPSHOT)?)(-[A-Za-z][A-Za-z0-9-]*)?\.jar$"
+)
 
 
 def default_jars_dir():
@@ -191,14 +198,14 @@ def extract_raw_version_from_jars(jars_dir):
     if not jars_dir.is_dir():
         raise FileNotFoundError(f"Jars directory not found: {jars_dir}")
 
-    versions = sorted(
-        {
-            match.group(1)
-            for match in (ENGINE_JAR_PATTERN.match(p.name) for p in jars_dir.iterdir())
-            if match
-        }
-    )
-    if not versions:
+    matches = [
+        match
+        for match in (ENGINE_JAR_PATTERN.match(p.name) for p in jars_dir.iterdir())
+        if match
+    ]
+    versions = sorted({match.group(1) for match in matches})
+    # A classifier jar alone (-sources, -javadoc) is no engine to version from
+    if not any(match.group(2) is None for match in matches):
         raise ValueError(f"No arcadedb-engine-<version>.jar found in {jars_dir}")
     if len(versions) > 1:
         raise ValueError(
