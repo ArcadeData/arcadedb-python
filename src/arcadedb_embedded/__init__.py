@@ -7,7 +7,8 @@ directly in the Python process using JPype.
 
 # The installed distribution's version is the single source of truth: the
 # wheel is versioned from the release tag, while the generated _version.py
-# is derived from the Maven pom, so the two disagree on tagged releases
+# is derived from the engine jar's version (scripts/write_version.py), so the
+# two disagree on tagged releases
 # (a 26.8.1.dev20 wheel carried __version__ == "26.8.1.dev0"). Fall back to
 # the generated file, then to a placeholder, for source checkouts that were
 # never installed.

@@ -96,10 +96,16 @@ Import: `import arcadedb_embedded as arcadedb`
 
 ## 🧪 Testing
 
-Tests run against the built wheel via the uv project at the repo root. No
-virtualenv activation is needed, and `uv run` works from anywhere in the repo:
+Tests run against the built wheel, installed with its `test` extra into a
+virtual environment. Once that is set up, `uv run` uses it without activation:
 
 ```bash
+# Once
+uv venv
+
+# After each build: --reinstall-package, as a rebuild keeps the version (26.11.1.dev0)
+uv pip install --reinstall-package arcadedb-embedded "$(ls dist/*.whl | head -1)[test]"
+
 # Run all tests
 uv run pytest
 
