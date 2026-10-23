@@ -143,7 +143,8 @@ default, which follows ArcadeDB's current snapshot, or the tag in `ARCADEDB_TAG`
 to pin one (`ARCADEDB_TAG=26.11.1-SNAPSHOT ./scripts/build.sh`). The package
 version is taken from the `arcadedb-engine-<version>.jar` in that image, so
 `26.11.1-SNAPSHOT` builds `26.11.1.devN`. CI does the same, and also runs every
-night so each new snapshot is tested. See [versioning strategy](https://docs.humem.ai/arcadedb/latest/development/release/#python-versioning-strategy) for details on development vs release mode handling.
+night so each new snapshot is tested. Both workflows take an `arcadedb-tag` input
+(manual run or `workflow_call`) to build from a pinned image: an exact version tag such as `26.10.2`. See [versioning strategy](https://docs.humem.ai/arcadedb/latest/development/release/#python-versioning-strategy) for details on development vs release mode handling.
 
 ## Origin
 
