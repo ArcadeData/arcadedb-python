@@ -516,23 +516,6 @@ fi
 
 echo ""
 
-# Refresh the repo-root uv dev environment so `uv run pytest` immediately uses
-# the wheel that was just built. Skipped in CI, which installs wheels itself.
-if [ -z "${CI:-}" ] && command -v uv > /dev/null 2>&1; then
-    REPO_ROOT=$(git rev-parse --show-toplevel 2> /dev/null || true)
-    # Only when a separate dev project wraps this package: at this repo's root the
-    # pyproject IS the package, `[tool.uv] managed = false`, so `uv lock` refuses it.
-    if [ -n "$REPO_ROOT" ] && [ "$REPO_ROOT" != "$PY_BINDINGS_DIR" ] && [ -f "$REPO_ROOT/pyproject.toml" ]; then
-        echo -e "${CYAN}🔄 Refreshing uv dev environment at repo root...${NC}"
-        (
-            cd "$REPO_ROOT" &&
-                uv lock --upgrade-package arcadedb-embedded &&
-                uv sync --reinstall-package arcadedb-embedded
-        )
-    fi
-fi
-
-echo ""
 echo -e "${BLUE}💡 Next steps:${NC}"
 echo -e "   🧪 Run tests (from the repository root):"
 echo -e "      ${YELLOW}uv run pytest${NC}"
