@@ -1,0 +1,235 @@
+= Databases and queries
+:description: Create, open, check and drop a database, then write and read it with SQL and openCypher.
+
+// Sources: bindings docs guide/core/database.md and guide/core/queries.md.
+
+This guide covers the life of a database directory and the two calls that talk to it. Prefer SQL or openCypher through `db.command(...)` and `db.query(...)` for schema, inserts and graph work. The bindings also expose wrapper objects for the rest of the Java API; they are not covered here.
+
+Every script on this page ran against the published `{pkg-name}` wheel. Run each one in an empty directory.
+
+== The life of a database
+
+A database is a directory on your filesystem. It is created, opened, used, closed and, if you want, dropped.
+
+[source,python,subs="attributes+"]
+----
+{import-stmt}
+
+# Create (raises if the path already holds a database)
+with arcadedb.create_database("./mydb") as db:
+    print(f"Created at: {db.get_database_path()}")
+    db.command("sql", "CREATE VERTEX TYPE User")
+    with db.transaction():
+        db.command("sql", "INSERT INTO User SET name = ?", "Alice")
+
+print("Exists:", arcadedb.database_exists("./mydb"))
+
+# Creating it again fails
+try:
+    with arcadedb.create_database("./mydb"):
+        pass
+except Exception as e:
+    print(type(e).__name__, e, sep=": ")
+
+# Open, and read a value back
+with arcadedb.open_database("./mydb") as db:
+    print("Name:", db.get_name())
+    for user in db.query("sql", "SELECT FROM User"):
+        print(user.get("name"))
+
+# Open an existing database or create it
+path = "./myapp"
+if arcadedb.database_exists(path):
+    db = arcadedb.open_database(path)
+else:
+    db = arcadedb.create_database(path)
+with db:
+    print("Transaction active:", db.is_transaction_active())
+    with db.transaction():
+        print("Transaction active:", db.is_transaction_active())
+    print("Transaction active:", db.is_transaction_active())
+
+# Drop: deletes all files, irreversible
+with arcadedb.open_database("./myapp") as db:
+    db.drop()
+print("Exists after drop:", arcadedb.database_exists("./myapp"))
+----
+
+[source,text]
+----
+Created at: ./mydb
+Exists: True
+ArcadeDBError: Failed to create database: com.arcadedb.exception.DatabaseOperationException: Database './mydb' already exists
+Name: mydb
+Alice
+Transaction active: False
+Transaction active: True
+Transaction active: False
+Exists after drop: False
+----
+
+Notes on the script:
+
+* `create_database(path)` creates the directory and opens the database for reading and writing. It raises `ArcadeDBError` if the path already holds a database, as the third output line shows.
+* `open_database(path)` opens an existing database. `database_exists(path)` tells the two cases apart.
+* `with` closes the database when the block ends, also when an exception leaves it. On close, active transactions roll back. You can call `db.close()` yourself, inside `try`/`finally`, but the context manager is the recommended way.
+* `db.drop()` deletes all files of the database. It cannot be undone.
+* `db.is_transaction_active()` is `True` only inside `with db.transaction():`.
+
+=== Locking
+
+The open database holds an operating-system lock on `database.lck` in its directory. A second process cannot open the same directory while the first holds it; open it in one process and share the handle between that process's threads.
+
+After a crash the operating system releases the lock and leaves the file behind. A leftover file blocks nothing: the next open sees it and replays the write-ahead log to recover. Do not delete it by hand, because that skips the recovery.
+
+=== Several databases, one JVM
+
+Each Python process starts one JVM, on the first database or server it creates. All databases of the process share it. To set JVM options, call `start_jvm(...)` before the first database; see xref:installation.adoc#jvm-options[JVM options].
+
+== Write and query
+
+[source,python,subs="attributes+"]
+----
+{import-stmt}
+
+with arcadedb.create_database("./qdb") as db:
+    db.command("sql", "CREATE VERTEX TYPE Person")
+    db.command("sql", "CREATE PROPERTY Person.name STRING")
+    db.command("sql", "CREATE PROPERTY Person.age INTEGER")
+    db.command("sql", "CREATE EDGE TYPE Knows")
+
+    with db.transaction():
+        db.command("sql", "INSERT INTO Person SET name = ?, age = ?", "Alice", 30)
+        db.command("sql", "INSERT INTO Person SET name = ?, age = ?", "Bob", 25)
+        db.command("sql", "INSERT INTO Person SET name = ?, age = ?", "Charlie", 35)
+
+    # Positional parameters
+    for p in db.query("sql", "SELECT FROM Person WHERE name = ? AND age > ?", "Alice", 25):
+        print("positional:", p.get("name"), p.get("age"))
+
+    # Named parameters
+    rows = db.query(
+        "sql",
+        "SELECT FROM Person WHERE name = :name AND age > :min_age",
+        {"name": "Alice", "min_age": 25},
+    )
+    print("named:", [r.get("name") for r in rows])
+
+    # Named collection parameter
+    rows = db.query(
+        "sql",
+        "SELECT FROM Person WHERE age IN :ages ORDER BY age",
+        {"ages": [25, 30]},
+    )
+    print("collection:", [r.get("name") for r in rows])
+
+    # first() and to_list()
+    first_person = db.query("sql", "SELECT FROM Person ORDER BY name").first()
+    print("first:", first_person.get("name"))
+    people = db.query("sql", "SELECT FROM Person ORDER BY name").to_list()
+    print("to_list:", len(people), people[1]["name"])
+    missing = db.query("sql", "SELECT FROM Person WHERE name = ?", "Unknown").first()
+    print("no match:", missing)
+
+    # Count a type
+    print("count_type:", db.count_type("Person"))
+
+    # Update and delete in a transaction
+    with db.transaction():
+        db.command("sql", "UPDATE Person SET age = ? WHERE name = ?", 26, "Bob")
+        db.command("sql", "DELETE FROM Person WHERE name = ?", "Charlie")
+    print("after write:", [(r.get("name"), r.get("age")) for r in db.query("sql", "SELECT FROM Person ORDER BY name")])
+
+    # SQLScript: several statements in one call
+    script = """
+        CREATE VERTEX TYPE ScriptVertex;
+        INSERT INTO ScriptVertex SET name = 'test';
+        ALTER TYPE ScriptVertex ALIASES sv;
+    """
+    with db.transaction():
+        result = db.command("sqlscript", script)
+    last = result.first()
+    print("sqlscript:", last.get("operation"), last.get("typeName"))
+
+    # @rid-based pagination
+    last_rid = "#-1:-1"
+    batch_size = 1
+    page_no = 0
+    while True:
+        chunk = db.query(
+            "sql",
+            "SELECT @rid AS rid, name FROM Person WHERE @rid > ? LIMIT ?",
+            last_rid,
+            batch_size,
+        ).to_list()
+        if not chunk:
+            break
+        page_no += 1
+        print("page", page_no, [c["name"] for c in chunk])
+        last_rid = str(chunk[-1]["rid"])
+
+    # openCypher through the same two calls
+    with db.transaction():
+        db.command(
+            "opencypher",
+            "MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'Bob'}) CREATE (a)-[:Knows]->(b)",
+        )
+    for row in db.query(
+        "opencypher",
+        "MATCH (a:Person)-[:Knows]->(b:Person) RETURN a.name AS a, b.name AS b",
+    ):
+        print("cypher:", row.get("a"), "knows", row.get("b"))
+
+    # Aggregation
+    total = db.query("sql", "SELECT count(*) AS total FROM Person").first().get("total")
+    print("total:", total)
+----
+
+[source,text]
+----
+positional: Alice 30
+named: ['Alice']
+collection: ['Bob', 'Alice']
+first: Alice
+to_list: 3 Bob
+no match: None
+count_type: 3
+after write: [('Alice', 30), ('Bob', 26)]
+sqlscript: ALTER TYPE ScriptVertex
+page 1 ['Alice']
+page 2 ['Bob']
+cypher: Alice knows Bob
+total: 2
+----
+
+=== Parameters
+
+Bind values as parameters instead of pasting them into the statement text. A pasted value can change the statement (SQL injection), and a quote in a name breaks it. ArcadeDB also caches parsed statements by their text, so every distinct pasted value is parsed again. Identifiers such as type and property names cannot be bound and belong in the text.
+
+* Positional: one `?` per value, from the extra arguments (`db.query("sql", q, "Alice", 25)`) or from one list or tuple (`db.query("sql", q, ["Alice", 25])`).
+* Named: `:name` in the statement and a dict as the one extra argument. A named parameter can hold a collection, as in `age IN :ages`.
+* `None` binds as null.
+
+=== Results
+
+`db.query` returns a result set you can iterate. Two methods cover the usual needs:
+
+* `first()` returns the first row, or `None` when there is none, so `if db.query(...).first():` tests whether anything matched.
+* `to_list()` materialises the whole result as a list of dicts. Use it when you need the whole result in memory; iterate when you stop early or the result is large.
+
+=== Pagination
+
+For a large type, page by `@rid` instead of `SKIP`. Each page is `WHERE @rid > ? LIMIT ?`, and the cursor is the `@rid` of the last row of the previous page. Start with `"#-1:-1"`. The script above shows the loop with a page size of one so that two short pages print.
+
+=== SQLScript
+
+`db.command("sqlscript", script)` runs several statements in one call. Without an explicit `RETURN`, the result set holds the last executed statement, DDL such as `CREATE` and `ALTER` included. That is why the script above reports the `ALTER TYPE` statement.
+
+=== openCypher
+
+The same two calls run openCypher: pass `"opencypher"` as the language. The script creates an edge with a `CREATE` pattern and reads it back with `MATCH`.
+
+== Next steps
+
+* xref:quickstart.adoc[Quickstart]
+* xref:index.adoc[ArcadeDB Python]
