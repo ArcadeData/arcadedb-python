@@ -100,6 +100,30 @@ def test_studio_jar_carries_no_classes():
     )
 
 
+def test_no_apexcharts_in_the_package():
+    """No ApexCharts file in the installed package, in or outside a jar.
+
+    Studio bundled ApexCharts, which has not been open source since 5.1.0, until
+    engine 26.11.1 replaced it with Apache ECharts (ArcadeData/arcadedb#10627). This
+    package is Apache-2.0, so a Studio jar from an older engine must not be installed.
+    scripts/verify_wheel_licences.py guards the wheel at build time; this checks what
+    pip actually installed.
+    """
+    from arcadedb_embedded.jvm import get_jar_path
+
+    package_dir = os.path.dirname(get_jar_path())
+    for root, _dirs, files in os.walk(package_dir):
+        for name in files:
+            path = os.path.join(root, name)
+            assert (
+                "apexcharts" not in name.lower()
+            ), f"ApexCharts file in the wheel: {path}"
+            if name.endswith(".jar"):
+                with zipfile.ZipFile(path) as z:
+                    hits = [n for n in z.namelist() if "apexcharts" in n.lower()]
+                assert not hits, f"{name} carries ApexCharts files: {hits[:3]}"
+
+
 @pytest.mark.server
 def test_server_starts_and_serves_http(temp_server_root):
     """End-to-end: the bundled stack actually starts and answers.
