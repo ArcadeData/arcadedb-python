@@ -14,7 +14,7 @@ cd examples
 python 01_simple_document_store.py
 ```
 
-See the dataset downloader guide: [docs/examples/download_data.md](../docs/examples/download_data.md).
+See the dataset downloader guide: [dataset downloader](https://docs.humem.ai/arcadedb/latest/examples/download_data/).
 
 ## Available Examples
 
@@ -223,7 +223,7 @@ Synthetic multi-table ingest comparison harness:
   be trusted
 - Current outcome is workload-dependent; SQL import can win on some table-heavy shapes
 - The async SQL arm is a comparison arm, not a recommendation, and `--async-parallel`
-  accepts only 1 (see [Bulk Ingest Recommendation](../docs/guide/import.md#bulk-ingest-recommendation)
+  accepts only 1 (see [Bulk Ingest Recommendation](https://docs.humem.ai/arcadedb/latest/guide/import/#bulk-ingest-recommendation)
   for why). For bulk document ingest use `db.insert_many(...)`
 
 **Learn:** Table-ingest tradeoffs for embedded Python workloads
@@ -238,7 +238,7 @@ Synthetic graph ingest comparison harness:
   vertex/edge data
 - Includes parity checks on final vertex and edge counts
 - The async SQL arm is pinned to `--async-parallel 1` (see
-  [Bulk Ingest Recommendation](../docs/guide/import.md#bulk-ingest-recommendation)).
+  [Bulk Ingest Recommendation](https://docs.humem.ai/arcadedb/latest/guide/import/#bulk-ingest-recommendation)).
   GraphBatch is the recommended bulk graph ingest path
 
 **Learn:** Graph-ingest tradeoffs for embedded Python workloads
@@ -334,7 +334,7 @@ Embedded-first server workflow, all in one process:
 - reads server metadata over HTTP
 - creates a database through the server-managed Java API
 - mixes embedded writes with HTTP queries and updates
-- opens Studio against the same in-process database
+- prints the Studio URL, but the wheels on PyPI do not include the Studio web UI (see the [top-level README](../README.md))
 
 **Learn:** How to expose an embedded database over HTTP without running a
 separate container, and when you should reach for the Docker distribution
@@ -407,8 +407,8 @@ half-applied after an interruption
 ## 🔗 Learn More
 
 - **[ArcadeDB Documentation](https://docs.arcadedb.com/)**
-- **[Python API Reference](../docs/api/)**
-- **[GitHub Repository](https://github.com/ArcadeData/arcadedb)**
+- **[Python API Reference](https://docs.humem.ai/arcadedb/latest/api/database/)**
+- **[GitHub Repository](https://github.com/ArcadeData/arcadedb-python)**
 
 ---
 

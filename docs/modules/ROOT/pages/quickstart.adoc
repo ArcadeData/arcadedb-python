@@ -120,7 +120,7 @@ ArcadeDBError: Command failed: com.arcadedb.exception.TransactionException: Tran
 
 == Server mode
 
-When another process, another language or a browser needs the same data, start the bundled server. The process that created it keeps full-speed embedded access, and `get_studio_url()` returns the address of the Studio UI:
+When another process or another language needs the same data, start the bundled server. The process that created it keeps direct embedded access, and other processes reach the same databases over the HTTP API on the port that `get_http_port()` returns:
 
 [source,python,subs="attributes+"]
 ----
@@ -128,15 +128,15 @@ When another process, another language or a browser needs the same data, start t
 
 with arcadedb.create_server("./databases", root_password="password123") as server:
     db = server.create_database("mydb")        # embedded access, in this process
-    print("Studio:", server.get_studio_url())  # HTTP access, any process
+    print("HTTP port:", server.get_http_port())  # HTTP access, any process
 ----
 
 [source,text]
 ----
-Studio: http://localhost:2480/
+HTTP port: 2480
 ----
 
-The server runs only while your Python process runs. See xref:index.adoc#embedded-vs-http[Embedded bindings or the HTTP driver] for when to run the regular ArcadeDB server instead.
+The server runs only while your Python process runs. It does not serve the Studio web UI: see the note in xref:installation.adoc#what-is-included[What is included]. See xref:index.adoc#embedded-vs-http[Embedded bindings or the HTTP driver] for when to run the regular ArcadeDB server instead.
 
 == Next steps
 
