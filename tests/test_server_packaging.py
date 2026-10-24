@@ -109,10 +109,12 @@ def test_server_starts_and_serves_http(temp_server_root):
     """
     requests = pytest.importorskip("requests")
     from arcadedb_embedded import create_server
-    from tests.conftest import TEST_PASSWORD
+    from tests.conftest import TEST_PASSWORD, free_port
 
     with create_server(
-        root_path=temp_server_root, root_password=TEST_PASSWORD
+        root_path=temp_server_root,
+        root_password=TEST_PASSWORD,
+        config={"http_port": free_port()},
     ) as server:
         assert server.is_started()
         port = server.get_http_port()
