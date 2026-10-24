@@ -240,11 +240,14 @@ jobs:
           if [[ "$OSTYPE" == "darwin"* ]]; then
             # macOS: Install CPU-only PyTorch (supports MPS acceleration)
             uv pip install --system torch --index-url https://download.pytorch.org/whl/cpu
-            uv pip install --system "numpy<2.0" requests sentence-transformers
+            # numpy is not capped: the old macOS `numpy<2.0` was for Intel Macs, where PyTorch stops at 2.2 (built against
+            # NumPy 1.x). That leg (darwin/amd64) is disabled; re-enabling it needs the cap back for that platform only.
+            # On Apple Silicon the cap breaks pyarrow, which requires NumPy 2 (example 27).
+            uv pip install --system numpy requests sentence-transformers pandas polars pyarrow
           else
             # Linux & Windows: Install CPU-only PyTorch to save space (avoid CUDA)
             uv pip install --system torch --index-url https://download.pytorch.org/whl/cpu
-            uv pip install --system numpy requests sentence-transformers
+            uv pip install --system numpy requests sentence-transformers pandas polars pyarrow
           fi
 
       # Restored before the dataset step, which is what triggers the model
