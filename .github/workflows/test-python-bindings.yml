@@ -3,10 +3,36 @@ name: Test Python Bindings
 on:
   push:
     branches: [main]
+    paths-ignore:
+      # Changes that cannot alter what these jobs build or run. README.md and
+      # tests/README.md are deliberately NOT here: the wheel build copies README.md
+      # (scripts/Dockerfile.build, pyproject `readme`) and test_no_monorepo_wording.py
+      # reads both. docs/** is safe to skip while tests/conftest.py collect-ignores
+      # test_docs_examples.py (it needs docs/index.md); if that Markdown site comes
+      # back, take docs/** out of this list. Schedule, dispatch and workflow_call
+      # ignore these filters and always run everything.
+      - "docs/**"
+      - "**/*.adoc"
+      - "CLAUDE.md"
+      - "examples/README.md"
+      - "LICENSE*"
   pull_request:
+    # ready_for_review: draft PRs skip the platform matrices (see the job conditions),
+    # so marking one ready is what starts them.
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths-ignore:
+      # Same list as under push.
+      - "docs/**"
+      - "**/*.adoc"
+      - "CLAUDE.md"
+      - "examples/README.md"
+      - "LICENSE*"
 
   # A new upstream snapshot is published as arcadedata/arcadedb:latest without
-  # any change here, so build and test against it every night as well.
+  # any change here, so build and test against it every night as well. The tag
+  # moves (ARCADEDB_IMAGE_TAG defaults to latest), so a night with no commit
+  # here still tests a new engine; that is why there is no skip-if-main-unchanged
+  # guard. One nightly per workflow, staggered an hour apart.
   schedule:
     - cron: "0 3 * * *"
 
@@ -30,6 +56,21 @@ on:
         description: "arcadedata/arcadedb image tag to take the jars from (e.g. 26.10.2); default latest"
         required: false
         default: "latest"
+
+# SUPERSEDE, do not race (same rule in test-python-examples.yml).
+#
+# A force-push to a PR branch left the OLD run going alongside the new one: the
+# stale run reports a failure that the newer commit already fixed, and it holds
+# macOS/Windows runners the organisation shares with ArcadeData/arcadedb.
+#
+# cancel-in-progress is scoped to pull_request ONLY. Every other event gets a
+# group of its own (run_id), so a push to main or a nightly run is never
+# cancelled and never replaced while queued behind another run. The group names
+# the workflow literally: github.workflow is the CALLER's name in a
+# workflow_call, which would put this workflow and its sibling in one group.
+concurrency:
+  group: test-python-bindings-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   # The image download-jars takes the jars from. Unset (push, pull_request, schedule)
@@ -143,6 +184,9 @@ jobs:
   download-jars:
     name: Download ArcadeDB JARs
     runs-on: ubuntu-latest
+    # Draft PRs skip this and the platform matrix; bandit and the dependency audit
+    # above are cheap Linux jobs and keep running.
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     outputs:
       arcadedb-tag: ${{ steps.jars.outputs.arcadedb-tag }}
     steps:
@@ -200,6 +244,7 @@ jobs:
     name: Test arcadedb-embedded (${{ matrix.platform }}, Python ${{ matrix.python-version }})
     runs-on: ${{ matrix.runs-on }}
     needs: download-jars
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     env:
       BUILD_VERSION: ${{ inputs.build-version }}
     strategy:
@@ -567,7 +612,8 @@ jobs:
     name: Test Summary
     needs: test
     runs-on: ubuntu-24.04
-    if: always()
+    # Skipped (not red) when the matrix was skipped for a draft PR.
+    if: always() && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
     steps:
       - name: Check test results
         run: |

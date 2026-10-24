@@ -3,10 +3,36 @@ name: Test Python Examples
 on:
   push:
     branches: [main]
+    paths-ignore:
+      # Changes that cannot alter what these jobs build or run. README.md and
+      # tests/README.md are deliberately NOT here: the wheel build copies README.md
+      # (scripts/Dockerfile.build, pyproject `readme`) and test_no_monorepo_wording.py
+      # reads both. docs/** is safe to skip while tests/conftest.py collect-ignores
+      # test_docs_examples.py (it needs docs/index.md); if that Markdown site comes
+      # back, take docs/** out of this list. Schedule, dispatch and workflow_call
+      # ignore these filters and always run everything.
+      - "docs/**"
+      - "**/*.adoc"
+      - "CLAUDE.md"
+      - "examples/README.md"
+      - "LICENSE*"
   pull_request:
+    # ready_for_review: draft PRs skip the platform matrices (see the job conditions),
+    # so marking one ready is what starts them.
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths-ignore:
+      # Same list as under push.
+      - "docs/**"
+      - "**/*.adoc"
+      - "CLAUDE.md"
+      - "examples/README.md"
+      - "LICENSE*"
 
   # A new upstream snapshot is published as arcadedata/arcadedb:latest without
-  # any change here, so build and test against it every night as well.
+  # any change here, so build and test against it every night as well. The tag
+  # moves (ARCADEDB_IMAGE_TAG defaults to latest), so a night with no commit
+  # here still tests a new engine; that is why there is no skip-if-main-unchanged
+  # guard. One nightly per workflow, staggered an hour apart.
   schedule:
     - cron: "0 4 * * *"
 
@@ -40,18 +66,23 @@ on:
         required: false
         default: "0[1-9]_*.py 1[0-9]_*.py 2[0-9]_*.py"
 
-# SUPERSEDE, do not race.
+# SUPERSEDE, do not race (same rule in test-python-bindings.yml).
 #
 # A force-push to a PR branch left the OLD run going alongside the new one: on
 # #6889 both 118b347ce and 75293c7a2 ran at once, and the stale one reported a
 # failure that the newer commit had already fixed. Anyone reading the PR sees a
-# red check against work that is done.
+# red check against work that is done. The stale run also holds macOS/Windows
+# runners the organisation shares with ArcadeData/arcadedb.
 #
 # cancel-in-progress is scoped to pull_request ONLY. On a push to a long-lived
 # branch a superseded run is often the one you still want -- it is the record
-# for that commit -- so those are left to finish.
+# for that commit -- so those are left to finish, and they get a group of their
+# own (run_id) so a queued push or nightly run is not replaced by a newer one
+# either. The group names the workflow literally: github.workflow is the
+# CALLER's name in a workflow_call, which would put this workflow and its
+# sibling in one group.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: test-python-examples-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -71,6 +102,8 @@ jobs:
   download-jars:
     name: Download ArcadeDB JARs
     runs-on: ubuntu-24.04
+    # Draft PRs skip the whole workflow; marking the PR ready starts it.
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     outputs:
       arcadedb-tag: ${{ steps.jars.outputs.arcadedb-tag }}
     steps:
@@ -125,6 +158,7 @@ jobs:
     name: Test Python Examples (${{ matrix.platform }}, Python ${{ matrix.python-version }})
     runs-on: ${{ matrix.runs-on }}
     needs: download-jars
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     env:
       BUILD_VERSION: ${{ inputs.build-version }}
       # Pin the Hugging Face cache inside the workspace so it is cacheable with
@@ -726,7 +760,8 @@ jobs:
     name: Examples Test Summary
     needs: test-examples
     runs-on: ubuntu-latest
-    if: always()
+    # Skipped (not red) when the matrix was skipped for a draft PR.
+    if: always() && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
     steps:
       - name: Check test results
         shell: bash
