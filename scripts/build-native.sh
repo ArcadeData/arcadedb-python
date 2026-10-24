@@ -21,6 +21,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PY_BINDINGS_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 DIST_DIR="$PY_BINDINGS_DIR/dist"
 JAR_EXCLUSIONS_FILE="$SCRIPT_DIR/jar_exclusions.txt"
+JRE_MODULE_EXCLUSIONS_FILE="$SCRIPT_DIR/jre_module_exclusions.txt"
 
 # Parameters
 PLATFORM="${1:-}"
@@ -28,9 +29,11 @@ PACKAGE_NAME="${2:-arcadedb-embedded}"
 PACKAGE_DESCRIPTION="${3:-ArcadeDB embedded multi-model database with bundled JRE}"
 ARCADEDB_TAG="${4:-}"
 BUILD_VERSION="${5:-}"
+# The jars to bundle; empty pulls them from arcadedata/arcadedb:ARCADEDB_TAG
+JARS_SOURCE="${6:-}"
 
 if [[ -z "$PLATFORM" ]] || [[ -z "$ARCADEDB_TAG" ]]; then
-    echo -e "${RED}Usage: $0 PLATFORM PACKAGE_NAME PACKAGE_DESCRIPTION ARCADEDB_TAG [BUILD_VERSION]${NC}"
+    echo -e "${RED}Usage: $0 PLATFORM PACKAGE_NAME PACKAGE_DESCRIPTION ARCADEDB_TAG [BUILD_VERSION] [JARS_SOURCE]${NC}"
     exit 1
 fi
 
@@ -168,39 +171,14 @@ fi
 
 echo ""
 
-# Step 1: Download ArcadeDB JARs (if not already present)
+# Step 1: Stage the ArcadeDB JARs, on every build (scripts/stage_jars.sh)
 JARS_DIR="$PY_BINDINGS_DIR/src/arcadedb_embedded/jars"
-if [[ -d "$JARS_DIR" ]] && [[ $(ls -1 "$JARS_DIR"/*.jar 2> /dev/null | wc -l) -gt 0 ]]; then
-    echo -e "${GREEN}✅ Using existing JARs from: $JARS_DIR${NC}"
-    JAR_COUNT=$(ls -1 "$JARS_DIR"/*.jar | wc -l)
-    echo -e "${CYAN}📦 Found $JAR_COUNT JAR files${NC}"
-else
-    # Check for Docker (needed to download JARs from ArcadeDB image)
-    if ! command -v docker &> /dev/null; then
-        echo -e "${RED}❌ Docker not found and JARs not present${NC}"
-        echo -e "${YELLOW}💡 Either:${NC}"
-        echo -e "${YELLOW}   1. Install Docker to download JARs: https://www.docker.com/get-started${NC}"
-        echo -e "${YELLOW}   2. Or manually place JARs in: $JARS_DIR${NC}"
-        exit 1
-    fi
+# shellcheck source=stage_jars.sh
+source "$SCRIPT_DIR/stage_jars.sh"
+stage_jars "$JARS_DIR" "$JARS_SOURCE" "$ARCADEDB_TAG"
+echo -e "${CYAN}📦 $(ls -1 "$JARS_DIR"/*.jar | wc -l | tr -d ' ') JAR files${NC}"
 
-    echo -e "${CYAN}📥 Downloading ArcadeDB JARs from Docker image...${NC}"
-    TEMP_JARS=$(mktemp -d)
-
-    if ! docker run --rm arcadedata/arcadedb:${ARCADEDB_TAG} tar -cf - -C /home/arcadedb lib | tar -xf - -C "$TEMP_JARS"; then
-        echo -e "${RED}❌ Failed to download JARs from Docker image${NC}"
-        echo -e "${YELLOW}💡 Make sure Docker is running and you have internet access${NC}"
-        rm -rf "$TEMP_JARS"
-        exit 1
-    fi
-
-    mkdir -p "$JARS_DIR"
-    cp "$TEMP_JARS/lib"/*.jar "$JARS_DIR/"
-    rm -rf "$TEMP_JARS"
-    echo -e "${GREEN}✅ JARs downloaded to: $JARS_DIR${NC}"
-fi
-
-# Always filter excluded jars, even when reusing an existing jars directory from a prior build.
+# Always filter excluded jars, whichever source staged them.
 apply_jar_exclusions "$JARS_DIR" "$JAR_EXCLUSIONS_FILE"
 
 # Build the Python-bindings bridge jar (batched row transport; see
@@ -261,13 +239,23 @@ fi
 # jdk.incubator.vector: Required for vectorized execution paths
 # NOTE: the java.se umbrella used to be force-added as a safety net; with the
 # package embedded-only and jdeps detection fixed, the detected set gates the
-# JRE (full suite + examples verify each build). java.se remains the fallback
-# when detection yields nothing.
-if [ -n "$FILTERED_MODULES" ]; then
-    REQUIRED_MODULES="${FILTERED_MODULES},jdk.management,jdk.zipfs,jdk.unsupported,jdk.incubator.vector"
-else
-    REQUIRED_MODULES="java.se,jdk.management,jdk.zipfs,jdk.unsupported,jdk.incubator.vector"
+# JRE (full suite + examples verify each build). Detection that yields nothing
+# stops the build: the java.se umbrella would bring back the excluded modules.
+# JDK modules the bundled JRE must not contain (jre_module_exclusions.txt says why).
+# Removed from the detected set here, and checked in the finished JRE below.
+if [[ ! -f "$JRE_MODULE_EXCLUSIONS_FILE" ]]; then
+    echo -e "${RED}❌ JRE module exclusion file not found: ${JRE_MODULE_EXCLUSIONS_FILE}${NC}"
+    exit 1
 fi
+EXCLUDED_MODULES_LIST="$(mktemp)"
+grep -v '^#' "$JRE_MODULE_EXCLUSIONS_FILE" | tr -d '\r' | sed '/^[[:space:]]*$/d' > "$EXCLUDED_MODULES_LIST"
+echo -e "${CYAN}📦 Excluded modules: ${YELLOW}$(paste -sd ',' "$EXCLUDED_MODULES_LIST")${NC}"
+FILTERED_MODULES=$(echo "$FILTERED_MODULES" | tr ',' '\n' | sed '/^$/d' | { grep -vxFf "$EXCLUDED_MODULES_LIST" || true; } | paste -sd "," -)
+if [ -z "$FILTERED_MODULES" ]; then
+    echo -e "${RED}❌ jdeps found no modules; the java.se fallback would bring back the excluded modules, so the build stops${NC}"
+    exit 1
+fi
+REQUIRED_MODULES="${FILTERED_MODULES},jdk.management,jdk.zipfs,jdk.unsupported,jdk.incubator.vector"
 
 echo -e "${CYAN}📦 Detected modules (raw): ${YELLOW}${DETECTED_MODULES}${NC}"
 echo -e "${CYAN}📦 Detected modules (filtered): ${YELLOW}${FILTERED_MODULES}${NC}"
@@ -285,6 +273,14 @@ jlink \
     --output "$PY_BINDINGS_DIR/temp_jre"
 
 echo -e "${GREEN}✅ JRE built${NC}"
+# A module that another module requires comes back through jlink's own resolution.
+BAD_MODULES=$("$PY_BINDINGS_DIR/temp_jre/bin/java" --list-modules | tr -d '\r' | sed 's/@.*//' | { grep -xFf "$EXCLUDED_MODULES_LIST" || true; })
+rm -f "$EXCLUDED_MODULES_LIST"
+if [ -n "$BAD_MODULES" ]; then
+    echo -e "${RED}❌ the JRE contains excluded modules (another module requires them): ${BAD_MODULES}${NC}"
+    exit 1
+fi
+echo -e "${GREEN}✅ No excluded module in the JRE${NC}"
 JRE_SIZE=$(du -sh "$PY_BINDINGS_DIR/temp_jre" | cut -f1)
 echo -e "${CYAN}📊 JRE size: ${YELLOW}${JRE_SIZE}${NC}"
 

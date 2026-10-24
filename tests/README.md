@@ -7,7 +7,14 @@ The [Testing Guide](https://docs.humem.ai/arcadedb/latest/development/testing/) 
 ## Running Tests
 
 ```bash
-# Run all tests (dependencies come from the repo-root uv project)
+# Once
+uv venv
+
+# After each build: the wheel and its test extra into .venv. --reinstall-package,
+# as a rebuild keeps the version (26.11.1.dev0)
+uv pip install --reinstall-package arcadedb-embedded "$(ls dist/*.whl | head -1)[test]"
+
+# Run all tests
 uv run pytest
 
 # Run specific file

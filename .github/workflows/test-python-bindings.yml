@@ -13,6 +13,11 @@ on:
   # Allow being called by other workflows (e.g., release workflow)
   workflow_call:
     inputs:
+      arcadedb-tag:
+        description: "arcadedata/arcadedb image tag to take the jars from (e.g. 26.10.2); default latest"
+        required: false
+        type: string
+        default: "latest"
       build-version:
         description: "Override package version (PEP 440) for build.sh"
         required: false
@@ -20,6 +25,16 @@ on:
 
   # Allow manual trigger
   workflow_dispatch:
+    inputs:
+      arcadedb-tag:
+        description: "arcadedata/arcadedb image tag to take the jars from (e.g. 26.10.2); default latest"
+        required: false
+        default: "latest"
+
+env:
+  # The image download-jars takes the jars from. Unset (push, pull_request, schedule)
+  # means latest; a release build passes its tag.
+  ARCADEDB_IMAGE_TAG: ${{ inputs.arcadedb-tag || 'latest' }}
 
 permissions:
   contents: read
@@ -141,18 +156,18 @@ jobs:
         id: jars
         shell: bash
         run: |
-          # Download JARs from the official Docker image. `latest` follows
-          # upstream's current snapshot. Every build job, Linux included, builds
+          # Download JARs from the official Docker image: ARCADEDB_IMAGE_TAG,
+          # `latest` (upstream's current snapshot) unless the caller pinned a tag. Every build job, Linux included, builds
           # from these jars (the artifact below), not from its own pull: upstream
           # re-pushes the snapshot tag on every deploy, so a pull per job could put
           # two different engine builds under one version in a single run.
-          echo "📦 Downloading JARs from arcadedata/arcadedb:latest..."
+          echo "📦 Downloading JARs from arcadedata/arcadedb:${ARCADEDB_IMAGE_TAG}..."
 
           # Create output directory
           mkdir -p src/arcadedb_embedded/jars
 
           # Create a temporary container and copy JARs from it
-          CONTAINER_ID=$(docker create arcadedata/arcadedb:latest)
+          CONTAINER_ID=$(docker create "arcadedata/arcadedb:${ARCADEDB_IMAGE_TAG}")
           docker cp $CONTAINER_ID:/home/arcadedb/lib/. src/arcadedb_embedded/jars/
           docker rm $CONTAINER_ID
 
@@ -163,6 +178,12 @@ jobs:
 
           ARCADEDB_TAG=$(python3 scripts/extract_version.py src/arcadedb_embedded/jars --format=docker)
           echo "📌 ArcadeDB version: $ARCADEDB_TAG"
+          # The build jobs pull arcadedata/arcadedb:<jar version> as their base image,
+          # so a pinned tag must name that version exactly (26.10.2, not an alias).
+          if [ "$ARCADEDB_IMAGE_TAG" != "latest" ] && [ "$ARCADEDB_IMAGE_TAG" != "$ARCADEDB_TAG" ]; then
+            echo "❌ arcadedb-tag '$ARCADEDB_IMAGE_TAG' holds engine $ARCADEDB_TAG; pass the exact version tag"
+            exit 1
+          fi
           echo "arcadedb-tag=$ARCADEDB_TAG" >> "$GITHUB_OUTPUT"
 
       # Unfiltered on purpose: build-native.sh applies scripts/jar_exclusions.txt
@@ -272,8 +293,8 @@ jobs:
       - name: Build and test arcadedb-embedded (${{ matrix.platform }})
         shell: bash
         env:
-          # The version download-jars resolved from `latest`; the Docker build still
-          # takes its base image by tag, but the jars come from the artifact
+          # The engine version download-jars read from the ARCADEDB_IMAGE_TAG jars;
+          # the Docker build takes its base image by this tag, the jars from the artifact
           ARCADEDB_TAG: ${{ needs.download-jars.outputs.arcadedb-tag }}
         run: |
           echo "🔨 Building arcadedb-embedded for ${{ matrix.platform }} with Python ${{ matrix.python-version }}..."

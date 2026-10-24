@@ -168,7 +168,9 @@ if [[ -n "$JAR_LIB_DIR" ]]; then
         exit 1
     fi
 
-    if ! find "$JAR_LIB_DIR" -maxdepth 1 -name "*.jar" -print -quit | grep -q .; then
+    # -H: find does not follow a symlinked starting point on its own, so a JAR_LIB_DIR that is
+    # a symlink to a directory looked empty and failed with "No JAR files found".
+    if ! find -H "$JAR_LIB_DIR" -maxdepth 1 -name "*.jar" -print -quit | grep -q .; then
         echo -e "${RED}❌ No JAR files found in: ${JAR_LIB_DIR}${NC}"
         exit 1
     fi
@@ -183,7 +185,9 @@ if [[ -n "$JAR_LIB_DIR" ]]; then
         echo -e "${CYAN}📦 Using provided JAR directory: ${YELLOW}${JAR_LIB_DIR}${NC}"
         rm -rf "$LOCAL_JARS_DIR"
         mkdir -p "$LOCAL_JARS_DIR"
-        cp -a "$JAR_LIB_DIR"/*.jar "$LOCAL_JARS_DIR"/
+        # -L: a jar that is itself a symlink is staged as a file. A copied link would dangle in the
+        # Docker build context and the hash below (find -type f) would skip it.
+        cp -aL "$JAR_LIB_DIR"/*.jar "$LOCAL_JARS_DIR"/
         JAR_SOURCE_DESC="${JAR_LIB_DIR} (staged into local-jars)"
     fi
 
@@ -279,7 +283,13 @@ echo ""
 if [[ "$USE_NATIVE" == true ]]; then
     # Native build
     echo -e "${YELLOW} Building natively on ${PLATFORM}...${NC}"
-    "$SCRIPT_DIR/build-native.sh" "$PLATFORM" "$PACKAGE_NAME" "$DESCRIPTION" "$DOCKER_TAG" "${BUILD_VERSION:-}"
+    # The jars build.sh was given (staged into local-jars); none: the native build
+    # pulls arcadedata/arcadedb:$DOCKER_TAG itself, never reusing a previous build's (#9)
+    NATIVE_JARS_SOURCE=""
+    if [[ -n "$JAR_LIB_DIR" ]]; then
+        NATIVE_JARS_SOURCE="$LOCAL_JARS_DIR"
+    fi
+    "$SCRIPT_DIR/build-native.sh" "$PLATFORM" "$PACKAGE_NAME" "$DESCRIPTION" "$DOCKER_TAG" "${BUILD_VERSION:-}" "$NATIVE_JARS_SOURCE"
 else
     # Docker build
     echo -e "${YELLOW} 🐳 Building in Docker...${NC}"
@@ -402,7 +412,10 @@ else
 
     if [[ -n "$JAR_LIB_DIR" ]]; then
         echo -e "${CYAN}🔎 Verifying embedded local integration JAR...${NC}"
-        ARCADEDB_VERSION="$(python3 "$SCRIPT_DIR/extract_version.py" "$LOCAL_JARS_DIR" --format=docker)" BUILD_VERSION="${BUILD_VERSION:-}" NEW_WHEELS="${NEW_WHEELS:-}" python3 - << 'PY'
+        # Its own line: as a prefix assignment (VAR="$(...)" python3 ...) its
+        # failure would not stop set -e, and the check would run with no version (#4)
+        ARCADEDB_VERSION="$(python3 "$SCRIPT_DIR/extract_version.py" "$LOCAL_JARS_DIR" --format=docker)"
+        ARCADEDB_VERSION="$ARCADEDB_VERSION" BUILD_VERSION="${BUILD_VERSION:-}" NEW_WHEELS="${NEW_WHEELS:-}" python3 - << 'PY'
 import hashlib
 import os
 import re
@@ -421,7 +434,10 @@ ARCADEDB_VERSION = os.environ["ARCADEDB_VERSION"]
 # (NEW_WHEELS), else the newest wheel of the version this run asked for
 # (BUILD_VERSION when set, as the wheel's own version follows it), and assert
 # the version, so picking the wrong file fails loudly.
-_want = (os.environ.get("BUILD_VERSION") or ARCADEDB_VERSION).replace("-SNAPSHOT", "").replace("-", ".")
+# The wheel version's base, by extract_version.py's maven_to_pep440 rules:
+# 26.11.1-SNAPSHOT -> 26.11.1 (.devN follows), 26.11.1-RC1 -> 26.11.1rc1 (#7).
+_want = (os.environ.get("BUILD_VERSION") or ARCADEDB_VERSION).replace("-SNAPSHOT", "")
+_want = _want.replace("-RC", "rc").replace("-", "")
 
 
 def _is_wanted(wheel_path):
@@ -525,27 +541,8 @@ fi
 
 echo ""
 
-# Refresh the repo-root uv dev environment so `uv run pytest` immediately uses
-# the wheel that was just built. Skipped in CI, which installs wheels itself.
-if [ -z "${CI:-}" ] && command -v uv > /dev/null 2>&1; then
-    REPO_ROOT=$(git rev-parse --show-toplevel 2> /dev/null || true)
-    # Only when a separate dev project wraps this package: at this repo's root the
-    # pyproject IS the package, `[tool.uv] managed = false`, so `uv lock` refuses it.
-    if [ -n "$REPO_ROOT" ] && [ "$REPO_ROOT" != "$PY_BINDINGS_DIR" ] && [ -f "$REPO_ROOT/pyproject.toml" ]; then
-        echo -e "${CYAN}🔄 Refreshing uv dev environment at repo root...${NC}"
-        (
-            cd "$REPO_ROOT" &&
-                uv lock --upgrade-package arcadedb-embedded &&
-                uv sync --reinstall-package arcadedb-embedded
-        )
-    fi
-fi
-
-echo ""
 echo -e "${BLUE}💡 Next steps:${NC}"
-echo -e "   🧪 Run tests (from the repository root):"
+echo -e "   🧪 Run tests against this wheel (from the repository root; uv venv once first):"
+echo -e "      ${YELLOW}uv pip install --reinstall-package arcadedb-embedded \"<the wheel above>[test]\"${NC}"
 echo -e "      ${YELLOW}uv run pytest${NC}"
-echo ""
-echo -e "   📤 Releases publish through the release workflow (docs/development/release.md);"
-echo -e "      do not upload wheels by hand"
 echo ""

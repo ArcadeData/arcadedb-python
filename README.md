@@ -56,11 +56,11 @@ with arcadedb.create_database("./mydb") as db:
 
 ## ✨ Features
 
-- ☕ **No Java Installation Required**: Bundled JRE (~63 MiB uncompressed)
+- ☕ **No Java Installation Required**: Bundled JRE (~44 MiB uncompressed)
 - 🌍 **4 Platforms Supported**: Linux (x86_64, ARM64), macOS (ARM64), Windows (x86_64)
 - 🚀 **Embedded Mode**: Direct database access in Python process (no network)
 - 🌐 **Server Mode**: Optional in-process HTTP server with the Studio web UI: it costs ~8MB of wheel and nothing at runtime until you call `create_server()`
-- 📦 **Self-contained**: All dependencies bundled (~69 MiB current Linux wheel)
+- 📦 **Self-contained**: All dependencies bundled (~64 MiB current Linux wheel)
 - 🔄 **Multi-model**: Graph, Document, Key/Value, Vector, Time Series
 - 🔍 **Multiple query languages**: SQL and OpenCypher
 - ⚡ **High performance**: Direct JVM integration via JPype
@@ -74,12 +74,12 @@ with arcadedb.create_database("./mydb") as db:
 
 The `arcadedb-embedded` package is platform-specific and self-contained:
 
-**Package Contents (the 26.10.1 Linux x86_64 wheel; varies by platform and version):**
+**Package Contents (the 26.11.1.dev0 Linux x86_64 wheel; varies by platform and version):**
 
-- **Wheel size (compressed)**: ~69 MiB
-- **ArcadeDB JARs (uncompressed)**: ~34 MiB across 64 JARs
-- **Bundled JRE (uncompressed)**: ~63 MiB (platform-specific Java 25 runtime via jlink)
-- **Installed package size**: ~97 MiB
+- **Wheel size (compressed)**: ~64 MiB
+- **ArcadeDB JARs (uncompressed)**: ~42 MiB across 72 JARs
+- **Bundled JRE (uncompressed)**: ~44 MiB (platform-specific Java 25 runtime via jlink)
+- **Installed package size**: ~86 MiB
 
 The compressed wheel size is measured from `dist/*.whl`, and the installed package size
 is measured from the extracted `site-packages/arcadedb_embedded/` directory.
@@ -96,10 +96,16 @@ Import: `import arcadedb_embedded as arcadedb`
 
 ## 🧪 Testing
 
-Tests run against the built wheel via the uv project at the repo root. No
-virtualenv activation is needed, and `uv run` works from anywhere in the repo:
+Tests run against the built wheel, installed with its `test` extra into a
+virtual environment. Once that is set up, `uv run` uses it without activation:
 
 ```bash
+# Once
+uv venv
+
+# After each build: --reinstall-package, as a rebuild keeps the version (26.11.1.dev0)
+uv pip install --reinstall-package arcadedb-embedded "$(ls dist/*.whl | head -1)[test]"
+
 # Run all tests
 uv run pytest
 
@@ -137,7 +143,8 @@ default, which follows ArcadeDB's current snapshot, or the tag in `ARCADEDB_TAG`
 to pin one (`ARCADEDB_TAG=26.11.1-SNAPSHOT ./scripts/build.sh`). The package
 version is taken from the `arcadedb-engine-<version>.jar` in that image, so
 `26.11.1-SNAPSHOT` builds `26.11.1.devN`. CI does the same, and also runs every
-night so each new snapshot is tested. See [versioning strategy](https://docs.humem.ai/arcadedb/latest/development/release/#python-versioning-strategy) for details on development vs release mode handling.
+night so each new snapshot is tested. Both workflows take an `arcadedb-tag` input
+(manual run or `workflow_call`) to build from a pinned image: an exact version tag such as `26.10.2`. See [versioning strategy](https://docs.humem.ai/arcadedb/latest/development/release/#python-versioning-strategy) for details on development vs release mode handling.
 
 ## Origin
 

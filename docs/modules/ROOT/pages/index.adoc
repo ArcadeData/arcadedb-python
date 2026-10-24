@@ -1,0 +1,102 @@
+= ArcadeDB Python
+:description: Run the ArcadeDB engine inside your Python process: install, first steps and how-to guides for the {pkg-name} package.
+
+// Sources: bindings docs index.md, api-access-methods.md and getting-started/installation.md,
+// and the PyPI description of arcadedb-embedded-native.
+
+`{pkg-name}` runs the ArcadeDB engine inside your Python process. Calls cross into the engine through https://jpype.readthedocs.io/[JPype], so there is no network hop and no server to start. The wheel bundles its own Java runtime (Java 25), so you do not install Java.
+
+ArcadeDB is a multi-model database: graph, document, key/value, vector and time series data live in one database, and you query it with SQL or openCypher. The bindings expose the two calls you need for that, `db.command(...)` and `db.query(...)`.
+
+[source,python,subs="attributes+"]
+----
+{import-stmt}
+
+with arcadedb.create_database("./mydb") as db:
+    db.command("sql", "CREATE DOCUMENT TYPE Person")
+    with db.transaction():
+        db.command("sql", "INSERT INTO Person SET name = ?, age = ?", "Alice", 30)
+    for record in db.query("sql", "SELECT FROM Person WHERE age > 25"):
+        print(record.get("name"))
+----
+
+[source,text]
+----
+Alice
+----
+
+This page is the map. xref:installation.adoc[Installation] and xref:quickstart.adoc[Quickstart] get you to a working database, and the xref:how-to/databases-and-queries.adoc[how-to guides] go deeper.
+
+[[embedded-vs-http]]
+== Embedded bindings or the HTTP driver
+
+ArcadeDB reaches Python in two ways. Pick by where the engine should run.
+
+[cols="1,2,2"]
+|===
+| | Embedded bindings (this component) | HTTP driver
+
+| Where the engine runs
+| In your Python process
+| In a separate ArcadeDB server
+
+| Who can reach the data
+| One process at a time: the database directory is locked while it is open
+| Any number of clients, local or remote
+
+| Network round trip
+| None
+| One per call
+
+| Setup
+| `pip install {pkg-name}`
+| A running server, plus `pip install arcadedb-driver`
+|===
+
+Choose the embedded bindings for a single script, a notebook, or an application with one Python process that owns its data. Choose the xref:arcadedb::how-to/connectivity/drivers/python-http.adoc[HTTP driver] when more than one process, another language, or a remote machine must reach the same database, or when the server must outlive your Python process.
+
+The two meet in one case. The bindings bundle an optional HTTP server with the Studio web UI. It is off until you call `create_server()`. The process that owns the database keeps direct access, and other processes connect over HTTP. That server lives and dies with your Python process. For a database that must outlive any one client, or for HA, replication and TLS, run the regular xref:arcadedb::index.adoc[ArcadeDB server] instead.
+
+[[jvm-vs-native]]
+== JVM build or native build
+
+Two packages ship for now. Both give you the same engine and the same API.
+
+[cols="1,3,3"]
+|===
+| | `{pkg-name}` (default) | `{native-pkg-name}` (preview)
+
+| Runtime
+| The engine on a bundled JVM, reached through JPype
+| The engine compiled ahead of time with GraalVM Community Edition to a shared library, loaded with `ctypes`: no JVM and no JPype
+
+| Import name
+| `{import-name}`
+| `{native-import-name}`
+
+| Status
+| The package these docs describe
+| A preview of alpha quality. It is an experiment, not a release: do not use it for data you cannot lose
+
+| Install
+| `pip install {pkg-name}`
+| `pip install --pre {native-pkg-name}`
+|===
+
+The preview installs beside the default package. Its public API follows the one of `{import-name}`, so the pages in this component apply to both; the JVM-specific parts (JVM options, `jvm_kwargs`) do not apply to the native build. Check the preview's https://pypi.org/project/{native-pkg-name}/[PyPI page] for its current status before you rely on it.
+
+== Requirements
+
+* Python 3.11 to 3.14. The wheels' CI runs all four versions on every supported platform.
+* Linux (x86_64 and ARM64), macOS on Apple Silicon, or Windows (x86_64).
+* No Java installation.
+
+== Links
+
+* xref:installation.adoc[Installation]
+* xref:quickstart.adoc[Quickstart]
+* xref:how-to/databases-and-queries.adoc[Databases and queries]
+* {pypi-url}[`{pkg-name}` on PyPI]
+* {repo-url}[Source repository] and {repo-url}/issues[issue tracker]
+
+The bindings are licensed under Apache 2.0, like the ArcadeDB engine.

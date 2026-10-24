@@ -1,6 +1,7 @@
 """The wheel can say which engine it carries, not just which version it is.
 
-`__version__` is the package version. It is baked from the pom and says
+`__version__` is the package version. It is baked from the engine jar's
+version (scripts/write_version.py) and says
 nothing about the JARs that ended up in the wheel, so a build from a locally
 patched Java tree reports the released version while shipping a different
 engine. That happened: a local build shipped 59 JARs instead of 64 with a

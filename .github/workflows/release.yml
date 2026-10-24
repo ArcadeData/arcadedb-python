@@ -1,0 +1,320 @@
+name: Release to PyPI
+
+# Pushing a tag that is the bare version (26.11.1, 26.11.1.post1, 26.11.1.dev0; no "v", same as
+# ArcadeData/arcadedb) builds the wheels, tests them, checks them and publishes them to PyPI.
+# Versions run A.B.C.devN -> A.B.C -> A.B.C.postN; never aN, bN or rcN.
+#
+# PyPI keys a trusted publisher on this FILENAME and on the job's environment, so do not rename
+# either without changing the publisher on PyPI at the same time:
+#   project arcadedb         <- ArcadeData/arcadedb-python, workflow release.yml, environment pypi
+#   project arcadedb-native  <- same repository and workflow, environment pypi-native (not used yet)
+# Both GitHub environments only accept deployments from tags that match [0-9]*.
+#
+# Nothing here stores a token: the publish job authenticates with PyPI trusted publishing (OIDC),
+# and only that job has the id-token permission.
+#
+# Until the distribution is renamed (tracker #19), pyproject.toml still names it arcadedb-embedded.
+# The guard in the publish job refuses to publish anything that is not `arcadedb`, so this workflow
+# cannot publish arcadedb-embedded from here by accident. The rename is a separate change.
+#
+# TODO (native-wheel port, tracker #19): a second publish job for arcadedb-native, in environment
+# pypi-native with its own id-token permission and the same kind of guard (distribution name must
+# be arcadedb-native). There is no native job yet.
+
+on:
+  push:
+    tags:
+      - '[0-9]+.[0-9]+.[0-9]+*'  # 26.11.1, 26.11.1.dev0, 26.11.1.post1; validate-version rejects the rest
+
+permissions:
+  contents: read
+
+# One release per tag at a time. A running release is never cancelled half way through an upload.
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  # The only distribution this workflow may publish. See the guard in the publish job.
+  DIST_NAME: arcadedb
+
+jobs:
+  # The tag must be a bare PEP 440 version of the allowed kinds. The jar-derived version is
+  # compared with the tag in verify-wheels, because the jars only exist after the test workflow
+  # downloaded them.
+  validate-version:
+    name: Validate tag
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.validate.outputs.version }}
+      base-version: ${{ steps.validate.outputs.base-version }}
+      arcadedb-tag: ${{ steps.validate.outputs.arcadedb-tag }}
+    steps:
+      - name: Validate tag
+        id: validate
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          if ! [[ "$TAG" =~ ^[0-9]+\.[0-9]+\.[0-9]+(\.(dev|post)[0-9]+)?$ ]]; then
+            echo "::error::Tag '$TAG' is not A.B.C, A.B.C.devN or A.B.C.postN (bare version, no v, no aN/bN/rcN)"
+            exit 1
+          fi
+          BASE="${TAG%%.dev*}"
+          BASE="${BASE%%.post*}"
+          # The engine jars come from the arcadedata/arcadedb image. A release or post tag names
+          # that image tag exactly (the test workflow fails when the image holds another version).
+          # A dev tag is built from the upstream snapshot, which is `latest`.
+          if [[ "$TAG" == *.dev* ]]; then
+            IMAGE_TAG="latest"
+          else
+            IMAGE_TAG="$BASE"
+          fi
+          {
+            echo "version=$TAG"
+            echo "base-version=$BASE"
+            echo "arcadedb-tag=$IMAGE_TAG"
+          } >> "$GITHUB_OUTPUT"
+          echo "Release $TAG (engine $BASE, image tag $IMAGE_TAG)"
+
+  # Builds a wheel per platform and Python version and runs the unit tests on each. The called
+  # workflow uploads the wheels as wheel-<platform>-py<version> artifacts.
+  test:
+    name: Unit tests and wheels
+    needs: validate-version
+    uses: ./.github/workflows/test-python-bindings.yml
+    with:
+      arcadedb-tag: ${{ needs.validate-version.outputs.arcadedb-tag }}
+      build-version: ${{ needs.validate-version.outputs.version }}
+
+  test-examples:
+    name: Example tests
+    needs: validate-version
+    uses: ./.github/workflows/test-python-examples.yml
+    with:
+      arcadedb-tag: ${{ needs.validate-version.outputs.arcadedb-tag }}
+      build-version: ${{ needs.validate-version.outputs.version }}
+
+  # Everything that can be checked without the right to publish: jar version against the tag,
+  # wheel count, size policy, wheel versions. Uploads the checked wheels for the publish job.
+  verify-wheels:
+    name: Verify wheels
+    needs: [validate-version, test, test-examples]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      import-name: ${{ steps.verify.outputs.import-name }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Download wheels for all tested Python versions
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: wheel-*-py*
+          path: dist/
+          merge-multiple: true
+
+      - name: Download the engine jars the wheels were built from
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: arcadedb-jars
+          path: engine-jars/
+
+      # The tag is the version of the engine jar the wheels ship, never a number someone typed.
+      - name: Tag must equal the version derived from the engine jar
+        env:
+          TAG: ${{ needs.validate-version.outputs.version }}
+          BASE: ${{ needs.validate-version.outputs.base-version }}
+        run: |
+          JAR_VERSION=$(python3 scripts/extract_version.py engine-jars --format=docker)
+          JAR_BASE="${JAR_VERSION%-SNAPSHOT}"
+          echo "tag $TAG, tag base $BASE, engine jar $JAR_VERSION"
+          if [ "$JAR_BASE" != "$BASE" ]; then
+            echo "::error::Tag $TAG does not match engine jar $JAR_VERSION (jar base $JAR_BASE, tag base $BASE)"
+            exit 1
+          fi
+          # A snapshot jar is only for a dev tag, and a dev tag only for a snapshot jar.
+          if [[ "$JAR_VERSION" == *-SNAPSHOT ]] && [[ "$TAG" != *.dev* ]]; then
+            echo "::error::Engine jar $JAR_VERSION is a snapshot, but tag $TAG is not a .devN tag"
+            exit 1
+          fi
+          if [[ "$JAR_VERSION" != *-SNAPSHOT ]] && [[ "$TAG" == *.dev* ]]; then
+            echo "::error::Tag $TAG is a .devN tag, but engine jar $JAR_VERSION is not a snapshot"
+            exit 1
+          fi
+
+      - name: Verify wheel count, versions and sizes
+        id: verify
+        env:
+          TAG: ${{ needs.validate-version.outputs.version }}
+        run: |
+          ls -lh dist/
+          python3 -I - <<'PY'
+          import os, pathlib, re, subprocess, sys, tomllib, zipfile
+
+          tag = os.environ["TAG"]
+          wheels = sorted(pathlib.Path("dist").glob("*.whl"))
+
+          # One wheel per platform and supported interpreter. The interpreters are the classifiers of
+          # pyproject.toml, which test-python-bindings.yml's matrix mirrors; the four platforms are
+          # the matrix platforms. Adding either to the matrix changes the expected count here.
+          prefix = "Programming Language :: Python :: 3."
+          classifiers = tomllib.load(open("pyproject.toml", "rb"))["project"]["classifiers"]
+          pythons = [c.rsplit(" ", 1)[1] for c in classifiers if c.startswith(prefix)]
+          platforms = {
+              "linux/amd64": r"manylinux.*x86_64",
+              "linux/arm64": r"manylinux.*aarch64",
+              "darwin/arm64": r"macosx.*arm64",
+              "windows/amd64": r"win_amd64",
+          }
+          expected = len(pythons) * len(platforms)
+          print(f"wheels: {len(wheels)} (expected {expected} = {len(pythons)} Python versions x {len(platforms)} platforms)")
+          problems = []
+          if len(wheels) != expected:
+              problems.append(f"expected {expected} wheels, got {len(wheels)}")
+          for name, pattern in platforms.items():
+              n = sum(1 for w in wheels if re.search(pattern, w.name))
+              print(f"  {name}: {n}")
+              if n != len(pythons):
+                  problems.append(f"{name}: expected {len(pythons)} wheels, got {n}")
+
+          names = set()
+          for w in wheels:
+              # name-version-pythontag-abitag-platformtag.whl, the version matched whole
+              parts = w.name.split("-")
+              if parts[1] != tag:
+                  problems.append(f"{w.name}: wheel version {parts[1]} is not the tag {tag}")
+              with zipfile.ZipFile(w) as zf:
+                  meta = next(n for n in zf.namelist() if n.endswith(".dist-info/METADATA"))
+                  top = next(n for n in zf.namelist() if n.endswith(".dist-info/top_level.txt"))
+                  dist = re.search(r"^Name: (.+)$", zf.read(meta).decode(), re.M).group(1)
+                  imports = zf.read(top).decode().split()
+              names.add((re.sub(r"[-_.]+", "-", dist).lower(), tuple(imports)))
+          if len(names) != 1:
+              problems.append(f"the wheels disagree on distribution name and import package: {sorted(names)}")
+          if problems:
+              for p in problems:
+                  print(f"::error::{p}")
+              sys.exit(1)
+          dist, imports = next(iter(names))
+          if len(imports) != 1:
+              print(f"::error::expected exactly one top-level import package, got {imports}")
+              sys.exit(1)
+          print(f"distribution {dist}, import package {imports[0]}")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              out.write(f"import-name={imports[0]}\n")
+
+          # Size policy: every wheel stays under 100 MB (decimal); build.sh checks the same limit.
+          # ARCADEDB_WHEEL_MAX_MB is deliberately not set: the release has no override.
+          rc = subprocess.run([sys.executable, "scripts/verify_wheel_size.py", *map(str, wheels)]).returncode
+          sys.exit(rc)
+          PY
+          {
+            echo "## Wheels"
+            echo
+            echo '```'
+            sha256sum dist/*.whl
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the checked wheels
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-dist
+          path: dist/*.whl
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish to PyPI
+    needs: [validate-version, verify-wheels]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - name: Download the checked wheels
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-dist
+          path: dist/
+
+      # GUARD: this workflow publishes the distribution `arcadedb` and nothing else. While the
+      # package is still named arcadedb-embedded (tracker #19, rename is a separate change), the
+      # job stops here, before anything reaches PyPI. Two checks, so neither can drift alone:
+      # the wheel file name and the Name field of its METADATA, both must be DIST_NAME.
+      - name: Refuse unless every wheel is the distribution ${{ env.DIST_NAME }}
+        run: |
+          python3 -I - <<'PY'
+          import os, pathlib, re, sys, zipfile
+
+          want = os.environ["DIST_NAME"]
+          norm = lambda s: re.sub(r"[-_.]+", "-", s).lower()
+          wheels = sorted(pathlib.Path("dist").glob("*.whl"))
+          if not wheels:
+              sys.exit("no wheels in dist/")
+          bad = []
+          for w in wheels:
+              file_dist = w.name.split("-")[0]
+              with zipfile.ZipFile(w) as zf:
+                  meta = next(n for n in zf.namelist() if n.endswith(".dist-info/METADATA"))
+                  meta_dist = re.search(r"^Name: (.+)$", zf.read(meta).decode(), re.M).group(1)
+              if norm(file_dist) != want or norm(meta_dist) != want:
+                  bad.append(f"{w.name}: file name says {file_dist}, METADATA says {meta_dist}")
+          if bad:
+              print("\n".join(f"::error::{b}" for b in bad))
+              sys.exit(f"Refusing to publish: this workflow publishes only the distribution '{want}'.")
+          print(f"OK: {len(wheels)} wheels, all distribution '{want}'")
+          PY
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          packages-dir: dist/
+
+  # After the upload: install the released version from PyPI on each platform and import it.
+  # PyPI needs a moment before a new file is installable, so the install retries.
+  verify-pypi:
+    name: Verify on PyPI (${{ matrix.platform }})
+    needs: [validate-version, verify-wheels, publish]
+    runs-on: ${{ matrix.runs-on }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runs-on: ubuntu-24.04
+          - platform: linux/arm64
+            runs-on: ubuntu-24.04-arm
+          - platform: darwin/arm64
+            runs-on: macos-15
+          - platform: windows/amd64
+            runs-on: windows-2025
+    steps:
+      - name: Set up uv
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+
+      - name: Install ${{ env.DIST_NAME }} from PyPI and import it
+        shell: bash
+        env:
+          VERSION: ${{ needs.validate-version.outputs.version }}
+          IMPORT_NAME: ${{ needs.verify-wheels.outputs.import-name }}
+        run: |
+          for attempt in 1 2 3 4 5 6 7 8 9 10; do
+            if uv run --no-project --refresh --python 3.12 --with "${DIST_NAME}==${VERSION}" python -I -c "
+          import importlib, importlib.metadata as md, os, sys
+          installed = md.version(os.environ['DIST_NAME'])
+          if installed != os.environ['VERSION']:
+              sys.exit(f'installed {installed}, expected ' + os.environ['VERSION'])
+          importlib.import_module(os.environ['IMPORT_NAME'])
+          print('OK', os.environ['DIST_NAME'], installed, 'imports as', os.environ['IMPORT_NAME'])
+          "; then
+              exit 0
+            fi
+            echo "attempt $attempt failed, waiting for PyPI"
+            sleep 30
+          done
+          echo "::error::${DIST_NAME}==${VERSION} could not be installed and imported from PyPI"
+          exit 1

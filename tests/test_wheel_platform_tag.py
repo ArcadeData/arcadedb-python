@@ -139,7 +139,7 @@ def test_module_exposes_public_api() -> None:
 def test_dunder_version_matches_distribution_metadata():
     """__version__ must equal the installed distribution version.
 
-    Regression: _version.py is generated from the Maven pom (26.8.1-SNAPSHOT
+    Regression: _version.py is generated from the engine version (26.8.1-SNAPSHOT
     -> 26.8.1.dev0) while the wheel is versioned from the release tag, so a
     published 26.8.1.dev20 wheel reported __version__ == "26.8.1.dev0".
     Anything reading the version programmatically (our own benchmark

@@ -16,6 +16,9 @@ collect_ignore = []
 if sys.platform == "win32":
     # test_sigint.py sends SIGINT to a child process, which Windows cannot deliver
     collect_ignore.append("test_sigint.py")
+    # runs scripts/stage_jars.sh under bash with a fake docker; the bash a Windows
+    # subprocess finds may be WSL's rather than Git Bash
+    collect_ignore.append("test_stage_jars.py")
 if not os.path.isfile(
     os.path.join(os.path.dirname(os.path.dirname(__file__)), "docs", "index.md")
 ):
@@ -106,6 +109,23 @@ def pytest_runtest_call(item):
 # Shared test password used by server-mode tests. ArcadeDB requires >= 8 chars.
 # Hardcoded test fixture, not a real credential.
 TEST_PASSWORD = "test12345"  # nosec B105
+
+
+def free_port():
+    """A free local TCP port, for a server's ``http_port``.
+
+    The server's default is the fixed port 2480, so a test that starts a server
+    without choosing a port fails with "Unable to listen to a HTTP port in the
+    configured port range 2480 - 2480" whenever anything else on the machine
+    holds 2480. Every test that starts a server passes
+    ``config={"http_port": free_port()}``. For several distinct ports at once,
+    see ``_free_ports`` in test_server_wire_protocols.py.
+    """
+    import socket
+
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
 
 
 @pytest.fixture
