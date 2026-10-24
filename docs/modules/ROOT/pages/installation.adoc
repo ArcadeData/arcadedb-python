@@ -49,14 +49,14 @@ Every wheel is platform-specific, built on a native runner of its platform, and 
 
 * The ArcadeDB engine with all models (graph, document, key/value, vector, time series) and both query languages, SQL and openCypher.
 * Vector indexes, and data import for CSV, XML and ArcadeDB JSONL.
-* The optional in-process HTTP server. It costs nothing at run time until you call `create_server()`.
+* The optional in-process HTTP server and, from 26.11.1, the Studio web UI. They cost nothing at run time until you call `create_server()`.
 * A bundled Java 25 runtime, trimmed with `jlink`.
 
 Engine modules the bindings do not use are left out to keep the wheel small. These include the gRPC and MongoDB wire protocols, Raft HA, and Gremlin.
 
 NOTE: *JavaScript is not available.* The GraalJS jars are left out, so `DEFINE FUNCTION ... LANGUAGE js` fails. Define functions in SQL or openCypher. Registering a Python function is planned in https://github.com/ArcadeData/arcadedb-python/pull/29[#29].
 
-NOTE: *The Studio web UI is not included.* It bundles ApexCharts, which is no longer open source (https://github.com/ArcadeData/arcadedb/issues/10579[ArcadeData/arcadedb#10579]). The wheels on PyPI do not contain it, and https://github.com/ArcadeData/arcadedb-python/pull/20[#20] leaves it out of wheels built from this repository. The HTTP API of the in-process server works without it.
+NOTE: *The Studio web UI is in the wheels from 26.11.1.* Studio used to bundle ApexCharts, which is no longer open source (https://github.com/ArcadeData/arcadedb/issues/10579[ArcadeData/arcadedb#10579]). https://github.com/ArcadeData/arcadedb/pull/10627[ArcadeData/arcadedb#10627] replaced it with Apache ECharts. The earlier 26.10.x wheels on PyPI do not contain Studio. The HTTP API of the in-process server works in all of them.
 
 == Verify the installation
 

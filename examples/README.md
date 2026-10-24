@@ -334,7 +334,7 @@ Embedded-first server workflow, all in one process:
 - reads server metadata over HTTP
 - creates a database through the server-managed Java API
 - mixes embedded writes with HTTP queries and updates
-- prints the Studio URL, but the wheels on PyPI do not include the Studio web UI (see the [top-level README](../README.md))
+- prints the Studio URL; the Studio web UI is in the wheels from 26.11.1, and the earlier 26.10.x wheels do not include it (see the [top-level README](../README.md))
 
 **Learn:** How to expose an embedded database over HTTP without running a
 separate container, and when you should reach for the Docker distribution

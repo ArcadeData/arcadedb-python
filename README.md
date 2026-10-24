@@ -43,7 +43,7 @@ This prints `Name: Alice` (the engine also logs to standard error). `create_data
 - Graph, document, key/value, vector (JVector HNSW) and time series models; ACID transactions.
 - Import from CSV, XML and ArcadeDB JSONL; export to JSONL.
 - Columnar results with `to_columns()`, `to_arrow()` and `to_dataframe()`.
-- An optional in-process HTTP server (`create_server()`), off until you call it, for other processes that need the same data. The Studio web UI is not in the wheels on PyPI because it bundles ApexCharts, which is no longer open source ([ArcadeData/arcadedb#10579](https://github.com/ArcadeData/arcadedb/issues/10579)); [#20](https://github.com/ArcadeData/arcadedb-python/pull/20) makes wheels built from this repository match.
+- An optional in-process HTTP server (`create_server()`), off until you call it, for other processes that need the same data. From 26.11.1 the wheels also carry the Studio web UI, which the server then serves. Studio used to bundle ApexCharts, which is no longer open source ([ArcadeData/arcadedb#10579](https://github.com/ArcadeData/arcadedb/issues/10579)), and [ArcadeData/arcadedb#10627](https://github.com/ArcadeData/arcadedb/pull/10627) replaced it with Apache ECharts. The earlier 26.10.x wheels on PyPI have no Studio.
 
 For several processes, other languages, HA or replication, run the regular [ArcadeDB server](https://docs.arcadedb.com) and connect with [`arcadedb-driver`](https://pypi.org/project/arcadedb-driver/) (HTTP client, developed in [ArcadeData/arcadedb-drivers](https://github.com/ArcadeData/arcadedb-drivers)).
 

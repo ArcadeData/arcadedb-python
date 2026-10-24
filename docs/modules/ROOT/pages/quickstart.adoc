@@ -136,7 +136,7 @@ with arcadedb.create_server("./databases", root_password="password123") as serve
 HTTP port: 2480
 ----
 
-The server runs only while your Python process runs. It does not serve the Studio web UI: see the note in xref:installation.adoc#what-is-included[What is included]. See xref:index.adoc#embedded-vs-http[Embedded bindings or the HTTP driver] for when to run the regular ArcadeDB server instead.
+The server runs only while your Python process runs. From 26.11.1 it also serves the Studio web UI, and `get_studio_url()` returns its address. The earlier 26.10.x wheels do not contain Studio: see the note in xref:installation.adoc#what-is-included[What is included]. See xref:index.adoc#embedded-vs-http[Embedded bindings or the HTTP driver] for when to run the regular ArcadeDB server instead.
 
 == Next steps
 
