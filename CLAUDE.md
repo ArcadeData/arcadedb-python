@@ -25,6 +25,7 @@ ARCADEDB_TAG=26.11.1-SNAPSHOT ./scripts/build.sh    # pin the arcadedata/arcaded
 
 - Linux builds use `scripts/Dockerfile.build`; macOS/Windows use `scripts/build-native.sh` with a native JDK 25+ (jlink).
 - Jars come from the `arcadedata/arcadedb` Docker image, filtered by `scripts/jar_exclusions.txt`, staged by `scripts/stage_jars.sh` (always re-pulled; stale jars from a previous build are removed).
+- `JAR_LIB_DIR` (third argument) may be a symlink, and so may any jar in it: `build.sh` follows both and stages real files into `local-jars/`.
 - The package version is derived from the `arcadedb-engine-<version>.jar` (`scripts/extract_version.py`): `26.11.1-SNAPSHOT` → `26.11.1.devN`. The `version = "0.0.0"` in `pyproject.toml` is a placeholder overwritten at build time.
 - `src/java/com/arcadedb/python/*.java` is compiled during the build into `arcadedb-python-bridge.jar` (both in `Dockerfile.build` and `build-native.sh`). Changing Java code requires a rebuild.
 - Output: `dist/*.whl`. `setup.py` only exists to force a platform-specific wheel tag.
