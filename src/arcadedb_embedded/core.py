@@ -1034,6 +1034,20 @@ class Database:
         except Exception as e:
             raise ArcadeDBError(f"Failed to get database name: {e}") from e
 
+    def is_read_only(self) -> bool:
+        """Return True if the database was opened read-only.
+
+        Example:
+            >>> db = arcadedb.open_database("./mydb", read_only=True)
+            >>> db.is_read_only()
+            True
+        """
+        self._check_not_closed()
+        try:
+            return str(self._java_db.getMode()) == "READ_ONLY"
+        except Exception as e:
+            raise ArcadeDBError(f"Failed to read the database mode: {e}") from e
+
     def get_database_path(self) -> str:
         """Get the database path."""
         self._check_not_closed()
@@ -1675,6 +1689,7 @@ class Database:
         trim_text: Optional[bool] = None,
         on_row_error: Optional[str] = None,
         extra_settings: Optional[Mapping[str, Any]] = None,
+        disable_xml_limits: bool = False,
     ) -> ImportResult:
         """
         Import document-shaped data through ArcadeDB's Java importer framework.
@@ -1706,6 +1721,10 @@ class Database:
                 value raises `ValueError`, because the engine treats everything
                 that is not `"skip"` as `"abort"`.
             extra_settings: Additional raw importer settings.
+            disable_xml_limits: Lift the JDK's XML entity limits for this call only, for an
+                XML file with a very large text node or many entity references. Default
+                False. The limits are restored when the call ends. An import that hits one
+                raises ``ArcadeDBError`` whose message names this option.
 
         Returns:
             ImportResult with normalized metadata and importer statistics.
@@ -1729,6 +1748,7 @@ class Database:
             trim_text=trim_text,
             on_row_error=on_row_error,
             extra_settings=extra_settings,
+            disable_xml_limits=disable_xml_limits,
         )
 
     @property
@@ -1921,10 +1941,22 @@ class DatabaseFactory:
         except Exception as e:
             raise ArcadeDBError(f"Failed to create database: {e}") from e
 
-    def open(self) -> Database:
-        """Open an existing database."""
+    def open(self, read_only: bool = False) -> Database:
+        """Open an existing database.
+
+        Args:
+            read_only: Open in ``ComponentFile.MODE.READ_ONLY``. Reads, queries
+                and scans work; every write and schema change raises
+                ``ArcadeDBError``. ``begin()`` does not raise: the first write
+                does, and so does the commit. Use it to inspect a database that
+                must not change, such as a backup restored for audit.
+        """
         try:
-            java_db = self._java_factory.open()
+            if read_only:
+                mode = _java_class("com.arcadedb.engine.ComponentFile$MODE").READ_ONLY
+                java_db = self._java_factory.open(mode)
+            else:
+                java_db = self._java_factory.open()
             return Database(java_db)
         except Exception as e:
             raise ArcadeDBError(f"Failed to open database: {e}") from e
@@ -1959,6 +1991,7 @@ def create_database(
 def open_database(
     path: str,
     jvm_kwargs: Optional[dict] = None,
+    read_only: bool = False,
 ) -> Database:
     """Open an existing database at the given path.
 
@@ -1966,12 +1999,19 @@ def open_database(
         path: Database path
         jvm_kwargs: Optional JVM args passed to start_jvm()
             Example: {"heap_size": "8g"}
+        read_only: Open the database read-only. Writes, schema changes and
+            transactions raise ``ArcadeDBError``.
+
+    Example:
+        >>> db = arcadedb.open_database("./mydb", read_only=True)
+        >>> db.is_read_only()
+        True
     """
     factory = DatabaseFactory(
         path,
         jvm_kwargs=jvm_kwargs,
     )
-    return factory.open()
+    return factory.open(read_only=read_only)
 
 
 def database_exists(path: str) -> bool:

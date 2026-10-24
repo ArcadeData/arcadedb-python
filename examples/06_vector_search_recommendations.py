@@ -445,7 +445,7 @@ def main():
         "--heap-size",
         type=str,
         default=None,
-        help="Set JVM max heap size (e.g. 8g, 4096m). Overrides default 4g.",
+        help="Set JVM max heap size (e.g. 8g, 4096m). Default: 50 percent of the RAM the JVM sees.",
     )
 
     args = parser.parse_args()
