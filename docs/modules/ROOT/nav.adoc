@@ -4,3 +4,4 @@
 * xref:quickstart.adoc[Quickstart]
 * How-to
 ** xref:how-to/databases-and-queries.adoc[Databases and queries]
+** xref:how-to/concurrency.adoc[Concurrency, processes and crashes]
