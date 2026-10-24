@@ -24,10 +24,10 @@ import pytest
 
 # The JAR families that make server mode work. Sizes as measured on the
 # 26.8.1-SNAPSHOT image (uncompressed, MB) are in docs/guide/server.md; the
-# whole set is ~7.65 MB uncompressed and ~7.3 MB on the wheel. Studio is
-# deliberately NOT in this list: the wheels leave it out (test_studio_is_not_bundled).
+# whole set is ~7.65 MB uncompressed and ~7.3 MB on the wheel.
 REQUIRED_JAR_PREFIXES = [
     "arcadedb-server",  # the server itself, 0.66 MB
+    "arcadedb-studio",  # web UI assets, 2.60 MB, contains zero .class files
     "undertow-core",  # HTTP server, 2.21 MB
     "xnio-api",  # undertow's IO layer
     "xnio-nio",
@@ -76,21 +76,42 @@ def test_server_api_is_importable_and_exported():
     assert "create_server" in adb.__all__, "create_server missing from __all__"
 
 
-def test_studio_is_not_bundled():
-    """No Studio jar and no ApexCharts file in the installed package.
+def test_studio_jar_carries_no_classes():
+    """Studio is static assets only, which is why bundling it is cheap.
 
-    Studio bundles ApexCharts, which has not been open source since 5.1.0, and this
-    package is Apache-2.0 (https://github.com/ArcadeData/arcadedb/issues/10579).
-    scripts/jar_exclusions.txt leaves the jar out and scripts/verify_wheel_no_studio.py
-    guards the wheel; this checks what pip actually installed.
+    docs/guide/server.md tells users Studio costs disk and nothing else,
+    on the grounds that a JAR with no ``.class`` entries cannot execute. If a
+    future Studio release starts shipping code, that claim stops being true
+    and the documentation needs revisiting, so assert the premise rather than
+    trusting it.
     """
     from arcadedb_embedded.jvm import get_jar_path
 
     jar_dir = get_jar_path()
-    studio = [n for n in os.listdir(jar_dir) if n.lower().startswith("arcadedb-studio")]
-    assert not studio, f"Studio jar bundled again: {studio}"
+    studio = [n for n in os.listdir(jar_dir) if n.startswith("arcadedb-studio")]
+    assert studio, "studio JAR missing (see test_server_jars_are_bundled)"
 
-    package_dir = os.path.dirname(jar_dir)
+    with zipfile.ZipFile(os.path.join(jar_dir, studio[0])) as z:
+        classes = [n for n in z.namelist() if n.endswith(".class")]
+    assert not classes, (
+        f"arcadedb-studio now ships {len(classes)} .class files. "
+        f"docs/guide/server.md claims Studio costs disk only because it "
+        f"contains no executable code; update that claim."
+    )
+
+
+def test_no_apexcharts_in_the_package():
+    """No ApexCharts file in the installed package, in or outside a jar.
+
+    Studio bundled ApexCharts, which has not been open source since 5.1.0, until
+    engine 26.11.1 replaced it with Apache ECharts (ArcadeData/arcadedb#10627). This
+    package is Apache-2.0, so a Studio jar from an older engine must not be installed.
+    scripts/verify_wheel_licences.py guards the wheel at build time; this checks what
+    pip actually installed.
+    """
+    from arcadedb_embedded.jvm import get_jar_path
+
+    package_dir = os.path.dirname(get_jar_path())
     for root, _dirs, files in os.walk(package_dir):
         for name in files:
             path = os.path.join(root, name)
