@@ -157,11 +157,14 @@ def _snappy_prometheus_write():
 def served(temp_server_root):
     """A started server, a database named ``packaging``, and an authenticated session."""
     import requests
+
     from arcadedb_embedded import create_server
-    from tests.conftest import TEST_PASSWORD
+    from tests.conftest import TEST_PASSWORD, free_port
 
     with create_server(
-        root_path=temp_server_root, root_password=TEST_PASSWORD
+        root_path=temp_server_root,
+        root_password=TEST_PASSWORD,
+        config={"http_port": free_port()},
     ) as server:
         server.create_database("packaging").close()
         session = requests.Session()
