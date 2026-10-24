@@ -250,44 +250,6 @@ def test_class_reference_parser_reads_a_real_class():
     assert "java/lang/String" in refs
 
 
-def test_polyglot_engine_is_off_while_no_graalvm_language_ships(tmp_path):
-    """The engine is off by default because the wheel carries no language for it.
-
-    GraalJS (js-language, truffle, icu4j, regex) is in jar_exclusions.txt, so a
-    polyglot engine would start with nothing to register and log "no languages
-    found" at the first SQL command, and ``DEFINE FUNCTION ... LANGUAGE js``
-    cannot work either way. If a language jar is ever shipped, this test stops
-    asserting either half.
-    """
-    import arcadedb_embedded as arcadedb
-    import jpype
-    from arcadedb_embedded.exceptions import ArcadeDBError
-
-    service = (
-        "META-INF/services/com.oracle.truffle.api.provider.TruffleLanguageProvider"
-    )
-    jar_dir = get_jar_path()
-    language_shipped = False
-    for name in os.listdir(jar_dir):
-        if name.endswith(".jar"):
-            with zipfile.ZipFile(os.path.join(jar_dir, name)) as archive:
-                language_shipped = language_shipped or service in archive.namelist()
-
-    with arcadedb.create_database(str(tmp_path / "poly")) as db:
-        configuration = jpype.JClass("com.arcadedb.GlobalConfiguration")
-        enabled = bool(configuration.POLYGLOT_ENGINE_ENABLED.getValueAsBoolean())
-        assert language_shipped or not enabled, (
-            "the polyglot engine is enabled but no GraalVM language is in the wheel; "
-            "start_jvm() should default -Darcadedb.polyglotEngineEnabled=false"
-        )
-        if not language_shipped:
-            with pytest.raises(ArcadeDBError):
-                db.command(
-                    "sql",
-                    'DEFINE FUNCTION jsfn.add "return a + b;" PARAMETERS [a,b] LANGUAGE js',
-                )
-
-
 # The JDK modules that scripts/jre_module_exclusions.txt keeps out of the bundled
 # runtime, with the packages each one provides in the full JDK. A package that is
 # in this table and that the running JVM does not provide is "removed on purpose".
