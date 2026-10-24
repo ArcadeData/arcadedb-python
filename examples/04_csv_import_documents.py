@@ -963,7 +963,7 @@ parser.add_argument(
     "--heap-size",
     type=str,
     default=None,
-    help="Set JVM max heap size (e.g. 8g, 4096m). Overrides default 4g.",
+    help="Set JVM max heap size (e.g. 8g, 4096m). Default: 50 percent of the RAM the JVM sees.",
 )
 parser.add_argument(
     "--db-name",
@@ -1017,8 +1017,8 @@ print()
 if args.heap_size:
     print(f"💡 JVM Max Heap: {args.heap_size} (from --heap-size)")
 else:
-    print("💡 JVM Max Heap: 4g (default)")
-    print("   ℹ️  Using default JVM heap (4g)")
+    print("💡 JVM Max Heap: 50 percent of RAM (default)")
+    print("   ℹ️  Using default JVM heap (50 percent of RAM)")
     if args.dataset == "movielens-large":
         print("   💡 For large datasets, you can increase it:")
         print("      Use --heap-size 8g (or higher)")
