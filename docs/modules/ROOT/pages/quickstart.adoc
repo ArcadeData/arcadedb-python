@@ -1,0 +1,143 @@
+= Quickstart
+:description: Create a database, insert records in a transaction and query them with SQL, in about five minutes.
+
+// Source: bindings docs getting-started/quickstart.md.
+
+This page builds a small database from scratch. You need the package from xref:installation.adoc[Installation]. Each script runs against the published `{pkg-name}` wheel; the output shown is what it printed.
+
+== Embedded mode
+
+The database runs in your Python process. You use SQL for the schema and for CRUD, through two calls. ArcadeDB SQL is its own dialect, and it has no JOINs: records link to each other and a query follows the links (see xref:arcadedb::reference/sql/sql-introduction.adoc#no-joins[No JOINs]).
+
+* `db.command(language, statement, *params)` runs a statement that can change data or schema.
+* `db.query(language, statement, *params)` runs a read.
+
+Two rules cover most first mistakes:
+
+* Use a `with` block. It closes the database when the block ends, also when an exception leaves it.
+* *Writes need a transaction.* `INSERT`, `UPDATE` and `DELETE` go inside `with db.transaction():`. Schema statements apply immediately. Reads need no transaction.
+
+== A complete example
+
+[source,python,subs="attributes+"]
+----
+{import-stmt}
+
+
+def main():
+    # Create database
+    with arcadedb.create_database("./quickstart") as db:
+        # Create schema (SQL)
+        db.command("sql", "CREATE DOCUMENT TYPE Person")
+        db.command("sql", "CREATE PROPERTY Person.name STRING")
+        db.command("sql", "CREATE PROPERTY Person.age INTEGER")
+        db.command("sql", "CREATE PROPERTY Person.email STRING")
+        db.command("sql", "CREATE INDEX ON Person (name) NOTUNIQUE")
+
+        # Insert data (in a transaction)
+        with db.transaction():
+            for name, age, email in [
+                ("Alice", 30, "alice@example.com"),
+                ("Bob", 25, "bob@example.com"),
+                ("Charlie", 35, "charlie@example.com"),
+            ]:
+                db.command(
+                    "sql",
+                    "INSERT INTO Person SET name = ?, age = ?, email = ?",
+                    name,
+                    age,
+                    email,
+                )
+        print("Inserted 3 records")
+
+        # Query all (no transaction needed for reads)
+        print("All people:")
+        for record in db.query("sql", "SELECT FROM Person ORDER BY age"):
+            print(f"  - {record.get('name')}, age {record.get('age')}")
+
+        # Query with a filter
+        print("People over 25:")
+        for record in db.query("sql", "SELECT FROM Person WHERE age > 25 ORDER BY age"):
+            print(f"  - {record.get('name')}, age {record.get('age')}")
+
+        # Count
+        total = db.query("sql", "SELECT count(*) as total FROM Person").first().get("total")
+        print("Total people:", total)
+
+
+if __name__ == "__main__":
+    main()
+----
+
+[source,text]
+----
+Inserted 3 records
+All people:
+  - Bob, age 25
+  - Alice, age 30
+  - Charlie, age 35
+People over 25:
+  - Alice, age 30
+  - Charlie, age 35
+Total people: 3
+----
+
+`create_database` raises if the path already holds a database, so run the script in an empty directory or delete `./quickstart` before you run it again.
+
+The steps in the script are:
+
+. `create_database("./quickstart")` creates the directory and opens a database in it.
+. Four `CREATE` statements define a document type `Person`, three properties and an index on `name`.
+. A transaction inserts three records. The `?` marks are positional parameters bound to the values after the statement.
+. `db.query` reads them back, with and without a filter, and `count(*)` counts them.
+
+== Reopen the database
+
+Open an existing database with `open_database`. The second part of the script shows what happens when a write runs outside a transaction:
+
+[source,python,subs="attributes+"]
+----
+{import-stmt}
+
+# Open the database that quickstart.py created
+with arcadedb.open_database("./quickstart") as db:
+    result = db.query("sql", "SELECT FROM Person")
+    print(f"Found {len(list(result))} records")
+
+# A write outside a transaction raises
+with arcadedb.open_database("./quickstart") as db:
+    try:
+        db.command("sql", "INSERT INTO Person SET name = 'Dora'")
+    except Exception as e:
+        print(type(e).__name__, e, sep=": ")
+----
+
+[source,text]
+----
+Found 3 records
+ArcadeDBError: Command failed: com.arcadedb.exception.TransactionException: Transaction not begun
+----
+
+== Server mode
+
+When another process, another language or a browser needs the same data, start the bundled server. The process that created it keeps full-speed embedded access, and `get_studio_url()` returns the address of the Studio UI:
+
+[source,python,subs="attributes+"]
+----
+{import-stmt}
+
+with arcadedb.create_server("./databases", root_password="password123") as server:
+    db = server.create_database("mydb")        # embedded access, in this process
+    print("Studio:", server.get_studio_url())  # HTTP access, any process
+----
+
+[source,text]
+----
+Studio: http://localhost:2480/
+----
+
+The server runs only while your Python process runs. See xref:index.adoc#embedded-vs-http[Embedded bindings or the HTTP driver] for when to run the regular ArcadeDB server instead.
+
+== Next steps
+
+* xref:how-to/databases-and-queries.adoc[Databases and queries]: open, drop and check databases, parameters, pagination, SQLScript and openCypher.

@@ -1,0 +1,64 @@
+= Which package for which mode
+:description: Pick between the embedded JVM package, the embedded native package, the official server drivers and the community driver of the same name.
+
+Several PyPI packages mention ArcadeDB, and two of them look alike. This page says which is which and which one to install for your process.
+
+== The short answer
+
+* One Python process owns the database and you want the simplest setup: install `{pkg-name}`. It runs the engine on the JVM, inside your process, and bundles its own Java runtime.
+* A short-lived process, or one where memory and start-up time matter: install `{native-pkg-name}`. It runs the engine as a GraalVM native image. It is a preview.
+* Several processes, or several services, share one database: run an ArcadeDB server and talk to it with a driver (see <<drivers>>).
+
+== Rule of thumb
+
+[cols="2,3"]
+|===
+| Your process | Use
+
+| Short-lived and footprint-sensitive: a CLI, a function that runs per request, a test run, a notebook cell that opens a database and exits
+| The native build, `{native-pkg-name}`. It starts faster and holds less memory than the JVM build.
+
+| Long-lived, with heavy repeated scans or big loads
+| The JVM build, `{pkg-name}`. The JVM warms up and then runs long scans and bulk loads faster than the native build.
+
+| Several processes or services read and write the same database
+| The server, with a driver. An embedded database is owned by one process; see xref:index.adoc#embedded-vs-http[Embedded bindings or the HTTP driver].
+|===
+
+Which build is ahead depends on whether you measure the first pass after a start or the warm passes, so measure with your own data before you commit to one. The two embedded packages expose the same API; xref:index.adoc#jvm-vs-native[JVM build or native build] compares them.
+
+== The embedded packages
+
+[cols="2,2,3"]
+|===
+| Package | Kind | What it is
+
+| `{pkg-name}`
+| Embedded, JVM build
+| The engine inside your Python process, through https://jpype.readthedocs.io/[JPype], with a bundled Java runtime. Import it as `{import-name}`. This is the package this component documents.
+
+| `{native-pkg-name}`
+| Embedded, GraalVM native build (preview)
+| The same API with the engine compiled ahead of time: no JVM and no JPype. Import it as `{native-import-name}`.
+
+| `{short-pkg-name}`
+| Embedded, JVM build
+| The name `{pkg-name}` moves to in the middle of November. Until then a placeholder on PyPI that installs `{pkg-name}`.
+
+| `{short-native-pkg-name}`
+| Embedded, native build (preview)
+| The name `{native-pkg-name}` moves to at the same time. Until then an alias that installs it.
+
+| `{jvm-pkg-name}`
+| Embedded, JVM build
+| A reserved name for the JVM build. Until the move it installs `{pkg-name}`.
+|===
+
+[[drivers]]
+== Packages that talk to a server
+
+None of these contains the engine. They connect to a running ArcadeDB server.
+
+* `{driver-pkg-name}`: the official HTTP client. See xref:arcadedb::how-to/connectivity/drivers/python-http.adoc[Python -- HTTP driver].
+* `{grpc-driver-pkg-name}`: the official gRPC client. See xref:arcadedb::how-to/connectivity/drivers/python-grpc.adoc[Python -- gRPC driver].
+* `{community-driver-pkg-name}`: a community HTTP driver by Steve Reiner and others ({community-repo-url}[stevereiner/arcadedb-python]). It is not related to this repository, whose name is also `arcadedb-python`. Check which one a tutorial installs before you copy its code.
