@@ -1,0 +1,254 @@
+= Concurrency, processes and crashes
+:description: What the embedded bindings do with threads, asyncio, several processes, signals and crashes, as measured, and how to write an update that two writers cannot lose.
+
+This page covers what is specific to the Python bindings: which calls work from several threads, from asyncio or from several processes, what a signal or a crash does to the process and the data, and how to write an update that concurrent writers cannot lose. What the engine guarantees at each isolation level is in the main ArcadeDB docs: see xref:arcadedb::concepts/transactions.adoc#isolation[Isolation].
+
+== How to read the numbers
+
+Every number on this page comes from probe scripts that were run on 2026-10-24 on one Linux x86_64 machine. The setup of each probe is next to its numbers. The scripts and their raw logs are not part of this repository yet.
+
+[cols="1,3,2"]
+|===
+| Label | Package | Python
+
+| JVM
+| `{pkg-name}` 26.10.2.post1, OpenJDK 25.0.4.1
+| 3.12.13, GIL on
+
+| Native
+| `{native-pkg-name}` 26.10.2.dev1, GraalVM CE 25.4.4.1.1 native image. A preview of alpha quality
+| 3.12.13, GIL on
+
+| Native, Python 3.14t
+| The same native wheel
+| 3.14.5, free-threaded, GIL off
+|===
+
+* A cell is one run of a probe, unless the run count is given. A count shows that a failure can happen, or that it did not happen in that run. It is not a rate: another run gives another count.
+* A recommendation names the number of runs behind it. Where a probe did not run, or ran once, the page says so.
+* The Python 3.14t runs are shorter than the others: 3 minutes of load instead of 10, 500 operations per writer instead of 1,500, 10 instead of 20 iterations per task. The probe on several processes was not run there.
+
+== Threads
+
+Share one `Database` object between the threads of a process.
+
+The probe: one writer thread and 1, 4 or 16 reader threads in one process, all using one `Database`, for 10 minutes (3 minutes on Python 3.14t). The writer commits batches of 5 rows and rolls back every seventh batch. On every read, a reader checks that the row count is not below the rows the writer had already committed, that the count is a multiple of 5 (no batch half applied), that no row of a rolled-back batch is visible, and that a random batch reads back whole with matching checksums. At the end the probe reopens the database and counts again.
+
+[cols="3,1,2,2,2,1,1"]
+|===
+| Build | Reader threads | Rows committed | Rows found after reopen | Reads | Errors | Bad checksums
+
+| JVM, Python 3.12 | 1 | 6,533,625 | 6,533,625 | 2,453,267 | 0 | 0
+| JVM, Python 3.12 | 4 | 1,856,195 | 1,856,195 | 2,817,025 | 0 | 0
+| JVM, Python 3.12 | 16 | 506,540 | 506,540 | 3,988,149 | 0 | 0
+| Native, Python 3.12 | 1 | 3,527,420 | 3,527,420 | 2,121,381 | 0 | 0
+| Native, Python 3.12 | 4 | 1,414,500 | 1,414,500 | 3,441,639 | 0 | 0
+| Native, Python 3.12 | 16 | 552,005 | 552,005 | 5,198,903 | 0 | 0
+| Native, Python 3.14t (GIL off) | 4 | 1,780,025 | 1,780,025 | 3,967,064 | 0 | 0
+|===
+
+All 7 runs ended with no error, no bad checksum and the same number of rows before and after the reopen. This probe has one writer. For several writers, read the next section.
+
+== Several writers
+
+Two transactions that change the same record conflict at commit. The one that loses raises `ArcadeDBError`, and the name `ConcurrentModificationException` is in the message or in the `__cause__` chain. The engine treats it as retryable: see xref:arcadedb::concepts/transactions.adoc#isolation[Isolation] for when it is raised. `db.run_in_transaction(fn, retries=...)` runs `fn` in a transaction again after such a conflict.
+
+The probe: 8 threads, one shared `Database`, 4 counter records. Each operation is one transaction that changes one counter, chosen by a fixed pseudo-random sequence, and inserts one row with a unique key into a ledger type. Each thread makes 1,500 operations (500 on Python 3.14t), so 12,000 in total (4,000 on Python 3.14t). The probe counts a lost update as an operation whose transaction committed but whose increment is not in the final counters. Each cell below is the number of lost updates out of the number of operations, from one run.
+
+[cols="3,3,2,2,2,2"]
+|===
+| Update | Retry | Isolation | JVM, Python 3.12 | Native, Python 3.12 | Native, Python 3.14t (GIL off)
+
+| Atomic SQL: `SET n = n + 1` | `db.run_in_transaction(fn, retries=60)` | default | 0 of 12,000 | 0 of 12,000 | 0 of 4,000
+| Atomic SQL: `SET n = n + 1` | own retry loop | default | 0 of 12,000 | 0 of 12,000 | 0 of 4,000
+| Read with `SELECT`, write the new value back | `db.run_in_transaction(fn, retries=60)` | default | 1,137 of 12,000 | 201 of 12,000 | 76 of 4,000
+| Read with `SELECT`, write the new value back | own retry loop | default | 2,883 of 12,000 | 331 of 12,000 | 108 of 4,000
+| Read with `SELECT`, write the new value back | own retry loop | `REPEATABLE_READ` | 0 of 12,000 | 0 of 12,000 | 0 of 4,000
+|===
+
+The first two rows change the counter in the statement itself: `UPDATE Counter SET n = n + 1 WHERE id = ?`. The last three read the counter with `SELECT n`, compute `n + 1` in Python, and write it back with `UPDATE Counter SET n = ? WHERE id = ?`. "Own retry loop" is the loop in <<retry-loop>>: it retries only on the three Java exception names `ConcurrentModificationException`, `NeedRetryException` and `LockTimeoutException`, up to 60 attempts, with a random backoff of up to 100 ms. The last row starts each transaction with `BEGIN ISOLATION REPEATABLE_READ`.
+
+Without any retry, the atomic update raised `ConcurrentModificationException` for 6,602 of 12,000 operations on the JVM build, 7,613 of 12,000 on the native build and 2,552 of 4,000 on Python 3.14t. The other operations committed (5,398, 4,387 and 1,448), and the counters added up to exactly those numbers. No write was lost without an error.
+
+What the runs show:
+
+* An atomic update in the statement, with a retry, lost nothing: 0 lost updates in each of the 6 runs (2 retry styles, 3 builds).
+* Reading the value, computing in Python and writing it back lost updates under the default isolation level, also when every conflict was retried: with `run_in_transaction` 1,137 of 12,000 on the JVM build and 201 of 12,000 on the native build, with the own loop 2,883 and 331. In this probe the read is a `SELECT` and the write is a separate `UPDATE` with the computed value.
+* The same read-compute-write under `REPEATABLE_READ` with the own retry loop lost nothing: 0 lost updates in each of the 3 runs, one per build.
+
+Based on that, do the arithmetic in the statement and retry the transaction. If the new value needs a computation that SQL cannot do, start the transaction with `BEGIN ISOLATION REPEATABLE_READ` and retry as in <<retry-loop>>. The evidence for each is one run per build, as in the table. Do not read a value, compute in Python and write it back under the default isolation level.
+
+[source,python]
+----
+# Atomic in the engine: the retry only has to repeat the whole statement.
+db.run_in_transaction(
+    lambda: db.command("sql", "UPDATE Counter SET n = n + 1 WHERE id = ?", key),
+    retries=60,
+)
+----
+
+[[retry-loop]]
+=== A retry loop for REPEATABLE_READ
+
+`db.transaction()` cannot retry, because a `with` block cannot run twice. This loop is the one the probe used for the last row of the table.
+
+[source,python]
+----
+import random
+import time
+
+RETRYABLE = ("ConcurrentModificationException", "NeedRetryException", "LockTimeoutException")
+
+
+def is_retryable(error):
+    # The Java exception name can be in the message of any error in the chain.
+    while error is not None:
+        if any(name in f"{type(error).__name__}: {error}" for name in RETRYABLE):
+            return True
+        error = error.__cause__ or error.__context__
+    return False
+
+
+def run_repeatable_read(db, fn, attempts=60):
+    for attempt in range(attempts):
+        try:
+            db.command("sql", "BEGIN ISOLATION REPEATABLE_READ")
+            try:
+                result = fn()
+                db.commit()
+                return result
+            except BaseException:
+                if db.is_transaction_active():
+                    db.rollback()
+                raise
+        except Exception as error:
+            if not is_retryable(error):
+                raise
+            time.sleep(random.random() * min(0.1, 0.002 * 2 ** min(attempt, 6)))
+    raise RuntimeError("retry budget exhausted")
+
+
+def add_one(key):
+    n = db.query("sql", "SELECT n FROM Counter WHERE id = ?", key).first().get("n")
+    db.command("sql", "UPDATE Counter SET n = ? WHERE id = ?", n + 1, key)
+
+
+run_repeatable_read(db, lambda: add_one(3))
+----
+
+== asyncio
+
+Call the bindings from asyncio through `asyncio.to_thread` or `loop.run_in_executor`. A call made directly on the event loop blocks the loop for as long as the call takes.
+
+The probe: 100 tasks, each making 20 operations (10 on Python 3.14t), so 2,000 operations (1,000 on Python 3.14t) per call style. One operation is `db.run_in_transaction(fn, retries=60)` with an atomic counter update and one unique ledger insert, then a count. A heartbeat task sleeps 10 ms in a loop and records how late it wakes up. Each cell below is that lateness in milliseconds, as the 99th percentile and the maximum. In the short phases, where the 99th percentile equals the maximum, there were too few heartbeats for them to differ. The two `async_executor()` rows use the bindings' `AsyncExecutor` with `set_parallel_level(1)` and `set_parallel_level(4)`: each task inserts one row with `command(..., callback=..., error_callback=...)`, and the callbacks hand the result to the loop with `loop.call_soon_threadsafe`.
+
+[cols="4,2,2,2"]
+|===
+| Call style | JVM, Python 3.12 | Native, Python 3.12 | Native, Python 3.14t (GIL off)
+
+| `asyncio.to_thread` | 63.2 / 89.8 | 7.4 / 10.0 | 11.4 / 11.4
+| `run_in_executor`, pool of 32 threads | 108.7 / 108.7 | 2.2 / 9.7 | 3.8 / 3.8
+| Blocking call made directly on the event loop | 653.5 / 653.5 | 928.9 / 928.9 | 382.3 / 382.3
+| `async_executor()`, parallel level 1 | 22.9 / 22.9 | 11.1 / 11.1 | 3.5 / 3.5
+| `async_executor()`, parallel level 4 | 118.1 / 118.1 | 25.3 / 25.3 | 2.9 / 2.9
+|===
+
+In all 15 phases (5 call styles, 3 builds) every operation landed (2,000 of 2,000 or 1,000 of 1,000), with no deadlock and no error. That is one run per cell, so no recommendation beyond "this works" follows from it. The phase that called the bindings directly on the loop stalled it for up to 653.5 ms on the JVM build, 928.9 ms on the native build and 382.3 ms on Python 3.14t. The lateness in the other phases differs between the builds. Measure it on your own workload if a bound matters to you.
+
+== Processes
+
+One process owns an embedded database at a time. Start worker processes with `spawn` and give each its own database. If several processes must share data, run a server and use a driver: see xref:packages.adoc#drivers[Packages that talk to a server].
+
+The probe has these cases. Each ran once per build.
+
+[cols="3,3,3"]
+|===
+| Case | JVM | Native
+
+| `spawn`, 4 worker processes, one database each, 2,000 rows each
+| All 4 workers finished with 2,000 rows
+| All 4 workers finished with 2,000 rows
+
+| A second process opens a database that another process holds open, read-write
+| Failed with `ArcadeDBError`: `LockException: Database 'shared' is locked by another process`. The first process kept its 130 rows
+| The same error. The first process kept its 130 rows
+
+| `os.fork` and `multiprocessing` with `fork` (a `Pool` of 3), before the first database is created or opened
+| 3 children each, every child made its own database of 2,000 rows
+| The same
+
+| `os.fork` after a database was created, the child reads the inherited `Database`
+| The child hung: the probe ended it after 60 s
+| The child exited 0 and counted 100 rows
+
+| `multiprocessing.Process` with the `fork` start method after a database was created, the child reads the inherited `Database`
+| The child hung: the probe ended it after 60 s
+| The child exited 0 and counted 100 rows
+
+| `os.fork` after a database was created, the child creates a new database
+| The child exited 0
+| The child exited 0
+
+| `os.fork` after a database was created, the child runs pure Python only
+| The child exited 0
+| The child exited 0
+|===
+
+Based on that:
+
+* Use `spawn` with one database per process. It worked in 1 run on each build, with 4 workers.
+* Do not fork a process that already created or opened a database. On the JVM build a child that used the inherited `Database` hung in 2 of 2 variants. On the native build the same two variants worked in 1 run each. That is too few observations to rely on, so treat it as unsupported on both builds.
+* A fork before any database is created or opened worked on both builds, in 1 run per variant with 3 children each.
+
+== Signals and crashes
+
+A write that has returned from `commit()` survived every kill in the probe. The probe cannot say anything about a power loss or an operating system crash, which a process kill does not simulate. For how the engine flushes its write-ahead log, see xref:arcadedb::concepts/transactions.adoc#wal-flush-durability[WAL flush and durability].
+
+The kill probe: a child process writes in a loop, in transactions of 5 or 200 rows, and prints the number of rows after every commit that returned. The parent sends `SIGKILL` (kill -9) at a random time between 0.2 and 2.5 s after the first commit, then reopens the same database. The reopen must recover, `CHECK DATABASE` must report nothing, every acknowledged row must be present with a matching checksum, no transaction may be half applied, and the database must accept a write. The same database was used for all runs of a build.
+
+[cols="3,1,2,3,2,2"]
+|===
+| Build | Runs | Runs that passed every check | Commits acknowledged before the kill (per run) | Acknowledged commits lost | `CHECK DATABASE` findings
+
+| JVM, Python 3.12 | 20 | 20 | 12 to 613 | 0 | 0
+| Native, Python 3.12 | 20 | 20 | 151 to 1517 | 0 | 0
+| Native, Python 3.14t (GIL off) | 5 | 5 | 700 to 1463 | 0 | 0
+|===
+
+A killed process lost no acknowledged commit in any of the 45 runs, and every check passed.
+
+The signal probe: a child opens a transaction and inserts rows without committing. The parent sends the signal 0.3 s after the first insert. After the child ended, or after 60 s if it did not, the parent reopens the database and runs the same checks. For the rows with a handler, the child must also report that it caught `KeyboardInterrupt`. Each build ran every row 5 times (2 times on Python 3.14t).
+
+[cols="3,2,5,1,2,2,2,2"]
+|===
+| Build | Signal | Main thread of the child, transaction open | Runs | Runs where the child hung | Exit status | Uncommitted rows visible after reopen | `CHECK DATABASE` findings
+
+| JVM, Python 3.12 | `SIGTERM` | blocked in `time.sleep(120)` | 5 | 0 | -6 | 0 | 0
+| JVM, Python 3.12 | `SIGTERM` | inserting rows in a loop | 5 | 0 | -6 | 0 | 0
+| JVM, Python 3.12 | `SIGINT` | blocked in `time.sleep(120)`, `KeyboardInterrupt` caught | 5 | 5 | none within 60 s | 0 | 0
+| JVM, Python 3.12 | `SIGINT` | inserting rows in a loop, `KeyboardInterrupt` caught | 5 | 0 | 0 | 0 | 0
+| JVM, Python 3.12 | `SIGINT` | inserting rows in a loop, no handler | 5 | 0 | -2 | 0 | 0
+| Native, Python 3.12 | `SIGTERM` | blocked in `time.sleep(120)` | 5 | 0 | -15 | 0 | 0
+| Native, Python 3.12 | `SIGTERM` | inserting rows in a loop | 5 | 0 | -15 | 0 | 0
+| Native, Python 3.12 | `SIGINT` | blocked in `time.sleep(120)`, `KeyboardInterrupt` caught | 5 | 0 | 0 | 0 | 0
+| Native, Python 3.12 | `SIGINT` | inserting rows in a loop, `KeyboardInterrupt` caught | 5 | 0 | 0 | 0 | 0
+| Native, Python 3.12 | `SIGINT` | inserting rows in a loop, no handler | 5 | 0 | -2 | 0 | 0
+| Native, Python 3.14t (GIL off) | `SIGTERM` | blocked in `time.sleep(120)` | 2 | 0 | -15 | 0 | 0
+| Native, Python 3.14t (GIL off) | `SIGTERM` | inserting rows in a loop | 2 | 0 | -15 | 0 | 0
+| Native, Python 3.14t (GIL off) | `SIGINT` | blocked in `time.sleep(120)`, `KeyboardInterrupt` caught | 2 | 0 | 0 | 0 | 0
+| Native, Python 3.14t (GIL off) | `SIGINT` | inserting rows in a loop, `KeyboardInterrupt` caught | 2 | 0 | 0 | 0 | 0
+| Native, Python 3.14t (GIL off) | `SIGINT` | inserting rows in a loop, no handler | 2 | 0 | -2 | 0 | 0
+|===
+
+* **Data.** No uncommitted row was visible after any reopen, `CHECK DATABASE` reported nothing and the database was writable, in all 60 runs.
+* **JVM build, `SIGINT`.** With the main thread blocked in one long `time.sleep(120)` and a transaction open, the child did not react to Ctrl-C within 60 s in 5 of 5 runs. A child that was busy inserting rows in the same state reacted in 5 of 5 runs. The JVM installs its own handlers for `SIGINT` and `SIGTERM` when it starts, and Python learns of the signal only when the blocked call returns. A fix is open as {repo-url}/pull/26[arcadedb-python#26], which gives both signals back to Python after the JVM starts. Until it ships, expect a script that is blocked in one long call with a transaction open not to stop on Ctrl-C.
+* **JVM build, `SIGTERM`.** The process aborted with exit status -6 in 10 of 10 runs, where a plain Python process and the native build end with -15. The committed data was intact. #26 changes this as well.
+* **Native build.** The child reacted to `SIGINT` in every run: it caught `KeyboardInterrupt` where it had a handler and ended with status -2 where it had none. `SIGTERM` ended it with -15 in every run. Both held on Python 3.12 and on Python 3.14t.
+
+If a process must stop and it does not react to a signal, `SIGKILL` cost no acknowledged commit in 45 runs (20 on the JVM build, 20 on the native build, 5 on Python 3.14t).
+
+== Free-threaded Python
+
+The native wheel is a `py3-none` wheel, and it installed and ran on free-threaded Python 3.14.5 with the GIL off. The Python 3.14t rows in the tables above are those runs: threads, several writers, asyncio and the signal and kill probes. The probe on several processes was not run there. The runs are shorter than those on Python 3.12, as listed at the top of this page.
+
+The JVM wheel does not install on Python 3.14t. `uv` could not resolve `{pkg-name}` 26.10.2.post1 there: it reported no wheel with a matching Python version tag.

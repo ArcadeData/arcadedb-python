@@ -59,14 +59,14 @@ Two things are not true yet. The native build is not in this repository (porting
 
 ## Documentation
 
-- Here: [`docs/`](https://github.com/ArcadeData/arcadedb-python/tree/main/docs/modules/ROOT/pages) is an Antora component (AsciiDoc) with Installation, Quickstart and Databases and queries. It covers only what is specific to the Python bindings.
+- Here: [`docs/`](https://github.com/ArcadeData/arcadedb-python/tree/main/docs/modules/ROOT/pages) is an Antora component (AsciiDoc) with Installation, Which package for which mode, Quickstart, Databases and queries, and Concurrency, processes and crashes. It covers only what is specific to the Python bindings.
 - The component is not published on docs.arcadedb.com yet; adding it as a content source is open in [ArcadeData/arcadedb-docs#505](https://github.com/ArcadeData/arcadedb-docs/pull/505).
 - The guide, API reference and example walkthroughs for the published package are still at [docs.humem.ai/arcadedb](https://docs.humem.ai/arcadedb/latest/) until those pages are ported here ([#19](https://github.com/ArcadeData/arcadedb-python/issues/19)).
 - ArcadeDB itself (SQL, openCypher, schema, server): [docs.arcadedb.com](https://docs.arcadedb.com). It is not repeated here.
 
 ## Examples
 
-[`examples/`](https://github.com/ArcadeData/arcadedb-python/tree/main/examples) holds 26 runnable scripts, from a first document store to vector search, time series, graph algorithms and server mode. CI runs them ([`test-python-examples.yml`](https://github.com/ArcadeData/arcadedb-python/blob/main/.github/workflows/test-python-examples.yml)).
+[`examples/`](https://github.com/ArcadeData/arcadedb-python/tree/main/examples) holds 27 runnable scripts, from a first document store to vector search, time series, graph algorithms and server mode. CI runs them ([`test-python-examples.yml`](https://github.com/ArcadeData/arcadedb-python/blob/main/.github/workflows/test-python-examples.yml)).
 
 ## Build and test from source
 
