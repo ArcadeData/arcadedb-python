@@ -1,0 +1,141 @@
+= Installation
+:description: Install the {pkg-name} wheel, check that it works, and set JVM options.
+
+// Sources: bindings docs getting-started/installation.md, the PyPI metadata of
+// arcadedb-embedded and arcadedb-embedded-native.
+
+== Install
+
+[source,shell,subs="attributes+"]
+----
+pip install {pkg-name}
+----
+
+Or with https://docs.astral.sh/uv/[uv]:
+
+[source,shell,subs="attributes+"]
+----
+uv add {pkg-name}
+----
+
+The package is self-contained. It carries a Java 25 runtime for its platform, so you do not install Java. Its only Python dependency is `JPype1` 1.5.0 or later (the Java-Python bridge), which pip installs for you.
+
+== Requirements
+
+* Python 3.11 to 3.14. The wheels' CI runs all four versions on every supported platform.
+* One of the four platforms below.
+
+Every wheel is platform-specific, built on a native runner of its platform, and carries a JRE for that platform, so pip needs no hint to pick the right one.
+
+[cols="2,3"]
+|===
+| Platform | Wheel tag (Python 3.12)
+
+| Linux x86_64
+| `manylinux_2_34_x86_64`
+
+| Linux ARM64
+| `manylinux_2_34_aarch64`
+
+| macOS Apple Silicon
+| `macosx_11_0_arm64`
+
+| Windows x86_64
+| `win_amd64`
+|===
+
+== What is included
+
+* The ArcadeDB engine with all models (graph, document, key/value, vector, time series) and both query languages, SQL and openCypher.
+* Vector indexes, and data import for CSV, XML and ArcadeDB JSONL.
+* The optional in-process HTTP server and the Studio web UI. They cost nothing at run time until you call `create_server()`.
+* A bundled Java 25 runtime, trimmed with `jlink`.
+
+Engine modules the bindings do not use are left out to keep the wheel small. These include the gRPC and MongoDB wire protocols, Raft HA, and Gremlin.
+
+NOTE: *JavaScript is not available.* The GraalJS jars are left out, so `DEFINE FUNCTION ... LANGUAGE js` fails. Define functions in SQL or openCypher, or register a Python function with `register_function()`.
+
+== Verify the installation
+
+[source,python,subs="attributes+"]
+----
+{import-stmt}
+print(f"ArcadeDB Python bindings version: {arcadedb.__version__}")
+
+# Test database creation
+with arcadedb.create_database("./test") as db:
+    result = db.query("sql", "SELECT 1 as test")
+    print(f"Database working: {result.first().get('test') == 1}")
+----
+
+Run in an empty directory, the script prints (the version matches what you installed):
+
+[source,text]
+----
+ArcadeDB Python bindings version: 26.10.2.post1
+Database working: True
+----
+
+The engine also writes log lines to the standard error stream. The output on this page shows the standard output only.
+
+[[jvm-options]]
+== JVM options
+
+Configure the bundled JVM inside Python, before the first database is created:
+
+[source,python,subs="attributes+"]
+----
+{import-stmt}
+from {import-name}.jvm import start_jvm
+
+# Configure the JVM once per process, before the first database is created
+start_jvm(heap_size="2g", jvm_args="-XX:MaxDirectMemorySize=2g")
+
+with arcadedb.create_database("./jvmdb") as db:
+    print(db.query("sql", "SELECT 1 AS one").first().get("one"))
+----
+
+[source,text]
+----
+1
+----
+
+Or pass the options when you create or open a database:
+
+[source,python,subs="attributes+"]
+----
+{import-stmt}
+
+with arcadedb.create_database("./jvmdb2", jvm_kwargs={"heap_size": "2g"}) as db:
+    print(db.query("sql", "SELECT 1 AS one").first().get("one"))
+----
+
+[source,text]
+----
+1
+----
+
+Two kinds of flag go in `jvm_args`:
+
+* `-X` and `-XX` flags are JVM runtime options, such as `-Xmx<size>` for the maximum heap and `-XX:MaxDirectMemorySize=<size>` for off-heap buffers.
+* `-D` flags are system properties that configure ArcadeDB.
+
+WARNING: *One JVM configuration per process.* JVM options are locked after the JVM starts. Call `start_jvm(...)` or pass `jvm_kwargs` before the first database is created. To change the settings, start a new Python process.
+
+Each Python process starts its own JVM, and each JVM sees the whole container limit. With several Python processes in one container, give each process its own `heap_size`.
+
+== Native build (preview)
+
+`{native-pkg-name}` is the same engine compiled to a GraalVM native-image shared library. It needs no JVM and no JPype, so the JVM options above do not apply to it. It is a preview of alpha quality, and its versions are pre-releases:
+
+[source,shell,subs="attributes+"]
+----
+pip install --pre {native-pkg-name}
+----
+
+It installs beside `{pkg-name}`: the distribution names differ, and so do the import names (`{native-import-name}` instead of `{import-name}`). Optional extras install the columnar helpers: `[numpy]`, `[arrow]`, `[pandas]` and `[polars]`. Report problems in the {repo-url}/issues[issue tracker] and say that you use the native wheel.
+
+== Next steps
+
+* xref:quickstart.adoc[Quickstart]
+* xref:how-to/databases-and-queries.adoc[Databases and queries]

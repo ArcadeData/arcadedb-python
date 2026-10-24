@@ -1,0 +1,7 @@
+* xref:index.adoc[ArcadeDB Python]
+* xref:installation.adoc[Installation]
+* xref:packages.adoc[Which package for which mode]
+* xref:quickstart.adoc[Quickstart]
+* How-to
+** xref:how-to/databases-and-queries.adoc[Databases and queries]
+** xref:how-to/concurrency.adoc[Concurrency, processes and crashes]
