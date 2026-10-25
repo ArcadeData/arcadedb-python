@@ -1,0 +1,65 @@
+= Release
+:description: How a release of the arcadedb package is numbered, tagged, checked and published to PyPI.
+
+A release is a Git tag. Pushing the tag starts the `release.yml` workflow. It builds the wheels, tests them, checks them and publishes them to PyPI with trusted publishing. The workflow stores no token.
+
+== Version numbering
+
+The tag is the bare version, with no `v`. The tag, the wheel version and the PyPI version are the same string.
+
+[cols="2,3"]
+|===
+| Version | Meaning
+
+| `26.11.1.dev0`, `26.11.1.dev1`, ...
+| A preview of engine release `26.11.1`, built from the upstream snapshot jars. `devN` starts at 0.
+
+| `26.11.1`
+| The release. The wheels ship the `26.11.1` engine jar.
+
+| `26.11.1.post1`, `26.11.1.post2`, ...
+| A fix in the Python code of the released `26.11.1`. The wheels still ship the `26.11.1` engine jar. `postN` starts at 1.
+|===
+
+The rule has five parts:
+
+* The order for one base `A.B.C` is `A.B.C.dev0`, `.dev1`, ..., then `A.B.C`, then `A.B.C.post1`, `.post2`, ....
+* `aN`, `bN` and `rcN` are never used, previews included.
+* `devN` starts again at 0 when the base `A.B.C` changes.
+* A number is never reused and never skipped. PyPI refuses a version it has seen, even after a delete. The next number is one above the highest published number of that base.
+* A `devN` of a released base is refused, because it would sort before the release. A `postN` of a base that is not released is refused.
+
+The base is the version of the engine. The workflow compares the tag with the version of the engine jar in the wheels, and it refuses a `devN` tag for a release jar and a release tag for a snapshot jar.
+
+== How the rule is enforced
+
+`scripts/check_version.py` checks the rule. It reads the published versions from the Git tags of the repository and from PyPI, and it never changes anything:
+
+[source,bash]
+----
+python3 scripts/check_version.py 26.11.1.dev0 --git-remote origin --pypi arcadedb
+----
+
+It exits 0 when the version is the correct next one, 1 when it is not, and 2 when a source cannot be read. Exit 2 is a failure, not a pass: the check fails closed.
+
+The first job of `release.yml` runs the same command on the pushed tag. When it fails, the workflow builds and publishes nothing. Run it by hand before you push the tag. Running the whole workflow again for a version that is already on PyPI fails the check on purpose. To retry a failed upload, re-run only the publish job.
+
+The tests of the script are in `tests/test_check_version.py`.
+
+== After the tag push
+
+`scripts/after_tag_verify.sh` checks the finished release. It only reads from GitHub and PyPI:
+
+[source,bash]
+----
+scripts/after_tag_verify.sh 26.11.1 26.10.1 <release-run-id>
+----
+
+The second argument is the previous release. Use `-` for the first release of the package. The script checks:
+
+* The workflow run, and the conclusion of the publish job and of its upload step.
+* The files on PyPI: one wheel per supported Python version and platform, each under 100 MB, none yanked.
+* The sha256 of every file on PyPI against the wheels the workflow checked.
+* A `pip download` for each of the four platforms, and a fresh install on Python 3.12 and 3.14 that opens a database and runs one SQL and one openCypher query.
+
+It prints `PASS` or `FAIL` for each step, and its exit code is the number of failures.
