@@ -520,11 +520,12 @@ jobs:
           cores="$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 2)"
           limit=()
           if [ "$FINAL" = true ]; then limit=(--max-notyet 0); fi
+          # macOS runs bash 3.2: under set -u an empty "${limit[@]}" is "unbound variable", so expand it only when set
           uv run --no-project --python "$PY" --with "$w" --with pytest --with setuptools --with numpy --with requests --with jpype1 --with pyarrow \
             --with polars --with pandas --with duckdb --with networkx --with "psycopg[binary]" --with adbc-driver-postgresql \
             --with redis --with neo4j --with ladybug \
             python native/wheel/parity_wheel.py --repo "$GITHUB_WORKSPACE" \
-              --out "$T/parity/parity-wheel.tsv" --cores "0-$((cores - 1))" "${limit[@]}" | tee "$T/parity/parity-wheel.run.log"
+              --out "$T/parity/parity-wheel.tsv" --cores "0-$((cores - 1))" ${limit[@]+"${limit[@]}"} | tee "$T/parity/parity-wheel.run.log"
 
       - name: "Gate: no failure, error, crash, timeout or uncounted skip"
         run: |
