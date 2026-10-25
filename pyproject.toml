@@ -2,7 +2,7 @@
 # setup.py imports only setuptools, so the build needs no JPype. A build-time jpype1 was compiled from
 # source on a Python without a JPype wheel (3.15, until JPype > 1.7.1) and failed there. `build` is a
 # frontend, not a backend requirement.
-requires = ["setuptools>=61.0", "wheel"]
+requires = ["setuptools>=84.2.1", "wheel"]
 build-backend = "setuptools.build_meta"
 
 # This file defines the package metadata for arcadedb.
@@ -76,7 +76,7 @@ test = [
     # subpackage; Python 3.12+ venvs have no setuptools, so without it here the test fails on those legs instead of running.
     # Floor 84.1.0: the dependency-floor audit resolves the lowest version; pip-audit (2026-10-24) finds no known
     # vulnerability in 84.1.0, while 78.1.1 still has PYSEC-2026-3447 and GHSA-xmj3-9gf7-h52w.
-    "setuptools>=84.1.0",
+    "setuptools>=84.2.1",
 ]
 dev = [
     "black",
