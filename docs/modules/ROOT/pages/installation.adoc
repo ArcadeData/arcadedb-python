@@ -1,5 +1,5 @@
 = Installation
-:description: Install the arcadedb (native) or arcadedb-jvm (JVM) wheel, check that it works, and set JVM options.
+:description: Install the arcadedb (native) or arcadedb-jvm (JVM) wheel, check that it works, and set JVM options and the native heap size.
 
 // Sources: bindings docs getting-started/installation.md, the PyPI metadata of
 // arcadedb and arcadedb-jvm.
@@ -148,6 +148,24 @@ Each Python process starts its own JVM, and each JVM sees the whole container li
 == Native build notes (`{native-pkg-name}`)
 
 The native package is the same engine compiled to a GraalVM native-image shared library. It needs no JVM and no JPype, so the JVM options above do not apply to it. The calls that hand out a Java object (`get_java_database`, `get_java_document`) raise `NotOnNativeYet` (a `NotImplementedError`) instead of misbehaving. The list is in xref:which-package.adoc[Which package?]. Report problems in the {repo-url}/issues[issue tracker] and say which package you use.
+
+[[native-heap]]
+=== Heap size
+
+The engine runs in a GraalVM isolate. By default the native package limits its heap to 50% of the memory the process can see. It does this with the isolate argument `-XX:MaximumHeapSizePercent=50`. The GraalVM default is 80%. The engine also uses memory outside the heap. With 80%, the kernel killed the process in containers that have a memory limit. With 50%, the same cases ran clean, and the timings of the benchmark figures did not change by more than the noise.
+
+The percentage follows the container memory limit (the cgroup limit) when there is one. Without a limit it follows the memory of the host. In a container with a 4 GB limit, the heap limit is 2 GB.
+
+To set the heap yourself, put one of these arguments in the environment variable `ARCADEDB_NATIVE_ISOLATE_ARGS` before the first database is opened. The variable takes space-separated arguments:
+
+[source,bash]
+----
+export ARCADEDB_NATIVE_ISOLATE_ARGS="-Xmx2g"                        # a fixed maximum heap
+export ARCADEDB_NATIVE_ISOLATE_ARGS="-XX:MaximumHeapSizePercent=70"  # another percentage
+export ARCADEDB_NATIVE_ISOLATE_ARGS="-XX:MaxRAM=4g"                 # a memory size for the percentage; GraalVM's 80% applies to it
+----
+
+When one of these three is present, the package adds no default. Do not use `-XX:MaxRAMPercentage`. The native image does not accept it, and the isolate then fails to start with `graal_create_isolate failed (rc=22)`. The same variable also takes the engine's `-D` settings: see xref:how-to/logs.adoc[Where the logs go]. For what a native image build supports, see xref:arcadedb::how-to/operations/native-image.adoc[Native image] in the main ArcadeDB docs.
 
 == Next steps
 

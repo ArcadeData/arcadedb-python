@@ -82,6 +82,23 @@ def _log_isolate_args(user_args, log_dir) -> list:
     return args
 
 
+# GraalVM's default heap limit is 80% of the memory it can see (the container limit when there is one). With the engine's off-heap
+# memory on top, that let the kernel kill the process in a memory-limited container; 50% ran clean in the same cases, at the same speed.
+HEAP_PERCENT = 50
+_HEAP_ARGS = ("-Xmx", "-XX:MaximumHeapSizePercent=", "-XX:MaxRAM=")
+
+
+def _heap_isolate_args(user_args) -> list:
+    """The isolate argument that limits the heap to ``HEAP_PERCENT`` of the memory; none when the user already sets the heap (theirs wins).
+
+    ``-XX:MaxRAMPercentage`` is not accepted by the image (the isolate is not created, rc=22). ``-Xmx``, ``-XX:MaximumHeapSizePercent``
+    and ``-XX:MaxRAM`` are, so any of them in ``user_args`` replaces the default.
+    """
+    if any(a.startswith(_HEAP_ARGS) for a in user_args):
+        return []
+    return [f"-XX:MaximumHeapSizePercent={HEAP_PERCENT}"]
+
+
 def _prepare_logging(user_args) -> list:
     """Create the log directory, write its logging.properties and return the isolate arguments for it (see :func:`_log_isolate_args`)."""
     global LOG_DIR_USED
@@ -141,34 +158,35 @@ def _load():
             ctypes.POINTER(ctypes.c_void_p),
         ]
         lib.graal_create_isolate.restype = ctypes.c_int
-        params = None
         # run-time image options for the isolate (e.g. "-XX:InitialCollectionPolicy=Adaptive -XX:MaximumYoungGenerationSizePercent=20")
-        iso_args = os.environ.get("ARCADEDB_NATIVE_ISOLATE_ARGS", "").split()
-        # the log directory: always set, so that nothing is written to the working directory (the same rule as the JVM build)
-        iso_args += _prepare_logging(iso_args)
-        if iso_args:
+        user_args = os.environ.get("ARCADEDB_NATIVE_ISOLATE_ARGS", "").split()
+        # the heap limit and the log directory are always set (the log rule is the same as the JVM build's: nothing is written to the
+        # working directory); an argument the user gave for either is left out
+        iso_args = (
+            user_args + _heap_isolate_args(user_args) + _prepare_logging(user_args)
+        )
 
-            class _Params(ctypes.Structure):
-                _fields_ = [
-                    ("version", ctypes.c_int),
-                    ("reserved_address_space_size", ctypes.c_size_t),
-                    ("auxiliary_image_path", ctypes.c_char_p),
-                    ("auxiliary_image_reserved_space_size", ctypes.c_size_t),
-                    ("argc", ctypes.c_int),
-                    ("argv", ctypes.POINTER(ctypes.c_char_p)),
-                    ("pkey", ctypes.c_int),
-                    ("ignore_unrecognized_args", ctypes.c_char),
-                    ("_reserved_4", ctypes.c_char),
-                    ("_reserved_5", ctypes.c_char),
-                ]
+        class _Params(ctypes.Structure):
+            _fields_ = [
+                ("version", ctypes.c_int),
+                ("reserved_address_space_size", ctypes.c_size_t),
+                ("auxiliary_image_path", ctypes.c_char_p),
+                ("auxiliary_image_reserved_space_size", ctypes.c_size_t),
+                ("argc", ctypes.c_int),
+                ("argv", ctypes.POINTER(ctypes.c_char_p)),
+                ("pkey", ctypes.c_int),
+                ("ignore_unrecognized_args", ctypes.c_char),
+                ("_reserved_4", ctypes.c_char),
+                ("_reserved_5", ctypes.c_char),
+            ]
 
-            argv = (ctypes.c_char_p * (len(iso_args) + 1))(
-                b"arcadedb", *[a.encode() for a in iso_args]
-            )
-            params = _Params(version=5, argc=len(argv), argv=argv)
-            lib.graal_create_isolate.argtypes[0] = ctypes.POINTER(_Params)
+        argv = (ctypes.c_char_p * (len(iso_args) + 1))(
+            b"arcadedb", *[a.encode() for a in iso_args]
+        )
+        params = _Params(version=5, argc=len(argv), argv=argv)
+        lib.graal_create_isolate.argtypes[0] = ctypes.POINTER(_Params)
         rc = lib.graal_create_isolate(
-            ctypes.byref(params) if params is not None else None,
+            ctypes.byref(params),
             ctypes.byref(isolate),
             ctypes.byref(thread),
         )
