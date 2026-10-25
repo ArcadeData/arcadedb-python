@@ -91,6 +91,8 @@ import os, signal, tempfile, threading, time
 import numpy as np
 import arcadedb
 
+# a parent started as a background job ignores SIGINT, and a child inherits that: Python then installs no handler
+signal.signal(signal.SIGINT, signal.default_int_handler)
 with tempfile.TemporaryDirectory() as directory:
     db = arcadedb.create_database(os.path.join(directory, "db"))
     db.command("sql", "CREATE DOCUMENT TYPE T")

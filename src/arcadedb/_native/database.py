@@ -916,6 +916,7 @@ class NativeDatabase:
         self._check_not_closed()
         return self._registrations().on(event, fn, type_name)
 
+    @property
     def schema(self):
         """DDL helpers over SQL statements (the DSL-first subset); everything else is not on native yet."""
         self._check_not_closed()
