@@ -2,7 +2,9 @@ name: Release to PyPI
 
 # Pushing a tag that is the bare version (26.11.1, 26.11.1.post1, 26.11.1.dev0; no "v", same as
 # ArcadeData/arcadedb) builds the wheels, tests them, checks them and publishes them to PyPI.
-# Versions run A.B.C.devN -> A.B.C -> A.B.C.postN; never aN, bN or rcN.
+# Versions run A.B.C.devN -> A.B.C -> A.B.C.postN; never aN, bN or rcN. devN starts at 0 and
+# restarts at 0 on a new base A.B.C, postN starts at 1; scripts/check_version.py enforces the
+# counting in the first job (a later native job passes --tag-prefix native-v for its own tags).
 #
 # PyPI keys a trusted publisher on this FILENAME and on the job's environment, so do not rename
 # either without changing the publisher on PyPI at the same time:
@@ -39,9 +41,9 @@ env:
   DIST_NAME: arcadedb
 
 jobs:
-  # The tag must be a bare PEP 440 version of the allowed kinds. The jar-derived version is
-  # compared with the tag in verify-wheels, because the jars only exist after the test workflow
-  # downloaded them.
+  # The tag must be a bare PEP 440 version of the allowed kinds, and the next number of its base.
+  # The jar-derived version is compared with the tag in verify-wheels, because the jars only exist
+  # after the test workflow downloaded them.
   validate-version:
     name: Validate tag
     runs-on: ubuntu-24.04
@@ -75,6 +77,23 @@ jobs:
             echo "arcadedb-tag=$IMAGE_TAG"
           } >> "$GITHUB_OUTPUT"
           echo "Release $TAG (engine $BASE, image tag $IMAGE_TAG)"
+
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The counting rule (docs, Release page): devN from 0, postN from 1, never aN/bN/rcN, and the
+      # tag is the next number after the versions already in the git tags and on PyPI. The script
+      # only checks, and it fails closed: exit 1 is a tag that breaks the rule, exit 2 is a source
+      # (git tags, PyPI) it could not read, and either stops the release before anything is built.
+      # The tag being released is left out of the git tags; running the whole workflow again for
+      # a version that is already on PyPI fails here, so re-run only the publish job instead.
+      # Its tests are in tests/test_check_version.py.
+      - name: Tag must be the next version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: python3 -I scripts/check_version.py "$TAG" --git-remote origin --pypi "$DIST_NAME"
 
   # Builds a wheel per platform and Python version and runs the unit tests on each. The called
   # workflow uploads the wheels as wheel-<platform>-py<version> artifacts.

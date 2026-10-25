@@ -70,3 +70,5 @@ python -m bandit -c pyproject.toml -r examples --severity-level medium --confide
 ## CI
 
 `.github/workflows/test-python-bindings.yml` builds wheels for linux/amd64, linux/arm64, darwin/arm64, windows/amd64 and tests Python 3.10–3.14; also runs nightly against `arcadedata/arcadedb:latest`. Both workflows accept an `arcadedb-tag` input to pin the image. `test-python-examples.yml` runs `examples/`. A dependency-floor audit resolves extras with `--resolution lowest-direct` for each Python classifier and runs pip-audit, so raise lower bounds when a floor has an advisory.
+
+`.github/workflows/release.yml` publishes on a bare-version tag (`26.11.1.dev0`, `26.11.1`, `26.11.1.post1`; no `v`, never `aN`/`bN`/`rcN`). Its first job runs `scripts/check_version.py` (the devN/postN counting rule, read-only, fails closed); `scripts/after_tag_verify.sh` checks the finished release. The rule is stated once, on the docs page `development/release.adoc`.
