@@ -88,6 +88,11 @@ Open an [issue](https://github.com/ArcadeData/arcadedb-python/issues) or a pull 
 
 It moved here from `bindings/python` in [ArcadeData/arcadedb](https://github.com/ArcadeData/arcadedb) at `ee04bd202abce0183c6263a3c4d8a61a4d526960`, with its git history. Issue numbers in older commit messages refer to that repository. [humemai/arcadedb-embedded-python](https://github.com/humemai/arcadedb-embedded-python) is the fork where the bindings kept developing (runtime fixes, JRE trim, native build, benchmarks). Its benchmark tooling stays there. <!-- allow-old-name -->
 
+## Citation
+
+If you use these bindings in published work, cite them with the metadata in [`CITATION.cff`](https://github.com/ArcadeData/arcadedb-python/blob/main/CITATION.cff); GitHub shows it as "Cite this repository".
+There is no DOI for this repository yet.
+
 ## License
 
 Apache License 2.0, like ArcadeDB. See [`LICENSE`](https://github.com/ArcadeData/arcadedb-python/blob/main/LICENSE).
