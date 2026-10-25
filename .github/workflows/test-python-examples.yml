@@ -263,7 +263,7 @@ jobs:
       - name: Install ArcadeDB Python bindings
         shell: bash
         run: |
-          uv pip install --system dist/*embed*.whl
+          uv pip install --system dist/arcadedb-*.whl
 
       - name: Install example dependencies
         shell: bash

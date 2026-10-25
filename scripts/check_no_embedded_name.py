@@ -37,7 +37,11 @@ from pathlib import Path
 
 # The old names. `arcadedb-embedded` also matches inside `arcadedb-embedded-native` and
 # `arcadedb-embedded-python`; those are old names too.
-OLD_NAME = re.compile(r"arcadedb[_-]embedded|ArcadeDB Embedded Python", re.IGNORECASE)
+# Also glob/wildcard spellings that only match the old wheel name (`*embed*.whl`, `embedded*`): the rename missed
+# `dist/*embed*.whl` in the examples workflow and six examples, and CI failed on it (#42, 2026-10-25).
+OLD_NAME = re.compile(
+    r"arcadedb[_-]embedded|ArcadeDB Embedded Python|\*embed(?:ded)?\*", re.IGNORECASE
+)
 
 # Files (fnmatch patterns on the path relative to the repository root) that may name the old package.
 ALLOWED_PATHS: tuple[str, ...] = (
@@ -46,6 +50,7 @@ ALLOWED_PATHS: tuple[str, ...] = (
     "HISTORY*",
     "NEWS*",
     "scripts/check_no_embedded_name.py",
+    "tests/test_no_embedded_name.py",  # holds the old patterns as test cases
 )
 
 # Text that is removed from a line before it is scanned: issue references of the old repository.

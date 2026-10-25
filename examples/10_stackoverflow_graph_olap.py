@@ -6520,7 +6520,7 @@ def run_in_docker(args) -> bool:
 
     arcadedb_wheel_mount_path = None
     if args.db == "arcadedb_cypher":
-        wheel_candidates = sorted((repo_root / "dist").glob("*embed*.whl"))
+        wheel_candidates = sorted((repo_root / "dist").glob("arcadedb-*.whl"))
         if not wheel_candidates:
             if os.environ.get("GITHUB_ACTIONS", "").lower() == "true":
                 raise RuntimeError(
