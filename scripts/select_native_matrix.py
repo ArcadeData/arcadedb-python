@@ -9,8 +9,10 @@ supported Python (3.11 to 3.14) on all four.
 
 usage: select_native_matrix.py EVENT     EVENT: pull_request | push | schedule | workflow_dispatch | release
 
-Prints `build=<json>` and `test=<json>` lines (GITHUB_OUTPUT format). Publishing is not decided here: release-native.yml
-does it. The GraalVM CE archives are pinned by sha256 per platform (GraalVM Community Edition only, never Oracle GraalVM).
+Prints `build=<json>`, `test=<json>` and `pyver=<json>` lines (GITHUB_OUTPUT format). Publishing is not decided here:
+release-native.yml does it. `pyver` is the cheap Python-version job (see PYVER_NOTE): a subset of the tests against the built
+linux-x86_64 wheel on the Pythons the full parity run of the event does not cover, and always on the free-threaded 3.14t. It never
+gates a release. The GraalVM CE archives are pinned by sha256 per platform (GraalVM Community Edition only, never Oracle GraalVM).
 """
 
 from __future__ import annotations
@@ -87,9 +89,28 @@ ALL_PYTHONS = ["3.11", "3.12", "3.13", "3.14"]
 PRERELEASE_REQUIRED = ["linux-x86_64", "linux-aarch64", "macos-arm64"]
 ALL_PLATFORMS = list(PLATFORMS)
 
+# The `pyver` job of test-native.yml installs the already built linux-x86_64 wheel (py3-none, no rebuild) into every Python below that the
+# full parity run of the event does not cover, and runs a subset of the test files there. 3.14t is the free-threaded build of 3.14:
+# it is not a classifier of the wheel and has no polars (polars ships abi3 wheels only, which a free-threaded Python cannot install).
+FREE_THREADED_PYTHONS = ["3.14t"]
+PYVER_NOTE = "informational: release-native.yml does not read it"
+
 PULL_REQUEST_PLATFORMS = ["linux-x86_64"]
 PULL_REQUEST_PYTHONS = ["3.12"]
 MAIN_PYTHONS = ["3.12", "3.14"]
+
+
+def pyver_legs(covered: list[str]) -> list[dict]:
+    """The legs of the cheap Python-version job: every supported Python that `covered` (the full parity run) leaves out."""
+    return [
+        {
+            "python": py,
+            "freethreaded": py in FREE_THREADED_PYTHONS,
+            "polars": py not in FREE_THREADED_PYTHONS,
+        }
+        for py in ALL_PYTHONS + FREE_THREADED_PYTHONS
+        if py not in covered
+    ]
 
 
 def select(event: str) -> dict:
@@ -112,7 +133,7 @@ def select(event: str) -> dict:
         for k in platforms
         for py in pythons
     ]
-    return {"build": build, "test": test}
+    return {"build": build, "test": test, "pyver": pyver_legs(pythons)}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -125,6 +146,7 @@ def main(argv: list[str] | None = None) -> int:
     chosen = select(a.event)
     print(f"build={json.dumps(chosen['build'], separators=(',', ':'))}")
     print(f"test={json.dumps(chosen['test'], separators=(',', ':'))}")
+    print(f"pyver={json.dumps(chosen['pyver'], separators=(',', ':'))}")
     return 0
 
 
