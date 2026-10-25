@@ -574,6 +574,33 @@ public final class NativeExtras {
 
   // ---- import and export
 
+  private static final String[] XML_LIMIT_PROPERTIES = { "jdk.xml.maxGeneralEntitySizeLimit", "jdk.xml.entityExpansionLimit",
+      "jdk.xml.totalEntitySizeLimit" };
+  private static final Object XML_LIMITS_LOCK = new Object();
+
+  /**
+   * Runs the import with the JDK's XML entity limits lifted and puts the previous values back afterwards. The lock serializes lifted imports
+   * with each other; the properties are global, so an XML parse started by another thread inside the call sees the lifted limits too.
+   */
+  private static Map<String, Object> loadWithoutXmlLimits(final Importer importer) {
+    synchronized (XML_LIMITS_LOCK) {
+      final String[] saved = new String[XML_LIMIT_PROPERTIES.length];
+      for (int i = 0; i < saved.length; i++) {
+        saved[i] = System.getProperty(XML_LIMIT_PROPERTIES[i]);
+        System.setProperty(XML_LIMIT_PROPERTIES[i], "0");
+      }
+      try {
+        return importer.load();
+      } finally {
+        for (int i = 0; i < saved.length; i++)
+          if (saved[i] == null)
+            System.clearProperty(XML_LIMIT_PROPERTIES[i]);
+          else
+            System.setProperty(XML_LIMIT_PROPERTIES[i], saved[i]);
+      }
+    }
+  }
+
   /** settings: {key: string} as the Python importer builds them; the reply is {"ok":true,"stats":{..}|null}. */
   @CEntryPoint(name = "arcadedb_n_import")
   public static CCharPointer importDocuments(final IsolateThread thread, final long dbh, final CCharPointer settingsJson) {
@@ -582,9 +609,11 @@ public final class NativeExtras {
       final Map<String, String> settings = new HashMap<>();
       for (final Map.Entry<String, Object> e : args(settingsJson).entrySet())
         settings.put(e.getKey(), String.valueOf(e.getValue()));
+      // "__disableXmlLimits" is the binding's own key (the JDK's XML entity limits are system properties): lifted around this one load
+      final boolean liftXmlLimits = "true".equals(settings.remove("__disableXmlLimits"));
       final Importer importer = new Importer(db, null);
       importer.setSettings(settings);
-      final Map<String, Object> stats = importer.load();
+      final Map<String, Object> stats = liftXmlLimits ? loadWithoutXmlLimits(importer) : importer.load();
       final StringBuilder sb = new StringBuilder("{\"ok\":true,\"stats\":");
       if (stats == null)
         sb.append("null");
