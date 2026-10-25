@@ -7,7 +7,6 @@ Tests cover:
 
 import math
 
-import jpype.types as jtypes
 import pytest
 
 import arcadedb
@@ -565,7 +564,7 @@ class TestVectorSQL:
                 "(SELECT expand(`vector.sparseNeighbors`('SparseDoc[tokens,weights]', ?, ?, ?))) "
                 "ORDER BY score DESC"
             ),
-            jtypes.JArray(jtypes.JInt)([5]),
+            arcadedb.to_java_int_array([5]),
             arcadedb.to_java_float_array([1.0]),
             5,
         ).to_list()
@@ -1338,7 +1337,7 @@ class TestSparseSearchOptionsSql:
             "SELECT id, score FROM "  # nosec B608 - test-owned option literals
             "(SELECT expand(`vector.sparseNeighbors`('SparseOpt[tokens,weights]', "  # nosec B608
             f"?, ?, 5, {options}))) ORDER BY score DESC",  # nosec B608
-            jtypes.JArray(jtypes.JInt)([5]),
+            arcadedb.to_java_int_array([5]),
             arcadedb.to_java_float_array([1.0]),
         ).to_list()
 

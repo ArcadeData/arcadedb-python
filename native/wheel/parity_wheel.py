@@ -5,7 +5,7 @@
 
 A run per test file in its own process (a hang or crash costs one file), junit XML per file, then one table:
 passed / failed / error / NOTYET (the test needs a Java-object API, reported by tests/conftest.py as a skip whose reason starts
-with NOTYET) / other skips / TIMEOUT-or-crash. Files in tests/conftest.py's NATIVE_NOT_APPLICABLE are not collected (JVM-only).
+with NOTYET, raised as NotOnNativeYet) / NA-JVM (a row of NATIVE_NA_JVM_TESTS: the test reaches into the JVM on purpose) / other skips / TIMEOUT-or-crash. Files in tests/conftest.py's NATIVE_NOT_APPLICABLE are not collected (JVM-only).
 """
 
 import argparse
