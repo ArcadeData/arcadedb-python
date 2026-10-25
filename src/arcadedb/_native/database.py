@@ -9,6 +9,7 @@ from collections import deque
 from datetime import date, datetime
 from typing import Any, Dict, Iterator, List, Optional
 
+from .._params import refuse_surplus_positionals
 from ..exceptions import ArcadeDBError
 from ..transactions import TransactionContext
 from ..type_conversion import json_bulk_dumps
@@ -83,7 +84,11 @@ class NativeResult:
         return self.get(name)
 
     def get_rid(self) -> Optional[str]:
-        return self._meta[0] if self._meta else None
+        if self._meta:
+            return self._meta[0]
+        # a projection of @rid (not an alias of it) is a row with that identity, as on the JVM build
+        rid = self._props.get("@rid")
+        return None if rid is None else str(rid)
 
     def _record(self, kinds):
         from .records import _wrap
@@ -468,6 +473,10 @@ class NativeDatabase:
         self, flags: int, prefix: str, language: str, command: str, args
     ) -> NativeResultSet:
         self._check_not_closed()
+        if args:
+            refuse_surplus_positionals(
+                "command" if flags & 1 else "query", language, command, args
+            )
         if flags & 1 and _LAZY_COMMAND_ROWS and lib.CMD_PATH:
             # phase 8: the cursor id comes back as a long (no reply text to free and decode); the rows are read late or never
             text, buf, count = encode_params(args, binary=True)
@@ -614,11 +623,15 @@ class NativeDatabase:
                         raise
                     duplicated_key_retried = True
                 if commits_at_start is not None:
+                    # the rollback above cannot take back what a BATCH boundary or a commit() inside the block already made
+                    # durable, and a replay would apply it twice. Only the READ of the witness may fail quietly (no witness:
+                    # retry, as before); the raise sits outside that try, or its own except would swallow it.
                     try:
-                        if self._transaction_commit_mark() != commits_at_start:
-                            raise
+                        commits_now = self._transaction_commit_mark()
                     except ArcadeDBError:
-                        pass
+                        commits_now = commits_at_start
+                    if commits_now != commits_at_start:
+                        raise
                 _time.sleep(
                     max(backoff_s * (attempt + 1), reply.get("retry_ms", 0) / 1000.0)
                 )
