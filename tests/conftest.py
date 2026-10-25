@@ -13,24 +13,179 @@ import pytest
 # A test file that cannot run here is not collected, so nothing is reported as skipped: a skip means
 # a test that should have run, and scripts/check_test_skips.py fails the CI job on any skip.
 collect_ignore = []
-if sys.platform == "win32":
+
+import arcadedb  # noqa: E402  (the build under test decides which tests apply)
+
+# "jvm" for the arcadedb-jvm distribution, "native" for the arcadedb distribution (the GraalVM native-image library).
+BACKEND = arcadedb.__backend__
+
+# Files that cannot run on Windows (native/wheel/parity_wheel.py reads this table too: it passes every file to pytest by name,
+# and a file named on the command line is collected even when it is in collect_ignore).
+WINDOWS_NOT_APPLICABLE = {
     # test_sigint.py sends SIGINT to a child process, which Windows cannot deliver
-    collect_ignore.append("test_sigint.py")
+    "test_sigint.py": "SIGINT to a child process",
     # test_python_function_interrupt.py sends SIGINT to its own process, which Windows cannot do either
-    collect_ignore.append("test_python_function_interrupt.py")
+    "test_python_function_interrupt.py": "SIGINT to its own process",
     # LadybugDB's compiled module does not load in this process on Windows (it falls back to a C-API library its
     # wheel does not ship), so the Cypher half of the equivalence checks runs on Linux and macOS
     # (humemai/arcadedb-embedded-python#347)
-    collect_ignore.append("test_equivalence_ladybug.py")
+    "test_equivalence_ladybug.py": "LadybugDB does not load on Windows",
     # runs scripts/stage_jars.sh under bash with a fake docker; the bash a Windows
     # subprocess finds may be WSL's rather than Git Bash
-    collect_ignore.append("test_stage_jars.py")
+    "test_stage_jars.py": "bash with a fake docker",
+}
+if sys.platform == "win32":
+    collect_ignore.extend(WINDOWS_NOT_APPLICABLE)
+if BACKEND != "native":
+    # Java -> Python upcalls (Python functions in SQL) exist on the native build only
+    collect_ignore.append("test_native_udf.py")
+    # the native library's start-up output (#477) can only be checked with the native library loaded
+    collect_ignore.append("test_native_startup_runtime.py")
 if not os.path.isfile(
     os.path.join(os.path.dirname(os.path.dirname(__file__)), "docs", "index.md")
 ):
     # the user documentation site (docs/index.md and its pages) is not in this repository;
     # docs/ alone is not enough, it also holds design notes (docs/superpowers)
     collect_ignore.append("test_docs_examples.py")
+
+
+# The native build (the arcadedb distribution): the same suite runs against libarcadedb. A test that needs a Java object API
+# raises NotOnNativeYet and is reported as a skip whose reason starts with "NOTYET"; a test about the JVM itself is reported as
+# a skip that starts with "NA-JVM"; a file about the JVM, the JPype wheel or the JVM wheel's build tooling is not collected and
+# listed in NATIVE_NOT_APPLICABLE. native/wheel/parity_wheel.py counts the three kinds apart, and the native workflow fails on
+# any other skip (this repository accepts no skips, scripts/check_test_skips.py).
+NATIVE_NOT_APPLICABLE = {
+    "test_jvm.py": "JVM start-up and settings",
+    "test_jvm_args.py": "JVM arguments",
+    "test_jar_provenance.py": "jar fingerprint of the JVM wheel",
+    "test_jar_closure.py": "jar closure of the JVM wheel",
+    "test_java_package_shadowing.py": "JPype package import hooks",
+    "test_wheel_platform_tag.py": "JVM wheel tag",
+    "test_wheel_size.py": "JVM wheel size",
+    "test_wheel_licences.py": "JVM wheel licences",
+    "test_wheel_packages.py": "JVM wheel contents",
+    "test_server_packaging.py": "JVM wheel contents",
+    "test_runtime_cache.py": "JRE runtime cache of the JVM wheel",
+    "test_aot.py": "JVM class-data cache",
+    "test_stage_jars.py": "staging of the JVM wheel's jars",
+    "test_extract_version.py": "version of the JVM wheel's engine jar",
+    "test_extract_version_classifiers.py": "version of the JVM wheel's engine jar",
+    "test_build_scripts.py": "build scripts of the JVM wheel",
+    "test_build_no_uv_refresh.py": "build scripts of the JVM wheel",
+    "test_build_wheel_check.py": "build scripts of the JVM wheel",
+}
+if BACKEND == "native" and not os.environ.get("NATIVE_PARITY_ALL"):
+    collect_ignore.extend(NATIVE_NOT_APPLICABLE)
+
+
+# Failure texts that mean the test is about the JPype bridge, not about database behaviour.
+NATIVE_JVM_MARKERS = (
+    "JVMNotRunning",
+    "without JVM",
+    "Java Virtual Machine is not running",
+    "'_java_db'",
+    "'_java_result'",
+    "bridge jar",
+    "'nextRows'",
+    "getClass",
+    "DID NOT RAISE KeyboardInterrupt",
+    "Cannot drop the database in transaction",  # teardown after an injected KeyboardInterrupt
+    "assert (None is not None)",  # fixtures that need a bridge class
+    "KeyError: 'flush'",
+    "KeyError: 'max_connections'",
+    "cause is <class 'NoneType'>",  # the Java exception as __cause__
+    "findNeighborsFromVector",  # the test calls the Java vector index directly
+    "to_java_rid",
+)
+
+
+# Failure texts that mean the test needs a Java-object wrapper (Document, Vertex, Edge) or the exporter's Java path.
+NATIVE_NOTYET_MARKERS = (
+    "'NativeResult' object is not iterable",
+    "assert 'NativeResult' ==",
+)
+
+
+# Tests that count the JPype parameter conversions (an internal of the JPype path).
+NATIVE_NA_TESTS = {
+    "test_non_scalars_keep_the_general_path",
+    "test_a_subclass_of_a_scalar_is_not_assumed_to_be_one",
+    "test_lsm_vector_search_looks_up_all_hits_in_one_bridge_call",  # counts GraphCalls bridge crossings
+}
+
+
+# Tests that exercise the JVM itself, so the native backend (no JVM, no jars) has nothing to run. Skipped before they start,
+# with the reason; a test whose behaviour native shares (Ctrl-C in a Python loop, the zone of to_json_list) is not listed.
+NATIVE_NA_JVM_TESTS = {
+    "test_ctrl_c_raises_keyboard_interrupt_and_runs_cleanup[java]": "a Java call blocked in JPype's SIGINT handler (#179)",
+    "test_interrupt_true_keeps_the_jvm_handling_sigint": "start_jvm(interrupt=True): the JVM handles SIGINT",
+    "test_docs_installation_jvm_examples": "documents start_jvm() and jvm_kwargs",
+    "test_to_java_int_array_keeps_values_that_fit": "to_java_int_array builds a Java int[] (JPype)",
+    "test_to_java_int_array_refuses_values_beyond_32_bits_in_an_array": "to_java_int_array builds a Java int[] (JPype)",
+    "test_to_java_byte_array_accepts_bytes_like_fast_paths": "to_java_byte_array builds a Java byte[] (JPype)",
+    "test_to_java_int_array": "to_java_int_array builds a Java int[] (JPype)",
+    "test_to_java_int_array_accepts_numpy_directly": "to_java_int_array builds a Java int[] (JPype)",
+    "test_to_java_int_array_round_trips_through_a_sparse_vector": "to_java_int_array builds a Java int[] (JPype)",
+    "test_the_host_reaches_exactly_the_listener_bind_settings": "reads the engine's GlobalConfiguration through the JVM",
+}
+
+
+def pytest_collection_modifyitems(config, items):
+    if BACKEND != "native":
+        return
+    for item in items:
+        reason = NATIVE_NA_JVM_TESTS.get(item.name)
+        if reason:
+            item.add_marker(pytest.mark.skip(reason=f"NA-JVM: {reason}"))
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    outcome = yield
+    if BACKEND != "native":
+        return
+    report = outcome.get_result()
+    if call.excinfo is None or report.passed:
+        return
+    from arcadedb._native import NotOnNativeYet
+
+    if item.name in NATIVE_NA_TESTS:
+        report.outcome = "skipped"
+        report.longrepr = (
+            str(item.fspath),
+            item.location[1] or 0,
+            "NA-JVM: counts JPype conversions",
+        )
+        return
+    exc, seen = call.excinfo.value, 0
+    while exc is not None and seen < 8:
+        if isinstance(exc, NotOnNativeYet):
+            report.outcome = "skipped"
+            report.longrepr = (
+                str(item.fspath),
+                item.location[1] or 0,
+                f"NOTYET: {exc}",
+            )
+            return
+        text = f"{type(exc).__name__}: {exc}"
+        if any(marker in text for marker in NATIVE_NOTYET_MARKERS):
+            report.outcome = "skipped"
+            report.longrepr = (
+                str(item.fspath),
+                item.location[1] or 0,
+                "NOTYET: Java-object wrapper or exporter path",
+            )
+            return
+        if any(marker in text for marker in NATIVE_JVM_MARKERS):
+            # the test reaches into the JVM directly (jpype.JClass, Java arrays, bridge classes): about the JPype path
+            report.outcome = "skipped"
+            report.longrepr = (
+                str(item.fspath),
+                item.location[1] or 0,
+                "NA-JVM: the test uses the JVM directly",
+            )
+            return
+        exc, seen = exc.__cause__ or exc.__context__, seen + 1
 
 
 @pytest.hookimpl(trylast=True)

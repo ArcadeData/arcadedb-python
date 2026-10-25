@@ -261,7 +261,7 @@ else
 fi
 
 echo -e "${CYAN}📋 Build Configuration:${NC}"
-echo -e "   Package: ${YELLOW}arcadedb${NC}"
+echo -e "   Package: ${YELLOW}arcadedb-jvm${NC}"
 echo -e "   Platform: ${YELLOW}${PLATFORM}${NC}"
 echo -e "   Python Version: ${YELLOW}${PYTHON_VERSION}${NC}"
 echo -e "   JAR Source: ${YELLOW}${JAR_SOURCE_DESC}${NC}"
@@ -271,7 +271,7 @@ echo ""
 
 # Package configuration
 PACKAGE_NAME="arcadedb-jvm"
-DESCRIPTION="ArcadeDB embedded multi-model database with bundled JRE - no Java installation required"
+DESCRIPTION="ArcadeDB embedded multi-model database, JVM build with a bundled JRE (no Java installation needed)"
 
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo -e "${BLUE}Building: ${YELLOW}${PACKAGE_NAME}${NC}"

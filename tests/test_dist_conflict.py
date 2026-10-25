@@ -99,11 +99,14 @@ def import_arcadedb(extra_site):
     )
 
 
+def own_backend():
+    """The build the installed package is: fixed at build time, not switched by ARCADEDB_BACKEND."""
+    return arcadedb._native_backend.distribution_backend()
+
+
 def sibling():
     """The distribution of the other build than the one under test."""
-    return _dist_conflict.DISTRIBUTIONS[
-        _dist_conflict.other_backend(arcadedb.__backend__)
-    ]
+    return _dist_conflict.DISTRIBUTIONS[_dist_conflict.other_backend(own_backend())]
 
 
 def test_import_fails_when_the_other_distribution_is_installed_too(tmp_path):
@@ -118,7 +121,7 @@ def test_import_fails_when_the_other_distribution_is_installed_too(tmp_path):
 
 def test_import_is_silent_when_only_this_distribution_is_installed(tmp_path):
     site = tmp_path / "site"
-    fake_dist_info(site, _dist_conflict.DISTRIBUTIONS[arcadedb.__backend__], "26.11.1")
+    fake_dist_info(site, _dist_conflict.DISTRIBUTIONS[own_backend()], "26.11.1")
     result = import_arcadedb(site)
     assert result.returncode == 0, result.stderr
     assert "pip uninstall" not in result.stderr

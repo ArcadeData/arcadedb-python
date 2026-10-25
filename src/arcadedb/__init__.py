@@ -7,14 +7,19 @@ directly in the Python process using JPype.
 
 # Which build this is: 'jvm' (the arcadedb-jvm distribution, the Java engine through JPype) or 'native' (the
 # arcadedb distribution, the engine as a GraalVM native-image library). The import name is arcadedb for both.
-__backend__ = "jvm"
-
-# Both distributions install a package named arcadedb into the same directory; pip overwrites one with the other
-# silently. Refuse to import when the other one is installed too, before anything else runs.
+# `_native.distribution_backend()` is fixed when the wheel is built (the native wheel build flips one line in
+# `_native/__init__.py`). `__backend__` is the engine that runs now: ARCADEDB_BACKEND=native can switch it on in a
+# source checkout, where a developer loads a library they built themselves.
+from . import _native as _native_backend
 from ._dist_conflict import DISTRIBUTIONS as _DISTRIBUTIONS
 from ._dist_conflict import check as _check_distributions
 
-_check_distributions(__backend__)
+_DISTRIBUTION_BACKEND = _native_backend.distribution_backend()
+__backend__ = "native" if _native_backend.enabled() else "jvm"
+
+# Both distributions install a package named arcadedb into the same directory; pip overwrites one with the other
+# silently. Refuse to import when the other one is installed too, before anything else runs.
+_check_distributions(_DISTRIBUTION_BACKEND)
 
 # The installed distribution's version is the single source of truth: the
 # wheel is versioned from the release tag, while the generated _version.py
@@ -26,7 +31,7 @@ _check_distributions(__backend__)
 try:
     from importlib.metadata import version as _dist_version
 
-    __version__ = _dist_version(_DISTRIBUTIONS[__backend__])
+    __version__ = _dist_version(_DISTRIBUTIONS[_DISTRIBUTION_BACKEND])
 except Exception:  # not installed: fall back to the build-time file
     try:
         from ._version import __version__

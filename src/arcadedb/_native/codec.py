@@ -1,0 +1,229 @@
+"""Python <-> native JSON: query parameters out, typed rows in."""
+
+import json
+import os
+from collections.abc import Mapping
+from datetime import date, datetime, timezone
+from decimal import Decimal
+
+try:  # numpy is optional
+    import numpy as _np
+except ImportError:  # pragma: no cover
+    _np = None
+
+TAG = "\u0001"
+_EPOCH_NAIVE = datetime(1970, 1, 1)
+
+
+def _default(value, _bin=None):
+    """json.dumps hook: the values JSON cannot carry, as tagged objects (see Json.java).
+
+    ``_bin`` (binary mode): ``[arrays, floats_so_far]``; a float ndarray then goes to the side buffer as float32 and the JSON carries
+    ``["B", offset, count]`` instead of the number list (no float formatting in Python, no text parsing in Java).
+    """
+    if isinstance(value, RID):
+        return {TAG: ["R", value.text]}
+    if isinstance(value, Decimal):
+        return {TAG: ["n", str(value)]}
+    if isinstance(value, datetime):
+        utc = (
+            value.astimezone(timezone.utc).replace(tzinfo=None)
+            if value.utcoffset() is not None
+            else value
+        )
+        return {TAG: ["T", utc.isoformat()]}
+    if isinstance(value, date):
+        return {TAG: ["D", value.isoformat()]}
+    if isinstance(value, (set, frozenset)):
+        return {TAG: ["s", list(value)]}
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        import base64
+
+        return {TAG: ["b", base64.b64encode(bytes(value)).decode("ascii")]}
+    if _np is not None:
+        if isinstance(value, _np.ndarray):
+            if value.dtype.kind == "f":
+                if _bin is not None:
+                    arr = _np.ascontiguousarray(value.ravel(), dtype=_np.float32)
+                    off = _bin[1]
+                    _bin[0].append(arr)
+                    _bin[1] = off + arr.size
+                    return {TAG: ["B", off, arr.size]}
+                return {TAG: ["F", value.tolist()]}
+            return value.tolist()
+        if isinstance(value, _np.bool_):
+            return bool(value)
+        if isinstance(value, _np.integer):
+            return int(value)
+        if isinstance(value, _np.floating):
+            return float(value)
+    if isinstance(value, Mapping):
+        return dict(value)
+    raise TypeError(
+        f"cannot pass {type(value).__name__} as a parameter on the native backend"
+    )
+
+
+_PLAIN = frozenset((str, int, float, bool, type(None)))
+_dumps = json.dumps
+_fast = os.environ.get("ARCADEDB_NATIVE_FASTENC", "1") != "0"
+
+
+def _prep(value):
+    """A value ready for json.dumps: a dict with a key that is not a str becomes a tagged ``[[k, v], ..]`` map (JSON would turn
+    the key into text; the JPype path keeps it), and containers are walked for such dicts. Plain scalars pass untouched.
+    """
+    t = type(value)
+    if t in _PLAIN:
+        return value
+    if isinstance(value, Mapping):
+        if all(type(k) is str for k in value):
+            return {k: _prep(v) for k, v in value.items()}
+        return {TAG: ["m", [[_prep(k), _prep(v)] for k, v in value.items()]]}
+    if t is list or t is tuple:
+        return [_prep(v) for v in value]
+    return value
+
+
+def encode_params(args, binary=False):
+    """The ``params`` text for ``arcadedb_n_exec``: '' for none, else ``{"named":{..}}`` or ``{"pos":[..]}``.
+
+    Same selection as the JPype path: a lone list/tuple is the positional list itself, a lone mapping (also alone in
+    a list) is the named map, anything else is positional.
+    """
+    if not args:
+        return ("", None, 0) if binary else ""
+    values = args[0] if len(args) == 1 and isinstance(args[0], (list, tuple)) else args
+    plain = _PLAIN
+    if _fast and set(map(type, values)) <= plain:
+        # all plain scalars (the per-row INSERT of a load): the cached default encoder, no default hook, no per-call encoder object
+        text = _dumps({"pos": values if type(values) is list else list(values)})
+        return (text, None, 0) if binary else text
+    if len(values) == 1 and isinstance(values[0], Mapping):
+        named = values[0]
+        if not all(type(v) in plain for v in named.values()):
+            named = {k: _prep(v) for k, v in named.items()}
+        return _dump({"named": dict(named)}, binary)
+    if not all(type(v) in plain for v in values):
+        values = [_prep(v) for v in values]
+    return _dump({"pos": list(values)}, binary)
+
+
+def _dump(obj, binary):
+    """JSON text; binary mode returns ``(text, float32 side buffer bytes or None, float count)``."""
+    if not binary:
+        return json.dumps(obj, default=_default)
+    state = [[], 0]
+    text = json.dumps(obj, default=lambda v: _default(v, state))
+    arrays = state[0]
+    if not arrays:
+        return text, None, 0
+    buf = arrays[0].tobytes() if len(arrays) == 1 else _np.concatenate(arrays).tobytes()
+    return text, buf, state[1]
+
+
+class RID:
+    """A record id as the engine returns it in a row; passed back as a parameter it is a link, not a string."""
+
+    __slots__ = ("text",)
+
+    def __init__(self, text):
+        self.text = text
+
+    def __str__(self):
+        return self.text
+
+    def __repr__(self):
+        return f"RID({self.text!r})"
+
+    def __eq__(self, other):
+        return self.text == (other.text if isinstance(other, RID) else other)
+
+    def __hash__(self):
+        return hash(self.text)
+
+
+def _restore_float(text):
+    return float(text)
+
+
+def _restore_map(pairs):
+    return {k: v for k, v in pairs}
+
+
+_SIMPLE = {
+    "n": Decimal,
+    "i": int,
+    "D": date.fromisoformat,
+    "T": datetime.fromisoformat,
+    "Z": datetime.fromisoformat,
+    "s": set,
+    "f": _restore_float,
+    "m": _restore_map,
+    "R": RID,
+}
+
+
+def _hook(obj):
+    tagged = obj.get(TAG)
+    # a column may be called like the tag: only a lone [kind, payload] pair of a known kind is a tagged value
+    if (
+        tagged is None
+        or len(obj) != 1
+        or type(tagged) is not list
+        or len(tagged) != 2
+        or tagged[0] not in _SIMPLE
+    ):
+        return obj
+    kind, payload = tagged
+    return _SIMPLE[kind](payload)
+
+
+def loads(text: str, floats=None):
+    """Decode a reply, restoring tagged values. ``floats``: the float32 tail of a binary reply (``["B", offset, count]`` values)."""
+    if floats is None:
+        return json.loads(text, object_hook=_hook)
+
+    def hook(obj):
+        tagged = obj.get(TAG)
+        if (
+            tagged is not None
+            and len(obj) == 1
+            and type(tagged) is list
+            and len(tagged) == 3
+            and tagged[0] == "B"
+        ):
+            return floats[
+                tagged[1] : tagged[1] + tagged[2]
+            ].tolist()  # float32 widens to the same double as the JPype path
+        return _hook(obj)
+
+    return json.loads(text, object_hook=hook)
+
+
+# --- JSON-native form of a row (ResultSet.to_json_list): DATE/DATETIME as epoch millis, DECIMAL as float.
+
+
+def json_native(value):
+    if isinstance(value, datetime):
+        return (
+            int((value.replace(tzinfo=None) - _EPOCH_NAIVE).total_seconds() * 1000)
+            if value.tzinfo is None
+            else int(value.timestamp() * 1000)
+        )
+    if isinstance(value, date):
+        return int(
+            (
+                datetime.combine(value, datetime.min.time()) - _EPOCH_NAIVE
+            ).total_seconds()
+            * 1000
+        )
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, (set, frozenset)):
+        return [json_native(v) for v in value]
+    if isinstance(value, list):
+        return [json_native(v) for v in value]
+    if isinstance(value, dict):
+        return {k: json_native(v) for k, v in value.items()}
+    return value
