@@ -153,6 +153,38 @@ def _arity(fn: Callable) -> Tuple[int, int]:
     return minimum, maximum
 
 
+def check_function(
+    name: str, fn: Callable, min_args: Optional[int], max_args: Optional[int]
+) -> Tuple[int, int]:
+    """Validate the arguments of ``register_function`` and return the (min, max) argument counts to register.
+
+    Shared by both backends (the JPype ``FunctionRegistration`` and the native one), so a bad call fails the same way.
+    """
+    if not isinstance(name, str) or not _NAME_RE.match(name):
+        raise ValueError(
+            f"Invalid function name {name!r}: use letters, digits and underscores "
+            "(not starting with a digit), optionally joined by dots like 'py.slugify'"
+        )
+    if not callable(fn):
+        raise TypeError("fn must be callable")
+    found_min, found_max = _arity(fn)
+    min_args = found_min if min_args is None else min_args
+    max_args = found_max if max_args is None else max_args
+    if min_args < 0 or max_args < min_args:
+        raise ValueError(
+            f"Invalid argument counts: min_args={min_args}, max_args={max_args}"
+        )
+    return min_args, max_args
+
+
+def check_event(event: str, fn: Callable) -> None:
+    """Validate the arguments of ``Database.on`` (shared by both backends)."""
+    if event not in EVENTS:
+        raise ValueError(f"Invalid event {event!r}. Must be one of: {list(EVENTS)}")
+    if not callable(fn):
+        raise TypeError("fn must be callable")
+
+
 # The proxy classes are defined once, on first use (the JVM must be running, so not at import):
 # a @JImplements class defined on every registration leaked about 6 KB of Python heap per
 # registration, which neither the engine's unregister nor gc gave back. State is per instance.
@@ -273,20 +305,7 @@ class FunctionRegistration:
         deterministic: bool,
         replace: bool,
     ) -> None:
-        if not isinstance(name, str) or not _NAME_RE.match(name):
-            raise ValueError(
-                f"Invalid function name {name!r}: use letters, digits and underscores "
-                "(not starting with a digit), optionally joined by dots like 'py.slugify'"
-            )
-        if not callable(fn):
-            raise TypeError("fn must be callable")
-        found_min, found_max = _arity(fn)
-        min_args = found_min if min_args is None else min_args
-        max_args = found_max if max_args is None else max_args
-        if min_args < 0 or max_args < min_args:
-            raise ValueError(
-                f"Invalid argument counts: min_args={min_args}, max_args={max_args}"
-            )
+        min_args, max_args = check_function(name, fn, min_args, max_args)
 
         functions = _bridge_class("com.arcadedb.python.PythonFunctions")
         try:
@@ -377,10 +396,7 @@ class EventHandle:
 
 def register_event(database, event: str, fn: Callable, type_name: Optional[str]):
     """Register ``fn`` for ``event`` on the database, or on one type, and return its handle."""
-    if event not in EVENTS:
-        raise ValueError(f"Invalid event {event!r}. Must be one of: {list(EVENTS)}")
-    if not callable(fn):
-        raise TypeError("fn must be callable")
+    check_event(event, fn)
     java_db = database.get_java_database()
     try:
         if type_name is None:

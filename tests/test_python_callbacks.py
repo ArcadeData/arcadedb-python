@@ -219,17 +219,18 @@ def test_a_numpy_array_is_a_return_value(db):
     strict=False,
 )
 def test_registering_again_and_again_does_not_grow_the_python_heap(db):
-    """The JPype proxy class is defined once, not per registration (it leaked about 6 KB each)."""
+    """The JPype proxy class is defined once, not per registration (it leaked about 6 KB each); on the native backend the callback table must not keep a removed callback."""
     import gc
     import time
     import tracemalloc
 
-    import jpype
-
     def settle():
-        # JPype frees a proxy's Python object once the JVM has collected the Java side
-        jpype.JClass("java.lang.System").gc()
-        time.sleep(0.3)
+        if arcadedb.__backend__ == "jvm":
+            import jpype
+
+            # JPype frees a proxy's Python object once the JVM has collected the Java side
+            jpype.JClass("java.lang.System").gc()
+            time.sleep(0.3)
         gc.collect()
 
     def cycle(n):
