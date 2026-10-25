@@ -5,9 +5,9 @@ from __future__ import annotations
 import importlib.util
 import itertools
 import json
+import re
 import subprocess  # nosec B404 - test-controlled child processes, no untrusted input
 import sys
-import tomllib
 from pathlib import Path
 
 import pytest
@@ -95,13 +95,11 @@ def test_unknown_workflow_is_refused():
 def test_pythons_match_the_classifiers_of_pyproject():
     # release.yml expects one wheel per classifier Python and platform from the full matrix; a
     # Python added to one place and not the other would fail the release, not a pull request.
-    prefix = "Programming Language :: Python :: 3."
-    classifiers = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))[
-        "project"
-    ]["classifiers"]
-    assert list(sm.PYTHONS) == [
-        c.rsplit(" ", 1)[1] for c in classifiers if c.startswith(prefix)
-    ]
+    # A regex, not tomllib: this test also runs on Python 3.10, which has no tomllib.
+    text = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    classifiers = re.findall(r'"Programming Language :: Python :: (3\.\d+)"', text)
+    assert classifiers, "no Python version classifiers found in pyproject.toml"
+    assert list(sm.PYTHONS) == classifiers
 
 
 def test_command_line_prints_one_line_of_matrix_json():
