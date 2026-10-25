@@ -210,6 +210,16 @@ Bind values as parameters instead of pasting them into the statement text. Ident
 * Named: `:name` in the statement and a dict as the one extra argument. A named parameter can hold a collection, as in `age IN :ages`.
 * `None` binds as null.
 
+A list or tuple on its own is the positional list, so it never binds as one parameter. `db.query("sql", "SELECT FROM V WHERE @rid IN ?", [rid_a, rid_b])` has two values for one `?`: the engine would bind `rid_a`, drop `rid_b` without a word and return one row where two were meant. The bindings raise `TypeError` before the statement runs when a SQL or SQLScript call has more positional values than the statement can bind, because the engine does not count them (https://github.com/ArcadeData/arcadedb/issues/10721[ArcadeData/arcadedb#10721]). To bind a list as one parameter, bind it by name or wrap it so it is the one positional value:
+
+[source,python]
+----
+db.query("sql", "SELECT FROM V WHERE @rid IN :ids", {"ids": [rid_a, rid_b]})
+db.query("sql", "SELECT FROM V WHERE @rid IN ?", [[rid_a, rid_b]])
+----
+
+The check counts the `?`, `$` and `:` characters of the SQL text, so the count is an upper bound: a `?` inside a string literal counts as a placeholder, and a call that binds is never refused. Fewer values than placeholders are not checked, and the engine binds null for the missing ones. `db.query` and `db.command` run the check; the async executor does not.
+
 === Results
 
 `db.query` returns a result set you can iterate. Two methods cover the usual needs:
