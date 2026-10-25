@@ -217,6 +217,20 @@ Bind values as parameters instead of pasting them into the statement text. Ident
 * `first()` returns the first row, or `None` when there is none, so `if db.query(...).first():` tests whether anything matched.
 * `to_list()` materialises the whole result as a list of dicts. Use it when you need the whole result in memory; iterate when you stop early or the result is large.
 
+=== Record ids in rows
+
+A record id inside a row value (`SELECT @rid AS r`, a `LINK` property, a list of links such as `out('Knows').@rid`) comes back as an RID object, not as text. `str(rid)` is the text (`"#10:5"`), so is an f-string, and `get_rid()` always returns text or `None`. Two RIDs of the same record are equal and hash alike, so they work in sets and as dict keys, and RIDs sort by bucket, then position. `getBucketId()`, `getPosition()`, `toString()` and `isValid()` work on the object. It goes back in as a query parameter (`WHERE @rid = ?`, or a list passed by name) and to `db.lookup_by_rid()`, as itself or as its text.
+
+[source,python,subs="attributes+"]
+----
+row = db.query("sql", "SELECT @rid AS r, name FROM User LIMIT 1").first()
+rid = row.get("r")
+print(str(rid), rid.getBucketId(), rid.getPosition())   # #1:0 1 0
+print(db.lookup_by_rid(rid).get("name"))                # the same record, from the object or from str(rid)
+----
+
+Compare record ids as `str(rid)`. A row also has an identity of its own: `result.get_rid()` returns it for a record row, an `expand()` row and a projection of `@rid` that does not alias it, and `None` for any other projection.
+
 === Pagination
 
 Page a large type by `@rid` instead of `SKIP`: each page is `WHERE @rid > ? LIMIT ?`, and the cursor is the `@rid` of the last row of the previous page. Start with `"#-1:-1"`. The script above runs the loop with a page size of one so that two short pages print.
