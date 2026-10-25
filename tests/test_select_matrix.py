@@ -5,9 +5,9 @@ from __future__ import annotations
 import importlib.util
 import itertools
 import json
-import re
 import subprocess  # nosec B404 - test-controlled child processes, no untrusted input
 import sys
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -19,15 +19,15 @@ WORKFLOWS = {
     "examples": ROOT / ".github" / "workflows" / "test-python-examples.yml",
 }
 
-# The matrix both workflows had before the selection existed: 4 platforms x 5 Pythons. Written
-# out here on purpose, not imported from the script, so the full matrix cannot shrink unnoticed.
+# The full matrix of both workflows: 4 platforms x 4 Pythons. Written out here on purpose, not
+# imported from the script, so the full matrix cannot shrink unnoticed.
 PLATFORMS = {
     "linux/amd64": "ubuntu-24.04",
     "linux/arm64": "ubuntu-24.04-arm",
     "darwin/arm64": "macos-15",
     "windows/amd64": "windows-2025",
 }
-PYTHONS = ["3.10", "3.11", "3.12", "3.13", "3.14"]
+PYTHONS = ["3.11", "3.12", "3.13", "3.14"]
 FULL = {(p, v) for p, v in itertools.product(PLATFORMS, PYTHONS)}
 NON_PULL_REQUEST_EVENTS = [
     "push",
@@ -65,7 +65,7 @@ def _pairs(matrix):
 @pytest.mark.parametrize("event", NON_PULL_REQUEST_EVENTS)
 def test_every_event_but_pull_request_runs_the_full_matrix(workflow, event):
     matrix = sm.select(workflow, event)
-    assert len(matrix["include"]) == 20
+    assert len(matrix["include"]) == 16
     assert _pairs(matrix) == FULL
 
 
@@ -73,8 +73,8 @@ def test_pull_request_bindings_matrix():
     pairs = _pairs(sm.select("bindings", "pull_request"))
     assert {v for p, v in pairs if p == "linux/amd64"} == set(PYTHONS)
     for platform in ("linux/arm64", "darwin/arm64", "windows/amd64"):
-        assert {v for p, v in pairs if p == platform} == {"3.10", "3.14"}, platform
-    assert len(pairs) == 11
+        assert {v for p, v in pairs if p == platform} == {"3.11", "3.14"}, platform
+    assert len(pairs) == 10
 
 
 def test_pull_request_examples_matrix():
@@ -95,15 +95,22 @@ def test_unknown_workflow_is_refused():
 def test_pythons_match_the_classifiers_of_pyproject():
     # release.yml expects one wheel per classifier Python and platform from the full matrix; a
     # Python added to one place and not the other would fail the release, not a pull request.
-    # A regex, not tomllib: this test also runs on Python 3.10, which has no tomllib.
-    text = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    classifiers = re.findall(r'"Programming Language :: Python :: (3\.\d+)"', text)
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))[
+        "project"
+    ]
+    prefix = "Programming Language :: Python :: 3."
+    classifiers = [
+        c.rsplit(" ", 1)[1] for c in project["classifiers"] if c.startswith(prefix)
+    ]
     assert classifiers, "no Python version classifiers found in pyproject.toml"
     assert list(sm.PYTHONS) == classifiers
+    # The oldest Python of the matrix is the floor of requires-python, so dropping or adding the
+    # oldest one cannot leave the install metadata saying something else.
+    assert project["requires-python"] == f">={sm.PYTHONS[0]}"
 
 
 def test_command_line_prints_one_line_of_matrix_json():
-    for event, count in (("pull_request", 11), ("push", 20)):
+    for event, count in (("pull_request", 10), ("push", 16)):
         out = subprocess.run(  # nosec B603 - fixed argument list, no untrusted input
             [sys.executable, "-I", str(SCRIPT_PATH), "bindings", "--event", event],
             capture_output=True,

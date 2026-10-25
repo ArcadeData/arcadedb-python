@@ -3,7 +3,7 @@
 
 Two workflows test the package: `test-python-bindings.yml` builds a wheel and runs the unit tests, and `test-python-examples.yml` runs the scripts in `examples/`. Both build the wheels on a native runner of each platform.
 
-The package supports four platforms and five Python versions (3.10 to 3.14). That is 20 combinations for each workflow. A pull request does not run all of them, because the organisation shares one runner limit with ArcadeData/arcadedb. Each macOS or Windows job on a pull request delays the upstream jobs too.
+The package supports four platforms and four Python versions (3.11 to 3.14). That is 16 combinations for each workflow. A pull request does not run all of them, because the organisation shares one runner limit with ArcadeData/arcadedb. Each macOS or Windows job on a pull request delays the upstream jobs too.
 
 == What runs when
 
@@ -14,15 +14,15 @@ The script `scripts/select_matrix.py` chooses the combinations. The first job of
 | Event | Unit tests (`Test arcadedb`) | Examples (`Test Python Examples`)
 
 | Pull request
-| `linux/amd64` on all five Python versions. `linux/arm64`, `darwin/arm64` and `windows/amd64` on Python 3.10 and 3.14.
+| `linux/amd64` on all four Python versions. `linux/arm64`, `darwin/arm64` and `windows/amd64` on Python 3.11 and 3.14.
 | All four platforms on Python 3.14.
 
 | Push to `main`, the nightly run, a manual run, a release
-| All 20 combinations.
-| All 20 combinations.
+| All 16 combinations.
+| All 16 combinations.
 |===
 
-A pull request runs 21 checks: 15 test jobs (11 and 4), the two `Download ArcadeDB JARs` jobs, the two summary jobs, `Bandit security scan` and `Dependency floor audit`. The full matrix runs 46.
+A pull request runs 20 checks: 14 test jobs (10 and 4), the two `Download ArcadeDB JARs` jobs, the two summary jobs, `Bandit security scan` and `Dependency floor audit`. The full matrix runs 38.
 
 The names of the test jobs do not change: `Test arcadedb (<platform>, Python <version>)`. A check keeps its history when a pull request runs fewer of them.
 
@@ -36,4 +36,4 @@ A release always runs the full matrix, because `release.yml` expects one wheel f
 
 == Change the selection
 
-Edit `PULL_REQUEST_LEGS` in `scripts/select_matrix.py`. The test `tests/test_select_matrix.py` fixes the full matrix at 20 combinations, so a change that shrinks it fails. When you add a Python version, add it to `PYTHONS` in the script and to the classifiers in `pyproject.toml`. A test checks that both lists are the same.
+Edit `PULL_REQUEST_LEGS` in `scripts/select_matrix.py`. The test `tests/test_select_matrix.py` fixes the full matrix at 16 combinations, so a change that shrinks it fails. When you add a Python version, add it to `PYTHONS` in the script and to the classifiers in `pyproject.toml`. A test checks that both lists are the same, and that `requires-python` is the oldest of them. When you drop one, remove it from the same places and update the counts in the test.

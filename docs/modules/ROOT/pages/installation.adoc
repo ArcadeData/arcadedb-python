@@ -24,7 +24,7 @@ The package is self-contained. It carries a Java 25 runtime for its platform, so
 
 == Requirements
 
-* Python 3.10 to 3.14. The wheels' CI runs all five versions on every supported platform for `main`, the nightly run and each release. A pull request runs a smaller selection (xref:development/ci.adoc[Continuous integration]).
+* Python 3.11 to 3.14. The wheels' CI runs all four versions on every supported platform for `main`, the nightly run and each release. A pull request runs a smaller selection (xref:development/ci.adoc[Continuous integration]).
 * One of the four platforms below.
 
 Every wheel is platform-specific, built on a native runner of its platform, and carries a JRE for that platform, so pip needs no hint to pick the right one.
