@@ -34,7 +34,7 @@ classifiers = [
 ]
 
 dependencies = [
-    "jpype1>=1.5.0",
+    "jpype1>=1.7.1",
 ]
 
 [tool.uv]
