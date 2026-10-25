@@ -39,6 +39,8 @@ if sys.platform == "win32":
 if BACKEND != "native":
     # Java -> Python upcalls (Python functions in SQL) exist on the native build only
     collect_ignore.append("test_native_udf.py")
+    # the columnar insert's stored records are compared between the JSON and the columnar entry points of the native library
+    collect_ignore.append("test_native_columnar_insert.py")
     # the native library's start-up output (#477) can only be checked with the native library loaded
     collect_ignore.append("test_native_startup_runtime.py")
     # the XML entity limits of an import, lifted by the native glue (the JVM build lifts them with JVM system properties)
