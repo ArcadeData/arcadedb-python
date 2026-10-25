@@ -23,6 +23,22 @@ COLP, ROWS, MANY = (
 )
 
 
+@pytest.fixture(autouse=True)
+def _one_chunk_per_commit(monkeypatch):
+    """The crossing counts below are for one chunk of up to 10,000 rows, so these tests run insert_many with its old commit_every of
+    10,000 (the native default is 1000, which cuts a 2,500-row load into three crossings). The tests are about the columnar entry
+    points, not the default; tests/test_native_ingest_defaults.py covers the default."""
+    from arcadedb._native import database as native_database
+
+    cls = next(
+        c
+        for c in vars(native_database).values()
+        if isinstance(c, type) and "insert_many" in vars(c)
+    )
+    defaults = cls.insert_many.__defaults__
+    monkeypatch.setattr(cls.insert_many, "__defaults__", (10_000,) + defaults[1:])
+
+
 class Spy:
     def __init__(self, monkeypatch):
         self.calls = []

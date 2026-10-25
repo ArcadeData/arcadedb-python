@@ -21,6 +21,9 @@ from .codec import encode_params, json_native, loads, row_default
 _LAZY_COMMAND_ROWS = os.environ.get("ARCADEDB_NATIVE_LAZY_CMD", "1") != "0"
 _BINARY_REPLY = os.environ.get("ARCADEDB_NATIVE_BIN_REPLY", "1") != "0"
 _INSERT_MANY_CHUNK = 10_000
+# rows per transaction when insert_many gets no commit_every: 1000 on the native build (laptop A/B, smaller commits copy less in the
+# young GC and ran faster); the JVM build keeps 10,000 (core.py), which is not measured
+DEFAULT_INSERT_MANY_COMMIT_EVERY = 1000
 _XML_LIMIT_ERROR = re.compile(r"JAXP0001000[134]")  # the JDK's XML entity limits
 _XML_LIMIT_HINT = (
     " The JDK's XML entity limits stopped this import. Pass disable_xml_limits=True to import_documents to lift them for this"
@@ -682,14 +685,20 @@ class NativeDatabase:
             raise ArcadeDBError(f"Failed to lookup by key in '{type_name}': {e}") from e
 
     def insert_many(
-        self, type_name: str, rows, commit_every: int = 10_000, parallel: bool = False
+        self,
+        type_name: str,
+        rows,
+        commit_every: int = DEFAULT_INSERT_MANY_COMMIT_EVERY,
+        parallel: bool = False,
     ) -> int:
-        """Bulk insert. Rows go in chunks of 10,000, one crossing per chunk. A chunk of rows with the same keys whose columns each hold one
+        """Bulk insert. Rows go in chunks of at most 10,000 (a chunk never crosses a commit), one crossing per chunk. A chunk of rows with the same keys whose columns each hold one
         value type (ints, floats, bools, strings, equal-length float lists for an ``ARRAY_OF_FLOATS`` property; None is a null) goes as
         columns by address (``arcadedb_n_insert_colp``, no JSON text); any other chunk goes as one JSON text (``arcadedb_n_insert_rows``:
         a newDocument/set/save loop inside the image, as ``DocumentBatcher.insertManyJson`` on the JPype path); a chunk with a value the
         JSON text cannot carry unchanged goes through ``INSERT INTO t CONTENT :row`` for each row, in one crossing. Inside the caller's
-        transaction nothing is committed; otherwise every ``commit_every`` rows are one transaction (0: all rows in one).
+        transaction nothing is committed; otherwise every ``commit_every`` rows are one transaction (0: all rows in one). The default is 1000 on
+        this build (the JVM build's is 10,000). Rows that are already committed stay committed if a later chunk fails, so a smaller
+        ``commit_every`` keeps fewer rows of a failed load (only the transaction that was open is rolled back).
         """
         self._check_not_closed()
         if parallel:
@@ -872,7 +881,10 @@ class NativeDatabase:
         return Document(self, type_name)
 
     def graph_batch(self, **options):
-        """A GraphBatch for bulk graph loads (keywords as :meth:`Database.graph_batch`)."""
+        """A GraphBatch for bulk graph loads (keywords as :meth:`Database.graph_batch`). ``commit_every`` defaults to 1000 on this build
+        (the JVM build leaves it unset: one commit per flush); ``commit_every=0`` gives one commit per flush here too, and an explicit value
+        wins. It is also the number of rows ``create_vertices`` sends, and commits, per call into the image.
+        """
         from .extras import NativeGraphBatch
 
         self._check_not_closed()
