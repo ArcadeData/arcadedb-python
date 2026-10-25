@@ -10,16 +10,16 @@ build-backend = "setuptools.build_meta"
 # scripts/extract_version.py
 
 [project]
-name = "arcadedb"
+name = "arcadedb-jvm"
 version = "0.0.0"
-description = "ArcadeDB embedded multi-model database with bundled JRE - no Java installation required"
+description = "ArcadeDB embedded multi-model database, JVM build with a bundled JRE (no Java installation needed). The native build is the package arcadedb; both import as arcadedb"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "Apache-2.0" }
 authors = [
     { name = "Taewoon Kim", email = "taewoon@humem.ai" }
 ]
-keywords = ["database", "graph", "document", "multi-model", "nosql", "arcadedb", "embedded", "jre", "java"]
+keywords = ["database", "graph", "document", "multi-model", "nosql", "arcadedb", "embedded", "jre", "java", "jvm"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -110,7 +110,7 @@ pandas = [
 ]
 # Optional: ResultSet.to_polars() and insert_dataframe() with a Polars frame. Both go
 # through Arrow, so pyarrow comes with it. insert_dataframe() with a pandas frame needs
-# `pip install 'arcadedb[arrow,pandas]'` (the pandas extra alone has no pyarrow,
+# `pip install 'arcadedb-jvm[arrow,pandas]'` (the pandas extra alone has no pyarrow,
 # because to_dataframe() does not need it).
 polars = [
     "polars>=1.0",

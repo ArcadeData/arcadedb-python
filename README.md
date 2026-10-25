@@ -1,7 +1,7 @@
 # ArcadeDB Python
 
-[![PyPI](https://img.shields.io/pypi/v/arcadedb)](https://pypi.org/project/arcadedb/)
-[![Python versions](https://img.shields.io/pypi/pyversions/arcadedb)](https://pypi.org/project/arcadedb/)
+[![PyPI](https://img.shields.io/pypi/v/arcadedb-jvm)](https://pypi.org/project/arcadedb-jvm/)
+[![Python versions](https://img.shields.io/pypi/pyversions/arcadedb-jvm)](https://pypi.org/project/arcadedb-jvm/)
 [![Tests](https://github.com/ArcadeData/arcadedb-python/actions/workflows/test-python-bindings.yml/badge.svg)](https://github.com/ArcadeData/arcadedb-python/actions/workflows/test-python-bindings.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](https://github.com/ArcadeData/arcadedb-python/blob/main/LICENSE)
 
@@ -10,7 +10,7 @@ Python bindings for [ArcadeDB](https://arcadedb.com), the multi-model database (
 ## Install
 
 ```bash
-pip install arcadedb   # or: uv add arcadedb
+pip install arcadedb-jvm   # or: uv add arcadedb-jvm
 ```
 
 This package was published as arcadedb-embedded until 26.10.x; install arcadedb now.

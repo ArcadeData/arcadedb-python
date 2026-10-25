@@ -22,7 +22,7 @@ Workflow covered:
 Requirements:
 - numpy (pip install numpy)
 - pyarrow, optional, only for the to_arrow section
-  (pip install 'arcadedb[arrow]')
+  (pip install 'arcadedb-jvm[arrow]')
 """
 
 from __future__ import annotations
@@ -167,7 +167,7 @@ def nulls_to_arrow(db, n_rows: int) -> None:
     if table is None:
         print(
             "to_arrow   : pyarrow not installed, skipping "
-            "(pip install 'arcadedb[arrow]')"
+            "(pip install 'arcadedb-jvm[arrow]')"
         )
         return
 

@@ -7,10 +7,10 @@ nav:
 asciidoc:
   attributes:
     # Package names. Every page takes them from here.
-    pkg-name: arcadedb
+    pkg-name: arcadedb-jvm
     import-name: arcadedb
     import-stmt: import arcadedb
-    native-pkg-name: arcadedb-native
+    native-pkg-name: arcadedb
     native-import-name: arcadedb
     # Other names a reader meets on PyPI (the pages that compare packages use these).
     jvm-pkg-name: arcadedb-jvm
@@ -19,4 +19,4 @@ asciidoc:
     community-driver-pkg-name: arcadedb-python
     community-repo-url: https://github.com/stevereiner/arcadedb-python
     repo-url: https://github.com/ArcadeData/arcadedb-python
-    pypi-url: https://pypi.org/project/arcadedb/
+    pypi-url: https://pypi.org/project/arcadedb-jvm/

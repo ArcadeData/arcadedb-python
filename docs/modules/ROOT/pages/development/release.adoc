@@ -1,5 +1,5 @@
 = Release
-:description: How a release of the arcadedb package is numbered, tagged, checked and published to PyPI.
+:description: How a release of the arcadedb-jvm package is numbered, tagged, checked and published to PyPI.
 
 A release is a Git tag. Pushing the tag starts the `release.yml` workflow. It builds the wheels, tests them, checks them and publishes them to PyPI with trusted publishing. The workflow stores no token.
 
@@ -37,7 +37,7 @@ The base is the version of the engine. The workflow compares the tag with the ve
 
 [source,bash]
 ----
-python3 scripts/check_version.py 26.11.1.dev0 --git-remote origin --pypi arcadedb
+python3 scripts/check_version.py 26.11.1.dev0 --git-remote origin --pypi arcadedb-jvm
 ----
 
 It exits 0 when the version is the correct next one, 1 when it is not, and 2 when a source cannot be read. Exit 2 is a failure, not a pass: the check fails closed.

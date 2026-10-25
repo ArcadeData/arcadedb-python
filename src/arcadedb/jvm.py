@@ -91,7 +91,7 @@ def _extract_runtime_resource(resource_name: str) -> Path:
     project_dir = _project_dir()
     dist_dir = project_dir / "dist"
     wheels = sorted(
-        dist_dir.glob("arcadedb-*.whl"),
+        dist_dir.glob("arcadedb_jvm-*.whl"),
         key=lambda p: p.stat().st_mtime_ns,
         reverse=True,
     )

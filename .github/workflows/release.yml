@@ -8,20 +8,17 @@ name: Release to PyPI
 #
 # PyPI keys a trusted publisher on this FILENAME and on the job's environment, so do not rename
 # either without changing the publisher on PyPI at the same time:
-#   project arcadedb         <- ArcadeData/arcadedb-python, workflow release.yml, environment pypi
-#   project arcadedb-native  <- same repository and workflow, environment pypi-native (not used yet)
+#   project arcadedb-jvm     <- ArcadeData/arcadedb-python, workflow release.yml, environment pypi-jvm
+#   project arcadedb         <- ArcadeData/arcadedb-python, workflow native.yml, environment pypi (the native build)
 # Both GitHub environments only accept deployments from tags that match [0-9]*.
 #
 # Nothing here stores a token: the publish job authenticates with PyPI trusted publishing (OIDC),
 # and only that job has the id-token permission.
 #
-# pyproject.toml names the distribution arcadedb (tracker #19).
-# The guard in the publish job refuses to publish anything that is not `arcadedb`, so this workflow
-# cannot publish another distribution from here by accident.
-#
-# TODO (native-wheel port, tracker #19): a second publish job for arcadedb-native, in environment
-# pypi-native with its own id-token permission and the same kind of guard (distribution name must
-# be arcadedb-native). There is no native job yet.
+# pyproject.toml names the distribution arcadedb-jvm (tracker #19). The wheel file is arcadedb_jvm-<version>-...
+# (PEP 427 turns the dash into an underscore). The guard in the publish job refuses to publish anything
+# that is not `arcadedb-jvm`, so this workflow cannot publish the native `arcadedb` by accident; the
+# native build has its own workflow, native.yml, with the same kind of guard.
 
 on:
   push:
@@ -38,7 +35,7 @@ concurrency:
 
 env:
   # The only distribution this workflow may publish. See the guard in the publish job.
-  DIST_NAME: arcadedb
+  DIST_NAME: arcadedb-jvm
 
 jobs:
   # The tag must be a bare PEP 440 version of the allowed kinds, and the next number of its base.
@@ -250,7 +247,7 @@ jobs:
     needs: [validate-version, verify-wheels]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
-    environment: pypi
+    environment: pypi-jvm
     permissions:
       id-token: write
     steps:
@@ -260,7 +257,7 @@ jobs:
           name: release-dist
           path: dist/
 
-      # GUARD: this workflow publishes the distribution `arcadedb` and nothing else. A wheel with
+      # GUARD: this workflow publishes the distribution `arcadedb-jvm` and nothing else. A wheel with
       # another name stops the job here, before anything reaches PyPI. Two checks, so neither can drift alone:
       # the wheel file name and the Name field of its METADATA, both must be DIST_NAME.
       - name: Refuse unless every wheel is the distribution ${{ env.DIST_NAME }}

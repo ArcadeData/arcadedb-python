@@ -270,7 +270,7 @@ echo -e "   Build Method: ${YELLOW}${BUILD_METHOD}${NC}"
 echo ""
 
 # Package configuration
-PACKAGE_NAME="arcadedb"
+PACKAGE_NAME="arcadedb-jvm"
 DESCRIPTION="ArcadeDB embedded multi-model database with bundled JRE - no Java installation required"
 
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -447,10 +447,10 @@ def _is_wanted(wheel_path):
 
 
 _new = [Path(p) for p in os.environ.get("NEW_WHEELS", "").split() if p.endswith(".whl")]
-wheels = _new or sorted((p for p in Path("dist").glob("arcadedb-*.whl") if _is_wanted(p)),
+wheels = _new or sorted((p for p in Path("dist").glob("arcadedb_jvm-*.whl") if _is_wanted(p)),
                         key=lambda p: p.stat().st_mtime)
 if not wheels:
-    print(f"❌ no arcadedb-{_want} wheel in dist/", file=sys.stderr)
+    print(f"❌ no arcadedb_jvm-{_want} wheel in dist/", file=sys.stderr)
     sys.exit(1)
 wheel = wheels[-1]
 if not _is_wanted(wheel):

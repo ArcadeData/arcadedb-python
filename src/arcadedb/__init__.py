@@ -15,7 +15,7 @@ directly in the Python process using JPype.
 try:
     from importlib.metadata import version as _dist_version
 
-    __version__ = _dist_version("arcadedb")
+    __version__ = _dist_version("arcadedb-jvm")
 except Exception:  # not installed: fall back to the build-time file
     try:
         from ._version import __version__

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-`arcadedb`: Python bindings for ArcadeDB that run the Java engine in-process through JPype. Each wheel is platform-specific and bundles the ArcadeDB jars plus a jlink'd Java 25 JRE, so users need no Java install. Moved here from `bindings/python` in ArcadeData/arcadedb (history kept; issue numbers in older commit messages refer to that repo).
+This repository builds two distributions that both import as `arcadedb`: `arcadedb` (the native build: the engine as a GraalVM native-image shared library loaded with ctypes) and `arcadedb-jvm` (the JVM build: the Java engine in-process through JPype). `arcadedb-jvm` is described first below. Each JVM wheel is platform-specific and bundles the ArcadeDB jars plus a jlink'd Java 25 JRE, so users need no Java install. Moved here from `bindings/python` in ArcadeData/arcadedb (history kept; issue numbers in older commit messages refer to that repo).
 
 ## Working rules
 

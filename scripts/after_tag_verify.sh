@@ -18,7 +18,7 @@ RUN="${3:-}"
 ENG_SHA="${4:-}"
 ENG_BUILD="${5:-}"
 R=ArcadeData/arcadedb-python
-DIST=arcadedb
+DIST=arcadedb-jvm
 W="${WORK:-$(mktemp -d "${TMPDIR:-$HOME}/after-tag-XXXXXX")}"
 FAILS=0
 pass() { printf 'PASS  %s\n' "$*"; }

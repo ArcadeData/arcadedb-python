@@ -260,7 +260,7 @@ jobs:
       - name: Install ArcadeDB Python bindings
         shell: bash
         run: |
-          uv pip install --system dist/arcadedb-*.whl
+          uv pip install --system dist/arcadedb_jvm-*.whl
 
       - name: Install example dependencies
         shell: bash

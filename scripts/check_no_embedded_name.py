@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Fail when the old package name comes back.
 
-The distribution is `arcadedb` (JVM wheel) and `arcadedb-native` (native wheel), and both import
+The distributions are `arcadedb` (native wheel) and `arcadedb-jvm` (JVM wheel), and both import
 as `arcadedb`. The names `arcadedb_embedded` and `arcadedb-embedded` belong to the old PyPI
 packages, which get a deprecation shim from the humemai repository, not from this one. This script
 scans every tracked (and every untracked, not ignored) text file and every path in the repository
@@ -17,7 +17,7 @@ What the allowlist lets through, and why:
   documents under docs/superpowers/, a changelog, and this script.
 * References to issues of the old repository, written `humemai/arcadedb-embedded-python#123`. They
   point at real threads, so they keep their text.
-* The sentence "This package was published as arcadedb-embedded until 26.10.x; install arcadedb now."
+* The sentence "This package was published as arcadedb-embedded until 26.10.x; install arcadedb or arcadedb-jvm now."
   and lines that say "formerly arcadedb-embedded".
 * Any line that carries the marker `allow-old-name`, for the rare mention that needs it.
 
