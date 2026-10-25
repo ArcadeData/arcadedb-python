@@ -84,6 +84,8 @@ The two packages release from two workflows with two PyPI environments:
 
 The version rule above holds for both packages.
 
+`arcadedb` has one trusted publisher on PyPI (`native.yml` with the environment `pypi`) for dev, final and post releases. There is no separate pre-release environment; the readiness gate below is what keeps a final release back.
+
 * A native pre-release (`26.11.1.devN`) publishes when the builds on `linux-x86_64`, `linux-aarch64` and `macos-arm64` pass.
 * A FINAL native release (`A.B.C` or `A.B.C.postN`) needs two more things:
 ** The repository variable `ARCADEDB_NATIVE_READINESS_BAR_MET` is `true`. A maintainer sets it after checking the readiness bar: the correctness fixes are merged; the full suite is green on every platform, Windows included, and on Python 3.11 to 3.14; the fault and concurrency probes pass; and the documented API raises no `NotOnNativeYet`.

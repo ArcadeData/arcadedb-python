@@ -21,7 +21,7 @@
 # besides the counted NOTYET and NA-JVM kinds (tests/conftest.py).
 #
 # Publishing (tags only; PyPI trusted publishing, no token; a trusted publisher on the PyPI project `arcadedb` for this workflow file):
-#   A.B.C.devN       environment `pypi-prerelease`. Needs the parity run of linux-x86_64, linux-aarch64 and macos-arm64 on every Python.
+#   A.B.C.devN       environment `pypi` (one trusted publisher for dev, final and post releases). Needs the parity run of linux-x86_64, linux-aarch64 and macos-arm64 on every Python.
 #                    Windows is published too when it passed, and is informational otherwise.
 #   A.B.C, A.B.C.postN  environment `pypi`, ONLY when the readiness bar is met: the repository variable ARCADEDB_NATIVE_READINESS_BAR_MET
 #                    is `true` (a maintainer sets it after checking the correctness fixes and the fault and concurrency probes), the parity run
@@ -641,7 +641,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     environment:
-      name: pypi-prerelease
+      name: pypi
       url: https://pypi.org/project/arcadedb/
     permissions:
       id-token: write # PyPI trusted publishing (OIDC); no API token anywhere
