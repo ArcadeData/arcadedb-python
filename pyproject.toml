@@ -58,7 +58,7 @@ test = [
     "adbc-driver-postgresql>=1.12",  # Postgres wire, Arrow ADBC (26.10.1+)
     "redis>=5.0",            # Redis wire
     "neo4j>=5.0",            # Bolt
-    "pyarrow>=23.0.1",       # ResultSet.to_arrow(); <23.0.1 has PYSEC-2026-113
+    "pyarrow>=26.0.0",       # ResultSet.to_arrow(); <23.0.1 has PYSEC-2026-113
     "polars>=1.0",           # ResultSet.to_polars(), insert_dataframe() with a Polars frame
     # ResultSet.to_dataframe(). Absent until 2026-08-04, which meant its two
     # tests called importorskip("pandas") and skipped in every CI run this
@@ -96,7 +96,7 @@ vector = [
 # pyarrow is only needed to wrap those buffers. Without it to_arrow() returns
 # None and callers fall back to to_columns().
 arrow = [
-    "pyarrow>=23.0.1",
+    "pyarrow>=26.0.0",
     "numpy>=1.26.4",
 ]
 # Optional: ResultSet.to_dataframe(). Shipped and documented long before this
@@ -119,7 +119,7 @@ pandas = [
 # because to_dataframe() does not need it).
 polars = [
     "polars>=1.0",
-    "pyarrow>=23.0.1",
+    "pyarrow>=26.0.0",
     "numpy>=1.26.4",
 ]
 examples = [
