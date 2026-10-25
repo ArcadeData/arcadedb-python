@@ -7,12 +7,12 @@
 #
 # REQUIRED BUILD ARGS (passed from build.sh):
 #   PYTHON_VERSION - Python version for wheel (e.g., 3.11, 3.12, 3.13, 3.14)
-#   PACKAGE_NAME - always: arcadedb
+#   PACKAGE_NAME - always: arcadedb-jvm
 #   PACKAGE_DESCRIPTION - package description
 #   TARGET_PLATFORM - Linux target platform for bundled JRE (linux-x64, linux-arm64)
 
 ARG PYTHON_VERSION=3.12
-ARG PACKAGE_NAME=arcadedb
+ARG PACKAGE_NAME=arcadedb-jvm
 ARG PACKAGE_DESCRIPTION="ArcadeDB embedded multi-model database with bundled JRE - no Java installation required"
 # Deterministic placeholder. The wrapper build script must pass the real ArcadeDB tag.
 ARG ARCADEDB_TAG=build-arg-required

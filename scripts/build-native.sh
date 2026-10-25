@@ -25,7 +25,7 @@ JRE_MODULE_EXCLUSIONS_FILE="$SCRIPT_DIR/jre_module_exclusions.txt"
 
 # Parameters
 PLATFORM="${1:-}"
-PACKAGE_NAME="${2:-arcadedb}"
+PACKAGE_NAME="${2:-arcadedb-jvm}"
 PACKAGE_DESCRIPTION="${3:-ArcadeDB embedded multi-model database with bundled JRE}"
 ARCADEDB_TAG="${4:-}"
 BUILD_VERSION="${5:-}"
@@ -378,7 +378,7 @@ WHEEL_FILE=$(ls "$DIST_DIR"/*.whl | head -n1)
 if [[ -n "$WHEEL_FILE" ]]; then
     # Extract components from wheel filename
     WHEEL_NAME=$(basename "$WHEEL_FILE")
-    # arcadedb-25.10.1-py3-none-any.whl -> arcadedb-25.10.1-py3-none-PLAT_NAME.whl
+    # arcadedb_jvm-25.10.1-py3-none-any.whl -> arcadedb_jvm-25.10.1-py3-none-PLAT_NAME.whl
     NEW_WHEEL_NAME=$(echo "$WHEEL_NAME" | sed "s|-py3-none-any\.whl|-py3-none-${PLAT_NAME}.whl|")
     if [[ "$WHEEL_NAME" != "$NEW_WHEEL_NAME" ]]; then
         mv "$WHEEL_FILE" "$DIST_DIR/$NEW_WHEEL_NAME"

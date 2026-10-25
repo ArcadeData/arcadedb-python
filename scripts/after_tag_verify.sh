@@ -1,6 +1,6 @@
 #!/bin/bash
 # After the tag push: verify the release end to end. Read-only against GitHub and PyPI (no writes).
-# Ported from humemai/arcadedb-embedded-python#479 and adapted to .github/workflows/release.yml.
+# Ported from humemai/arcadedb-embedded-python#479 and adapted to .github/workflows/release-jvm.yml (the arcadedb-jvm release; the artifact it reads is release-dist).
 #
 # usage: after_tag_verify.sh <version> <previous-version|-> [<release-workflow-run-id>] [<expected-engine-jar-sha256> <expected-engine-buildNumber>]
 # example: after_tag_verify.sh 26.11.1 26.10.1 <run-id>
@@ -18,7 +18,7 @@ RUN="${3:-}"
 ENG_SHA="${4:-}"
 ENG_BUILD="${5:-}"
 R=ArcadeData/arcadedb-python
-DIST=arcadedb
+DIST=arcadedb-jvm
 W="${WORK:-$(mktemp -d "${TMPDIR:-$HOME}/after-tag-XXXXXX")}"
 FAILS=0
 pass() { printf 'PASS  %s\n' "$*"; }
@@ -64,7 +64,7 @@ want={u["filename"].replace(pv,v) for u in prev["urls"] if kept(u["filename"])}
 have={u["filename"]:u for u in new["urls"]}
 gaps=0
 if pv=="-":
-    # No release to compare with: one wheel per supported Python version and platform, as release.yml counts them.
+    # No release to compare with: one wheel per supported Python version and platform, as release-jvm.yml counts them.
     pythons=[c.rsplit(".",1)[1] for c in project["classifiers"] if c.startswith("Programming Language :: Python :: 3.")]
     plats=[r"manylinux.*x86_64",r"manylinux.*aarch64",r"macosx.*arm64",r"win_amd64"]
     for py in pythons:

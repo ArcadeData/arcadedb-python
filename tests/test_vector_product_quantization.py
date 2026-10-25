@@ -107,10 +107,7 @@ def _search(db, query, options="{ efSearch: 100 }", k=K):
 
 
 def _metadata(db):
-    index = db.schema.get_index_by_name("PqDoc[embedding]")
-    if "TypeIndex" in index.getClass().getName():
-        index = index.getSubIndexes().get(0)
-    return index.getMetadata()
+    return db.schema.get_vector_index("PqDoc", "embedding").get_metadata()
 
 
 def _recall(db, vectors, queries, options):
@@ -137,12 +134,12 @@ class TestProductQuantizationSql:
 
         meta = _metadata(test_db)
 
-        assert str(meta.quantizationType) == "PRODUCT"
-        assert int(meta.rerankOversample) == 30
-        assert int(meta.pqTrainingLimit) == 1500
-        assert bool(meta.fusedPQ) is False
-        assert int(meta.pqSubspaces) == 8
-        assert int(meta.pqClusters) == 64
+        assert meta["quantization"] == "PRODUCT"
+        assert meta["rerank_oversample"] == 30
+        assert meta["pq_training_limit"] == 1500
+        assert meta["fused_pq"] is False
+        assert meta["pq_subspaces"] == 8
+        assert meta["pq_clusters"] == 64
 
     def test_rerank_oversample_defaults_to_ten_and_fused_pq_to_off(
         self, test_db, corpus, has_pq_rerank
@@ -152,11 +149,11 @@ class TestProductQuantizationSql:
         meta = _metadata(test_db)
 
         if not has_pq_rerank:
-            assert not hasattr(meta, "rerankOversample")
+            assert "rerank_oversample" not in meta
             return
 
-        assert int(meta.rerankOversample) == 10
-        assert bool(meta.fusedPQ) is False
+        assert meta["rerank_oversample"] == 10
+        assert meta["fused_pq"] is False
 
     def test_negative_rerank_oversample_is_refused(self, test_db, has_pq_rerank):
         test_db.command("sql", "CREATE DOCUMENT TYPE PqDoc")
@@ -249,7 +246,7 @@ class TestProductQuantizationSql:
 
         _build(test_db)
 
-        assert bool(_metadata(test_db).fusedPQ) is True
+        assert _metadata(test_db)["fused_pq"] is True
         assert len(_search(test_db, queries[0])) == K
 
 

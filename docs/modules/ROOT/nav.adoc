@@ -1,10 +1,12 @@
 * xref:index.adoc[ArcadeDB Python]
 * xref:installation.adoc[Installation]
-* xref:packages.adoc[Which package for which mode]
+* xref:which-package.adoc[Which package?]
 * xref:quickstart.adoc[Quickstart]
 * How-to
 ** xref:how-to/databases-and-queries.adoc[Databases and queries]
 ** xref:how-to/concurrency.adoc[Concurrency, processes and crashes]
+** xref:how-to/logs.adoc[Where the logs go]
+** xref:how-to/bulk-loads.adoc[Bulk loads and commit size]
 * Development
 ** xref:development/ci.adoc[Continuous integration]
 ** xref:development/release.adoc[Release]

@@ -57,7 +57,7 @@ def test_max_glibc_in_dir_picks_highest(tmp_path: Path) -> None:
 
 def test_parse_wheel_tag_extracts_version_and_arch(tmp_path: Path) -> None:
     verifier = _load_verifier()
-    wheel = tmp_path / "arcadedb-26.4.2-py3-none-manylinux_2_34_x86_64.whl"
+    wheel = tmp_path / "arcadedb_jvm-26.4.2-py3-none-manylinux_2_34_x86_64.whl"
     wheel.write_bytes(b"")
 
     glibc, arch = verifier.parse_wheel_tag(wheel)
@@ -73,7 +73,7 @@ def test_main_succeeds_when_tag_matches(
     jre_dir.mkdir()
     _make_elf_with_glibc_symbols(jre_dir / "libjvm.so", ["2.17", "2.34"])
 
-    wheel = tmp_path / "arcadedb-26.4.2-py3-none-manylinux_2_34_x86_64.whl"
+    wheel = tmp_path / "arcadedb_jvm-26.4.2-py3-none-manylinux_2_34_x86_64.whl"
     wheel.write_bytes(b"")
 
     rc = _run_main(verifier, [str(wheel), str(jre_dir)])
@@ -90,7 +90,7 @@ def test_main_fails_when_tag_higher_than_jre(
     jre_dir.mkdir()
     _make_elf_with_glibc_symbols(jre_dir / "libjvm.so", ["2.17", "2.34"])
 
-    wheel = tmp_path / "arcadedb-26.4.2-py3-none-manylinux_2_35_x86_64.whl"
+    wheel = tmp_path / "arcadedb_jvm-26.4.2-py3-none-manylinux_2_35_x86_64.whl"
     wheel.write_bytes(b"")
 
     rc = _run_main(verifier, [str(wheel), str(jre_dir)])
@@ -109,7 +109,7 @@ def test_main_fails_when_tag_lower_than_jre(
     jre_dir.mkdir()
     _make_elf_with_glibc_symbols(jre_dir / "libjvm.so", ["2.17", "2.36"])
 
-    wheel = tmp_path / "arcadedb-26.4.2-py3-none-manylinux_2_28_x86_64.whl"
+    wheel = tmp_path / "arcadedb_jvm-26.4.2-py3-none-manylinux_2_28_x86_64.whl"
     wheel.write_bytes(b"")
 
     rc = _run_main(verifier, [str(wheel), str(jre_dir)])
@@ -151,7 +151,7 @@ def test_dunder_version_matches_distribution_metadata():
     import arcadedb
 
     try:
-        expected = dist_version("arcadedb")
+        expected = dist_version("arcadedb-jvm")
     except PackageNotFoundError:  # source checkout, nothing to compare against
         return
     assert arcadedb.__version__ == expected

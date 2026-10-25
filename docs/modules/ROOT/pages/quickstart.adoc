@@ -3,7 +3,22 @@
 
 // Source: bindings docs getting-started/quickstart.md.
 
-This page builds a small database from scratch. You need the package from xref:installation.adoc[Installation]. Each script runs against the published `{pkg-name}` wheel; the output shown is what it printed.
+This page builds a small database from scratch. You need one of the two packages from xref:installation.adoc[Installation]. Both import as `{import-name}`.
+
+[cols="1,2,2"]
+|===
+| Package | Install | Pick this if
+
+| `{native-pkg-name}` (native, the default)
+| `pip install {native-pkg-name}`
+| Scripts, notebooks, tests, CLIs, serverless functions, agents.
+
+| `{jvm-pkg-name}` (JVM)
+| `pip install {jvm-pkg-name}`
+| Heavy, long-running loads, or the Java-object APIs.
+|===
+
+See xref:which-package.adoc[Which package?] if you are not sure. The scripts on this page ran against the published `{jvm-pkg-name}` wheel, and the output shown is what it printed. The code is the same for both packages. The wording of an error message can differ on `{native-pkg-name}`.
 
 == Embedded mode
 
@@ -136,7 +151,10 @@ with arcadedb.create_server("./databases", root_password="password123") as serve
 HTTP port: 2480
 ----
 
-The server runs only while your Python process runs. From 26.11.1 it also serves the Studio web UI, and `get_studio_url()` returns its address. The earlier 26.10.x wheels do not contain Studio: see the note in xref:installation.adoc#what-is-included[What is included]. See xref:index.adoc#embedded-vs-http[Embedded bindings or the HTTP driver] for when to run the regular ArcadeDB server instead.
+The server runs only while your Python process runs. See xref:index.adoc#embedded-vs-http[Embedded bindings or the HTTP driver] for when to run the regular ArcadeDB server (the official Docker image `arcadedata/arcadedb`) instead.
+
+// REMOVE WHEN: the old arcadedb-embedded* shims are retired and two releases have shipped with the two-package layout allow-old-name
+In the `{jvm-pkg-name}` wheels from 26.11.1 the server also serves the Studio web UI, and `get_studio_url()` returns its address. The earlier 26.10.x wheels do not contain Studio: see the note in xref:installation.adoc#what-is-included[What is included].
 
 == Next steps
 

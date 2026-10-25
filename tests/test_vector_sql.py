@@ -7,7 +7,6 @@ Tests cover:
 
 import math
 
-import jpype.types as jtypes
 import pytest
 
 import arcadedb
@@ -470,6 +469,17 @@ class TestVectorSQL:
 
     def test_vector_neighbors_on_native_int8_storage_sql(self, test_db):
         """Verify that vectorNeighbors works against native INT8-encoded storage."""
+        from arcadedb._native import enabled
+
+        # a BINARY value and a float[] parameter: Java arrays on the JPype path, bytes and a float32 array on the native one
+        if enabled():
+            import numpy as np
+
+            to_bytes = bytes
+            to_floats = lambda v: np.array(v, dtype=np.float32)  # noqa: E731
+        else:
+            to_bytes = arcadedb.to_java_byte_array
+            to_floats = arcadedb.to_java_float_array
         test_db.command("sql", "CREATE VERTEX TYPE SqlNativeInt8SearchDoc")
         test_db.command("sql", "CREATE PROPERTY SqlNativeInt8SearchDoc.id STRING")
         test_db.command("sql", "CREATE PROPERTY SqlNativeInt8SearchDoc.vec BINARY")
@@ -492,19 +502,19 @@ class TestVectorSQL:
                 "sql",
                 "INSERT INTO SqlNativeInt8SearchDoc SET id = ?, vec = ?",
                 "doc_a",
-                arcadedb.to_java_byte_array([127, 0, 0, 0]),
+                to_bytes([127, 0, 0, 0]),
             )
             test_db.command(
                 "sql",
                 "INSERT INTO SqlNativeInt8SearchDoc SET id = ?, vec = ?",
                 "doc_b",
-                arcadedb.to_java_byte_array([120, 10, 0, 0]),
+                to_bytes([120, 10, 0, 0]),
             )
             test_db.command(
                 "sql",
                 "INSERT INTO SqlNativeInt8SearchDoc SET id = ?, vec = ?",
                 "doc_c",
-                arcadedb.to_java_byte_array([0, 127, 0, 0]),
+                to_bytes([0, 127, 0, 0]),
             )
 
         rows = test_db.query(
@@ -514,7 +524,7 @@ class TestVectorSQL:
                 "(SELECT expand(vectorNeighbors('SqlNativeInt8SearchDoc[vec]', ?, 2))) "
                 "ORDER BY distance"
             ),
-            arcadedb.to_java_float_array([1.0, 0.0, 0.0, 0.0]),
+            to_floats([1.0, 0.0, 0.0, 0.0]),
         ).to_list()
 
         assert [row.get("id") for row in rows] == ["doc_a", "doc_b"]
@@ -554,7 +564,7 @@ class TestVectorSQL:
                 "(SELECT expand(`vector.sparseNeighbors`('SparseDoc[tokens,weights]', ?, ?, ?))) "
                 "ORDER BY score DESC"
             ),
-            jtypes.JArray(jtypes.JInt)([5]),
+            arcadedb.to_java_int_array([5]),
             arcadedb.to_java_float_array([1.0]),
             5,
         ).to_list()
@@ -587,17 +597,16 @@ class TestVectorSQL:
             """,
         )
 
-        java_index = self._get_primary_sql_vector_index(test_db, "SqlMetaDoc[vec]")
-        metadata = java_index.getMetadata()
+        metadata = test_db.schema.get_vector_index("SqlMetaDoc", "vec").get_metadata()
 
-        assert metadata.dimensions == 4
-        assert str(metadata.similarityFunction) == "COSINE"
-        assert str(metadata.quantizationType) == "INT8"
-        assert metadata.idPropertyName == "slug"
-        assert metadata.storeVectorsInGraph is True
-        assert metadata.addHierarchy is True
-        assert metadata.graphBuildCacheSize == 456
-        assert metadata.mutationsBeforeRebuild == 789
+        assert metadata["dimensions"] == 4
+        assert metadata["similarity_function"] == "COSINE"
+        assert metadata["quantization"] == "INT8"
+        assert metadata["id_property"] == "slug"
+        assert metadata["store_vectors_in_graph"] is True
+        assert metadata["add_hierarchy"] is True
+        assert metadata["graph_build_cache_size"] == 456
+        assert metadata["mutations_before_rebuild"] == 789
 
         # locationCacheSize was removed in #5559/#5568 and the engine now
         # rejects it outright, so a SQL METADATA block that still carries it
@@ -1255,12 +1264,10 @@ class TestVectorSearchOptionsSql:
     def test_add_hierarchy_defaults_differ_between_sql_and_python(self, test_db):
         """SQL follows the engine (flat graph); create_vector_index() builds a hierarchy."""
         self._make_docs(test_db)
-        meta = self._metadata(test_db, "OptDoc[embedding]")
-        assert bool(meta.addHierarchy) is False
+        meta = test_db.schema.get_vector_index("OptDoc", "embedding").get_metadata()
+        assert meta["add_hierarchy"] is False
         # The vector guide says the same of quantization: SQL is the engine's NONE.
-        assert str(meta.quantizationType) == "NONE"
-        assert float(meta.neighborOverflowFactor) == pytest.approx(1.2)
-        assert float(meta.alphaDiversityRelaxation) == pytest.approx(1.2)
+        assert meta["quantization"] == "NONE"
 
         test_db.command("sql", "CREATE VERTEX TYPE PyHier")
         test_db.command("sql", "CREATE PROPERTY PyHier.embedding ARRAY_OF_FLOATS")
@@ -1276,6 +1283,12 @@ class TestVectorSearchOptionsSql:
             "PyEngineDefault", "embedding", dimensions=2, add_hierarchy=None
         )
         assert engine_default_index.get_metadata()["add_hierarchy"] is False
+
+    def test_sql_graph_settings_default_to_the_engines(self, test_db):
+        self._make_docs(test_db)
+        meta = self._metadata(test_db, "OptDoc[embedding]")
+        assert float(meta.neighborOverflowFactor) == pytest.approx(1.2)
+        assert float(meta.alphaDiversityRelaxation) == pytest.approx(1.2)
 
     def test_sql_metadata_gives_the_helper_defaults(self, test_db):
         """The vector guide's quick start sets quantization and addHierarchy in METADATA."""
@@ -1294,9 +1307,9 @@ class TestVectorSearchOptionsSql:
             }
             """,
         )
-        meta = self._metadata(test_db, "QuickDoc[embedding]")
-        assert str(meta.quantizationType) == "INT8"
-        assert bool(meta.addHierarchy) is True
+        meta = test_db.schema.get_vector_index("QuickDoc", "embedding").get_metadata()
+        assert meta["quantization"] == "INT8"
+        assert meta["add_hierarchy"] is True
 
 
 class TestSparseSearchOptionsSql:
@@ -1327,7 +1340,7 @@ class TestSparseSearchOptionsSql:
             "SELECT id, score FROM "  # nosec B608 - test-owned option literals
             "(SELECT expand(`vector.sparseNeighbors`('SparseOpt[tokens,weights]', "  # nosec B608
             f"?, ?, 5, {options}))) ORDER BY score DESC",  # nosec B608
-            jtypes.JArray(jtypes.JInt)([5]),
+            arcadedb.to_java_int_array([5]),
             arcadedb.to_java_float_array([1.0]),
         ).to_list()
 

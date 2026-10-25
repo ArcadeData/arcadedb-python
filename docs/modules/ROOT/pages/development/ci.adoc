@@ -1,7 +1,22 @@
 = Continuous integration
 :description: Which platforms and Python versions the CI runs for a pull request, and which for main, the nightly run and a release.
 
-Two workflows test the package: `test-python-bindings.yml` builds a wheel and runs the unit tests, and `test-python-examples.yml` runs the scripts in `examples/`. Both build the wheels on a native runner of each platform.
+Each package has one test workflow and one release workflow:
+
+[cols="2,2,2"]
+|===
+| Package | Test | Release
+
+| `arcadedb-jvm` (the JVM build)
+| `test-jvm.yml`
+| `release-jvm.yml`
+
+| `arcadedb` (the native build)
+| `test-native.yml`
+| `release-native.yml`
+|===
+
+The release workflows call the test workflows (`workflow_call`) and then publish; see xref:development/release.adoc[Release]. Two workflows test the `arcadedb-jvm` package: `test-jvm.yml` builds a wheel and runs the unit tests, and `test-python-examples.yml` runs the scripts in `examples/`. Both build the wheels on a native runner of each platform. `test-native.yml` builds and tests the `arcadedb` (native) package; see <<_native_build,Native build>>.
 
 The package supports four platforms and four Python versions (3.11 to 3.14). That is 16 combinations for each workflow. A pull request does not run all of them, because the organisation shares one runner limit with ArcadeData/arcadedb. Each macOS or Windows job on a pull request delays the upstream jobs too.
 
@@ -26,13 +41,22 @@ A pull request runs 20 checks: 14 test jobs (10 and 4), the two `Download Arcade
 
 The names of the test jobs do not change: `Test arcadedb (<platform>, Python <version>)`. A check keeps its history when a pull request runs fewer of them.
 
-A release always runs the full matrix, because `release.yml` expects one wheel for each platform and Python version. The nightly run also tests against the newest `arcadedata/arcadedb:latest` image.
+A release always runs the full matrix, because `release-jvm.yml` expects one wheel for each platform and Python version. The nightly run also tests against the newest `arcadedata/arcadedb:latest` image.
 
 == Other rules
 
 * A pull request that changes only documentation (`docs/**`, `*.adoc`, `CLAUDE.md`, `examples/README.md`, `LICENSE*`) runs nothing.
 * A draft pull request skips the platform jobs. Marking it ready for review starts them.
 * A new push to a pull request cancels the run it replaces. A run on `main` is never cancelled.
+
+== Native build
+
+The workflow `test-native.yml` builds the native image of the `arcadedb` package and runs the test suite against the installed wheel. It does not follow the table above. It never publishes; `release-native.yml` calls it on a version tag.
+
+* A pull request runs it only when native paths change: `native/**`, `src/arcadedb/_native/**`, the native tests, or `test-native.yml` itself. It then runs on `linux-x86_64` with Python 3.12 only.
+* A push to `main`, the nightly run, a manual run (dispatch) run all four platforms: `linux-x86_64`, `linux-aarch64`, `macos-arm64` and `windows-x64` (Python 3.12 and 3.14). A release (`release-native.yml` calls the workflow with `release: true`) runs the same four platforms on all four Python versions, 16 legs.
+* The `pyver` job installs the already built `linux-x86_64` wheel (no rebuild) into the Pythons that the full parity runs of the event leave out (3.11, 3.13 and 3.14 on a pull request; 3.11 and 3.13 on a push to `main`, the nightly run and a dispatch; none on a release) and into the free-threaded 3.14t, and runs 13 test files there (14 where polars installs), about 20 seconds of tests per Python. It is informational: `release-native.yml` reads only the `native-passed-*` markers and the `native-wheel-*` wheels, so a red `pyver` leg never blocks a release. The 3.14t leg has no polars (no free-threaded wheel exists), so it skips `test_dataframe_ingest.py`. `scripts/select_native_matrix.py` decides its legs.
+* A native image build takes about 1 to 2.5 hours for each platform. The organisation shares one runner limit with upstream ArcadeDB, so do not add runs lightly. Change the paths or the matrix of `test-native.yml` only for a reason that you can write down.
 
 == Change the selection
 

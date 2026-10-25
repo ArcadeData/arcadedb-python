@@ -15,12 +15,18 @@ must pop it and nothing else, in ``run_in_transaction`` and ``with db.transactio
 @author Luca Garulli (l.garulli@arcadedata.com)
 """
 
+import importlib
+
 import pytest
 
 import arcadedb
 from arcadedb import ArcadeDBError
 from arcadedb.core import Database
 from arcadedb.server import ArcadeDBServer
+
+# the wrapper-level checks run against the class the active build's databases are instances of
+if arcadedb.__backend__ == "native":
+    Database = importlib.import_module("arcadedb._native.database").NativeDatabase
 
 
 @pytest.fixture
@@ -30,7 +36,11 @@ def db(temp_db_path):
     yield database
     # a failed assertion can leave levels open, and drop() refuses inside a transaction
     try:
-        database._java_db.rollbackAllNested()
+        if hasattr(database, "_java_db"):
+            database._java_db.rollbackAllNested()
+        else:
+            while database.is_transaction_active():
+                database.rollback()
     except Exception:  # nosec B110 - teardown must not hide the test failure
         pass
     database.drop()
@@ -42,7 +52,9 @@ def _count(database):
 
 def _depth(database):
     """How many transaction levels are on this thread's stack (nesting depth)."""
-    return int(database._java_db.getNestedTransactions())
+    if hasattr(database, "_java_db"):
+        return int(database._java_db.getNestedTransactions())
+    return database._transaction_stack_mark()[1]
 
 
 class TestRunInTransactionBeginHygiene:

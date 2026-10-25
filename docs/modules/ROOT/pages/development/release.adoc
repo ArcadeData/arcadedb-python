@@ -1,7 +1,7 @@
 = Release
-:description: How a release of the arcadedb package is numbered, tagged, checked and published to PyPI.
+:description: How a release of the arcadedb-jvm and arcadedb (native) packages is numbered, tagged, checked and published to PyPI.
 
-A release is a Git tag. Pushing the tag starts the `release.yml` workflow. It builds the wheels, tests them, checks them and publishes them to PyPI with trusted publishing. The workflow stores no token.
+A release is a Git tag. Pushing the tag starts the release workflows. This repository releases two packages: `arcadedb-jvm` (the JVM build) with `release-jvm.yml`, and `arcadedb` (the native build) with `release-native.yml`. Each release workflow calls the test workflow of its build (`test-jvm.yml`, `test-native.yml`), checks the wheels and publishes them to PyPI with trusted publishing. The workflows store no token. The sections below describe `release-jvm.yml`; the native release is in <<_native_release,Native release>>.
 
 == Version numbering
 
@@ -37,18 +37,18 @@ The base is the version of the engine. The workflow compares the tag with the ve
 
 [source,bash]
 ----
-python3 scripts/check_version.py 26.11.1.dev0 --git-remote origin --pypi arcadedb
+python3 scripts/check_version.py 26.11.1.dev0 --git-remote origin --pypi arcadedb-jvm
 ----
 
 It exits 0 when the version is the correct next one, 1 when it is not, and 2 when a source cannot be read. Exit 2 is a failure, not a pass: the check fails closed.
 
-The first job of `release.yml` runs the same command on the pushed tag. When it fails, the workflow builds and publishes nothing. Run it by hand before you push the tag. Running the whole workflow again for a version that is already on PyPI fails the check on purpose. To retry a failed upload, re-run only the publish job.
+The first job of each release workflow runs the same command on the pushed tag. When it fails, the workflow builds and publishes nothing. Run it by hand before you push the tag. Running the whole workflow again for a version that is already on PyPI fails the check on purpose. To retry a failed upload, re-run only the publish job.
 
 The tests of the script are in `tests/test_check_version.py`.
 
 == After the tag push
 
-`scripts/after_tag_verify.sh` checks the finished release. It only reads from GitHub and PyPI:
+`scripts/after_tag_verify.sh` checks the finished `arcadedb-jvm` release (the run of `release-jvm.yml`). It only reads from GitHub and PyPI:
 
 [source,bash]
 ----
@@ -63,3 +63,38 @@ The second argument is the previous release. Use `-` for the first release of th
 * A `pip download` for each of the four platforms, and a fresh install on Python 3.12 and 3.14 that opens a database and runs one SQL and one openCypher query.
 
 It prints `PASS` or `FAIL` for each step, and its exit code is the number of failures.
+
+[[_native_release]]
+== Native release
+
+The two packages release from two workflows with two PyPI environments:
+
+[cols="2,2,2"]
+|===
+| Package | Workflow | GitHub environment
+
+| `arcadedb-jvm`
+| `release-jvm.yml`
+| `pypi-jvm`
+
+| `arcadedb` (native)
+| `release-native.yml`
+| `pypi`
+|===
+
+The version rule above holds for both packages. One tag starts both release workflows, and each one checks the tag against its own PyPI project.
+
+`release-native.yml` has four jobs:
+
+. `Validate tag` checks that the tag is a bare version and the next one (`scripts/check_version.py`).
+. `test` calls `test-native.yml` with the full matrix: four platforms, each on Python 3.11 to 3.14. It builds the native image and the wheel on each platform and runs the test suite of this repository against the installed wheel.
+. `Verify what may be published` reads which legs passed, applies the readiness gate below and collects the wheels.
+. `Publish to PyPI` uploads the wheels through the environment `pypi`. It refuses any wheel that is not the distribution `arcadedb`.
+
+`arcadedb` has one trusted publisher on PyPI (`release-native.yml` with the environment `pypi`) for dev, final and post releases, and one publish job in the workflow. `arcadedb-jvm` has one trusted publisher (`release-jvm.yml` with the environment `pypi-jvm`). PyPI matches the workflow file name, so renaming either file means changing the publisher on PyPI first. There is no separate pre-release environment; the readiness gate below is what keeps a final release back.
+
+* A native pre-release (`26.11.1.devN`) publishes when the builds on `linux-x86_64`, `linux-aarch64` and `macos-arm64` pass.
+* A FINAL native release (`A.B.C` or `A.B.C.postN`) needs two more things:
+** The repository variable `ARCADEDB_NATIVE_READINESS_BAR_MET` is `true`. A maintainer sets it after checking the readiness bar: the correctness fixes are merged; the full suite is green on every platform, Windows included, and on Python 3.11 to 3.14; the fault and concurrency probes pass; and the documented API raises no `NotOnNativeYet`.
+** The parity run of every platform and every Python version passes with zero `NotOnNativeYet` skips.
+* Speed parity with the JVM build is not part of the bar.

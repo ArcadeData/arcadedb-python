@@ -15,7 +15,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = ROOT / "scripts" / "select_matrix.py"
 WORKFLOWS = {
-    "bindings": ROOT / ".github" / "workflows" / "test-python-bindings.yml",
+    "jvm": ROOT / ".github" / "workflows" / "test-jvm.yml",
     "examples": ROOT / ".github" / "workflows" / "test-python-examples.yml",
 }
 
@@ -61,7 +61,7 @@ def _pairs(matrix):
     return set(pairs)
 
 
-@pytest.mark.parametrize("workflow", ["bindings", "examples"])
+@pytest.mark.parametrize("workflow", ["jvm", "examples"])
 @pytest.mark.parametrize("event", NON_PULL_REQUEST_EVENTS)
 def test_every_event_but_pull_request_runs_the_full_matrix(workflow, event):
     matrix = sm.select(workflow, event)
@@ -69,8 +69,8 @@ def test_every_event_but_pull_request_runs_the_full_matrix(workflow, event):
     assert _pairs(matrix) == FULL
 
 
-def test_pull_request_bindings_matrix():
-    pairs = _pairs(sm.select("bindings", "pull_request"))
+def test_pull_request_jvm_matrix():
+    pairs = _pairs(sm.select("jvm", "pull_request"))
     assert {v for p, v in pairs if p == "linux/amd64"} == set(PYTHONS)
     for platform in ("linux/arm64", "darwin/arm64", "windows/amd64"):
         assert {v for p, v in pairs if p == platform} == {"3.11", "3.14"}, platform
@@ -82,7 +82,7 @@ def test_pull_request_examples_matrix():
     assert pairs == {(p, "3.14") for p in PLATFORMS}
 
 
-@pytest.mark.parametrize("workflow", ["bindings", "examples"])
+@pytest.mark.parametrize("workflow", ["jvm", "examples"])
 def test_pull_request_matrix_is_part_of_the_full_matrix(workflow):
     assert _pairs(sm.select(workflow, "pull_request")) < FULL
 
@@ -93,7 +93,7 @@ def test_unknown_workflow_is_refused():
 
 
 def test_pythons_match_the_classifiers_of_pyproject():
-    # release.yml expects one wheel per classifier Python and platform from the full matrix; a
+    # release-jvm.yml expects one wheel per classifier Python and platform from the full matrix; a
     # Python added to one place and not the other would fail the release, not a pull request.
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))[
         "project"
@@ -112,7 +112,7 @@ def test_pythons_match_the_classifiers_of_pyproject():
 def test_command_line_prints_one_line_of_matrix_json():
     for event, count in (("pull_request", 10), ("push", 16)):
         out = subprocess.run(  # nosec B603 - fixed argument list, no untrusted input
-            [sys.executable, "-I", str(SCRIPT_PATH), "bindings", "--event", event],
+            [sys.executable, "-I", str(SCRIPT_PATH), "jvm", "--event", event],
             capture_output=True,
             text=True,
             check=True,

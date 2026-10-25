@@ -16,6 +16,10 @@ on:
       - "CLAUDE.md"
       - "examples/README.md"
       - "LICENSE*"
+      # the native build has its own workflows; nothing under native/ is in the JVM wheel
+      - "native/**"
+      - ".github/workflows/test-native.yml"
+      - ".github/workflows/release-native.yml"
   pull_request:
     # ready_for_review: draft PRs skip the platform matrices (see the job conditions),
     # so marking one ready is what starts them.
@@ -27,6 +31,10 @@ on:
       - "CLAUDE.md"
       - "examples/README.md"
       - "LICENSE*"
+      # the native build has its own workflows; nothing under native/ is in the JVM wheel
+      - "native/**"
+      - ".github/workflows/test-native.yml"
+      - ".github/workflows/release-native.yml"
 
   # A new upstream snapshot is published as arcadedata/arcadedb:latest without
   # any change here, so build and test against it every night as well. The tag
@@ -36,7 +44,7 @@ on:
   schedule:
     - cron: "0 4 * * *"
 
-  # Allow being called by other workflows (e.g., release workflow)
+  # Allow being called by other workflows (release-jvm.yml)
   workflow_call:
     inputs:
       arcadedb-tag:
@@ -66,7 +74,7 @@ on:
         required: false
         default: "0[1-9]_*.py 1[0-9]_*.py 2[0-9]_*.py"
 
-# SUPERSEDE, do not race (same rule in test-python-bindings.yml).
+# SUPERSEDE, do not race (same rule in test-jvm.yml).
 #
 # A force-push to a PR branch left the OLD run going alongside the new one: on
 # #6889 both 118b347ce and 75293c7a2 ran at once, and the stale one reported a
@@ -260,7 +268,7 @@ jobs:
       - name: Install ArcadeDB Python bindings
         shell: bash
         run: |
-          uv pip install --system dist/arcadedb-*.whl
+          uv pip install --system dist/arcadedb_jvm-*.whl
 
       - name: Install example dependencies
         shell: bash

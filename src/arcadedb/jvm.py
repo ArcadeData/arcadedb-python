@@ -8,12 +8,10 @@ import functools
 import glob
 import os
 import platform
-import re
 import shlex
 import shutil
 import signal
 import sys
-import tempfile
 import threading
 import zipfile
 from pathlib import Path
@@ -23,6 +21,12 @@ import jpype
 import jpype.imports
 
 from . import aot as _aot
+from ._logdir import LOG_DIR_ENV as _LOG_DIR_ENV
+from ._logdir import LOGGING_CONFIG_NAME as _LOGGING_CONFIG_NAME
+from ._logdir import default_log_dir as _default_log_dir
+from ._logdir import render_logging_config as _render_logging_config
+from ._logdir import usable_log_dir as _usable_log_dir
+from ._logdir import write_logging_config as _write_logging_config
 from ._logging import get_logger
 from .exceptions import ArcadeDBError
 
@@ -48,8 +52,6 @@ _MAX_HEAP_FLAG_PREFIXES = (
 _JVM_INTERRUPT = None  # the `interrupt` the running JVM was started with
 _LOG_DIR_USED = None  # the log directory the running JVM was started with
 
-_LOG_DIR_ENV = "ARCADEDB_LOG_DIR"
-_LOGGING_CONFIG_NAME = "logging.properties"
 _ENGINE_LOG_RESOURCE = "arcadedb-log.properties"
 
 
@@ -91,7 +93,7 @@ def _extract_runtime_resource(resource_name: str) -> Path:
     project_dir = _project_dir()
     dist_dir = project_dir / "dist"
     wheels = sorted(
-        dist_dir.glob("arcadedb-*.whl"),
+        dist_dir.glob("arcadedb_jvm-*.whl"),
         key=lambda p: p.stat().st_mtime_ns,
         reverse=True,
     )
@@ -697,45 +699,6 @@ def _dedupe_max_heap(args: list[str]) -> list[str]:
     return filtered
 
 
-def _state_base_dir() -> Path:
-    """Per-user base directory for state and logs, by platform (stdlib only).
-
-    The home directory is read only where the platform needs it, and when it
-    cannot be determined (no HOME or USERPROFILE, as in a stripped-down service
-    environment) the system temp directory is used, so this never raises.
-    """
-    if sys.platform == "win32":
-        local = os.environ.get("LOCALAPPDATA")
-        if local:
-            return Path(local)
-    elif sys.platform != "darwin":
-        xdg = os.environ.get("XDG_STATE_HOME")
-        # The XDG spec ignores a relative value.
-        if xdg and os.path.isabs(xdg):
-            return Path(xdg)
-    try:
-        home = Path.home()
-    except (RuntimeError, KeyError, OSError):
-        return Path(tempfile.gettempdir())
-    if sys.platform == "win32":
-        return home / "AppData" / "Local"
-    if sys.platform == "darwin":
-        return home / "Library" / "Logs"
-    return home / ".local" / "state"
-
-
-def _default_log_dir() -> Path:
-    """Where the engine log, the crash log and logging.properties go.
-
-    ``ARCADEDB_LOG_DIR`` if set, else ``arcadedb/log`` under the
-    per-user state directory. Never the working directory.
-    """
-    override = os.environ.get(_LOG_DIR_ENV)
-    if override:
-        return Path(os.path.abspath(os.path.expanduser(override)))
-    return _state_base_dir() / "arcadedb" / "log"
-
-
 def _read_engine_log_properties(jar_files: Iterable[str]) -> Optional[str]:
     """Read the engine's bundled ``arcadedb-log.properties`` from its jar."""
     for jar in sorted(jar_files, key=lambda j: "engine" not in os.path.basename(j)):
@@ -747,26 +710,6 @@ def _read_engine_log_properties(jar_files: Iterable[str]) -> Optional[str]:
     return None
 
 
-def _render_logging_config(engine_text: str) -> str:
-    """The engine's logging config with the file log in ``logsDirectory``.
-
-    The jar's own file hard-codes ``./log/arcadedb.log``, which lands in the
-    working directory. The engine resolves ``${arcadedb.server.logsDirectory}``
-    in the pattern, and the JVM argument that sets it is added in
-    ``_build_jvm_args``.
-    """
-    lines = [
-        line
-        for line in engine_text.splitlines()
-        if not re.match(r"\s*java\.util\.logging\.FileHandler\.pattern\s*[=:]", line)
-    ]
-    lines.append(
-        "java.util.logging.FileHandler.pattern="
-        "${arcadedb.server.logsDirectory}/arcadedb.log"
-    )
-    return "\n".join(lines) + "\n"
-
-
 def _prepare_log_dir(log_dir: Path, jar_files: Iterable[str]) -> Path:
     """Create the log directory and write its logging.properties.
 
@@ -775,32 +718,10 @@ def _prepare_log_dir(log_dir: Path, jar_files: Iterable[str]) -> Path:
     read-only home, for example), so that nothing is ever written to the
     working directory.
     """
-    try:
-        log_dir.mkdir(parents=True, exist_ok=True)
-        if not os.access(log_dir, os.W_OK | os.X_OK):
-            raise OSError(f"{log_dir} is not writable")
-    except OSError as exc:
-        fallback = Path(tempfile.mkdtemp(prefix="arcadedb-log-"))
-        _LOGGER.warning(
-            "Cannot use %s for ArcadeDB logs (%s); using %s. Set %s to choose one.",
-            log_dir,
-            exc,
-            fallback,
-            _LOG_DIR_ENV,
-        )
-        log_dir = fallback
-
+    log_dir = _usable_log_dir(log_dir)
     engine_text = _read_engine_log_properties(jar_files)
     if engine_text is not None:
-        config = log_dir / _LOGGING_CONFIG_NAME
-        rendered = _render_logging_config(engine_text)
-        try:
-            if not config.exists() or config.read_text("iso-8859-1") != rendered:
-                tmp = log_dir / f"{_LOGGING_CONFIG_NAME}.{os.getpid()}.tmp"
-                tmp.write_text(rendered, encoding="iso-8859-1", newline="\n")
-                os.replace(tmp, config)
-        except OSError as exc:
-            _LOGGER.warning("Cannot write %s: %s", config, exc)
+        _write_logging_config(log_dir, engine_text)
     return log_dir
 
 

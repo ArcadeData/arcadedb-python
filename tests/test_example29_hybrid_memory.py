@@ -33,9 +33,30 @@ def memory(example29, tmp_path_factory):
         yield db, centroids
 
 
-@pytest.mark.parametrize("form", ["filter", "where"])
-def test_hybrid_rows_and_hops_stay_in_the_tenant(example29, memory, form):
+@pytest.fixture(scope="module")
+def has_where(example29, memory):
+    """True when the engine takes the ``where`` option of ``vector.neighbors`` (ArcadeDB 26.11.1).
+
+    The native build links the newest engine RELEASE, which predates it until 26.11.1 ships: the form is then refused with the engine's
+    own message, and the tests below assert that answer instead of the new one. When the native build links 26.11.1, delete this
+    fixture and the old-answer branches.
+    """
     db, centroids = memory
+    try:
+        example29.run(db, centroids, "where")
+    except arcadedb.ArcadeDBError as e:
+        assert "Unknown option 'where'" in str(e), e
+        return False
+    return True
+
+
+@pytest.mark.parametrize("form", ["filter", "where"])
+def test_hybrid_rows_and_hops_stay_in_the_tenant(example29, memory, form, has_where):
+    db, centroids = memory
+    if form == "where" and not has_where:
+        with pytest.raises(arcadedb.ArcadeDBError, match="Unknown option 'where'"):
+            example29.run(db, centroids, form)
+        return
     out = example29.run(db, centroids, form)
     tenant = example29.REQUESTED_TENANT
 
@@ -56,9 +77,15 @@ def test_filtering_after_the_top_k_loses_the_rows(example29, memory):
     assert len(out["post_filtered"]) < example29.K  # the pre-filter returns K
 
 
-def test_the_forms_agree(example29, memory):
+def test_the_forms_agree(example29, memory, has_where):
     db, centroids = memory
     by_filter = example29.run(db, centroids, "filter")
+    if (
+        not has_where
+    ):  # the engine predates the option: the other form is refused (see has_where)
+        with pytest.raises(arcadedb.ArcadeDBError, match="Unknown option 'where'"):
+            example29.run(db, centroids, "where")
+        return
     by_where = example29.run(db, centroids, "where")
     assert [r["fid"] for r in by_filter["hybrid"]] == [
         r["fid"] for r in by_where["hybrid"]

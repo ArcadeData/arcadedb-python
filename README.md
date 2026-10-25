@@ -1,23 +1,39 @@
 # ArcadeDB Python
 
-[![PyPI](https://img.shields.io/pypi/v/arcadedb)](https://pypi.org/project/arcadedb/)
-[![Python versions](https://img.shields.io/pypi/pyversions/arcadedb)](https://pypi.org/project/arcadedb/)
-[![Tests](https://github.com/ArcadeData/arcadedb-python/actions/workflows/test-python-bindings.yml/badge.svg)](https://github.com/ArcadeData/arcadedb-python/actions/workflows/test-python-bindings.yml)
+[![PyPI arcadedb](https://img.shields.io/pypi/v/arcadedb?label=arcadedb)](https://pypi.org/project/arcadedb/)
+[![PyPI arcadedb-jvm](https://img.shields.io/pypi/v/arcadedb-jvm?label=arcadedb-jvm)](https://pypi.org/project/arcadedb-jvm/)
+[![Python versions](https://img.shields.io/pypi/pyversions/arcadedb-jvm)](https://pypi.org/project/arcadedb-jvm/)
+[![Tests JVM](https://github.com/ArcadeData/arcadedb-python/actions/workflows/test-jvm.yml/badge.svg)](https://github.com/ArcadeData/arcadedb-python/actions/workflows/test-jvm.yml)
+[![Tests native](https://github.com/ArcadeData/arcadedb-python/actions/workflows/test-native.yml/badge.svg)](https://github.com/ArcadeData/arcadedb-python/actions/workflows/test-native.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](https://github.com/ArcadeData/arcadedb-python/blob/main/LICENSE)
 
-Python bindings for [ArcadeDB](https://arcadedb.com), the multi-model database (graph, document, key/value, vector and time series, queried with SQL or openCypher). The engine runs inside your Python process through [JPype](https://jpype.readthedocs.io/), with no server and no network hop. The wheel bundles its own Java 25 runtime, so you install no Java. Status: beta.
+Python bindings for [ArcadeDB](https://arcadedb.com), the multi-model database (graph, document, key/value, vector and time series, queried with SQL or openCypher). The engine runs inside your Python process, with no server and no network hop. This repository builds two packages, and both import as `arcadedb`. `arcadedb-jvm` has a sibling, `arcadedb`, the native build: pick `arcadedb` for scripts, notebooks, tests, CLIs, serverless functions and agents, and `arcadedb-jvm` for heavy, long-running loads. Status: beta.
+
+| Package | Engine | Pick it for |
+|---|---|---|
+| [`arcadedb`](https://pypi.org/project/arcadedb/) (native, the default) | The engine compiled by GraalVM Community Edition into a shared library, loaded with `ctypes`. No JVM, no JPype | Scripts, notebooks, tests, CLIs, serverless functions, agents |
+| [`arcadedb-jvm`](https://pypi.org/project/arcadedb-jvm/) (JVM) | The Java engine in your process through [JPype](https://jpype.readthedocs.io/), with a bundled Java 25 runtime | Heavy, long-running loads, where the JIT wins over time. Also the Java-object APIs and JVM options |
+
+Both packages `import arcadedb`, and they have the same public API. Install one, not both. Not sure which? Read [Which package?](https://github.com/ArcadeData/arcadedb-python/blob/main/docs/modules/ROOT/pages/which-package.adoc).
 
 ## Install
 
 ```bash
-pip install arcadedb   # or: uv add arcadedb
+pip install arcadedb       # native, the default (or: uv add arcadedb)
+pip install arcadedb-jvm   # JVM, for heavy long-running loads (or: uv add arcadedb-jvm)
 ```
 
-This package was published as arcadedb-embedded until 26.10.x; install arcadedb now.
+<!-- REMOVE WHEN: the old arcadedb-embedded* shims are retired and two releases have shipped with the two-package layout allow-old-name -->
+> Transition note: the first release of this layout is 26.11.1. Until `arcadedb` passes its readiness bar, it may appear only as pre-releases, `26.11.1.devN`. Install it with `pip install --pre arcadedb` (or `uv add --prerelease allow arcadedb`).
+
+<!-- REMOVE WHEN: the old arcadedb-embedded* shims are retired and two releases have shipped with the two-package layout allow-old-name -->
+> Old names: `arcadedb-jvm` was formerly `arcadedb-embedded`, and `arcadedb` was formerly `arcadedb-embedded-native`. The old packages will get a deprecation shim.
 
 - Python 3.11 to 3.14. CI builds and tests all four versions on every platform below for `main`, every night and each release. A pull request runs a smaller selection.
-- Linux x86_64 and ARM64, macOS on Apple Silicon, Windows x86_64. One wheel per platform and Python version.
-- Import name: `arcadedb`. Optional extras: `arrow`, `pandas`, `vector`.
+- Linux x86_64 and ARM64, macOS on Apple Silicon, Windows x86_64, for both packages. The Windows wheel of `arcadedb` is the newest.
+- Import name: `arcadedb`. Check which package you have with `python -c "import arcadedb; print(arcadedb.__backend__)"`. It prints `native` or `jvm`.
+- Optional extras: `arrow`, `pandas`, `vector` for `arcadedb-jvm`; `numpy`, `arrow`, `pandas`, `polars` for `arcadedb`.
+- `arcadedb-jvm` bundles its own Java 25 runtime, so you install no Java. `arcadedb` needs no Java at all.
 
 ## Quick start
 
@@ -45,23 +61,29 @@ This prints `Name: Alice` (the engine also logs to standard error). `create_data
 - Graph, document, key/value, vector (JVector HNSW) and time series models; ACID transactions.
 - Import from CSV, XML and ArcadeDB JSONL; export to JSONL.
 - Columnar results with `to_columns()`, `to_arrow()` and `to_dataframe()`.
-- An optional in-process HTTP server (`create_server()`), off until you call it, for other processes that need the same data. From 26.11.1 the wheels also carry the Studio web UI, which the server then serves. Studio used to bundle ApexCharts, which is no longer open source ([ArcadeData/arcadedb#10579](https://github.com/ArcadeData/arcadedb/issues/10579)), and [ArcadeData/arcadedb#10627](https://github.com/ArcadeData/arcadedb/pull/10627) replaced it with Apache ECharts. The earlier 26.10.x wheels on PyPI have no Studio.
+- An optional in-process HTTP server (`create_server()`), off until you call it, for other processes that need the same data.
 
-For several processes, other languages, HA or replication, run the regular [ArcadeDB server](https://docs.arcadedb.com) and connect with [`arcadedb-driver`](https://pypi.org/project/arcadedb-driver/) (HTTP client, developed in [ArcadeData/arcadedb-drivers](https://github.com/ArcadeData/arcadedb-drivers)).
+<!-- REMOVE WHEN: the old arcadedb-embedded* shims are retired and two releases have shipped with the two-package layout allow-old-name -->
+> New in 26.11.1: the `arcadedb-jvm` wheels carry the Studio web UI, which the server then serves. Studio used to bundle ApexCharts, which is no longer open source ([ArcadeData/arcadedb#10579](https://github.com/ArcadeData/arcadedb/issues/10579)), and [ArcadeData/arcadedb#10627](https://github.com/ArcadeData/arcadedb/pull/10627) replaced it with Apache ECharts. The earlier 26.10.x wheels on PyPI have no Studio.
+
+For several processes, other languages, HA or replication, run the official Docker image `arcadedata/arcadedb` ([ArcadeDB server](https://docs.arcadedb.com)) and connect with [`arcadedb-driver`](https://pypi.org/project/arcadedb-driver/) (HTTP client, developed in [ArcadeData/arcadedb-drivers](https://github.com/ArcadeData/arcadedb-drivers)).
 
 ## Packages on PyPI
 
 | Package | What it is | Status |
 |---|---|---|
-| [`arcadedb`](https://pypi.org/project/arcadedb/) | These bindings: the engine on a bundled JVM. The package this README describes | First release from this repository: 26.11.1 |
-| [`arcadedb-native`](https://pypi.org/project/arcadedb-native/) | The same API with the engine compiled ahead of time by GraalVM Community Edition: no JVM, no JPype. Python 3.11 or later. It imports as `arcadedb`, like the JVM wheel, so install only one of the two | Not in this repository yet (porting is tracked in [#19](https://github.com/ArcadeData/arcadedb-python/issues/19)). Until then a placeholder on PyPI |
-| Formerly `arcadedb-embedded` and `arcadedb-embedded-native` | The names of these packages until 26.10.x. They import as `arcadedb_embedded` and `arcadedb_native` | Deprecated: install `arcadedb` |
+| [`arcadedb`](https://pypi.org/project/arcadedb/) | The native build: the engine compiled by GraalVM Community Edition, no JVM, no JPype. The default for embedded use | First release of this layout: 26.11.1. It may first appear as `26.11.1.devN` pre-releases |
+| [`arcadedb-jvm`](https://pypi.org/project/arcadedb-jvm/) | The JVM build: the Java engine on a bundled JVM, through JPype. The package this README described before the two-package layout | First release from this repository: 26.11.1 |
+| `arcadedb-native` | An alias of `arcadedb`: same version, it only installs `arcadedb` | Planned |
+
+<!-- REMOVE WHEN: the old arcadedb-embedded* shims are retired and two releases have shipped with the two-package layout allow-old-name -->
+Formerly `arcadedb-embedded` (now `arcadedb-jvm`, the same build) and formerly `arcadedb-embedded-native` (now `arcadedb`). They imported as `arcadedb_embedded` and `arcadedb_native`, and they are deprecated.
 
 Releases from this repository start with 26.11.1. The 26.10.x wheels were built and published from [humemai/arcadedb-embedded-python](https://github.com/humemai/arcadedb-embedded-python). <!-- allow-old-name -->
 
 ## Documentation
 
-- Here: [`docs/`](https://github.com/ArcadeData/arcadedb-python/tree/main/docs/modules/ROOT/pages) is an Antora component (AsciiDoc) with Installation, Which package for which mode, Quickstart, Databases and queries, and Concurrency, processes and crashes. It covers only what is specific to the Python bindings.
+- Here: [`docs/`](https://github.com/ArcadeData/arcadedb-python/tree/main/docs/modules/ROOT/pages) is an Antora component (AsciiDoc) with Installation, [Which package?](https://github.com/ArcadeData/arcadedb-python/blob/main/docs/modules/ROOT/pages/which-package.adoc), Quickstart, Databases and queries, and Concurrency, processes and crashes. It covers only what is specific to the Python bindings.
 - The component is not published on docs.arcadedb.com yet; adding it as a content source is open in [ArcadeData/arcadedb-docs#505](https://github.com/ArcadeData/arcadedb-docs/pull/505).
 - The guide, API reference and example walkthroughs for the published package are still at [docs.humem.ai/arcadedb](https://docs.humem.ai/arcadedb/latest/) until those pages are ported here ([#19](https://github.com/ArcadeData/arcadedb-python/issues/19)).
 - ArcadeDB itself (SQL, openCypher, schema, server): [docs.arcadedb.com](https://docs.arcadedb.com). It is not repeated here.
@@ -73,10 +95,12 @@ Releases from this repository start with 26.11.1. The 26.10.x wheels were built 
 ## Build and test from source
 
 ```bash
-./scripts/build.sh   # a wheel for your platform in dist/
+./scripts/build.sh   # an arcadedb-jvm wheel for your platform in dist/
 ```
 
-Linux builds run in Docker. macOS and Windows need a JDK 25 or later. The jars come from the `arcadedata/arcadedb` Docker image: `latest` by default, or the tag in `ARCADEDB_TAG` (for example `ARCADEDB_TAG=26.10.2 ./scripts/build.sh`). The package version is read from the engine jar in that image, so a `26.11.1-SNAPSHOT` image builds `26.11.1.devN`.
+The `arcadedb` (native) wheel is built from `native/` with GraalVM Community Edition; [`CLAUDE.md`](https://github.com/ArcadeData/arcadedb-python/blob/main/CLAUDE.md) has the commands. A native image build takes about 1 to 2.5 hours per platform.
+
+The JVM build runs in Docker on Linux. macOS and Windows need a JDK 25 or later. The jars come from the `arcadedata/arcadedb` Docker image: `latest` by default, or the tag in `ARCADEDB_TAG` (for example `ARCADEDB_TAG=26.10.2 ./scripts/build.sh`). The package version is read from the engine jar in that image, so a `26.11.1-SNAPSHOT` image builds `26.11.1.devN`.
 
 Tests run against the built wheel, not the source tree: install the wheel with its `test` extra into a virtual environment, then run `pytest`. [`CLAUDE.md`](https://github.com/ArcadeData/arcadedb-python/blob/main/CLAUDE.md) has the exact commands, the build options and the lint setup.
 
@@ -86,7 +110,7 @@ Open an [issue](https://github.com/ArcadeData/arcadedb-python/issues) or a pull 
 
 ## Where this code comes from
 
-It moved here from `bindings/python` in [ArcadeData/arcadedb](https://github.com/ArcadeData/arcadedb) at `ee04bd202abce0183c6263a3c4d8a61a4d526960`, with its git history. Issue numbers in older commit messages refer to that repository. [humemai/arcadedb-embedded-python](https://github.com/humemai/arcadedb-embedded-python) is the fork where the bindings kept developing (runtime fixes, JRE trim, native build, benchmarks). Its benchmark tooling stays there. <!-- allow-old-name -->
+It moved here from `bindings/python` in [ArcadeData/arcadedb](https://github.com/ArcadeData/arcadedb) at `ee04bd202abce0183c6263a3c4d8a61a4d526960`, with its git history. Issue numbers in older commit messages refer to that repository. [humemai/arcadedb-embedded-python](https://github.com/humemai/arcadedb-embedded-python) is the fork where the bindings kept developing (runtime fixes, JRE trim, the native build, benchmarks). Its benchmark tooling stays there. <!-- allow-old-name -->
 
 ## Citation
 

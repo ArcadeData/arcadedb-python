@@ -1,0 +1,218 @@
+name: Release native (arcadedb)
+
+# Pushing a tag that is the bare version (26.11.1.dev0, 26.11.1, 26.11.1.post1; no "v", never aN/bN/rcN) builds the native wheels, runs
+# the parity suite against them on every platform and Python, checks them and publishes them to PyPI as `arcadedb`. The same tag also
+# starts release-jvm.yml, which publishes `arcadedb-jvm`; the two workflows do not wait for each other.
+#
+# The build and the tests are test-native.yml, called with `release: true` (the full matrix: linux-x86_64, linux-aarch64,
+# macos-arm64 and windows-x64, each on Python 3.11 to 3.14). A native image build takes about 1 to 2.5 hours per platform; this workflow adds
+# no build of its own. The way the JVM release calls test-jvm.yml is the model.
+#
+# PyPI keys a trusted publisher on this FILENAME and on the job's environment, so do not rename either without changing the publisher
+# on PyPI at the same time:
+#   project arcadedb         <- ArcadeData/arcadedb-python, workflow release-native.yml, environment pypi
+#   project arcadedb-jvm     <- ArcadeData/arcadedb-python, workflow release-jvm.yml, environment pypi-jvm
+# The GitHub environment `pypi` only accepts deployments from tags that match [0-9]*. There is one environment and one publish job for
+# dev, final and post releases.
+#
+# What is published (the `verify` job decides, the `publish` job uploads):
+#   A.B.C.devN       the parity run of linux-x86_64, linux-aarch64 and macos-arm64 passed on every Python. windows-x64 is published too when it
+#                    passed on every Python, and is informational otherwise.
+#   A.B.C, A.B.C.postN  ONLY when the readiness bar is met: the repository variable ARCADEDB_NATIVE_READINESS_BAR_MET is `true` (a maintainer
+#                    sets it after checking the correctness fixes and the fault and concurrency probes), the parity run of ALL four platforms
+#                    on ALL four Pythons passed, and no test is a NOTYET skip (test-native.yml passes --max-notyet 0 for a final version).
+#                    Speed parity is not part of the bar. The bar is written down in docs/modules/ROOT/pages/development/release.adoc.
+#
+# Nothing here stores a token: the publish job authenticates with PyPI trusted publishing (OIDC), and only that job has the id-token
+# permission. The guard in the publish job refuses to publish anything that is not `arcadedb`, so this workflow cannot publish the
+# JVM `arcadedb-jvm` by accident.
+
+on:
+  push:
+    tags:
+      - "[0-9]+.[0-9]+.[0-9]+*" # 26.11.1.dev0, 26.11.1, 26.11.1.post1; validate-version rejects the rest
+
+permissions:
+  contents: read
+
+# One release per tag at a time. A running release is never cancelled half way through an upload. The group differs from the one of
+# test-native.yml (test-native-...), which this workflow calls.
+concurrency:
+  group: release-native-${{ github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  # The only distribution this workflow may publish. See the guard in the publish job.
+  DIST_NAME: arcadedb
+
+jobs:
+  # The tag must be a bare PEP 440 version of the allowed kinds, and the next number of its base.
+  validate-version:
+    name: Validate tag
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.validate.outputs.version }}
+      final: ${{ steps.validate.outputs.final }}
+    steps:
+      - name: Validate tag
+        id: validate
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          if ! [[ "$TAG" =~ ^[0-9]+\.[0-9]+\.[0-9]+(\.(dev|post)[0-9]+)?$ ]]; then
+            echo "::error::Tag '$TAG' is not A.B.C, A.B.C.devN or A.B.C.postN (bare version, no v, no aN/bN/rcN)"
+            exit 1
+          fi
+          # a .devN wheel is a pre-release; an A.B.C or A.B.C.postN wheel is final and needs the readiness bar
+          if [[ "$TAG" == *.dev* ]]; then final=false; else final=true; fi
+          { echo "version=$TAG"; echo "final=$final"; } >> "$GITHUB_OUTPUT"
+          echo "Release $TAG (final=$final)"
+
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The counting rule is on the docs page development/release.adoc. The script only checks and fails closed: exit 1 is a tag that
+      # breaks the rule, exit 2 is a source (git tags, PyPI) it could not read, and either stops the release before anything is built.
+      # The tag being released is left out of the git tags; running the whole workflow again for a version that is already on PyPI
+      # fails here, so re-run only the publish job instead. Its tests are in tests/test_check_version.py.
+      - name: Tag must be the next version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: python3 -I scripts/check_version.py "$TAG" --git-remote origin --pypi "$DIST_NAME"
+
+  # Builds a wheel per platform, runs the parity suite on every Python and uploads the wheels (native-wheel-<platform>) and one marker per
+  # passed leg (native-passed-<platform>-py<version>).
+  test:
+    name: Native build and parity
+    needs: validate-version
+    uses: ./.github/workflows/test-native.yml
+    with:
+      version: ${{ needs.validate-version.outputs.version }}
+      release: true
+
+  # What may be published, decided once: the wheels whose platform passed on every required Python, and the readiness bar for a final
+  # release. Runs when `test` failed too, because a platform that is only informational may fail; the markers say which legs passed.
+  verify:
+    name: Verify what may be published
+    needs: [validate-version, test]
+    if: ${{ !cancelled() && needs.validate-version.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      ok: ${{ steps.verify.outputs.ok }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: native-passed-*
+          path: passed
+          merge-multiple: true
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: native-wheel-*
+          path: wheels
+          merge-multiple: true
+
+      - name: Every required platform passed on every Python, and the wheels are the ones that were tested
+        id: verify
+        env:
+          VERSION: ${{ needs.validate-version.outputs.version }}
+          FINAL: ${{ needs.validate-version.outputs.final }}
+          BAR: ${{ vars.ARCADEDB_NATIVE_READINESS_BAR_MET }}
+        run: |
+          set -euo pipefail
+          mkdir -p passed dist
+          ls -l passed wheels
+          pythons="3.11 3.12 3.13 3.14"
+          if [ "$FINAL" = true ]; then
+            required="linux-x86_64 linux-aarch64 macos-arm64 windows-x64"
+            if [ "$BAR" != true ]; then
+              echo "::error::$VERSION is a final release of arcadedb (native), and the readiness bar is not marked as met (repository variable ARCADEDB_NATIVE_READINESS_BAR_MET): nothing is published. See docs/modules/ROOT/pages/development/release.adoc" >&2
+              exit 1
+            fi
+          else
+            required="linux-x86_64 linux-aarch64 macos-arm64"
+          fi
+          for key in $required; do
+            for py in $pythons; do
+              [ -f "passed/$key-py$py.ok" ] || { echo "::error::required leg $key on Python $py did not pass its parity run: nothing is published" >&2; exit 1; }
+            done
+          done
+          # every platform that passed on every Python is published (Windows is informational for a pre-release)
+          for key in linux-x86_64 linux-aarch64 macos-arm64 windows-x64; do
+            all=true
+            for py in $pythons; do [ -f "passed/$key-py$py.ok" ] || all=false; done
+            [ "$all" = true ] || continue
+            w="$(cat "passed/$key-py3.12.ok")"
+            case "$w" in
+              "arcadedb-${VERSION}-py3-none-"*.whl) ;;
+              *) echo "::error::unexpected wheel $w for version $VERSION" >&2; exit 1 ;;
+            esac
+            [ -f "wheels/$w" ] || { echo "::error::wheel $w is missing" >&2; exit 1; }
+            cp "wheels/$w" dist/
+          done
+          ls -l dist
+          echo "ok=true" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: native-release-dist
+          path: dist/*.whl
+          if-no-files-found: error
+          retention-days: 7
+
+  # One job for A.B.C.devN, A.B.C and A.B.C.postN. `verify` already refused a final version unless ARCADEDB_NATIVE_READINESS_BAR_MET is true.
+  publish:
+    name: Publish to PyPI
+    needs: [validate-version, verify]
+    if: ${{ !cancelled() && needs.verify.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment:
+      name: pypi
+      url: https://pypi.org/project/arcadedb/
+    permissions:
+      id-token: write # PyPI trusted publishing (OIDC); no API token anywhere
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: native-release-dist
+          path: dist
+
+      # GUARD: this workflow publishes the distribution `arcadedb` and nothing else. A wheel with another name stops the job here,
+      # before anything reaches PyPI. Two checks, so neither can drift alone: the wheel file name and the Name field of its METADATA,
+      # both must be DIST_NAME.
+      - name: Refuse unless every wheel is the distribution ${{ env.DIST_NAME }}
+        run: |
+          python3 -I - <<'PY'
+          import os, pathlib, re, sys, zipfile
+
+          want = os.environ["DIST_NAME"]
+          norm = lambda s: re.sub(r"[-_.]+", "-", s).lower()
+          wheels = sorted(pathlib.Path("dist").glob("*.whl"))
+          if not wheels:
+              sys.exit("no wheels in dist/")
+          bad = []
+          for w in wheels:
+              file_dist = w.name.split("-")[0]
+              with zipfile.ZipFile(w) as zf:
+                  meta = next(n for n in zf.namelist() if n.endswith(".dist-info/METADATA"))
+                  meta_dist = re.search(r"^Name: (.+)$", zf.read(meta).decode(), re.M).group(1)
+              if norm(file_dist) != want or norm(meta_dist) != want:
+                  bad.append(f"{w.name}: file name says {file_dist}, METADATA says {meta_dist}")
+          if bad:
+              print("\n".join(f"::error::{b}" for b in bad))
+              sys.exit(f"Refusing to publish: this workflow publishes only the distribution '{want}'.")
+          print(f"OK: {len(wheels)} wheels, all distribution '{want}'")
+          PY
+
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          packages-dir: dist

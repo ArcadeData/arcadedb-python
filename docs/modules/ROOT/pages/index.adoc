@@ -1,10 +1,25 @@
 = ArcadeDB Python
-:description: Run the ArcadeDB engine inside your Python process: install, first steps and how-to guides for the {pkg-name} package.
+:description: Run the ArcadeDB engine inside your Python process: install, first steps and how-to guides for the arcadedb (native) and arcadedb-jvm (JVM) packages.
 
 // Sources: bindings docs index.md, api-access-methods.md and getting-started/installation.md,
-// and the PyPI description of arcadedb-native.
+// and the PyPI descriptions of arcadedb and arcadedb-jvm.
 
-`{pkg-name}` runs the ArcadeDB engine inside your Python process. Calls cross into the engine through https://jpype.readthedocs.io/[JPype], so there is no network hop and no server to start. The wheel bundles its own Java runtime (Java 25), so you do not install Java.
+These packages run the ArcadeDB engine inside your Python process, with no network hop and no server to start. Two packages exist, and both use the import name `{import-name}`:
+
+[cols="1,3,3"]
+|===
+| Package | Engine | Pick it for
+
+| `{native-pkg-name}` (the default)
+| Native: the engine compiled by GraalVM Community Edition, loaded with `ctypes`. No JVM, no JPype.
+| Scripts, notebooks, tests, CLIs, serverless functions and agents.
+
+| `{jvm-pkg-name}`
+| JVM: the Java engine in your process through https://jpype.readthedocs.io/[JPype], with a bundled Java 25 runtime.
+| Heavy, long-running loads, and the Java-object APIs.
+|===
+
+Not sure which one? Read xref:which-package.adoc[Which package?]. Install one of them, not both.
 
 ArcadeDB is a multi-model database: graph, document, key/value, vector and time series data live in one database, and you query it with SQL or openCypher. The bindings expose the two calls you need for that, `db.command(...)` and `db.query(...)`.
 
@@ -49,54 +64,34 @@ ArcadeDB reaches Python in two ways. Pick by where the engine should run.
 | One per call
 
 | Setup
-| `pip install {pkg-name}`
-| A running server, plus `pip install arcadedb-driver`
+| `pip install {native-pkg-name}` or `pip install {jvm-pkg-name}`
+| A running server (the official Docker image `arcadedata/arcadedb`), plus `pip install arcadedb-driver`
 |===
 
 Choose the embedded bindings for a single script, a notebook, or an application with one Python process that owns its data. Choose the xref:arcadedb::how-to/connectivity/drivers/python-http.adoc[HTTP driver] when more than one process, another language, or a remote machine must reach the same database, or when the server must outlive your Python process.
 
-The two meet in one case. The bindings bundle an optional HTTP server, with the Studio web UI from 26.11.1. It is off until you call `create_server()`. The process that owns the database keeps direct access, and other processes connect over HTTP. That server lives and dies with your Python process. For a database that must outlive any one client, or for HA, replication and TLS, run the regular xref:arcadedb::index.adoc[ArcadeDB server] instead.
+The two meet in one case. The bindings bundle an optional HTTP server. It is off until you call `create_server()`. The process that owns the database keeps direct access, and other processes connect over HTTP. That server lives and dies with your Python process. For a database that must outlive any one client, or for HA, replication and TLS, run the regular xref:arcadedb::index.adoc[ArcadeDB server] instead.
 
 [[jvm-vs-native]]
-== JVM build or native build
+== Native build or JVM build
 
-Two packages ship for now. Both give you the same engine and the same API.
+Both packages give you the same engine and the same API. The table in xref:which-package.adoc[Which package?] lists what differs: start-up time, memory, platforms, and the APIs that exist only on the JVM build (`get_java_database`, `jvm_kwargs`, `start_jvm`). The pages in this component apply to both packages. Parts that apply to one only say so.
 
-[cols="1,3,3"]
-|===
-| | `{pkg-name}` (default) | `{native-pkg-name}` (preview)
-
-| Runtime
-| The engine on a bundled JVM, reached through JPype
-| The engine compiled ahead of time with GraalVM Community Edition to a shared library, loaded with `ctypes`: no JVM and no JPype
-
-| Import name
-| `{import-name}`
-| `{native-import-name}`
-
-| Status
-| The package these docs describe
-| A preview of alpha quality. It is an experiment, not a release: do not use it for data you cannot lose
-
-| Install
-| `pip install {pkg-name}`
-| `pip install --pre {native-pkg-name}`
-|===
-
-Both packages import as `{import-name}`, so an environment holds one of them. The preview's public API follows the one of the default package, so the pages in this component apply to both; the JVM-specific parts (JVM options, `jvm_kwargs`) do not apply to the native build. Check the preview's https://pypi.org/project/{native-pkg-name}/[PyPI page] for its current status before you rely on it.
+Check which one you have with `python -c "import arcadedb; print(arcadedb.__backend__)"`. It prints `native` or `jvm`.
 
 == Requirements
 
 * Python 3.11 to 3.14. The wheels' CI runs all four versions on every supported platform for `main`, the nightly run and each release. A pull request runs a smaller selection (xref:development/ci.adoc[Continuous integration]).
-* Linux (x86_64 and ARM64), macOS on Apple Silicon, or Windows (x86_64).
-* No Java installation.
+* Linux (x86_64 and ARM64), macOS on Apple Silicon, or Windows (x86_64). The Windows wheel of the native build is the newest.
+* No Java installation, for either package.
 
 == Links
 
+* xref:which-package.adoc[Which package?]
 * xref:installation.adoc[Installation]
 * xref:quickstart.adoc[Quickstart]
 * xref:how-to/databases-and-queries.adoc[Databases and queries]
-* {pypi-url}[`{pkg-name}` on PyPI]
+* {native-pypi-url}[`{native-pkg-name}` on PyPI] and {jvm-pypi-url}[`{jvm-pkg-name}` on PyPI]
 * {repo-url}[Source repository] and {repo-url}/issues[issue tracker]
 
 The bindings are licensed under Apache 2.0, like the ArcadeDB engine.

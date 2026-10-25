@@ -1,0 +1,692 @@
+# The native build: the `arcadedb` distribution (a GraalVM native-image shared library loaded with ctypes). This workflow builds the
+# wheels and runs the parity suite against them; release-native.yml calls it on a version tag and publishes. The JVM build,
+# `arcadedb-jvm`, is test-jvm.yml / release-jvm.yml.
+#
+# A native image build takes about 1 to 2.5 hours per platform and the ArcadeData organisation shares a runner cap with
+# upstream ArcadeDB, so the load is selective (scripts/select_native_matrix.py holds the legs, tests/test_select_native_matrix.py pins them):
+#   pull request   only when a native path changed (the `paths` filter below); linux-x86_64, Python 3.12; not for a draft
+#   push to main   only when a native path changed; all four platforms, Python 3.12 and 3.14
+#   nightly        all four platforms, Python 3.12 and 3.14, but only when something besides docs changed in the last 25 hours (a full run on Mondays)
+#   dispatch       all four platforms, Python 3.12 and 3.14
+#   workflow_call  from release-native.yml with `release: true`: all four platforms, Python 3.11 to 3.14
+# This workflow never publishes: it has no id-token permission and no environment.
+#
+# Beside the full parity runs, the `pyver` job installs the already built linux-x86_64 wheel (py3-none: no rebuild) into the Pythons the full
+# runs of the event leave out (a pull request: 3.11, 3.13, 3.14; main, nightly, dispatch: 3.11, 3.13; a release: none) and into the free-threaded
+# 3.14t, and runs a small subset of the tests there (about 20 s of tests per Python). It is informational: release-native.yml does not need it.
+# scripts/select_native_matrix.py decides its legs.
+#
+# One wheel per platform, py3-none-<platform tag>:
+#   linux-x86_64   manylinux_2_34 container          manylinux_2_34_x86_64   libarcadedb.so + libjvector-x86_64.so
+#   linux-aarch64  manylinux_2_34 aarch64 container  manylinux_2_34_aarch64  libarcadedb.so
+#   macos-arm64    native, heap and threads capped   macosx_<minos>_arm64    libarcadedb.dylib
+#   windows-x64    native, MSVC environment loaded   win_amd64               libarcadedb.dll
+# Only free GitHub-hosted standard runners. GraalVM Community Edition only (pinned by sha256 per platform), never Oracle GraalVM.
+#
+# Gates per platform: the glibc floor, `auditwheel show`, `twine check`, wheel name `arcadedb` and version == requested version, and the
+# test suite of this repository run against the INSTALLED wheel (native/wheel/parity_wheel.py): no failure, error, crash, timeout, or skip
+# besides the counted NOTYET and NA-JVM kinds (tests/conftest.py).
+#
+# A leg that passes uploads a marker (native-passed-<platform>-py<version>) and the wheel (native-wheel-<platform>); release-native.yml
+# reads them to decide what may be published. Do not rename these artifacts without changing release-native.yml.
+name: Test native (arcadedb)
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths: &native_paths
+      - "native/**"
+      - "src/arcadedb/_native/**"
+      - "tests/test_native_*.py"
+      - "tests/conftest.py"
+      - "scripts/select_native_matrix.py"
+      - "tests/test_select_native_matrix.py"
+      - ".github/workflows/test-native.yml"
+  push:
+    branches: [main]
+    paths: *native_paths
+  schedule:
+    - cron: "40 3 * * *"
+  # Called by release-native.yml on a version tag.
+  workflow_call:
+    inputs:
+      version:
+        description: "Wheel version to build (PEP 440: A.B.C.devN, A.B.C or A.B.C.postN); the release passes the tag"
+        required: true
+        type: string
+      engine:
+        description: "Engine release (Maven Central) the image links; empty = the release segment of a final version, else the newest release"
+        required: false
+        default: ""
+        type: string
+      release:
+        description: "The release legs: all four platforms and Python 3.11 to 3.14 (otherwise the small main/nightly legs)"
+        required: false
+        default: false
+        type: boolean
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Wheel version to build (PEP 440: A.B.C.devN, A.B.C or A.B.C.postN)"
+        required: false
+        default: "26.11.1.dev0"
+        type: string
+      engine:
+        description: "Engine release (Maven Central) the image links; empty = the release segment of a final version, else the newest release"
+        required: false
+        default: ""
+        type: string
+
+# The group names the workflow literally: github.workflow is the CALLER's name in a workflow_call, and the group of release-native.yml
+# must differ from this one or the two would wait for each other.
+concurrency:
+  group: test-native-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.ref }}
+  # A dry run is superseded by a newer one; a run for a tag is never cancelled (a half-done release is worse than a queued one).
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+
+permissions:
+  contents: read
+
+env:
+  GRAALVM_VERSION: "25.4.4.1.1"
+  GRAALVM_BASE: https://github.com/graalvm/graalvm-ce-builds/releases/download/graal-25.4.4.1.1
+  UV_VERSION: "0.12.0"
+  PYTHONUTF8: "1" # Windows defaults to cp1252; the notices contain non-ASCII author names
+  # The version and engine of a run that does not pass them (pull request, push, nightly). The newest engine release on Maven Central is what an A.B.C.devN wheel links
+  # (the A.B.C release does not exist yet); raise it when a newer release is out.
+  DEFAULT_VERSION: "26.11.1.dev0"
+  DEV_ENGINE: "26.10.2"
+
+jobs:
+  plan:
+    name: Plan the legs
+    # a draft pull request starts the platform legs when it is marked ready, as in test-jvm.yml
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      run: ${{ steps.plan.outputs.run }}
+      version: ${{ steps.ver.outputs.version }}
+      engine: ${{ steps.ver.outputs.engine }}
+      final: ${{ steps.ver.outputs.final }}
+      build: ${{ steps.plan.outputs.build }}
+      test: ${{ steps.plan.outputs.test }}
+      pyver: ${{ steps.plan.outputs.pyver }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 50
+
+      - name: Resolve the version and the engine
+        id: ver
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_ENGINE: ${{ inputs.engine }}
+        run: |
+          set -euo pipefail
+          version="${INPUT_VERSION:-$DEFAULT_VERSION}"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(\.(dev|post)[0-9]+)?$ ]] || { echo "::error::Version '$version' is not A.B.C, A.B.C.devN or A.B.C.postN (no aN/bN/rcN)"; exit 1; }
+          base="${version%%.dev*}"
+          base="${base%%.post*}"
+          if [[ "$version" == *.dev* ]]; then
+            final=false
+            engine="${INPUT_ENGINE:-$DEV_ENGINE}"
+          else
+            final=true
+            engine="${INPUT_ENGINE:-$base}"
+            # a final or post wheel links exactly the engine release it is named after
+            [ "$engine" = "$base" ] || { echo "::error::Version $version links engine $base, not $engine" >&2; exit 1; }
+          fi
+          { echo "version=$version"; echo "engine=$engine"; echo "final=$final"; } >> "$GITHUB_OUTPUT"
+          echo "wheel version $version, engine $engine, final=$final"
+
+      - name: Choose the legs
+        id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          RELEASE: ${{ inputs.release }}
+        run: |
+          set -euo pipefail
+          run=true
+          event="$EVENT"
+          if [ "$RELEASE" = true ]; then event=release; fi
+          if [ "$EVENT" = "schedule" ]; then
+            changed="$(git log --since='25 hours ago' --format=%h -- src native tests scripts pyproject.toml .github/workflows/test-native.yml | wc -l)"
+            monday="$(date -u +%u)"
+            if [ "$changed" = 0 ] && [ "$monday" != 1 ]; then
+              run=false
+              echo "nothing changed in the last 25 hours and it is not Monday: no native run tonight"
+            fi
+          fi
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+          python3 -I scripts/select_native_matrix.py "$event" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Image and wheel (${{ matrix.key }})
+    needs: plan
+    if: ${{ needs.plan.outputs.run == 'true' }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: ${{ matrix.build_minutes }}
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false # a failing platform must not stop the others from building
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.build) }}
+    env:
+      KEY: ${{ matrix.key }}
+      KIND: ${{ matrix.kind }}
+    steps:
+      # Windows checks scripts out with CRLF by default, which breaks bash and mvnw: keep LF everywhere.
+      - name: Keep LF line endings
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # T: the runner temp directory in a form bash and the native tools both accept (D:/a/_temp on Windows)
+      - name: Paths
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then T="$(cygpath -m "$RUNNER_TEMP")"; else T="$RUNNER_TEMP"; fi
+          echo "T=$T" >> "$GITHUB_ENV"
+
+      - name: Install uv
+        if: ${{ matrix.kind != 'windows' }}
+        run: |
+          installer="$(mktemp)"
+          curl -LsSf --retry 5 --retry-all-errors --retry-delay 5 -o "$installer" "https://astral.sh/uv/${UV_VERSION}/install.sh"
+          sh "$installer"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Install uv (Windows)
+        if: ${{ matrix.kind == 'windows' }}
+        shell: pwsh
+        run: |
+          $env:UV_NO_MODIFY_PATH = "1"
+          Invoke-RestMethod "https://astral.sh/uv/$env:UV_VERSION/install.ps1" | Invoke-Expression
+          Add-Content -Path $env:GITHUB_PATH -Value "$env:USERPROFILE\.local\bin"
+
+      # The builder heap is 12g (8g ran out of memory on the laptop, 2026-10-25): swap keeps a 16 GB runner from being killed.
+      - name: Add swap
+        if: ${{ matrix.kind == 'linux' }}
+        run: |
+          set -euo pipefail
+          sudo fallocate -l 8G /swapfile.native
+          sudo chmod 600 /swapfile.native
+          sudo mkswap /swapfile.native
+          sudo swapon /swapfile.native
+          free -m
+
+      - name: Download GraalVM CE and verify its sha256
+        env:
+          GRAALVM_ASSET: ${{ matrix.graalvm_asset }}
+          GRAALVM_SHA256: ${{ matrix.graalvm_sha256 }}
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 -o "$T/graalvm.archive" "$GRAALVM_BASE/$GRAALVM_ASSET"
+          if command -v sha256sum > /dev/null; then
+            echo "$GRAALVM_SHA256  $T/graalvm.archive" | sha256sum -c -
+          else
+            echo "$GRAALVM_SHA256  $T/graalvm.archive" | shasum -a 256 -c -
+          fi
+          mkdir -p "$T/graalvm"
+          case "$GRAALVM_ASSET" in
+            *.zip)
+              7z x -y -o"$T/graalvm-x" "$T/graalvm.archive" > /dev/null
+              mv "$T"/graalvm-x/*/* "$T/graalvm/"
+              ;;
+            *) tar -xzf "$T/graalvm.archive" -C "$T/graalvm" --strip-components=1 ;;
+          esac
+          rm -rf "$T/graalvm.archive" "$T/graalvm-x"
+          home="$T/graalvm"
+          # the macOS archive is a bundle: the JDK home is below Contents/Home
+          if [ -f "$home/Contents/Home/release" ]; then home="$home/Contents/Home"; fi
+          echo "GRAALVM_HOME_P5=$home" >> "$GITHUB_ENV"
+          grep -F "GRAALVM_VERSION=\"$GRAALVM_VERSION\"" "$home/release"
+          ni="$home/bin/native-image"
+          if [ "$KIND" = windows ]; then ni="$ni.cmd"; fi
+          "$ni" --version
+
+      # native-image on Windows needs the MSVC toolchain on PATH and the INCLUDE/LIB variables (what the x64 Native Tools prompt sets).
+      - name: Load the MSVC environment
+        if: ${{ matrix.kind == 'windows' }}
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vs) { throw "no Visual Studio with the C++ tools" }
+          $bat = Join-Path $vs 'VC\Auxiliary\Build\vcvars64.bat'
+          Write-Host "vcvars: $bat"
+          $keep = '^(PATH|INCLUDE|LIB|LIBPATH|VC.*|VS.*|WindowsSdk.*|WindowsSDK.*|UCRT.*|UniversalCRT.*|DevEnv.*|Framework.*|NETFXSDK.*|Platform|CommandPromptType)$'
+          cmd /c "`"$bat`" >nul && set" | ForEach-Object {
+            # the name and value are taken before the second -match, which would overwrite $Matches
+            $i = $_.IndexOf('=')
+            if ($i -gt 0) {
+              $name = $_.Substring(0, $i)
+              if ($name -match $keep) { Add-Content -Path $env:GITHUB_ENV -Value $_ }
+            }
+          }
+
+      - name: Hide Git's GNU link.exe (it shadows the MSVC linker)
+        if: ${{ matrix.kind == 'windows' }}
+        run: |
+          mv /usr/bin/link.exe /usr/bin/link-gnu.exe || true
+          echo "link is now: $(command -v link || echo none)"
+
+      # -march=compatibility, -J-Xmx12g, -H:-VectorAPISupport, fastops.mode 1, inside the manylinux_2_34 container (glibc 2.34) so the
+      # glibc floor of libarcadedb.so is a guarantee, not a property of the runner.
+      - name: Build the native image in manylinux_2_34
+        if: ${{ matrix.kind == 'linux' }}
+        env:
+          ENGINE: ${{ needs.plan.outputs.engine }}
+          MANYLINUX_IMAGE: ${{ matrix.container }}
+          XMX: ${{ matrix.xmx }}
+          NI_EXTRA: ${{ matrix.ni_extra }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$T/lib" "$T/m2"
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/work" -v "$GRAALVM_HOME_P5:/graalvm:ro" -v "$T/lib:/out" -v "$T/m2:/root/.m2" \
+            -e GRAALVM_HOME_P5=/graalvm -e ARCADEDB_ENGINE_VERSION="$ENGINE" -e MARCH=compatibility -e XMX="$XMX" -e NI_EXTRA="$NI_EXTRA" \
+            "$MANYLINUX_IMAGE" bash -euo pipefail -c '
+              ldd --version | sed -n 1p # not `head -1`: under pipefail its early exit can SIGPIPE ldd
+              uname -m
+              # zlib-devel, unzip and which are in the base repositories; EPEL is not needed and its mirrors fail now and then
+              for i in 1 2 3 4 5; do
+                dnf install -y --disablerepo="epel*" --setopt=install_weak_deps=False zlib-devel unzip which >/dev/null && break
+                [ "$i" -lt 5 ] && { echo "dnf failed, retry $i in $((i * 20))s" >&2; sleep $((i * 20)); } || exit 1
+              done
+              cd /work
+              bash native/scripts/build-image.sh /out
+            ' || { tail -n 80 "$T/lib/build.log" || true; exit 1; }
+          # the container ran as root: give the files back to the runner user
+          sudo chown -R "$(id -u):$(id -g)" "$T/lib" "$GITHUB_WORKSPACE"
+          cat "$T/lib/build.done"
+          cat "$T/lib/sha256.txt"
+          ls -l "$T/lib"
+
+      # macOS and Windows build on the runner itself (no container): same script, capped heap/threads where the runner is small.
+      - name: Build the native image on the runner
+        if: ${{ matrix.kind != 'linux' }}
+        env:
+          ARCADEDB_ENGINE_VERSION: ${{ needs.plan.outputs.engine }}
+          MARCH: compatibility
+          XMX: ${{ matrix.xmx }}
+          NI_EXTRA: ${{ matrix.ni_extra }}
+          MACOSX_DEPLOYMENT_TARGET: ${{ matrix.macos_target }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$T/lib"
+          bash native/scripts/build-image.sh "$T/lib" || { tail -n 120 "$T/lib/build.log" || true; exit 1; }
+          cat "$T/lib/build.done"
+          cat "$T/lib/sha256.txt"
+          ls -l "$T/lib"
+
+      - name: Glibc floor of the libraries
+        if: ${{ matrix.kind == 'linux' }}
+        run: |
+          set -euo pipefail
+          for so in "$T"/lib/*.so; do
+            top="$(objdump -T "$so" | grep -Eo 'GLIBC_[0-9]+\.[0-9]+(\.[0-9]+)?' | sort -uV | tail -n 1)"
+            echo "$(basename "$so"): highest $top"
+            [ "$(printf '%s\nGLIBC_2.34\n' "$top" | sort -V | tail -n 1)" = "GLIBC_2.34" ] || { echo "$so needs $top, above the manylinux_2_34 floor" >&2; exit 1; }
+          done
+
+      - name: Build the wheel
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+          ENGINE: ${{ needs.plan.outputs.engine }}
+        run: |
+          set -euo pipefail
+          # the Linux container logged /root/.m2/repository in the native-image classpath; on the runner that is $T/m2/repository
+          case "$KIND" in
+            linux) m2="$T/m2/repository" ;;
+            windows) m2="$(cygpath -m "$HOME")/.m2/repository" ;;
+            *) m2="$HOME/.m2/repository" ;;
+          esac
+          mkdir -p "$T/record"
+          uv run --no-project --python 3.12 python native/wheel/build_wheel.py --lib-dir "$T/lib" --version "$VERSION" --engine "$ENGINE" \
+            --graalvm-home "$GRAALVM_HOME_P5" --m2-repo "$m2" \
+            --notices-out "$T/record/THIRD_PARTY_NOTICES.generated.md" --out "$T/wheel"
+          ls -l "$T/wheel/dist"
+          shopt -s nullglob
+          wheels=("$T"/wheel/dist/*.whl)
+          [ "${#wheels[@]}" = 1 ]
+
+      - name: "Gate: auditwheel grants the manylinux tag, no ISA warning"
+        if: ${{ matrix.kind == 'linux' }}
+        env:
+          PLAT: ${{ matrix.plat_re }}
+        run: |
+          set -euo pipefail
+          w="$(ls "$T"/wheel/dist/*.whl)"
+          uvx auditwheel show "$w" | tee "$T/auditwheel.txt"
+          # auditwheel wraps its report to the terminal width, so match on one line with the whitespace collapsed
+          tr -s '[:space:]' ' ' < "$T/auditwheel.txt" > "$T/auditwheel.flat"
+          grep -F 'consistent with the following platform tag' "$T/auditwheel.flat"
+          grep -F "\"$PLAT\"" "$T/auditwheel.flat"
+          if grep -Eiq 'instruction set|x86_64_v[0-9]' "$T/auditwheel.flat"; then
+            echo "auditwheel reports an ISA warning: the image is not baseline x86-64" >&2
+            exit 1
+          fi
+
+      - name: "Gate: the macOS library links system libraries only"
+        if: ${{ matrix.kind == 'macos' }}
+        run: |
+          set -euo pipefail
+          w="$(ls "$T"/wheel/dist/*.whl)"
+          mkdir -p "$T/unz"
+          unzip -q -o "$w" -d "$T/unz"
+          dylib="$(ls "$T"/unz/arcadedb/_native/libarcadedb.dylib)"
+          otool -L "$dylib"
+          otool -l "$dylib" | grep -A4 -E 'LC_BUILD_VERSION|LC_VERSION_MIN' || true
+          lipo -info "$dylib"
+          # delocate lists the libraries the wheel would have to bundle: none may remain (system libraries are not listed)
+          deps="$(uvx --from delocate delocate-listdeps "$w")"
+          printf 'delocate-listdeps: [%s]\n' "$deps"
+          [ -z "$deps" ]
+
+      # Informational: the imported DLLs, so a dependency on the Visual C++ redistributable would be visible.
+      - name: List the DLLs the Windows library imports
+        if: ${{ matrix.kind == 'windows' }}
+        run: |
+          set -euo pipefail
+          dll="$(ls "$T"/lib/libarcadedb.dll)"
+          dumpbin //dependents "$dll" | tee "$T/dumpbin.txt"
+
+      - name: "Gate: twine check"
+        run: uvx twine check --strict "$T"/wheel/dist/*.whl
+
+      - name: "Gate: the wheel is arcadedb, its version equals the requested (tag) version, the tag fits the platform"
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+          PLAT_RE: ${{ matrix.plat_re }}
+        run: |
+          set -euo pipefail
+          w="$(ls "$T"/wheel/dist/*.whl)"
+          uv run --no-project --with packaging python - "$w" "$VERSION" "$PLAT_RE" <<'PY'
+          import re
+          import sys
+          from packaging.utils import parse_wheel_filename
+          from packaging.version import Version
+          name, version, _build, tags = parse_wheel_filename(sys.argv[1].replace("\\", "/").rsplit("/", 1)[-1])
+          want = Version(sys.argv[2])
+          print(f"wheel {name} {version} {sorted(map(str, tags))}; requested {want}")
+          assert str(name) == "arcadedb", name
+          assert str(want) == sys.argv[2], f"{sys.argv[2]} is not the canonical PEP 440 form {want}: fix the tag"
+          assert version == want, f"wheel version {version} != requested {want}"
+          assert len(tags) == 1, tags
+          (tag,) = tags
+          assert (tag.interpreter, tag.abi) == ("py3", "none"), tag
+          assert re.fullmatch(sys.argv[3], tag.platform), f"platform tag {tag.platform} does not match {sys.argv[3]}"
+          PY
+
+      # also on failure: the generated notices and the full build log are what a drift needs to be diagnosed
+      - name: Collect the build record
+        if: ${{ always() }}
+        run: |
+          mkdir -p "$T/dist-out" "$T/record"
+          cp "$T/lib/build.log" "$T/record/build.log" || true
+          cp "$T"/wheel/dist/*.whl "$T/dist-out/" || true
+          for f in auditwheel.txt dumpbin.txt; do
+            if [ -f "$T/$f" ]; then cp "$T/$f" "$T/record/"; fi
+          done
+          cp "$T/lib/sha256.txt" "$T/lib/build.done" "$T/record/" || true
+          tail -n 400 "$T/lib/build.log" > "$T/record/build.log.tail" || true
+          (cd "$T/dist-out" && if command -v sha256sum > /dev/null; then sha256sum ./*.whl; else shasum -a 256 ./*.whl; fi) | tee "$T/record/wheel.sha256" || true
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: native-wheel-${{ matrix.key }}
+          path: ${{ runner.temp }}/dist-out/*.whl
+          if-no-files-found: error
+          retention-days: 30
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ always() }}
+        with:
+          name: native-build-record-${{ matrix.key }}
+          path: ${{ runner.temp }}/record/
+          if-no-files-found: ignore
+          retention-days: 30
+
+  test:
+    name: Parity against the installed wheel (${{ matrix.key }}, Python ${{ matrix.python }})
+    needs: [plan, build]
+    # A platform whose build failed has no wheel to download and shows red here; the other platforms still run.
+    if: ${{ !cancelled() && needs.plan.outputs.run == 'true' }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: ${{ matrix.test_minutes }}
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.test) }}
+    env:
+      KEY: ${{ matrix.key }}
+      PY: ${{ matrix.python }}
+    steps:
+      - name: Keep LF line endings
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Paths
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then T="$(cygpath -m "$RUNNER_TEMP")"; else T="$RUNNER_TEMP"; fi
+          echo "T=$T" >> "$GITHUB_ENV"
+
+      - name: Install uv
+        if: ${{ runner.os != 'Windows' }}
+        run: |
+          installer="$(mktemp)"
+          curl -LsSf --retry 5 --retry-all-errors --retry-delay 5 -o "$installer" "https://astral.sh/uv/${UV_VERSION}/install.sh"
+          sh "$installer"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Install uv (Windows)
+        if: ${{ runner.os == 'Windows' }}
+        shell: pwsh
+        run: |
+          $env:UV_NO_MODIFY_PATH = "1"
+          Invoke-RestMethod "https://astral.sh/uv/$env:UV_VERSION/install.ps1" | Invoke-Expression
+          Add-Content -Path $env:GITHUB_PATH -Value "$env:USERPROFILE\.local\bin"
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: native-wheel-${{ matrix.key }}
+          path: ${{ runner.temp }}/wheel
+
+      # The tests of this checkout run in a clean environment that contains the wheel and the test dependencies, not the source tree.
+      # The repository tooling tests that are about the wheel template and the matrix run here too (they need the checkout).
+      - name: Run the parity suite
+        env:
+          FINAL: ${{ needs.plan.outputs.final }}
+        run: |
+          set -euo pipefail
+          w="$(ls "$T"/wheel/*.whl)"
+          mkdir -p "$T/parity"
+          cores="$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 2)"
+          limit=()
+          if [ "$FINAL" = true ]; then limit=(--max-notyet 0); fi
+          uv run --no-project --python "$PY" --with "$w" --with pytest --with setuptools --with numpy --with requests --with jpype1 --with pyarrow \
+            --with polars --with pandas --with duckdb --with networkx --with "psycopg[binary]" --with adbc-driver-postgresql \
+            --with redis --with neo4j --with ladybug \
+            python native/wheel/parity_wheel.py --repo "$GITHUB_WORKSPACE" \
+              --out "$T/parity/parity-wheel.tsv" --cores "0-$((cores - 1))" "${limit[@]}" | tee "$T/parity/parity-wheel.run.log"
+
+      - name: "Gate: no failure, error, crash, timeout or uncounted skip"
+        run: |
+          set -euo pipefail
+          tsv="$T/parity/parity-wheel.tsv"
+          # the pyver job has a copy of this awk: keep the two in sync
+          awk -F'\t' '
+            NR == 1 { next }
+            $1 == "TOTAL" { passed = $2; failed = $3; err = $4; notyet = $5; na = $6; skipped = $7; tot = 1; next }
+            $8 != "" { bad = bad " " $1 "(" $8 ")" }
+            END {
+              if (!tot) { print "no TOTAL row" > "/dev/stderr"; exit 1 }
+              printf "parity %s py%s: passed=%s failed=%s error=%s notyet=%s na_jvm=%s skipped=%s\n", ENVIRON["KEY"], ENVIRON["PY"], passed, failed, err, notyet, na, skipped
+              if (bad != "") { print "files with a status:" bad > "/dev/stderr"; exit 1 }
+              if (passed + 0 == 0 || failed + 0 != 0 || err + 0 != 0) exit 1
+              # this repository accepts no skips; NOTYET and NA-JVM are the two counted kinds of the native build
+              if (skipped + 0 != 0) { print "skipped tests that are neither NOTYET nor NA-JVM: " skipped > "/dev/stderr"; exit 1 }
+            }' "$tsv" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # Reached only when the gate passed: release-native.yml reads these markers (one per platform and Python, holding the wheel file name).
+      - name: Mark this leg as passed
+        run: |
+          set -euo pipefail
+          mkdir -p "$T/passed"
+          basename "$(ls "$T"/wheel/*.whl)" > "$T/passed/$KEY-py$PY.ok"
+          cat "$T/passed/$KEY-py$PY.ok"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: native-passed-${{ matrix.key }}-py${{ matrix.python }}
+          path: ${{ runner.temp }}/passed/${{ matrix.key }}-py${{ matrix.python }}.ok
+          if-no-files-found: error
+          retention-days: 30
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ !cancelled() }}
+        with:
+          name: native-parity-${{ matrix.key }}-py${{ matrix.python }}
+          path: |
+            ${{ runner.temp }}/parity/parity-wheel.tsv
+            ${{ runner.temp }}/parity/parity-wheel.run.log
+            ${{ runner.temp }}/parity/parity-wheel-xml/
+          if-no-files-found: warn
+          retention-days: 30
+
+  # The cheap Python-version coverage of the wheel of linux-x86_64 (py3-none: the same file for every Python, nothing is rebuilt): a subset of
+  # the test files, not the whole suite. The legs are the supported Pythons the full parity runs of this event leave out, plus the
+  # free-threaded 3.14t (scripts/select_native_matrix.py).
+  # INFORMATIONAL for now: release-native.yml (verify and the publish jobs) reads only the native-passed-* markers and the native-wheel-* wheels,
+  # never an artifact of this job, so a red leg never blocks a release. Promote it once it has been green for a while.
+  # 3.14t runs without polars, and so without test_dataframe_ingest.py (it imports polars at module level): polars ships abi3 wheels only
+  # (polars and polars-runtime-32 have no cp314t wheel, and an abi3 wheel cannot be installed on a free-threaded build). The other
+  # dependencies of the subset (numpy, pandas, pyarrow, jpype1, requests) all have cp314t wheels. polars is an optional extra of the wheel.
+  pyver:
+    name: Python ${{ matrix.python }} on the wheel (linux-x86_64)
+    needs: [plan, build]
+    # The linux-x86_64 build may have failed: then there is no wheel to download and this shows red, as the test job does.
+    if: ${{ !cancelled() && needs.plan.outputs.run == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.pyver) }}
+    env:
+      KEY: linux-x86_64
+      PY: ${{ matrix.python }}
+      WITH_POLARS: ${{ matrix.polars }}
+      FREE_THREADED: ${{ matrix.freethreaded }}
+      # The subset: ctypes layer and database lifecycle (test_core, test_native_udf), queries and results (test_resultset), parameters
+      # (test_parameter_binding), type conversion (test_type_conversion), transactions (test_transaction_config), async (test_async_executor),
+      # threads (test_concurrency, test_free_threading), vectors (test_vector), numpy (test_numpy_support), arrow (test_resultset_arrow), pandas
+      # and arrow readers (test_columnar_readers). test_dataframe_ingest (pandas, polars and arrow ingest) is added where polars installs.
+      SUBSET: test_core.py,test_resultset.py,test_type_conversion.py,test_parameter_binding.py,test_transaction_config.py,test_async_executor.py,test_vector.py,test_numpy_support.py,test_resultset_arrow.py,test_columnar_readers.py,test_native_udf.py,test_concurrency.py,test_free_threading.py
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Paths
+        run: echo "T=$RUNNER_TEMP" >> "$GITHUB_ENV"
+
+      - name: Install uv
+        run: |
+          installer="$(mktemp)"
+          curl -LsSf --retry 5 --retry-all-errors --retry-delay 5 -o "$installer" "https://astral.sh/uv/${UV_VERSION}/install.sh"
+          sh "$installer"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      # The wheel of the build job, not a rebuild: the very file the test job installs.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: native-wheel-linux-x86_64
+          path: ${{ runner.temp }}/wheel
+
+      - name: Run the subset against the installed wheel
+        run: |
+          set -euo pipefail
+          w="$(ls "$T"/wheel/*.whl)"
+          mkdir -p "$T/parity"
+          files="$SUBSET"
+          with_polars=()
+          if [ "$WITH_POLARS" = true ]; then
+            files="$files,test_dataframe_ingest.py"
+            with_polars=(--with polars)
+          fi
+          echo "python $PY, files: $files"
+          cores="$(nproc)"
+          uv run --no-project --python "$PY" --with "$w" --with pytest --with numpy --with requests --with jpype1 --with pyarrow \
+            --with pandas ${with_polars[@]+"${with_polars[@]}"} \
+            python native/wheel/parity_wheel.py --repo "$GITHUB_WORKSPACE" --files "$files" \
+              --out "$T/parity/parity-wheel.tsv" --cores "0-$((cores - 1))" | tee "$T/parity/parity-wheel.run.log"
+
+      # A free-threaded leg only means something if the GIL stays off once the wheel and the extension modules are loaded.
+      - name: Report whether the GIL is enabled
+        run: |
+          set -euo pipefail
+          w="$(ls "$T"/wheel/*.whl)"
+          uv run --no-project --python "$PY" --with "$w" --with numpy --with pandas --with pyarrow --with jpype1 python - <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
+          import os
+          import sys
+
+          import arcadedb  # noqa: F401
+          import jpype  # noqa: F401
+          import numpy  # noqa: F401
+          import pandas  # noqa: F401
+          import pyarrow  # noqa: F401
+
+          gil = sys._is_gil_enabled() if hasattr(sys, "_is_gil_enabled") else True
+          print(f"python {sys.version.split()[0]}, GIL enabled after loading the wheel and its dependencies: {gil}")
+          if os.environ["FREE_THREADED"] == "true" and gil:
+              print("::warning::the free-threaded leg re-enabled the GIL: it does not test free threading")
+          PY
+
+      - name: "Gate: no failure, error, crash, timeout or uncounted skip"
+        run: |
+          set -euo pipefail
+          tsv="$T/parity/parity-wheel.tsv"
+          # the same awk as the gate of the test job: keep the two in sync
+          awk -F'\t' '
+            NR == 1 { next }
+            $1 == "TOTAL" { passed = $2; failed = $3; err = $4; notyet = $5; na = $6; skipped = $7; tot = 1; next }
+            $8 != "" { bad = bad " " $1 "(" $8 ")" }
+            END {
+              if (!tot) { print "no TOTAL row" > "/dev/stderr"; exit 1 }
+              printf "parity %s py%s: passed=%s failed=%s error=%s notyet=%s na_jvm=%s skipped=%s\n", ENVIRON["KEY"], ENVIRON["PY"], passed, failed, err, notyet, na, skipped
+              if (bad != "") { print "files with a status:" bad > "/dev/stderr"; exit 1 }
+              if (passed + 0 == 0 || failed + 0 != 0 || err + 0 != 0) exit 1
+              # this repository accepts no skips; NOTYET and NA-JVM are the two counted kinds of the native build
+              if (skipped + 0 != 0) { print "skipped tests that are neither NOTYET nor NA-JVM: " skipped > "/dev/stderr"; exit 1 }
+            }' "$tsv" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ !cancelled() }}
+        with:
+          name: native-parity-pyver-py${{ matrix.python }}
+          path: |
+            ${{ runner.temp }}/parity/parity-wheel.tsv
+            ${{ runner.temp }}/parity/parity-wheel.run.log
+            ${{ runner.temp }}/parity/parity-wheel-xml/
+          if-no-files-found: warn
+          retention-days: 30

@@ -50,6 +50,18 @@ SCALARS = {
 PROJECTION = "SELECT :i AS i, :big AS big, :f AS f, :s AS s, :b AS b, :n AS n"
 
 
+def test_named_scalars_round_trip(db):
+    assert db.query("sql", PROJECTION, SCALARS).first().to_dict() == SCALARS
+
+
+def test_positional_scalars_round_trip(db):
+    values = (7, 2**40, 1.5, "text", True, None)
+    row = db.query(
+        "sql", "SELECT ? AS a, ? AS b, ? AS c, ? AS d, ? AS e, ? AS f", *values
+    ).first()
+    assert row.to_dict() == dict(zip("abcdef", values))
+
+
 def test_named_scalars_bind_as_the_plain_path_binds_them(db):
     glued = db.query("sql", PROJECTION, SCALARS).first()
     plain = _plain_query(db, PROJECTION, (SCALARS,)).first()
@@ -123,6 +135,11 @@ def test_a_lone_null_or_lone_java_array_keeps_the_plain_path(db, lone):
         )
         is core._NO_GLUE
     )
+
+
+@pytest.mark.parametrize("lone", [None, "java-array"])
+def test_a_lone_null_or_lone_java_array_binds_as_the_value(db, lone):
+    value = None if lone is None else arcadedb.to_java_float_array([1.0, 2.0])
     row = db.query("sql", "SELECT ? AS x", value).first()
     assert (
         (row.get("x") is None) if lone is None else (list(row.get("x")) == [1.0, 2.0])
