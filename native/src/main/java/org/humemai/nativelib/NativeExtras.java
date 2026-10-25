@@ -76,6 +76,8 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 public final class NativeExtras {
   private NativeExtras() {
@@ -131,9 +133,13 @@ public final class NativeExtras {
     return UnmanagedMemory.malloc(WordFactory.unsigned(size));
   }
 
-  /** A callback failure that must not stop an async writer: reported on stderr, not lost. */
+  /**
+   * A callback failure that must not stop an async writer: logged, not lost. It goes through java.util.logging, never to System.err:
+   * on Windows the image caches the OS handle of stdout and stderr at start-up, and a host that redirects fd 1 or 2 afterwards (pytest
+   * capture, a service) closes that handle, so a database file opened later can get the same handle value and receive the text.
+   */
   static void swallowed(final String where, final Throwable t) {
-    System.err.println("[arcadedb-native] " + where + " failed: " + t);
+    Logger.getLogger("org.humemai.nativelib").log(Level.WARNING, "[arcadedb-native] " + where + " failed: " + t);
   }
 
   /** Calls Python with an event whose reply nobody reads; a Python exception (reported in the reply) is logged, not lost. */

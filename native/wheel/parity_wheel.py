@@ -100,6 +100,9 @@ for f in files:
         a.python,
         "-m",
         "pytest",
+        # No --capture=sys on Windows: pytest's default fd capture (dup2 onto fd 1 and 2) is the regression check for engine log
+        # text landing in database files there (tests/test_log_redirect.py is the direct test; the whole-file runs of test_vector.py
+        # were the ones that failed before the engine stopped logging to the console on Windows).
         f"tests/{name}",
         "-q",
         "-p",

@@ -79,7 +79,7 @@ def _log_isolate_args(user_args, log_dir) -> list:
         args.append(f"-Darcadedb.server.logsDirectory={posix}")
     if not any(a.startswith("-Djava.util.logging.config.file=") for a in user_args):
         args.append(
-            f"-Djava.util.logging.config.file={posix}/{_logdir.LOGGING_CONFIG_NAME}"
+            f"-Djava.util.logging.config.file={posix}/{_logdir.logging_config_name()}"
         )
     return args
 
@@ -102,7 +102,7 @@ def _heap_isolate_args(user_args) -> list:
 
 
 def _prepare_logging(user_args) -> list:
-    """Create the log directory, write its logging.properties and return the isolate arguments for it (see :func:`_log_isolate_args`)."""
+    """Create the log directory, write its logging config and return the isolate arguments for it (see :func:`_log_isolate_args`)."""
     global LOG_DIR_USED
     log_dir = _logdir.usable_log_dir(_logdir.default_log_dir())
     _logdir.write_logging_config(log_dir, _logdir.NATIVE_ENGINE_LOG_PROPERTIES)

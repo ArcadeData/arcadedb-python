@@ -6,6 +6,11 @@ write a ``logging.properties`` there whose file pattern is ``${arcadedb.server.l
 system properties at it: ``arcadedb.server.logsDirectory`` (the directory) and ``java.util.logging.config.file`` (that file).
 The JVM build sets them as JVM arguments (``jvm.py``), the native build as isolate arguments (``_native/lib.py``). The engine
 reads both when it first logs, so they have to be in place before the first engine call. This module has no JVM and no JPype.
+
+The engine's console handler is off by default on Windows (``ARCADEDB_LOG_CONSOLE`` turns it on or off on any platform). On Windows
+the runtime caches the OS handle of stdout and stderr at start-up. A host that redirects fd 1 or 2 afterwards (pytest's fd capture,
+a service, an embedding application) closes that handle, a database file opened later can get the same handle value, and the next
+console log line is written into that file. The log file does not have that problem: the engine opens it itself.
 """
 
 import os
@@ -13,13 +18,19 @@ import re
 import sys
 import tempfile
 from pathlib import Path
+from typing import Optional
 
 from ._logging import get_logger
 
 _LOGGER = get_logger(__name__)
 
 LOG_DIR_ENV = "ARCADEDB_LOG_DIR"
+LOG_CONSOLE_ENV = "ARCADEDB_LOG_CONSOLE"
 LOGGING_CONFIG_NAME = "logging.properties"
+# The config without the console handler has its own file name, so that two processes with different console settings that share a
+# log directory never replace each other's file between the write and the engine's first log call.
+FILE_ONLY_CONFIG_NAME = "logging-file-only.properties"
+CONSOLE_HANDLER = "java.util.logging.ConsoleHandler"
 
 # The engine's arcadedb-log.properties without its file pattern, for the native build: the image holds the engine's copy as a
 # resource, but an isolate argument has to name a real file, and there is no jar to read it from. tests/test_log_dir.py compares
@@ -80,18 +91,54 @@ def default_log_dir() -> Path:
     return state_base_dir() / "arcadedb" / "log"
 
 
-def render_logging_config(engine_text: str) -> str:
-    """The engine's logging config with the file log in ``logsDirectory``.
+def console_enabled() -> bool:
+    """Whether the engine logs to the console (stdout/stderr) as well as to its log file.
+
+    ``ARCADEDB_LOG_CONSOLE`` decides on every platform: ``1``, ``true``, ``yes`` or ``on`` turns the console handler on; ``0``,
+    ``false``, ``no`` or ``off`` turns it off. Unset (or any other value), it is on everywhere except Windows, where it is off
+    (see the module docstring for why). A ``java.util.logging.config.file`` the caller passes replaces all of this.
+    """
+    value = os.environ.get(LOG_CONSOLE_ENV, "").strip().lower()
+    if value in ("1", "true", "yes", "on"):
+        return True
+    if value in ("0", "false", "no", "off"):
+        return False
+    return sys.platform != "win32"
+
+
+def logging_config_name(console: Optional[bool] = None) -> str:
+    """The file name of the generated logging config: ``logging.properties`` with the console handler, ``logging-file-only.properties`` without."""
+    if console is None:
+        console = console_enabled()
+    return LOGGING_CONFIG_NAME if console else FILE_ONLY_CONFIG_NAME
+
+
+def render_logging_config(engine_text: str, console: Optional[bool] = None) -> str:
+    """The engine's logging config with the file log in ``logsDirectory``, and without the console handler unless ``console``.
 
     The jar's own file hard-codes ``./log/arcadedb.log``, which lands in the
     working directory. The engine resolves ``${arcadedb.server.logsDirectory}``
     in the pattern, and the argument that sets it is added by the caller.
+    ``console`` None means :func:`console_enabled`.
     """
-    lines = [
-        line
-        for line in engine_text.splitlines()
-        if not re.match(r"\s*java\.util\.logging\.FileHandler\.pattern\s*[=:]", line)
-    ]
+    if console is None:
+        console = console_enabled()
+    lines = []
+    for line in engine_text.splitlines():
+        if re.match(r"\s*java\.util\.logging\.FileHandler\.pattern\s*[=:]", line):
+            continue
+        if not console:
+            handlers = re.match(r"(\s*handlers\s*[=:]\s*)(.*)$", line)
+            if handlers:
+                kept = [
+                    h
+                    for h in re.split(r"[,\s]+", handlers.group(2).strip())
+                    if h and h != CONSOLE_HANDLER
+                ]
+                line = f"{handlers.group(1)}{', '.join(kept)}"
+            elif re.match(r"\s*java\.util\.logging\.ConsoleHandler\.", line):
+                continue
+        lines.append(line)
     lines.append(
         "java.util.logging.FileHandler.pattern="
         "${arcadedb.server.logsDirectory}/arcadedb.log"
@@ -121,12 +168,14 @@ def usable_log_dir(log_dir: Path) -> Path:
 
 
 def write_logging_config(log_dir: Path, engine_text: str) -> None:
-    """Write ``logging.properties`` in ``log_dir`` (replaced atomically, and only when its text changed)."""
-    config = log_dir / LOGGING_CONFIG_NAME
-    rendered = render_logging_config(engine_text)
+    """Write the logging config in ``log_dir`` under :func:`logging_config_name` (replaced atomically, and only when its text changed)."""
+    console = console_enabled()
+    name = logging_config_name(console)
+    config = log_dir / name
+    rendered = render_logging_config(engine_text, console)
     try:
         if not config.exists() or config.read_text("iso-8859-1") != rendered:
-            tmp = log_dir / f"{LOGGING_CONFIG_NAME}.{os.getpid()}.tmp"
+            tmp = log_dir / f"{name}.{os.getpid()}.tmp"
             tmp.write_text(rendered, encoding="iso-8859-1", newline="\n")
             os.replace(tmp, config)
     except OSError as exc:
