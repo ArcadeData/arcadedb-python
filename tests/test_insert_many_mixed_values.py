@@ -96,9 +96,8 @@ def _per_row(db, type_name, rows):
 def _stored(db, type_name):
     """Every record by id as {property: (python type name, repr)}, so a changed type is as visible as a changed value."""
     out = []
-    for rec in db.query(
-        "sql", f"SELECT FROM {type_name} ORDER BY id"
-    ).to_list():  # nosec B608 - test-owned type name
+    sql = f"SELECT FROM {type_name} ORDER BY id"  # nosec B608 - test-owned type name
+    for rec in db.query("sql", sql).to_list():
         out.append(
             {
                 k: (type(v).__name__, repr(v))
