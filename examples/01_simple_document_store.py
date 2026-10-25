@@ -508,7 +508,9 @@ print("     - schema.json - Schema definition (types & properties)")
 print("     - Task_0.1.65536.v0.bucket - Data bucket with Task documents")
 print("     - dictionary.0.327680.v0.dict - String compression dictionary")
 print("     - statistics.json - Database statistics")
-print("   • ./log/ - ArcadeDB and JVM log files")
+print(
+    "   • ARCADEDB_LOG_DIR (default: a per-user state directory) - ArcadeDB and JVM log files"
+)
 print()
 print("💡 Next steps:")
 print("   • See docs/examples/ for detailed explanations")

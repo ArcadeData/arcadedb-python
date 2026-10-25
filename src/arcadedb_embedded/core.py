@@ -9,11 +9,18 @@ from collections.abc import Mapping
 from datetime import date
 from decimal import Decimal
 from os import PathLike
-from typing import Any, List, Optional
+from typing import Any, Callable, List, Optional
 
 import jpype
 
 from ._logging import get_logger
+from .callbacks import (
+    EventHandle,
+    FunctionRegistration,
+    clear_pending_interrupt,
+    raise_pending_interrupt,
+    register_event,
+)
 from .exceptions import ArcadeDBError, _retry_verdict
 from .graph import Document, Edge, Vertex
 from .graph_batch import GraphBatch
@@ -22,7 +29,12 @@ from .importer import import_documents as run_document_import
 from .jvm import start_jvm
 from .results import ResultSet
 from .transactions import TransactionContext
-from .type_conversion import _is_numpy_bool, convert_python_to_java, json_bulk_dumps
+from .type_conversion import (
+    _is_numpy_bool,
+    convert_python_to_java,
+    json_bulk_dumps,
+    split_float_vectors,
+)
 from .vector import to_java_float_array
 
 _LOGGER = get_logger(__name__)
@@ -177,7 +189,8 @@ def _column_to_java(name, values):
     and any other sequence convert per element into an ``Object[]`` (a ``str``
     reuses one Java String per distinct value, ``None`` is a null). A pandas
     ``Series`` is read through ``to_numpy``, with a nullable dtype's ``<NA>``
-    as ``None``. Kinds that do not cross natively raise ``TypeError`` rather
+    as ``None``. A 2-D ``float32`` array is a column of vectors: it crosses as
+    one ``float[]`` and each document gets one row of it. Kinds that do not cross natively raise ``TypeError`` rather
     than being stored as something else.
     """
     if hasattr(values, "to_numpy") and not isinstance(values, (list, tuple)):
@@ -187,9 +200,26 @@ def _column_to_java(name, values):
         else:  # a pandas extension dtype (Int64, string, boolean, category): its <NA> is a null
             values = values.to_numpy(dtype=object, na_value=None)
     if _np is not None and isinstance(values, _np.ndarray):
+        if values.ndim == 2 and values.dtype == _np.float32 and values.shape[1] > 0:
+            # a column of vectors: ONE float[] holds the whole matrix and the
+            # documents get a row each, Java-side (FloatVectors.Matrix)
+            return (
+                _java_class("com.arcadedb.python.FloatVectors$Matrix")(
+                    jpype.JArray(jpype.JFloat)(
+                        _np.ascontiguousarray(values).reshape(-1)
+                    ),
+                    int(values.shape[1]),
+                ),
+                int(values.shape[0]),
+            )
         if values.ndim != 1:
+            hint = (
+                "; a 2-D float32 matrix is accepted as a column of vectors"
+                if values.ndim == 2
+                else ""
+            )
             raise ValueError(
-                f"column {name!r} is {values.ndim}-dimensional; a column is one-dimensional"
+                f"column {name!r} is {values.ndim}-dimensional; a column is one-dimensional{hint}"
             )
         kind = values.dtype.kind
         if kind in "iu":
@@ -264,6 +294,7 @@ class Database:
         self._java_db = java_database
         self._closed = False
         self._async_executors = []
+        self._functions = FunctionRegistration(self)
 
     def __enter__(self):
         return self
@@ -371,6 +402,7 @@ class Database:
         is the positional list itself; ``None`` binds as null.
         """
         self._check_not_closed()
+        clear_pending_interrupt()
         try:
             if args:
                 java_result = _through_bridge(
@@ -384,7 +416,10 @@ class Database:
                 java_result = self._java_db.query(language, command)
             return ResultSet(java_result, self)
         except Exception as e:
-            raise ArcadeDBError(f"Query failed: {e}") from e
+            error = ArcadeDBError(f"Query failed: {e}")
+            error.__cause__ = e
+            raise_pending_interrupt(error, e)
+            raise error from e
 
     def command(self, language: str, command: str, *args) -> Optional[ResultSet]:
         """Execute a command (non-idempotent operation).
@@ -392,6 +427,7 @@ class Database:
         Parameters bind as in :meth:`query`.
         """
         self._check_not_closed()
+        clear_pending_interrupt()
         try:
             if args:
                 java_result = _through_bridge(
@@ -408,7 +444,10 @@ class Database:
                 return ResultSet(java_result, self)
             return None
         except Exception as e:
-            raise ArcadeDBError(f"Command failed: {e}") from e
+            error = ArcadeDBError(f"Command failed: {e}")
+            error.__cause__ = e
+            raise_pending_interrupt(error, e)
+            raise error from e
 
     def run_in_transaction(self, fn, retries: int = 12, backoff_s: float = 0.005):
         """
@@ -648,7 +687,13 @@ class Database:
         generator of any length can be loaded (#294). Values must be
         JSON-representable (str/int/float/bool/None and nested lists/dicts);
         a chunk containing other types (e.g. datetime, bytes) falls back
-        transparently to the per-row path.
+        transparently to the per-row path. A property declared
+        ``ARRAY_OF_FLOATS`` whose value in every row of a chunk is a list or a
+        numpy array of numbers of one length crosses as one binary float32
+        matrix beside the JSON instead of as text (``FloatVectors``); the stored
+        values are the list's, since the engine converts a list for such a
+        property to float. A vector that is ragged, missing or null in a row
+        stays in the JSON.
 
         Args:
             type_name: Target document type (must exist).
@@ -754,8 +799,11 @@ class Database:
 
     def _insert_many_chunk(self, type_name, chunk):
         """Insert one chunk of insert_many rows inside the open transaction."""
+        # Float vectors for ARRAY_OF_FLOATS properties cross as one binary matrix
+        # beside the JSON, not as text (see split_float_vectors).
+        split = split_float_vectors(self._java_db, type_name, chunk)
         try:
-            payload = json_bulk_dumps(chunk)
+            payload = json_bulk_dumps(split[0] if split else chunk)
         except (TypeError, ValueError):
             # Values the JSON text cannot carry unchanged (numpy integer
             # scalars, which json.dumps rejects; an integer beyond 64 bits,
@@ -771,9 +819,13 @@ class Database:
         try:
             # commitEvery 0 inside a transaction that is already open: the
             # helper only inserts, and the transaction stays with insert_many.
-            _java_class("com.arcadedb.python.DocumentBatcher").insertManyJson(
-                self._java_db, type_name, payload, 0, False
-            )
+            batcher = _java_class("com.arcadedb.python.DocumentBatcher")
+            if split:
+                batcher.insertManyJson(
+                    self._java_db, type_name, payload, 0, False, split[1], split[2]
+                )
+            else:
+                batcher.insertManyJson(self._java_db, type_name, payload, 0, False)
         except Exception as e:
             raise ArcadeDBError(f"Failed to bulk-insert into '{type_name}': {e}") from e
 
@@ -785,8 +837,9 @@ class Database:
         chunk = first
         try:
             while chunk:
+                split = split_float_vectors(self._java_db, type_name, chunk)
                 try:
-                    payload = json_bulk_dumps(chunk)
+                    payload = json_bulk_dumps(split[0] if split else chunk)
                 except (TypeError, ValueError):
                     payload = None
                 if payload is None:
@@ -811,9 +864,14 @@ class Database:
                         raise
                 else:
                     try:
-                        failures = batcher.insertManyJsonParallel(
-                            self._java_db, type_name, payload
-                        )
+                        if split:
+                            failures = batcher.insertManyJsonParallel(
+                                self._java_db, type_name, payload, split[1], split[2]
+                            )
+                        else:
+                            failures = batcher.insertManyJsonParallel(
+                                self._java_db, type_name, payload
+                            )
                     except Exception as e:
                         raise self._parallel_load_failed(type_name, e) from e
                     # The writers report a rejected record only through its
@@ -871,7 +929,10 @@ class Database:
         engine): 8.2 s against 18.4 s for ``insert_many`` (2.24x); every arm
         stored the same sums and count. Use it whenever the data already lives
         in columns (a pandas ``DataFrame``, a parquet batch, numpy arrays);
-        ``insert_many`` stays the path for a list of dicts.
+        ``insert_many`` stays the path for a list of dicts. A 2-D ``float32``
+        array is a column of vectors: the whole matrix crosses as one
+        ``float[]`` and each document gets one row of it (an ``ARRAY_OF_FLOATS``
+        property).
 
         Args:
             type_name: Target document type (must exist).
@@ -996,10 +1057,179 @@ class Database:
             )
         return n
 
+    def insert_dataframe(
+        self,
+        type_name: str,
+        df,
+        *,
+        batch_size: int = 10_000,
+        parallel: bool = False,
+    ) -> int:
+        """Load a pandas or Polars DataFrame into a type, in batches.
+
+        The DataFrame is read as an Arrow table (see :meth:`insert_arrow`, which
+        takes that table directly and has the type mapping, the declared-type
+        rules, and the failure contract). Each column becomes a typed array
+        that crosses the bridge once per batch: integers, floats, and booleans
+        without nulls as one buffer copy, anything else per element. A document
+        type gets documents; a vertex type gets vertices. An edge type is
+        refused: load the vertices, then buffer the edges with
+        ``graph_batch().new_edges()``.
+
+        What differs by library: a pandas ``NaN`` in a float column is pandas'
+        missing value and loads as a null, while a Polars ``NaN`` stays a
+        ``NaN`` (Polars keeps null and NaN apart). The pandas index is not
+        loaded (``df.reset_index()`` makes it a column), and pandas column
+        names must be strings. A Polars ``LazyFrame`` must be ``.collect()``-ed
+        first.
+
+        Args:
+            type_name: Target type (must exist, with or without declared
+                properties).
+            df: A pandas or Polars ``DataFrame``. Any object that speaks the
+                Arrow PyCapsule interface also works.
+            batch_size: Rows per batch. Each batch is converted, then written
+                and committed on its own, so memory stays bounded for a large
+                frame.
+            parallel: Document types only: hand each batch to the async
+                executor's parallel bucket writers (see :meth:`insert_columns`).
+
+        Returns:
+            Number of records written.
+
+        Raises:
+            ImportError: If pyarrow is not installed.
+            ValueError: If the frame has no columns, duplicate or non-string
+                column names, ``batch_size`` is not a positive integer, or
+                ``parallel`` is used with a vertex type.
+            TypeError: If a column has a type with no ArcadeDB mapping (time of
+                day, duration, map), or one that does not load into the property
+                type ``type_name`` declares for it (a float column into an
+                INTEGER property would truncate). Raised before anything is
+                written.
+            ArcadeDBError: If the type does not exist or is an edge type, or the
+                load fails (a duplicate key, a value the declared type refuses).
+                The batch in flight is rolled back; batches before it stay
+                committed, and the message says how many rows that is. A
+                transaction the caller opened is left to the caller (for
+                documents; a vertex load refuses to run inside one): the
+                batches join it, the message then says the rows were written
+                in your transaction, not committed, and a rollback removes them.
+
+        Example:
+            >>> import pandas as pd
+            >>> df = pd.DataFrame({"id": [1, 2], "name": ["a", "b"]})
+            >>> db.insert_dataframe("User", df)
+            2
+        """
+        from .dataframe import insert_table, to_arrow_table
+
+        self._check_not_closed()
+        table = to_arrow_table(df, what="insert_dataframe()")
+        return insert_table(
+            self,
+            type_name,
+            table,
+            batch_size=batch_size,
+            parallel=parallel,
+            what="insert_dataframe()",
+        )
+
+    def insert_arrow(
+        self,
+        type_name: str,
+        table,
+        *,
+        batch_size: int = 10_000,
+        parallel: bool = False,
+    ) -> int:
+        """Load an Arrow table into a type, in batches.
+
+        The Arrow counterpart of :meth:`insert_columns`: each Arrow column is
+        converted to the typed array ``insert_columns`` sends across the bridge
+        (``DocumentBatcher.insertColumns``), so a document type loads at that
+        path's speed; a vertex type loads through ``GraphBatch``. Documents and
+        vertices only: an edge type is refused.
+
+        A property the type does not declare takes the stored type below; a
+        declared property converts to its declared type.
+
+        | Arrow type | Stored as |
+        |---|---|
+        | int8 to int64, uint8 to uint32 | LONG (uint64 up to 2**63 - 1) |
+        | float16, float32, float64 | DOUBLE (float32 widens exactly) |
+        | bool | BOOLEAN |
+        | string, large_string, string_view | STRING |
+        | dictionary (categorical) | its value type |
+        | binary, large_binary | byte[] |
+        | timestamp without a time zone, any unit | a UTC date-time, the wall clock as it shows |
+        | timestamp with a time zone, any unit | a UTC date-time, converted to UTC |
+        | date32, date64 | DATE |
+        | decimal128, decimal256 | DECIMAL |
+        | list, large_list, fixed_size_list | LIST (ARRAY_OF_* when declared so) |
+        | struct | MAP |
+        | null (only nulls) | no value |
+
+        A date-time is a UTC wall clock. A declared property keeps its own
+        precision: DATETIME milliseconds, DATETIME_MICROS microseconds,
+        DATETIME_NANOS nanoseconds, DATETIME_SECOND seconds; a column the type
+        does not declare keeps the input's precision. Nanosecond input is read
+        from the integer epoch value, so it is not cut to microseconds on the
+        way in. Reading back is coarser: ``Result.get()`` returns a Python
+        ``datetime`` (microseconds at most) and ``to_arrow()``, ``to_polars()``,
+        ``to_dataframe()`` and ``to_columns()`` return milliseconds. Time-of-day, duration, and map
+        columns have no mapping and raise ``TypeError``. A null is stored as a
+        missing property.
+
+        A column loads into a declared property when the engine converts it
+        without guessing: integers into BYTE, SHORT, INTEGER, LONG, FLOAT,
+        DOUBLE, DECIMAL, or STRING (a value past the target's range fails the
+        load); floats into FLOAT, DOUBLE, DECIMAL, or STRING (never into an
+        integer property, which would truncate); booleans into BOOLEAN or
+        STRING; timestamps into any DATETIME precision or STRING; dates into DATE,
+        any DATETIME, or STRING; strings into STRING or LINK (RIDs). Anything else
+        raises ``TypeError`` before a row is written.
+
+        Args:
+            type_name: Target type (must exist).
+            table: A ``pyarrow.Table``, ``RecordBatch``, or ``RecordBatchReader``
+                (read whole), or any object that speaks the Arrow PyCapsule
+                interface.
+            batch_size: Rows per batch; each batch is written and committed on
+                its own.
+            parallel: Document types only: as in :meth:`insert_columns`.
+
+        Returns:
+            Number of records written.
+
+        Raises:
+            ImportError: If pyarrow is not installed.
+            ValueError, TypeError, ArcadeDBError: As for :meth:`insert_dataframe`.
+
+        Example:
+            >>> import pyarrow as pa
+            >>> table = pa.table({"id": [1, 2], "name": ["a", "b"]})
+            >>> db.insert_arrow("User", table)
+            2
+        """
+        from .dataframe import insert_table, to_arrow_table
+
+        self._check_not_closed()
+        arrow_table = to_arrow_table(table, what="insert_arrow()")
+        return insert_table(
+            self,
+            type_name,
+            arrow_table,
+            batch_size=batch_size,
+            parallel=parallel,
+            what="insert_arrow()",
+        )
+
     def close(self):
         """Close the database."""
         if not self._closed and self._java_db is not None:
             async_close_error = None
+            self._functions.clear()
             try:
                 async_close_error = self._close_async_executors()
                 self._java_db.close()
@@ -1033,6 +1263,20 @@ class Database:
             return self._java_db.getName()
         except Exception as e:
             raise ArcadeDBError(f"Failed to get database name: {e}") from e
+
+    def is_read_only(self) -> bool:
+        """Return True if the database was opened read-only.
+
+        Example:
+            >>> db = arcadedb.open_database("./mydb", read_only=True)
+            >>> db.is_read_only()
+            True
+        """
+        self._check_not_closed()
+        try:
+            return str(self._java_db.getMode()) == "READ_ONLY"
+        except Exception as e:
+            raise ArcadeDBError(f"Failed to read the database mode: {e}") from e
 
     def get_database_path(self) -> str:
         """Get the database path."""
@@ -1152,6 +1396,8 @@ class Database:
         pq_clusters: Optional[int] = None,
         pq_center_globally: Optional[bool] = None,
         pq_training_limit: Optional[int] = None,
+        rerank_oversample: Optional[int] = None,
+        fused_pq: Optional[bool] = None,
         build_graph_now: bool = True,
     ) -> "VectorIndex":
         """
@@ -1185,6 +1431,7 @@ class Database:
                 In current ArcadeDB engine builds, PRODUCT also requires enough indexed
                 vectors per bucket for PQ training; for tiny corpora, set `pq_clusters`
                 explicitly to a small value or prefer INT8/BINARY/NONE.
+                PRODUCT is not recommended; see ArcadeDB #10514.
             encoding: Optional storage encoding for the underlying vector property.
                 Use "INT8" when the document property stores pre-quantized bytes in a
                 `BINARY` property. When using INT8 encoding, set quantization to "NONE"
@@ -1216,7 +1463,17 @@ class Database:
             pq_center_globally: Whether to globally center vectors before PQ.
                 Requires quantization="PRODUCT".
             pq_training_limit: Max vectors to use for PQ training. Requires
-                quantization="PRODUCT".
+                quantization="PRODUCT". The codebook is trained on a random sample
+                of this size (the engine caps it at 128000).
+            rerank_oversample: Candidates per requested neighbour that a search
+                walking on the PQ codes scores again on the stored vectors
+                (maps to the index setting "rerankOversample"; the engine default
+                is 10, 0 returns the PQ scores alone, negative is refused).
+                Requires quantization="PRODUCT". A query can override it with the
+                `rerank` option of `vectorNeighbors`.
+            fused_pq: Whether the graph file stores the PQ codes of every node's
+                neighbours inline (jvector FusedPQ; maps to the index setting
+                "fusedPQ"; off by default). Requires quantization="PRODUCT".
             build_graph_now: If True (default), eagerly builds the vector graph
                 immediately after index creation. If False, graph preparation is
                 deferred and may happen lazily on first search.
@@ -1226,7 +1483,10 @@ class Database:
                 lookups.
             add_hierarchy: Whether to build hierarchical layers in the HNSW graph
                 (Default is True). If None, uses the engine default. Set explicitly to
-                True/False to force the behavior.
+                True/False to force the behavior. The default of True is a deliberate
+                choice of these bindings: the engine itself defaults to False, so a
+                SQL ``CREATE INDEX ... LSM_VECTOR`` without ``"addHierarchy"`` builds a
+                flat graph. Record the value you use when you compare results.
 
         Returns:
             VectorIndex object
@@ -1260,6 +1520,8 @@ class Database:
                     pq_clusters,
                     pq_center_globally,
                     pq_training_limit,
+                    rerank_oversample,
+                    fused_pq,
                 )
             ):
                 if not quantization or quantization.upper() != "PRODUCT":
@@ -1320,6 +1582,10 @@ class Database:
                 builder.withPQTrainingLimit(int(pq_training_limit))
 
             metadata_cfg = {}
+            if rerank_oversample is not None:
+                metadata_cfg["rerankOversample"] = int(rerank_oversample)
+            if fused_pq is not None:
+                metadata_cfg["fusedPQ"] = bool(fused_pq)
             if store_vectors_in_graph:
                 metadata_cfg["storeVectorsInGraph"] = True
             if add_hierarchy is not None:
@@ -1507,6 +1773,130 @@ class Database:
         except Exception as e:
             raise ArcadeDBError(f"Failed to set auto-transaction: {e}") from e
 
+    def register_function(
+        self,
+        name: str,
+        fn: Callable,
+        *,
+        min_args: Optional[int] = None,
+        max_args: Optional[int] = None,
+        deterministic: bool = False,
+        replace: bool = False,
+    ) -> None:
+        """
+        Register a Python function that SQL and openCypher statements can call.
+
+        After ``db.register_function("slugify", fn)``, ``SELECT slugify(name) FROM Person``
+        and ``MATCH (p:Person) RETURN slugify(p.name)`` call ``fn`` once per row.
+        Arguments reach ``fn`` as Python values (SQL ``NULL`` is ``None``) and the return
+        value is converted back with the bindings' type conversion, so ``fn`` may return
+        ``None``, a number, a string, a bool, a ``Decimal``, a ``datetime``, a list, or a
+        dict. An exception raised in ``fn`` fails the statement with an ``ArcadeDBError``
+        that names the function and the Python exception. A ``KeyboardInterrupt`` (Ctrl-C)
+        is the one exception to that: the statement is aborted and the caller gets a
+        ``KeyboardInterrupt``, chained from the ``ArcadeDBError``, wherever the signal
+        landed. A numeric argument costs about 30 bytes of Python memory per call that
+        JPype 1.7.1 does not give back (see the Python functions guide).
+
+        The engine registers functions for the whole process, not for one database: every
+        database in this process sees the function, and a function stays registered until
+        :meth:`unregister_function` or until this ``Database`` is closed. Register before
+        running concurrent statements: the engine's function table is not safe to change
+        while another thread resolves a name. The engine may call ``fn`` on its own
+        threads; the GIL serializes the calls, so ``fn`` does not run in parallel. An
+        aggregate (one result per group) cannot be written this way.
+
+        Args:
+            name: Function name; letters, digits and underscores, starting with a letter
+                or underscore. SQL function names are case-insensitive. A name that is
+                already an engine function (``abs``, ``count``, ``toUpper``, ...) is
+                refused.
+            fn: The callable. It takes positional arguments only.
+            min_args: Fewest arguments a call may pass. Default: the parameters of ``fn``
+                without a default.
+            max_args: Most arguments a call may pass. Default: all positional parameters
+                of ``fn`` (unlimited with ``*args``).
+            deterministic: True only if ``fn`` returns the same result for the same
+                arguments and reads nothing else. The planner may then fold a call over
+                constants at plan time and cache plans that contain it.
+            replace: Replace a Python function already registered under this name.
+
+        Raises:
+            ValueError: If the name or an argument count is invalid
+            ArcadeDBError: If the name is an engine function, or a Python function with
+                this name exists and ``replace`` is false
+
+        Example:
+            >>> db.register_function("slugify", lambda s: s.lower().replace(" ", "-"))
+            >>> db.query("sql", "SELECT slugify('Hello World') AS s").first().get("s")
+            'hello-world'
+        """
+        self._check_not_closed()
+        self._functions.register(name, fn, min_args, max_args, deterministic, replace)
+
+    def unregister_function(self, name: str) -> None:
+        """
+        Remove a Python function registered through this database.
+
+        A statement that calls it afterwards fails with an unknown-function error.
+
+        Args:
+            name: The name given to :meth:`register_function`
+
+        Raises:
+            ArcadeDBError: If this database did not register a function with this name
+        """
+        self._check_not_closed()
+        self._functions.unregister(name)
+
+    def on(
+        self,
+        event: str,
+        fn: Callable,
+        type_name: Optional[str] = None,
+    ) -> EventHandle:
+        """
+        Call a Python function when a record is created, updated, or deleted.
+
+        ``fn(record)`` receives the record as a :class:`Vertex`, :class:`Edge`, or
+        :class:`Document`. It runs inside the operation that fired the event, on the
+        thread that runs it (the engine may use its own threads, for example for async
+        writes; the GIL serializes the calls). A callback should be quick and should not
+        start work that waits on another thread's transaction.
+
+        Events: ``before_create``, ``after_create``, ``before_update``, ``after_update``,
+        ``before_delete``, ``after_delete``. A ``before_*`` callback that returns
+        ``False`` vetoes the change: the record is not written (a ``save()`` or a
+        statement skips it silently, as for the engine's own listeners). Any other return
+        value allows it, and the return value of an ``after_*`` callback is ignored.
+
+        An exception raised in a callback is not swallowed: it fails the operation that
+        fired the event with an ``ArcadeDBError`` that names the event and the Python
+        exception, and the surrounding transaction does not commit. A ``before_*`` event
+        fires before the record is written, an ``after_*`` event right after the write
+        and before the commit, so a rolled-back transaction has already fired its
+        ``after_*`` callbacks.
+
+        Args:
+            event: One of the event names above
+            fn: The callback, called with one argument: the record
+            type_name: Only records of exactly this type (not its subtypes). Default: every
+                record of the database.
+
+        Returns:
+            An :class:`EventHandle`; ``handle.remove()`` stops the callback
+
+        Raises:
+            ValueError: If ``event`` is not valid
+            ArcadeDBError: If ``type_name`` does not exist
+
+        Example:
+            >>> handle = db.on("after_create", lambda rec: print(rec.get_rid()), "Person")
+            >>> handle.remove()
+        """
+        self._check_not_closed()
+        return register_event(self, event, fn, type_name)
+
     def async_executor(self):
         """
         Get async executor for parallel operations.
@@ -1675,6 +2065,7 @@ class Database:
         trim_text: Optional[bool] = None,
         on_row_error: Optional[str] = None,
         extra_settings: Optional[Mapping[str, Any]] = None,
+        disable_xml_limits: bool = False,
     ) -> ImportResult:
         """
         Import document-shaped data through ArcadeDB's Java importer framework.
@@ -1706,6 +2097,10 @@ class Database:
                 value raises `ValueError`, because the engine treats everything
                 that is not `"skip"` as `"abort"`.
             extra_settings: Additional raw importer settings.
+            disable_xml_limits: Lift the JDK's XML entity limits for this call only, for an
+                XML file with a very large text node or many entity references. Default
+                False. The limits are restored when the call ends. An import that hits one
+                raises ``ArcadeDBError`` whose message names this option.
 
         Returns:
             ImportResult with normalized metadata and importer statistics.
@@ -1729,6 +2124,7 @@ class Database:
             trim_text=trim_text,
             on_row_error=on_row_error,
             extra_settings=extra_settings,
+            disable_xml_limits=disable_xml_limits,
         )
 
     @property
@@ -1921,10 +2317,22 @@ class DatabaseFactory:
         except Exception as e:
             raise ArcadeDBError(f"Failed to create database: {e}") from e
 
-    def open(self) -> Database:
-        """Open an existing database."""
+    def open(self, read_only: bool = False) -> Database:
+        """Open an existing database.
+
+        Args:
+            read_only: Open in ``ComponentFile.MODE.READ_ONLY``. Reads, queries
+                and scans work; every write and schema change raises
+                ``ArcadeDBError``. ``begin()`` does not raise: the first write
+                does, and so does the commit. Use it to inspect a database that
+                must not change, such as a backup restored for audit.
+        """
         try:
-            java_db = self._java_factory.open()
+            if read_only:
+                mode = _java_class("com.arcadedb.engine.ComponentFile$MODE").READ_ONLY
+                java_db = self._java_factory.open(mode)
+            else:
+                java_db = self._java_factory.open()
             return Database(java_db)
         except Exception as e:
             raise ArcadeDBError(f"Failed to open database: {e}") from e
@@ -1959,6 +2367,7 @@ def create_database(
 def open_database(
     path: str,
     jvm_kwargs: Optional[dict] = None,
+    read_only: bool = False,
 ) -> Database:
     """Open an existing database at the given path.
 
@@ -1966,12 +2375,19 @@ def open_database(
         path: Database path
         jvm_kwargs: Optional JVM args passed to start_jvm()
             Example: {"heap_size": "8g"}
+        read_only: Open the database read-only. Writes, schema changes and
+            transactions raise ``ArcadeDBError``.
+
+    Example:
+        >>> db = arcadedb.open_database("./mydb", read_only=True)
+        >>> db.is_read_only()
+        True
     """
     factory = DatabaseFactory(
         path,
         jvm_kwargs=jvm_kwargs,
     )
-    return factory.open()
+    return factory.open(read_only=read_only)
 
 
 def database_exists(path: str) -> bool:

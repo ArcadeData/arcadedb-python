@@ -16,6 +16,8 @@ collect_ignore = []
 if sys.platform == "win32":
     # test_sigint.py sends SIGINT to a child process, which Windows cannot deliver
     collect_ignore.append("test_sigint.py")
+    # test_python_function_interrupt.py sends SIGINT to its own process, which Windows cannot do either
+    collect_ignore.append("test_python_function_interrupt.py")
     # runs scripts/stage_jars.sh under bash with a fake docker; the bash a Windows
     # subprocess finds may be WSL's rather than Git Bash
     collect_ignore.append("test_stage_jars.py")

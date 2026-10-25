@@ -30,3 +30,7 @@ jline-*.jar
 #   snappy-java-*.jar     CompressedBodyDecoder and the Prometheus remote read and
 #                         write routes
 #   commons-math3-*.jar   jvector's ScoreTracker$TwoPhaseTracker
+#   arcadedb-studio-*.jar the Studio web UI. It bundled ApexCharts (not open source since 5.1.0) until
+#                         ArcadeData/arcadedb#10627 replaced it with Apache ECharts, first in engine 26.11.1.
+#                         scripts/verify_wheel_licences.py fails a wheel that carries ApexCharts files, so a
+#                         wheel built from an older engine cannot ship.

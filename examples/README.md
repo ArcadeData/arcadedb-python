@@ -14,7 +14,7 @@ cd examples
 python 01_simple_document_store.py
 ```
 
-See the dataset downloader guide: [docs/examples/download_data.md](../docs/examples/download_data.md).
+See the dataset downloader guide: [dataset downloader](https://docs.humem.ai/arcadedb/latest/examples/download_data/).
 
 ## Available Examples
 
@@ -223,7 +223,7 @@ Synthetic multi-table ingest comparison harness:
   be trusted
 - Current outcome is workload-dependent; SQL import can win on some table-heavy shapes
 - The async SQL arm is a comparison arm, not a recommendation, and `--async-parallel`
-  accepts only 1 (see [Bulk Ingest Recommendation](../docs/guide/import.md#bulk-ingest-recommendation)
+  accepts only 1 (see [Bulk Ingest Recommendation](https://docs.humem.ai/arcadedb/latest/guide/import/#bulk-ingest-recommendation)
   for why). For bulk document ingest use `db.insert_many(...)`
 
 **Learn:** Table-ingest tradeoffs for embedded Python workloads
@@ -238,7 +238,7 @@ Synthetic graph ingest comparison harness:
   vertex/edge data
 - Includes parity checks on final vertex and edge counts
 - The async SQL arm is pinned to `--async-parallel 1` (see
-  [Bulk Ingest Recommendation](../docs/guide/import.md#bulk-ingest-recommendation)).
+  [Bulk Ingest Recommendation](https://docs.humem.ai/arcadedb/latest/guide/import/#bulk-ingest-recommendation)).
   GraphBatch is the recommended bulk graph ingest path
 
 **Learn:** Graph-ingest tradeoffs for embedded Python workloads
@@ -334,7 +334,7 @@ Embedded-first server workflow, all in one process:
 - reads server metadata over HTTP
 - creates a database through the server-managed Java API
 - mixes embedded writes with HTTP queries and updates
-- opens Studio against the same in-process database
+- prints the Studio URL; the Studio web UI is in the wheels from 26.11.1, and the earlier 26.10.x wheels do not include it (see the [top-level README](../README.md))
 
 **Learn:** How to expose an embedded database over HTTP without running a
 separate container, and when you should reach for the Docker distribution
@@ -391,6 +391,37 @@ half-applied after an interruption
 
 ---
 
+### 🐼 [27_dataframe_arrow_ingest.py](./27_dataframe_arrow_ingest.py)
+**DataFrame And Arrow Ingest | pandas | Polars | Arrow | Declared Types**
+
+DataFrames and Arrow tables loaded straight into a type, and a result back out as Polars:
+- a pandas DataFrame into a document type (timestamps, nulls, a list column), in batches
+- a Polars DataFrame into a vertex type, then edges through `graph_batch().new_edges()`
+- an Arrow table into declared `INTEGER` and `DATETIME_MICROS` properties, and a float
+  column refused before a row is written
+- `to_polars()` on the result
+- synthetic data; flags: `--rows` (default 100,000) and `--db-path`
+- requires `pip install 'arcadedb-embedded[pandas,polars]'`
+
+**Learn:** How a DataFrame becomes documents or vertices without a row loop, and what each
+Arrow type is stored as
+
+### 🧩 [28_python_functions_and_record_events.py](./28_python_functions_and_record_events.py)
+**Python Functions | Record Events | SQL + openCypher**
+
+Two things no query language can express:
+- `db.register_function()` makes a Python `slugify` callable from SQL (SELECT and WHERE) and,
+  as `py.slugify`, from openCypher; an exception in the function is a query error
+- measures the cost of one call on your machine against the same SQL expression
+- `db.on()` keeps an audit trail with `after_create` / `after_update` / `after_delete`
+  callbacks and vetoes a write with a `before_create` callback that returns `False`
+- no data download; flags: `--rows` (default 20,000) and `--db-path`
+
+**Learn:** When a Python function or callback is the right tool, what it costs, and how
+errors, threads, and unregistering behave
+
+---
+
 ### 🧠 [29_hybrid_memory_retrieval.py](./29_hybrid_memory_retrieval.py)
 **Agent Memory | Tenant Pre-filter | Vector + Full-Text + Graph | `vector.fuse`**
 
@@ -427,8 +458,8 @@ full-text and graph context in a single query
 ## 🔗 Learn More
 
 - **[ArcadeDB Documentation](https://docs.arcadedb.com/)**
-- **[Python API Reference](../docs/api/)**
-- **[GitHub Repository](https://github.com/ArcadeData/arcadedb)**
+- **[Python API Reference](https://docs.humem.ai/arcadedb/latest/api/database/)**
+- **[GitHub Repository](https://github.com/ArcadeData/arcadedb-python)**
 
 ---
 
