@@ -15,7 +15,7 @@ import pytest
 
 np = pytest.importorskip("numpy")
 
-from arcadedb_embedded.exceptions import ArcadeDBError  # noqa: E402
+from arcadedb.exceptions import ArcadeDBError  # noqa: E402
 
 
 def _count(db, type_name, where=""):

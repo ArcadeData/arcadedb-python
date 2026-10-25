@@ -23,8 +23,8 @@ import time
 
 import pytest
 
-import arcadedb_embedded as arcadedb
-from arcadedb_embedded.exceptions import ArcadeDBError
+import arcadedb
+from arcadedb.exceptions import ArcadeDBError
 
 # ---------------------------------------------------------------------------------------------
 # #9378: a one-hop count over light edges in an edge type that is not declared LIGHTWEIGHT

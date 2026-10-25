@@ -125,16 +125,16 @@ jobs:
           echo "📦 Downloading JARs from arcadedata/arcadedb:${ARCADEDB_IMAGE_TAG}..."
 
           # Create output directory
-          mkdir -p src/arcadedb_embedded/jars
+          mkdir -p src/arcadedb/jars
 
           # Create a temporary container and copy JARs from it
           CONTAINER_ID=$(docker create "arcadedata/arcadedb:${ARCADEDB_IMAGE_TAG}")
-          docker cp $CONTAINER_ID:/home/arcadedb/lib/. src/arcadedb_embedded/jars/
+          docker cp $CONTAINER_ID:/home/arcadedb/lib/. src/arcadedb/jars/
           docker rm $CONTAINER_ID
 
-          echo "✅ Downloaded $(ls -1 src/arcadedb_embedded/jars/*.jar | wc -l) JARs"
+          echo "✅ Downloaded $(ls -1 src/arcadedb/jars/*.jar | wc -l) JARs"
 
-          ARCADEDB_TAG=$(python3 scripts/extract_version.py src/arcadedb_embedded/jars --format=docker)
+          ARCADEDB_TAG=$(python3 scripts/extract_version.py src/arcadedb/jars --format=docker)
           echo "📌 ArcadeDB version: $ARCADEDB_TAG"
           # The build jobs pull arcadedata/arcadedb:<jar version> as their base image,
           # so a pinned tag must name that version exactly (26.10.2, not an alias).
@@ -150,7 +150,7 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: arcadedb-jars-examples
-          path: src/arcadedb_embedded/jars/*.jar
+          path: src/arcadedb/jars/*.jar
           retention-days: 1
 
   # Second job: Test examples on each platform
@@ -202,7 +202,7 @@ jobs:
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: arcadedb-jars-examples
-          path: src/arcadedb_embedded/jars
+          path: src/arcadedb/jars
 
       - name: Set up Java (for native builds on macOS/Windows)
         if: matrix.platform != 'linux/amd64' && matrix.platform != 'linux/arm64'
@@ -246,24 +246,24 @@ jobs:
       #     ln -s "$PYTHON_DIR/python.exe" "$PYTHON_DIR/python3.exe" || true
       #     python3 --version
 
-      - name: Build arcadedb-embedded (${{ matrix.platform }})
+      - name: Build arcadedb (${{ matrix.platform }})
         shell: bash
         env:
           # The engine version download-jars read from the ARCADEDB_IMAGE_TAG jars;
           # the Docker build takes its base image by this tag, the jars from the artifact
           ARCADEDB_TAG: ${{ needs.download-jars.outputs.arcadedb-tag }}
         run: |
-          echo "🔨 Building arcadedb-embedded for ${{ matrix.platform }} with Python ${{ matrix.python-version }}..."
+          echo "🔨 Building arcadedb for ${{ matrix.platform }} with Python ${{ matrix.python-version }}..."
           # The jars download-jars fetched, on every platform, so all wheels of this
           # run carry the same engine build (and build.sh checks the integration jar)
-          ./scripts/build.sh ${{ matrix.platform }} ${{ matrix.python-version }} src/arcadedb_embedded/jars
+          ./scripts/build.sh ${{ matrix.platform }} ${{ matrix.python-version }} src/arcadedb/jars
 
-      # Note: Java is NOT required - arcadedb-embedded has bundled JRE!
+      # Note: Java is NOT required - arcadedb has bundled JRE!
 
       - name: Install ArcadeDB Python bindings
         shell: bash
         run: |
-          uv pip install --system dist/*embed*.whl
+          uv pip install --system dist/arcadedb-*.whl
 
       - name: Install example dependencies
         shell: bash

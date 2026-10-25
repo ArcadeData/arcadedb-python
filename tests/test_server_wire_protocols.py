@@ -72,7 +72,7 @@ def _wait(port, timeout=60.0):
 @pytest.fixture
 def wire_server(tmp_path):
     """A server with all three bundled wire plugins enabled."""
-    from arcadedb_embedded import create_server
+    from arcadedb import create_server
 
     ports = _free_ports("http", "postgres", "redis", "bolt")
     server = create_server(
@@ -114,7 +114,7 @@ def test_plugins_are_opt_in(tmp_path):
     Pinned because the other tests only mean something if enabling the
     plugins is what turns them on.
     """
-    from arcadedb_embedded import create_server
+    from arcadedb import create_server
 
     http = _free_port()
     server = create_server(
@@ -359,7 +359,7 @@ def test_wire_listeners_stay_on_loopback_by_default(wire_server):
 
 
 def test_host_applies_to_every_wire_listener(tmp_path):
-    from arcadedb_embedded import create_server
+    from arcadedb import create_server
 
     ports = _free_ports("http", "postgres", "redis", "bolt")
     server = create_server(
@@ -388,7 +388,7 @@ def test_host_applies_to_every_wire_listener(tmp_path):
 
 
 def test_a_protocol_host_overrides_the_server_host_for_that_protocol_only(tmp_path):
-    from arcadedb_embedded import create_server
+    from arcadedb import create_server
 
     ports = _free_ports("http", "postgres", "redis")
     server = create_server(
@@ -428,8 +428,8 @@ def test_the_host_reaches_exactly_the_listener_bind_settings():
     interfaces joins this set (and so follows `host`), and a non-listener
     setting that happened to match the pattern would show up here too.
     """
-    from arcadedb_embedded.jvm import start_jvm
-    from arcadedb_embedded.server import _all_interfaces_host_settings
+    from arcadedb.jvm import start_jvm
+    from arcadedb.server import _all_interfaces_host_settings
 
     start_jvm()
     assert set(_all_interfaces_host_settings()) == {

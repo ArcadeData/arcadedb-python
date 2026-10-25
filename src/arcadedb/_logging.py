@@ -1,4 +1,4 @@
-"""Internal logging helpers for arcadedb_embedded.
+"""Internal logging helpers for arcadedb.
 
 Centralises the pattern for swallowing exceptions in finalizers and
 best-effort cleanup paths so the suppression is observable at DEBUG level
@@ -9,7 +9,7 @@ import logging
 
 
 def get_logger(name: str) -> logging.Logger:
-    """Return a namespaced logger for an arcadedb_embedded submodule."""
+    """Return a namespaced logger for an arcadedb submodule."""
     return logging.getLogger(name)
 
 

@@ -2,7 +2,7 @@
 
 import pytest
 
-import arcadedb_embedded as arcadedb
+import arcadedb
 
 
 def _ensure_opencypher(db) -> None:

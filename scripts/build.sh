@@ -1,6 +1,6 @@
 #!/bin/bash
 # ArcadeDB Python Package Build Script
-# Builds arcadedb-embedded with a bundled JRE (no Java install needed).
+# Builds arcadedb with a bundled JRE (no Java install needed).
 # JAR sourcing is explicit: provide a JAR directory to embed those artifacts;
 # otherwise JARs are pulled from the arcadedata/arcadedb image.
 #
@@ -48,7 +48,7 @@ print_header() {
 print_usage() {
     echo "Usage: $0 [PLATFORM] [PYTHON_VERSION] [JAR_LIB_DIR]"
     echo ""
-    echo "Builds arcadedb-embedded package with bundled JRE"
+    echo "Builds arcadedb package with bundled JRE"
     echo "No external Java installation required!"
     echo ""
     echo "PLATFORM:"
@@ -261,7 +261,7 @@ else
 fi
 
 echo -e "${CYAN}📋 Build Configuration:${NC}"
-echo -e "   Package: ${YELLOW}arcadedb-embedded${NC}"
+echo -e "   Package: ${YELLOW}arcadedb${NC}"
 echo -e "   Platform: ${YELLOW}${PLATFORM}${NC}"
 echo -e "   Python Version: ${YELLOW}${PYTHON_VERSION}${NC}"
 echo -e "   JAR Source: ${YELLOW}${JAR_SOURCE_DESC}${NC}"
@@ -270,7 +270,7 @@ echo -e "   Build Method: ${YELLOW}${BUILD_METHOD}${NC}"
 echo ""
 
 # Package configuration
-PACKAGE_NAME="arcadedb-embedded"
+PACKAGE_NAME="arcadedb"
 DESCRIPTION="ArcadeDB embedded multi-model database with bundled JRE - no Java installation required"
 
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -447,10 +447,10 @@ def _is_wanted(wheel_path):
 
 
 _new = [Path(p) for p in os.environ.get("NEW_WHEELS", "").split() if p.endswith(".whl")]
-wheels = _new or sorted((p for p in Path("dist").glob("arcadedb_embedded-*.whl") if _is_wanted(p)),
+wheels = _new or sorted((p for p in Path("dist").glob("arcadedb-*.whl") if _is_wanted(p)),
                         key=lambda p: p.stat().st_mtime)
 if not wheels:
-    print(f"❌ no arcadedb_embedded-{_want} wheel in dist/", file=sys.stderr)
+    print(f"❌ no arcadedb-{_want} wheel in dist/", file=sys.stderr)
     sys.exit(1)
 wheel = wheels[-1]
 if not _is_wanted(wheel):
@@ -544,6 +544,6 @@ echo ""
 
 echo -e "${BLUE}💡 Next steps:${NC}"
 echo -e "   🧪 Run tests against this wheel (from the repository root; uv venv once first):"
-echo -e "      ${YELLOW}uv pip install --reinstall-package arcadedb-embedded \"<the wheel above>[test]\"${NC}"
+echo -e "      ${YELLOW}uv pip install --reinstall-package arcadedb \"<the wheel above>[test]\"${NC}"
 echo -e "      ${YELLOW}uv run pytest${NC}"
 echo ""

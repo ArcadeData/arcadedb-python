@@ -208,19 +208,19 @@ jobs:
           echo "📦 Downloading JARs from arcadedata/arcadedb:${ARCADEDB_IMAGE_TAG}..."
 
           # Create output directory
-          mkdir -p src/arcadedb_embedded/jars
+          mkdir -p src/arcadedb/jars
 
           # Create a temporary container and copy JARs from it
           CONTAINER_ID=$(docker create "arcadedata/arcadedb:${ARCADEDB_IMAGE_TAG}")
-          docker cp $CONTAINER_ID:/home/arcadedb/lib/. src/arcadedb_embedded/jars/
+          docker cp $CONTAINER_ID:/home/arcadedb/lib/. src/arcadedb/jars/
           docker rm $CONTAINER_ID
 
           # Verify JARs were downloaded
-          ls -lh src/arcadedb_embedded/jars/
-          JAR_COUNT=$(ls -1 src/arcadedb_embedded/jars/*.jar 2>/dev/null | wc -l)
+          ls -lh src/arcadedb/jars/
+          JAR_COUNT=$(ls -1 src/arcadedb/jars/*.jar 2>/dev/null | wc -l)
           echo "✅ Downloaded $JAR_COUNT JAR files"
 
-          ARCADEDB_TAG=$(python3 scripts/extract_version.py src/arcadedb_embedded/jars --format=docker)
+          ARCADEDB_TAG=$(python3 scripts/extract_version.py src/arcadedb/jars --format=docker)
           echo "📌 ArcadeDB version: $ARCADEDB_TAG"
           # The build jobs pull arcadedata/arcadedb:<jar version> as their base image,
           # so a pinned tag must name that version exactly (26.10.2, not an alias).
@@ -236,12 +236,12 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: arcadedb-jars
-          path: src/arcadedb_embedded/jars/*.jar
+          path: src/arcadedb/jars/*.jar
           retention-days: 1
 
   # Second job: Build and test on each platform
   test:
-    name: Test arcadedb-embedded (${{ matrix.platform }}, Python ${{ matrix.python-version }})
+    name: Test arcadedb (${{ matrix.platform }}, Python ${{ matrix.python-version }})
     runs-on: ${{ matrix.runs-on }}
     needs: download-jars
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
@@ -301,7 +301,7 @@ jobs:
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: arcadedb-jars
-          path: src/arcadedb_embedded/jars
+          path: src/arcadedb/jars
 
       - name: Set up Java (for native builds on macOS/Windows)
         if: matrix.platform != 'linux/amd64' && matrix.platform != 'linux/arm64'
@@ -335,17 +335,17 @@ jobs:
       #     ln -s "$PYTHON_DIR/python.exe" "$PYTHON_DIR/python3.exe" || true
       #     python3 --version
 
-      - name: Build and test arcadedb-embedded (${{ matrix.platform }})
+      - name: Build and test arcadedb (${{ matrix.platform }})
         shell: bash
         env:
           # The engine version download-jars read from the ARCADEDB_IMAGE_TAG jars;
           # the Docker build takes its base image by this tag, the jars from the artifact
           ARCADEDB_TAG: ${{ needs.download-jars.outputs.arcadedb-tag }}
         run: |
-          echo "🔨 Building arcadedb-embedded for ${{ matrix.platform }} with Python ${{ matrix.python-version }}..."
+          echo "🔨 Building arcadedb for ${{ matrix.platform }} with Python ${{ matrix.python-version }}..."
           # The jars download-jars fetched, on every platform, so all wheels of this
           # run carry the same engine build (and build.sh checks the integration jar)
-          ./scripts/build.sh ${{ matrix.platform }} ${{ matrix.python-version }} src/arcadedb_embedded/jars
+          ./scripts/build.sh ${{ matrix.platform }} ${{ matrix.python-version }} src/arcadedb/jars
 
       - name: Extract wheel for additional testing
         shell: bash
@@ -358,7 +358,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      # Note: Java is NOT required for arcadedb-embedded (JRE is bundled)
+      # Note: Java is NOT required for arcadedb (JRE is bundled)
       # This package works without any external Java installation!
 
       - name: Install wheel and test dependencies
@@ -380,7 +380,7 @@ jobs:
         timeout-minutes: 30
         shell: bash
         run: |
-          echo "🧪 Testing arcadedb-embedded (with bundled JRE)..."
+          echo "🧪 Testing arcadedb (with bundled JRE)..."
 
           # Run pytest with JUnit XML output for structured results
           # WINDOWS RUNS WITH --capture=sys (humemai/arcadedb-embedded-python#10). pytest's default fd capture swaps
@@ -485,7 +485,7 @@ jobs:
           summary_file = os.environ.get('GITHUB_STEP_SUMMARY', '/dev/null')
 
           with open(summary_file, 'a', encoding='utf-8') as f:
-              f.write("## 🧪 Test Results: arcadedb-embedded (${{ matrix.platform }})\n")
+              f.write("## 🧪 Test Results: arcadedb (${{ matrix.platform }})\n")
               f.write("\n")
 
               # Check test status
@@ -623,9 +623,9 @@ jobs:
           if [ "${{ needs.test.result }}" = "success" ]; then
             echo "✅ **All platforms passed testing!**" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "The arcadedb-embedded package has been successfully built and tested." >> $GITHUB_STEP_SUMMARY
+            echo "The arcadedb package has been successfully built and tested." >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "**Package**: arcadedb-embedded" >> $GITHUB_STEP_SUMMARY
+            echo "**Package**: arcadedb" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "ℹ️ **Note**: Some platform/Python combinations are excluded from testing:" >> $GITHUB_STEP_SUMMARY
             echo "- Windows ARM64 (no GitHub-hosted runners available)" >> $GITHUB_STEP_SUMMARY

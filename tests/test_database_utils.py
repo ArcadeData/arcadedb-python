@@ -2,7 +2,7 @@
 Tests for new Database utility methods.
 """
 
-import arcadedb_embedded as arcadedb
+import arcadedb
 
 
 def test_count_type(temp_db_path):

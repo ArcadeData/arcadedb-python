@@ -5,10 +5,10 @@ import inspect
 import jpype
 import pytest
 
-import arcadedb_embedded as arcadedb
-from arcadedb_embedded import jvm
-from arcadedb_embedded.exceptions import ArcadeDBError
-from arcadedb_embedded.jvm import _build_jvm_args
+import arcadedb
+from arcadedb import jvm
+from arcadedb.exceptions import ArcadeDBError
+from arcadedb.jvm import _build_jvm_args
 
 LIMIT_PROPERTIES = (
     "jdk.xml.maxGeneralEntitySizeLimit",
@@ -75,7 +75,7 @@ def test_per_call_option_lifts_the_limits_for_that_call_only(db, big_xml):
 
 
 def test_per_call_option_restores_a_value_that_was_already_set():
-    from arcadedb_embedded.importer import _xml_limits_lifted
+    from arcadedb.importer import _xml_limits_lifted
 
     System = jpype.JClass("java.lang.System")
     name = LIMIT_PROPERTIES[0]

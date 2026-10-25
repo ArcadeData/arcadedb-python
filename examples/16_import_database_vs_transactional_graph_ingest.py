@@ -76,7 +76,7 @@ import time
 from pathlib import Path
 from typing import Dict, List, Tuple
 
-import arcadedb_embedded as arcadedb
+import arcadedb
 
 ColumnDef = Tuple[str, str]
 

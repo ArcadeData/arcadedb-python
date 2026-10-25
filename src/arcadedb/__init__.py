@@ -15,12 +15,17 @@ directly in the Python process using JPype.
 try:
     from importlib.metadata import version as _dist_version
 
-    __version__ = _dist_version("arcadedb-embedded")
+    __version__ = _dist_version("arcadedb")
 except Exception:  # not installed: fall back to the build-time file
     try:
         from ._version import __version__
     except ModuleNotFoundError:
         __version__ = "0.0.0"
+
+# The JVM and the native wheel both import as `arcadedb`; pip overwrites one with the other silently.
+from ._dist_conflict import warn_if_both_installed as _warn_if_both_installed
+
+_warn_if_both_installed(stacklevel=3)  # blame the importing line
 
 # Import async execution
 from .async_executor import AsyncExecutor

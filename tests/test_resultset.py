@@ -4,7 +4,7 @@ Tests for enhanced ResultSet and Result functionality.
 
 import pytest
 
-import arcadedb_embedded as arcadedb
+import arcadedb
 
 
 def test_resultset_to_list(temp_db_path):
@@ -389,9 +389,9 @@ def test_to_dict_one_crossing_matches_the_per_property_path(temp_db_path):
     from datetime import date, datetime
     from decimal import Decimal
 
-    import arcadedb_embedded as arcadedb
-    from arcadedb_embedded.results import _bridge_class
-    from arcadedb_embedded.type_conversion import convert_java_to_python
+    import arcadedb
+    from arcadedb.results import _bridge_class
+    from arcadedb.type_conversion import convert_java_to_python
 
     # Run alone, this is before the JVM starts: the answer must not be cached.
     _bridge_class("RowAccess")
@@ -591,7 +591,7 @@ class _CountingBridge:
 @pytest.fixture
 def counting_bridge(monkeypatch):
     """Count the calls the Python layer makes into TypedRows.nextRows and RowBatcher.nextJsonBatch."""
-    from arcadedb_embedded import results
+    from arcadedb import results
 
     typed_rows = results._bridge_class("TypedRows")
     row_batcher = results._bridge_class("RowBatcher")
@@ -647,7 +647,7 @@ class TestSmallResultsCostOneBridgeCall:
 
     def test_a_full_batch_still_ends_on_the_next_call(self, temp_db, counting_bridge):
         """Exactly one batch of rows (the to_list batch): the first batch is full, so one more call finds it drained."""
-        from arcadedb_embedded import results
+        from arcadedb import results
 
         batch = results._TYPED_BATCH_ROWS
         temp_db.command("sql", "CREATE DOCUMENT TYPE Exact")
@@ -673,7 +673,7 @@ class TestSmallResultsCostOneBridgeCall:
     def test_python_does_not_cross_the_bridge_to_close_a_drained_set(
         self, three, counting_bridge, monkeypatch
     ):
-        from arcadedb_embedded import results
+        from arcadedb import results
 
         closes = []
         real_close = results.ResultSet.close
@@ -694,7 +694,7 @@ class TestSmallResultsCostOneBridgeCall:
         has fewer rows than asked for, and leave one alone that still has rows."""
         import jpype
 
-        from arcadedb_embedded import results
+        from arcadedb import results
 
         interface = jpype.JClass("com.arcadedb.query.sql.executor.ResultSet")
 

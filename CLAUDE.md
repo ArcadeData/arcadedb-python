@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-`arcadedb-embedded`: Python bindings for ArcadeDB that run the Java engine in-process through JPype. Each wheel is platform-specific and bundles the ArcadeDB jars plus a jlink'd Java 25 JRE, so users need no Java install. Moved here from `bindings/python` in ArcadeData/arcadedb (history kept; issue numbers in older commit messages refer to that repo).
+`arcadedb`: Python bindings for ArcadeDB that run the Java engine in-process through JPype. Each wheel is platform-specific and bundles the ArcadeDB jars plus a jlink'd Java 25 JRE, so users need no Java install. Moved here from `bindings/python` in ArcadeData/arcadedb (history kept; issue numbers in older commit messages refer to that repo).
 
 ## Working rules
 
@@ -36,7 +36,7 @@ Tests run against the **built wheel**, not the source tree. `pyproject.toml` has
 
 ```bash
 uv venv                                                                          # once
-uv pip install --reinstall-package arcadedb-embedded "$(ls dist/*.whl | head -1)[test]"   # after each build
+uv pip install --reinstall-package arcadedb "$(ls dist/*.whl | head -1)[test]"   # after each build
 uv run pytest                                    # all
 uv run pytest tests/test_core.py -v              # one file
 uv run pytest tests/test_core.py::TestX::test_y  # one test

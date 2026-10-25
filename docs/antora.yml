@@ -6,20 +6,17 @@ nav:
   - modules/ROOT/nav.adoc
 asciidoc:
   attributes:
-    # Package names. After the rename of the distribution these are the only
-    # lines to change; every page takes the names from here.
-    pkg-name: arcadedb-embedded
-    import-name: arcadedb_embedded
-    import-stmt: import arcadedb_embedded as arcadedb
-    native-pkg-name: arcadedb-embedded-native
-    native-import-name: arcadedb_native
+    # Package names. Every page takes them from here.
+    pkg-name: arcadedb
+    import-name: arcadedb
+    import-stmt: import arcadedb
+    native-pkg-name: arcadedb-native
+    native-import-name: arcadedb
     # Other names a reader meets on PyPI (the pages that compare packages use these).
-    short-pkg-name: arcadedb
-    short-native-pkg-name: arcadedb-native
     jvm-pkg-name: arcadedb-jvm
     driver-pkg-name: arcadedb-driver
     grpc-driver-pkg-name: arcadedb-driver-grpc
     community-driver-pkg-name: arcadedb-python
     community-repo-url: https://github.com/stevereiner/arcadedb-python
     repo-url: https://github.com/ArcadeData/arcadedb-python
-    pypi-url: https://pypi.org/project/arcadedb-embedded/
+    pypi-url: https://pypi.org/project/arcadedb/

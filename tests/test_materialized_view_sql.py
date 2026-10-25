@@ -1,6 +1,6 @@
 """Materialized view SQL coverage for Python bindings."""
 
-import arcadedb_embedded as arcadedb
+import arcadedb
 
 
 def test_materialized_view_sql_end_to_end(temp_db_path):

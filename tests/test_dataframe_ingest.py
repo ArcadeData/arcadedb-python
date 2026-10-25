@@ -17,7 +17,7 @@ pd = pytest.importorskip("pandas")
 pa = pytest.importorskip("pyarrow")
 pl = pytest.importorskip("polars")
 
-from arcadedb_embedded.exceptions import ArcadeDBError  # noqa: E402
+from arcadedb.exceptions import ArcadeDBError  # noqa: E402
 
 
 def _rows(db, sql):
@@ -717,7 +717,7 @@ class TestToPolars:
         monkeypatch.setitem(sys.modules, "polars", None)
         with pytest.raises(
             ImportError,
-            match=r"polars is required for to_polars\(\).*arcadedb-embedded\[polars\]",
+            match=r"polars is required for to_polars\(\).*arcadedb\[polars\]",
         ):
             temp_db.query("sql", "SELECT FROM NoPolars").to_polars()
 

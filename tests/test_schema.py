@@ -13,7 +13,7 @@ Tests cover:
 
 import pytest
 
-from arcadedb_embedded import ArcadeDBError, IndexType, PropertyType, create_database
+from arcadedb import ArcadeDBError, IndexType, PropertyType, create_database
 
 
 @pytest.fixture
@@ -669,13 +669,13 @@ class TestLSMVectorIndexSchemaOps:
         # Retrieve using auto detection
         index = schema.get_vector_index("Doc", "embedding")
         assert index is not None
-        from arcadedb_embedded.vector import VectorIndex
+        from arcadedb.vector import VectorIndex
 
         assert isinstance(index, VectorIndex)
 
     def test_get_lsm_vector_index_persistence(self, test_db):
         """Test that get_vector_index can load persisted LSM indexes."""
-        import arcadedb_embedded as arcadedb
+        import arcadedb
 
         schema = test_db.schema
         schema.create_vertex_type("Doc")

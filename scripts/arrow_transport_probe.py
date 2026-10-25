@@ -75,7 +75,7 @@ def main():
 
     import pandas as pd
 
-    import arcadedb_embedded as arcadedb
+    import arcadedb
 
     try:
         import pyarrow  # noqa: F401
@@ -94,7 +94,7 @@ def main():
         print("\nROW " + "".join(cells), flush=True)
 
     print(f"\n  rows={args.rows} reps={args.reps} (warmup {args.warmup})")
-    print(f"  arcadedb_embedded {arcadedb.__version__}\n")
+    print(f"  arcadedb {arcadedb.__version__}\n")
     row(
         f"{'shape':<10}{'to_columns':>12}{'to_arrow':>11}",
         f"{'cols->df':>11}{'arrow->df':>11}{'df speedup':>12}",

@@ -288,8 +288,8 @@ NEO4J_DATABASE = "neo4j"
 
 def get_arcadedb_module():
     try:
-        import arcadedb_embedded as arcadedb
-        from arcadedb_embedded.exceptions import ArcadeDBError
+        import arcadedb
+        from arcadedb.exceptions import ArcadeDBError
     except ImportError:
         return None, None
     return arcadedb, ArcadeDBError
@@ -4152,7 +4152,7 @@ def run_graph_oltp_arcadedb(
 ) -> dict:
     arcadedb, arcade_error = get_arcadedb_module()
     if arcadedb is None or arcade_error is None:
-        raise RuntimeError("arcadedb-embedded is not installed")
+        raise RuntimeError("arcadedb is not installed")
 
     if db_path.exists():
         shutil.rmtree(db_path)
@@ -9747,7 +9747,7 @@ def run_in_docker(args) -> bool:
 
     arcadedb_wheel_mount_path = None
     if args.db.startswith("arcadedb_"):
-        wheel_candidates = sorted((repo_root / "dist").glob("*embed*.whl"))
+        wheel_candidates = sorted((repo_root / "dist").glob("arcadedb-*.whl"))
         if not wheel_candidates:
             if os.environ.get("GITHUB_ACTIONS", "").lower() == "true":
                 raise RuntimeError(

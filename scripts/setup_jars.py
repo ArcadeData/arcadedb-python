@@ -16,7 +16,7 @@ from pathlib import Path
 
 def find_jar_files():
     """Find all ArcadeDB JAR files (already filtered upstream)."""
-    print("📦 Building arcadedb-embedded with bundled JRE")
+    print("📦 Building arcadedb with bundled JRE")
 
     # Look for JAR files copied from the ArcadeDB Docker image
     # The Dockerfile copies JARs from the full distribution image to these locations
@@ -49,7 +49,7 @@ def find_jar_files():
 def copy_jars_to_package():
     """Copy JAR files to the Python package."""
     package_dir = Path(__file__).parent.parent
-    jar_dir = package_dir / "src" / "arcadedb_embedded" / "jars"
+    jar_dir = package_dir / "src" / "arcadedb" / "jars"
 
     # Remove any previous jars so the wheel reflects the current build inputs exactly.
     if jar_dir.exists():
@@ -95,7 +95,7 @@ def copy_jre():
 
     package_dir = Path(__file__).parent.parent
     jre_source = Path("/build/jre")
-    jre_dest = package_dir / "src" / "arcadedb_embedded" / "jre"
+    jre_dest = package_dir / "src" / "arcadedb" / "jre"
 
     # Check if JRE source exists
     if not jre_source.exists():
@@ -134,7 +134,7 @@ def main():
     """Main function."""
     print("🎮 ArcadeDB Python Package Setup")
     print("=" * 40)
-    print("📦 Package: arcadedb-embedded (with bundled JRE)")
+    print("📦 Package: arcadedb (with bundled JRE)")
     print()
 
     # Copy JAR files

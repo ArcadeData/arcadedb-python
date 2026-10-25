@@ -11,7 +11,7 @@ import time
 
 import pytest
 
-import arcadedb_embedded as arcadedb
+import arcadedb
 from tests.conftest import TEST_PASSWORD, free_port
 
 

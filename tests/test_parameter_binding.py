@@ -10,7 +10,7 @@ raised "Ambiguous overloads" instead of binding null; ``(None, 1)`` did too.
 import jpype
 import pytest
 
-import arcadedb_embedded as arcadedb
+import arcadedb
 
 # Three spellings of "one positional parameter, bound to null".
 LONE_NULL = [
@@ -176,7 +176,7 @@ def test_async_parameters_reach_one_java_overload(temp_db):
     """The async executor's ``args`` reach the engine as one ``Object[]`` too. Splatted, a
     lone ``None`` arrived as a null in place of the whole array, so nothing was bound.
     """
-    from arcadedb_embedded.async_executor import AsyncExecutor
+    from arcadedb.async_executor import AsyncExecutor
 
     seen = []
 
@@ -223,7 +223,7 @@ class TestScalarParametersTakeTheShortPath:
 
     @pytest.fixture
     def counted(self, monkeypatch):
-        from arcadedb_embedded import core
+        from arcadedb import core
 
         calls = []
         real = core.convert_python_to_java

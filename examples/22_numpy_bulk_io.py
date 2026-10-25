@@ -22,7 +22,7 @@ Workflow covered:
 Requirements:
 - numpy (pip install numpy)
 - pyarrow, optional, only for the to_arrow section
-  (pip install 'arcadedb-embedded[arrow]')
+  (pip install 'arcadedb[arrow]')
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ from pathlib import Path
 
 import numpy as np
 
-import arcadedb_embedded as arcadedb
+import arcadedb
 
 
 def bulk_documents(db, n_rows: int) -> None:
@@ -167,7 +167,7 @@ def nulls_to_arrow(db, n_rows: int) -> None:
     if table is None:
         print(
             "to_arrow   : pyarrow not installed, skipping "
-            "(pip install 'arcadedb-embedded[arrow]')"
+            "(pip install 'arcadedb[arrow]')"
         )
         return
 

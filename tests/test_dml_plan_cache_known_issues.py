@@ -17,7 +17,7 @@ found: a script of two UPDATEs, an UPSERT after a SELECT, a DELETE after an UPDA
 ``:name`` parameters bound by position.
 """
 
-import arcadedb_embedded as arcadedb
+import arcadedb
 
 
 def _products(db, name):

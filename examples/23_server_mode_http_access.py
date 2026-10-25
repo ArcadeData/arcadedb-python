@@ -33,7 +33,7 @@ from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-import arcadedb_embedded as arcadedb
+import arcadedb
 
 ROOT_PASSWORD = "example23pass"
 ITEMS = [

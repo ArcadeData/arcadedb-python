@@ -33,7 +33,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-import arcadedb_embedded as arcadedb
+import arcadedb
 
 START_TS_MS = 1_710_000_000_000
 

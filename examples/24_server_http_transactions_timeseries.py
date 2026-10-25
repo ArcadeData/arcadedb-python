@@ -28,7 +28,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-import arcadedb_embedded as arcadedb
+import arcadedb
 
 DB = "httpdemo"
 

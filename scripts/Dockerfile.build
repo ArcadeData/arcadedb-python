@@ -2,17 +2,17 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Docker build for ArcadeDB Python package
-# Builds arcadedb-embedded package with bundled JRE (no external Java required)
+# Builds arcadedb package with bundled JRE (no external Java required)
 # Excludes JARs listed in scripts/jar_exclusions.txt to optimize size
 #
 # REQUIRED BUILD ARGS (passed from build.sh):
 #   PYTHON_VERSION - Python version for wheel (e.g., 3.11, 3.12, 3.13, 3.14)
-#   PACKAGE_NAME - always: arcadedb-embedded
+#   PACKAGE_NAME - always: arcadedb
 #   PACKAGE_DESCRIPTION - package description
 #   TARGET_PLATFORM - Linux target platform for bundled JRE (linux-x64, linux-arm64)
 
 ARG PYTHON_VERSION=3.12
-ARG PACKAGE_NAME=arcadedb-embedded
+ARG PACKAGE_NAME=arcadedb
 ARG PACKAGE_DESCRIPTION="ArcadeDB embedded multi-model database with bundled JRE - no Java installation required"
 # Deterministic placeholder. The wrapper build script must pass the real ArcadeDB tag.
 ARG ARCADEDB_TAG=build-arg-required
@@ -313,7 +313,7 @@ COPY --from=python-builder /build/tests ./tests/
 
 # Create a quick installation test
 RUN echo '#!/usr/bin/env python3\n\
-import arcadedb_embedded as arcadedb\n\
+import arcadedb\n\
 import tempfile\n\
 import shutil\n\
 import os\n\

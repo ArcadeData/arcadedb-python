@@ -8,7 +8,7 @@ create many types, because the schema is then written to disk once when the tran
 
 import pytest
 
-import arcadedb_embedded as arcadedb
+import arcadedb
 
 
 def test_many_schema_statements_in_one_transaction_all_take_effect(temp_db_path):

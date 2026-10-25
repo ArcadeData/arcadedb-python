@@ -2,7 +2,7 @@
 :description: Install the {pkg-name} wheel, check that it works, and set JVM options.
 
 // Sources: bindings docs getting-started/installation.md, the PyPI metadata of
-// arcadedb-embedded and arcadedb-embedded-native.
+// arcadedb and arcadedb-native.
 
 == Install
 
@@ -10,6 +10,8 @@
 ----
 pip install {pkg-name}
 ----
+
+This package was published as arcadedb-embedded until 26.10.x; install arcadedb now.
 
 Or with https://docs.astral.sh/uv/[uv]:
 
@@ -136,7 +138,7 @@ Each Python process starts its own JVM, and each JVM sees the whole container li
 pip install --pre {native-pkg-name}
 ----
 
-It installs beside `{pkg-name}`: the distribution names differ, and so do the import names (`{native-import-name}` instead of `{import-name}`). Optional extras install the columnar helpers: `[numpy]`, `[arrow]`, `[pandas]` and `[polars]`. Report problems in the {repo-url}/issues[issue tracker] and say that you use the native wheel.
+It imports as `{native-import-name}`, the same name as `{pkg-name}`, so install only one of the two in an environment. If both are installed, importing `{import-name}` prints a `RuntimeWarning`, because pip overwrites one with the other without a message. Optional extras install the columnar helpers: `[numpy]`, `[arrow]`, `[pandas]` and `[polars]`. Report problems in the {repo-url}/issues[issue tracker] and say that you use the native wheel.
 
 == Next steps
 

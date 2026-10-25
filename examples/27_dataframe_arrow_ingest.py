@@ -17,7 +17,7 @@ Workflow covered:
 
 Requirements:
 - pandas, polars and pyarrow
-  (pip install 'arcadedb-embedded[pandas,polars]')
+  (pip install 'arcadedb[pandas,polars]')
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ import pandas as pd
 import polars as pl
 import pyarrow as pa
 
-import arcadedb_embedded as arcadedb
+import arcadedb
 
 
 def documents_from_pandas(db, rows: int) -> None:

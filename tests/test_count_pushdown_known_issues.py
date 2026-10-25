@@ -26,7 +26,7 @@ to the verified shape).
 
 import pytest
 
-import arcadedb_embedded as arcadedb
+import arcadedb
 
 # ---------------------------------------------------------------------------------------------
 # #9277: another label at the far end of the chain (fixed in 26.10.2, #9288)

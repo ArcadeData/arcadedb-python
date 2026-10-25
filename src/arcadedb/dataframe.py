@@ -19,7 +19,7 @@ from .exceptions import ArcadeDBError
 
 _PYARROW_HINT = (
     "pyarrow is required for {what}. Install with: pip install pyarrow "
-    "(or pip install 'arcadedb-embedded[arrow]')"
+    "(or pip install 'arcadedb[arrow]')"
 )
 
 # Declared property types (the engine's Type names) that an Arrow column kind

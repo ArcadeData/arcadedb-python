@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-import arcadedb_embedded as arcadedb
+import arcadedb
 
 
 def _write_people_csv(csv_path: Path) -> None:

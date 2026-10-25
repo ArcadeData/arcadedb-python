@@ -22,8 +22,8 @@ only on a build from source (`engine-from-source: true`).
 import numpy as np
 import pytest
 
-import arcadedb_embedded as arcadedb
-from arcadedb_embedded import create_database
+import arcadedb
+from arcadedb import create_database
 
 DIMS = 32
 COUNT = 2000

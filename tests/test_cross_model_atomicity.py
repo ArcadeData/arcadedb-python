@@ -4,7 +4,7 @@ torn; the same writes without a transaction are torn every time."""
 
 import random
 
-import arcadedb_embedded as arcadedb
+import arcadedb
 
 DIM = 8
 

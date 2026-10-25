@@ -12,7 +12,7 @@ assert against `to_columns` directly so the difference cannot quietly go away.
 
 import pytest
 
-import arcadedb_embedded as arcadedb
+import arcadedb
 
 pa = pytest.importorskip("pyarrow")
 

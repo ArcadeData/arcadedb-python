@@ -225,7 +225,7 @@ __marimo__/
 # SPDX-License-Identifier: Apache-2.0
 
 # Generated during build - do not commit
-src/arcadedb_embedded/_version.py
+src/arcadedb/_version.py
 
 
 # Build artifacts
@@ -280,8 +280,8 @@ scripts/.dev_version_tracker.json
 src/**/__pycache__/
 src/**/*.egg-info/
 # the JRE and the jars scripts/build-native.sh bundles into the package
-src/arcadedb_embedded/jre/
-src/arcadedb_embedded/jars/
+src/arcadedb/jre/
+src/arcadedb/jars/
 
 # git worktrees for issue branches
 .worktrees/

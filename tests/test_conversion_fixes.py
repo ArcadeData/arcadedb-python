@@ -7,10 +7,10 @@ from datetime import date, datetime
 
 import pytest
 
-import arcadedb_embedded as arcadedb
-from arcadedb_embedded import type_conversion
-from arcadedb_embedded.schema import PropertyType
-from arcadedb_embedded.vector import to_java_int_array
+import arcadedb
+from arcadedb import type_conversion
+from arcadedb.schema import PropertyType
+from arcadedb.vector import to_java_int_array
 
 np = pytest.importorskip("numpy")
 

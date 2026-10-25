@@ -19,8 +19,8 @@ import tempfile
 import jpype
 import pytest
 
-import arcadedb_embedded as arcadedb
-from arcadedb_embedded import ArcadeDBError
+import arcadedb
+from arcadedb import ArcadeDBError
 
 FAILS_ON_THE_FIRST_ROW = [
     pytest.param("SELECT 1 / (i - i) AS f FROM E", id="division-first"),

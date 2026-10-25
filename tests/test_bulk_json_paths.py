@@ -11,8 +11,8 @@ import math
 
 import pytest
 
-import arcadedb_embedded as arcadedb
-from arcadedb_embedded import type_conversion
+import arcadedb
+from arcadedb import type_conversion
 
 ENTRY_POINTS = ["insert_many", "create_vertices", "new_edges"]
 

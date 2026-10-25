@@ -8,8 +8,8 @@ statement (see `test_sql_constraints_and_maintenance.py`).
 
 import pytest
 
-import arcadedb_embedded as arcadedb
-from arcadedb_embedded import ArcadeDBError
+import arcadedb
+from arcadedb import ArcadeDBError
 
 
 @pytest.fixture

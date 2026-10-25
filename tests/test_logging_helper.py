@@ -2,17 +2,17 @@
 
 import logging
 
-from arcadedb_embedded._logging import get_logger, log_swallowed_exception
+from arcadedb._logging import get_logger, log_swallowed_exception
 
 
 def test_get_logger_returns_namespaced_logger():
-    logger = get_logger("arcadedb_embedded.foo")
+    logger = get_logger("arcadedb.foo")
     assert isinstance(logger, logging.Logger)
-    assert logger.name == "arcadedb_embedded.foo"
+    assert logger.name == "arcadedb.foo"
 
 
 def test_log_swallowed_exception_emits_debug(caplog):
-    logger = get_logger("arcadedb_embedded.test")
+    logger = get_logger("arcadedb.test")
     with caplog.at_level(logging.DEBUG, logger=logger.name):
         try:
             raise RuntimeError("boom")

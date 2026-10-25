@@ -41,17 +41,9 @@ Which build is ahead depends on whether you measure the first pass after a start
 | Embedded, GraalVM native build (preview)
 | The same API with the engine compiled ahead of time: no JVM and no JPype. Import it as `{native-import-name}`.
 
-| `{short-pkg-name}`
-| Embedded, JVM build
-| The name `{pkg-name}` moves to in the middle of November. Until then a placeholder on PyPI that installs `{pkg-name}`.
-
-| `{short-native-pkg-name}`
-| Embedded, native build (preview)
-| The name `{native-pkg-name}` moves to at the same time. Until then an alias that installs it.
-
 | `{jvm-pkg-name}`
 | Embedded, JVM build
-| A reserved name for the JVM build. Until the move it installs `{pkg-name}`.
+| A reserved name for the JVM build. It installs `{pkg-name}`.
 |===
 
 [[drivers]]

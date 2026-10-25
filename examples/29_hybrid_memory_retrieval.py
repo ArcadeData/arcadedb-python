@@ -48,7 +48,7 @@ from pathlib import Path
 
 import numpy as np
 
-import arcadedb_embedded as arcadedb
+import arcadedb
 
 SEED = 20261024
 DIM = 16
@@ -325,7 +325,7 @@ def main() -> None:
             for t in ("Fact", "Entity", "MENTIONS", "RELATES")
         }
         print(f"memory: {counts}, tenants: {len(TENANTS)}")
-        print(f"engine: arcadedb_embedded {arcadedb.__version__}, form: {args.form}")
+        print(f"engine: arcadedb {arcadedb.__version__}, form: {args.form}")
         out = run(db, centroids, args.form)
 
         print(f"\nrequested tenant: {REQUESTED_TENANT}, k = {K}")

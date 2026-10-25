@@ -37,7 +37,7 @@ RID is statement syntax there and the parser rejects a bound parameter.
 
 import pytest
 
-import arcadedb_embedded as arcadedb
+import arcadedb
 
 
 def _count_two_ways(db, type_name):

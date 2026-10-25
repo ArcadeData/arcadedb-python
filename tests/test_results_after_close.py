@@ -4,8 +4,8 @@ import gc
 
 import pytest
 
-import arcadedb_embedded as arcadedb
-from arcadedb_embedded.exceptions import ArcadeDBError
+import arcadedb
+from arcadedb.exceptions import ArcadeDBError
 
 NAMES = ["Ann", "Bob", "Cy"]
 

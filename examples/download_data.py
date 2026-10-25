@@ -749,7 +749,7 @@ def download_movielens(size="large", inject_nulls=True):
         # than report a bindings regression that did not happen.
         print(f"[UNAVAILABLE] Cannot reach the dataset host: {e}")
         print(f"   URL: {url}")
-        print("   This is a third-party host, not a defect in arcadedb-embedded.")
+        print("   This is a third-party host, not a defect in arcadedb.")
         raise DatasetUnavailable(f"{url}: {e}") from e
     except Exception as e:
         print(f"[ERROR] Error downloading dataset: {e}")
@@ -953,7 +953,7 @@ def download_stackoverflow(size="small"):
         # from a broken binding.
         print(f"[UNAVAILABLE] Cannot reach the dataset host: {e}")
         print(f"   URL: {config['urls'][0]}")
-        print("   This is a third-party host, not a defect in arcadedb-embedded.")
+        print("   This is a third-party host, not a defect in arcadedb.")
         raise DatasetUnavailable(f"{config['urls'][0]}: {e}") from e
     except Exception as e:
         print(f"[ERROR] Error downloading dataset: {e}")

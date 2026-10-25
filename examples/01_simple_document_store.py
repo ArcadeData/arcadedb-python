@@ -17,7 +17,7 @@ Record Types Used:
 - Not using VERTEX/EDGE types (those are for graph operations)
 
 Requirements:
-- arcadedb-embedded
+- arcadedb
 
 Note: This example creates a database at ./my_test_databases/task_db/
       The database files are preserved so you can inspect them after running.
@@ -37,7 +37,7 @@ import time
 import uuid
 from datetime import date, datetime
 
-import arcadedb_embedded as arcadedb
+import arcadedb
 
 print("=" * 70)
 print("🎮 ArcadeDB Python - Example 01: Simple Document Store")

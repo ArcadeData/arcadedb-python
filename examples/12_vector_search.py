@@ -1955,7 +1955,7 @@ def run_in_docker(args) -> bool:
 
     arcadedb_wheel_mount_path = None
     if args.backend == "arcadedb_sql":
-        wheel_candidates = sorted((repo_root / "dist").glob("*embed*.whl"))
+        wheel_candidates = sorted((repo_root / "dist").glob("arcadedb-*.whl"))
         if not wheel_candidates:
             if os.environ.get("GITHUB_ACTIONS", "").lower() == "true":
                 raise RuntimeError(
@@ -2313,7 +2313,7 @@ def main() -> None:
     runtime_versions: dict[str, str | None] = {}
 
     if args.backend == "arcadedb_sql":
-        import arcadedb_embedded as arcadedb
+        import arcadedb
 
         stop_cpu = start_cpu_logger(2)
         jvm_kwargs: Dict[str, str] = {}

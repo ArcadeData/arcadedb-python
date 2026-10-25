@@ -321,7 +321,7 @@ def create_server(
 
         To customize locations, set environment variables BEFORE importing:
             os.environ["ARCADEDB_JVM_ERROR_FILE"] = "/custom/path/errors.log"
-            import arcadedb_embedded as arcadedb
+            import arcadedb
 
         Note: Application log location is hardcoded in ArcadeDB's Java code
         and cannot be changed via environment variables.

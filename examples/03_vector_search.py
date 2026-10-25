@@ -24,7 +24,7 @@ Use Cases:
 - Question answering (find relevant context)
 
 Requirements:
-- arcadedb-embedded
+- arcadedb
 - NumPy (for vector operations and mock embeddings)
 
 Note: This example uses mock embeddings for demonstration. In production:
@@ -48,7 +48,7 @@ import zlib
 import jpype.types as jtypes
 import numpy as np
 
-import arcadedb_embedded as arcadedb
+import arcadedb
 
 # Parse command line arguments
 parser = argparse.ArgumentParser(

@@ -9,13 +9,13 @@ from unittest.mock import patch
 
 import pytest
 
-from arcadedb_embedded import jvm
-from arcadedb_embedded.jvm import _build_jvm_args, _default_log_dir
+from arcadedb import jvm
+from arcadedb.jvm import _build_jvm_args, _default_log_dir
 
 CHILD = """
 import sys
-import arcadedb_embedded as arcadedb
-from arcadedb_embedded import jvm
+import arcadedb
+from arcadedb import jvm
 
 jvm_args = sys.argv[2:]
 db = arcadedb.create_database(sys.argv[1], jvm_kwargs={"jvm_args": jvm_args})
@@ -68,7 +68,7 @@ def test_default_logs_land_in_the_state_dir_not_the_cwd(tmp_path):
     cwd, log_dir, home = _run_child(tmp_path, {})
     assert list(cwd.iterdir()) == []
     assert home in log_dir.parents
-    assert log_dir.name == "log" and log_dir.parent.name == "arcadedb-embedded"
+    assert log_dir.name == "log" and log_dir.parent.name == "arcadedb"
     assert list(log_dir.glob("arcadedb.log*")), list(log_dir.iterdir())
     config = (log_dir / "logging.properties").read_text("iso-8859-1")
     assert "${arcadedb.server.logsDirectory}/arcadedb.log" in config
@@ -117,18 +117,18 @@ def test_state_dir_by_platform(tmp_path):
     env = {"HOME": str(tmp_path), "USERPROFILE": str(tmp_path)}
     with patch.dict(os.environ, {**env, "XDG_STATE_HOME": str(tmp_path / "xdg")}):
         with patch.object(jvm.sys, "platform", "linux"):
-            assert _default_log_dir() == tmp_path / "xdg" / "arcadedb-embedded" / "log"
+            assert _default_log_dir() == tmp_path / "xdg" / "arcadedb" / "log"
     with patch.dict(os.environ, {**env, "XDG_STATE_HOME": "relative"}):
         with patch.object(jvm.sys, "platform", "linux"):
-            expected = tmp_path / ".local" / "state" / "arcadedb-embedded" / "log"
+            expected = tmp_path / ".local" / "state" / "arcadedb" / "log"
             assert _default_log_dir() == expected
     with patch.dict(os.environ, env):
         with patch.object(jvm.sys, "platform", "darwin"):
-            expected = tmp_path / "Library" / "Logs" / "arcadedb-embedded" / "log"
+            expected = tmp_path / "Library" / "Logs" / "arcadedb" / "log"
             assert _default_log_dir() == expected
     with patch.dict(os.environ, {**env, "LOCALAPPDATA": str(tmp_path / "lad")}):
         with patch.object(jvm.sys, "platform", "win32"):
-            assert _default_log_dir() == tmp_path / "lad" / "arcadedb-embedded" / "log"
+            assert _default_log_dir() == tmp_path / "lad" / "arcadedb" / "log"
 
 
 def test_user_arguments_win_over_the_log_defaults(tmp_path):
@@ -185,14 +185,14 @@ def test_windows_branch_needs_no_home_directory(tmp_path):
     with patch.object(jvm.sys, "platform", "win32"):
         with patch.dict(os.environ, {"LOCALAPPDATA": str(tmp_path)}, clear=True):
             with patch.object(Path, "home", side_effect=RuntimeError("no home")):
-                assert _default_log_dir() == tmp_path / "arcadedb-embedded" / "log"
+                assert _default_log_dir() == tmp_path / "arcadedb" / "log"
         with patch.dict(os.environ, {}, clear=True):
             with patch.object(Path, "home", side_effect=RuntimeError("no home")):
-                expected = Path(tempfile.gettempdir()) / "arcadedb-embedded" / "log"
+                expected = Path(tempfile.gettempdir()) / "arcadedb" / "log"
                 assert _default_log_dir() == expected
         with patch.dict(os.environ, {}, clear=True):
             with patch.object(Path, "home", return_value=tmp_path):
-                expected = tmp_path / "AppData" / "Local" / "arcadedb-embedded" / "log"
+                expected = tmp_path / "AppData" / "Local" / "arcadedb" / "log"
                 assert _default_log_dir() == expected
 
 

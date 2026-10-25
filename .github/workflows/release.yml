@@ -13,9 +13,9 @@ name: Release to PyPI
 # Nothing here stores a token: the publish job authenticates with PyPI trusted publishing (OIDC),
 # and only that job has the id-token permission.
 #
-# Until the distribution is renamed (tracker #19), pyproject.toml still names it arcadedb-embedded.
+# pyproject.toml names the distribution arcadedb (tracker #19).
 # The guard in the publish job refuses to publish anything that is not `arcadedb`, so this workflow
-# cannot publish arcadedb-embedded from here by accident. The rename is a separate change.
+# cannot publish another distribution from here by accident.
 #
 # TODO (native-wheel port, tracker #19): a second publish job for arcadedb-native, in environment
 # pypi-native with its own id-token permission and the same kind of guard (distribution name must
@@ -240,9 +240,8 @@ jobs:
           name: release-dist
           path: dist/
 
-      # GUARD: this workflow publishes the distribution `arcadedb` and nothing else. While the
-      # package is still named arcadedb-embedded (tracker #19, rename is a separate change), the
-      # job stops here, before anything reaches PyPI. Two checks, so neither can drift alone:
+      # GUARD: this workflow publishes the distribution `arcadedb` and nothing else. A wheel with
+      # another name stops the job here, before anything reaches PyPI. Two checks, so neither can drift alone:
       # the wheel file name and the Name field of its METADATA, both must be DIST_NAME.
       - name: Refuse unless every wheel is the distribution ${{ env.DIST_NAME }}
         run: |

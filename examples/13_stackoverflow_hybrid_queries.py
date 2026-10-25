@@ -56,7 +56,7 @@ DAY_MS = 24 * 60 * 60 * 1000
 
 def get_arcadedb_module():
     try:
-        import arcadedb_embedded as arcadedb
+        import arcadedb
     except ImportError:
         return None
     return arcadedb
@@ -451,7 +451,7 @@ def create_indexes_with_retry(
     retry_delay: int,
     max_retries: int,
 ) -> float:
-    from arcadedb_embedded import ArcadeDBError
+    from arcadedb import ArcadeDBError
 
     start = time.time()
     for table, props, unique in index_defs:
@@ -573,7 +573,7 @@ def load_table_arcadedb_bulk(
 
 
 def insert_table_batch(db, table_name: str, batch: List[Dict[str, Any]]) -> None:
-    from arcadedb_embedded.type_conversion import convert_python_to_java
+    from arcadedb.type_conversion import convert_python_to_java
 
     with db.transaction():
         for record in batch:
@@ -1259,7 +1259,7 @@ def count_graph(db) -> Dict[str, Any]:
 
 
 def ensure_embedding_properties(db) -> None:
-    from arcadedb_embedded import ArcadeDBError
+    from arcadedb import ArcadeDBError
 
     for vertex_type in ("Question", "Answer", "Comment"):
         for prop_name, prop_type in (
@@ -1399,7 +1399,7 @@ def timed_step(name: str, fn: Callable[[], Any]) -> Dict[str, Any]:
 
 
 def create_activity_timeseries_type(db) -> Tuple[bool, Optional[str]]:
-    from arcadedb_embedded import ArcadeDBError
+    from arcadedb import ArcadeDBError
 
     try:
         db.command(
@@ -2279,8 +2279,8 @@ def main() -> None:
 
     arcadedb = get_arcadedb_module()
     if arcadedb is None:
-        print("Missing dependency: arcadedb-embedded")
-        print("Install with: pip install arcadedb-embedded")
+        print("Missing dependency: arcadedb")
+        print("Install with: pip install arcadedb")
         sys.exit(1)
 
     SentenceTransformer = get_sentence_transformer_class()

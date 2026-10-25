@@ -10,8 +10,8 @@ from decimal import Decimal
 
 import pytest
 
-import arcadedb_embedded as arcadedb
-from arcadedb_embedded.callbacks import EVENTS
+import arcadedb
+from arcadedb.callbacks import EVENTS
 
 
 @pytest.fixture

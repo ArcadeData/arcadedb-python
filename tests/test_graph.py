@@ -1,6 +1,6 @@
 def test_graph_batch_new_edges_bulk(tmp_path):
     """new_edges buffers many property-less edges in one crossing."""
-    import arcadedb_embedded as arcadedb
+    import arcadedb
 
     with arcadedb.create_database(str(tmp_path / "bulk_edges_db")) as db:
         db.command("sql", "CREATE VERTEX TYPE BP")
@@ -20,7 +20,7 @@ def test_graph_batch_create_vertices_json_bulk_correctness(tmp_path):
     (and datetimes fall back to the matrix path with types preserved)."""
     import datetime
 
-    import arcadedb_embedded as arcadedb
+    import arcadedb
 
     with arcadedb.create_database(str(tmp_path / "bulk_v_db")) as db:
         db.command("sql", "CREATE VERTEX TYPE BV")
@@ -51,7 +51,7 @@ def test_graph_batch_create_vertices_json_bulk_correctness(tmp_path):
 
 def test_graph_batch_new_edges_bulk_with_properties(tmp_path):
     """new_edges with per-edge property dicts stores values correctly."""
-    import arcadedb_embedded as arcadedb
+    import arcadedb
 
     with arcadedb.create_database(str(tmp_path / "bulk_ep_db")) as db:
         db.command("sql", "CREATE VERTEX TYPE PV")

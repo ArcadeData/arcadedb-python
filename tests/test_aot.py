@@ -1,4 +1,4 @@
-"""Opt-in JDK AOT cache (arcadedb_embedded.aot): key, paths, fallbacks. No JVM is started."""
+"""Opt-in JDK AOT cache (arcadedb.aot): key, paths, fallbacks. No JVM is started."""
 
 import hashlib
 import json
@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from arcadedb_embedded import aot, jvm
+from arcadedb import aot, jvm
 
 
 def _fake_jre(tmp_path: Path, version="25.0.4.1", libsize=1234) -> Path:

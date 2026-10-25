@@ -82,7 +82,7 @@ python extract_version.py --python-patch 1
 python extract_version.py --format=docker
 # Output: 25.10.1-SNAPSHOT (no conversion)
 
-# Custom jars directory (default: src/arcadedb_embedded/jars)
+# Custom jars directory (default: src/arcadedb/jars)
 python extract_version.py /path/to/jars --format=pep440
 ```
 
@@ -184,8 +184,8 @@ ENGINE_JAR_PATTERN = re.compile(
 
 
 def default_jars_dir():
-    """The jars bundled into the package: src/arcadedb_embedded/jars"""
-    return Path(__file__).resolve().parent.parent / "src" / "arcadedb_embedded" / "jars"
+    """The jars bundled into the package: src/arcadedb/jars"""
+    return Path(__file__).resolve().parent.parent / "src" / "arcadedb" / "jars"
 
 
 def extract_raw_version_from_jars(jars_dir):

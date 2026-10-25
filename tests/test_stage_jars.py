@@ -1,6 +1,6 @@
 """A native build bundles the jars it was asked for, not the last build's (#9).
 
-build-native.sh reused whatever was in src/arcadedb_embedded/jars: with no
+build-native.sh reused whatever was in src/arcadedb/jars: with no
 jars directory given it never pulled ``arcadedata/arcadedb:${ARCADEDB_TAG}``,
 so a wheel built after ``latest`` moved carried the old engine; with one given
 (build.sh's third argument) it ignored it. scripts/stage_jars.sh now stages
@@ -120,7 +120,7 @@ def test_build_sh_hands_its_jars_dir_to_the_native_build():
 
 
 def test_ci_path_restages_the_artifact_from_local_jars(tmp_path):
-    # CI: build.sh copies its jars dir (the artifact, src/arcadedb_embedded/jars)
+    # CI: build.sh copies its jars dir (the artifact, src/arcadedb/jars)
     # into local-jars/lib and hands that over; a previous build's leftovers in
     # the jars dir go, the artifact's jars come back.
     jars = _jars(

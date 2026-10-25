@@ -41,7 +41,7 @@ Other:
   - STRING, BOOLEAN, DATE, DATETIME, BINARY, EMBEDDED, LIST
 
 Requirements:
-- arcadedb-embedded
+- arcadedb
 - MovieLens dataset (downloaded via download_data.py)
 - Sufficient JVM heap memory (8GB recommended for large dataset)
 
@@ -81,7 +81,7 @@ import sys
 import time
 from pathlib import Path
 
-import arcadedb_embedded as arcadedb
+import arcadedb
 
 # Define test queries used for validation
 # NOTE: ORDER BY clauses ensure consistent results across runs (important for validation)

@@ -4,7 +4,7 @@ answer."""
 
 import random
 
-import arcadedb_embedded as arcadedb
+import arcadedb
 
 
 def test_second_pass_returns_identical_neighbours(temp_db):

@@ -38,7 +38,8 @@ import struct
 import zipfile
 
 import pytest
-from arcadedb_embedded.jvm import get_jar_path
+
+from arcadedb.jvm import get_jar_path
 
 # Packages the JDK provides. The first test checks the jars only. The bundled JRE
 # is a jlink image, and the modules it lacks on purpose are checked by the tests
@@ -358,7 +359,8 @@ ALLOWED_REMOVED_MODULE_USE = (
 def _runtime_packages():
     """The packages of every module in the running JVM's boot layer, as ``a/b/c``."""
     import jpype
-    from arcadedb_embedded.jvm import start_jvm
+
+    from arcadedb.jvm import start_jvm
 
     start_jvm()
     modules = jpype.JClass("java.lang.ModuleLayer").boot().modules()
@@ -415,7 +417,8 @@ def _removed_module_use_is_allowed(jar, package):
 def test_bundled_runtime_lacks_the_excluded_modules():
     """The runtime really is the trimmed one, so the closure test below means something."""
     import jpype
-    from arcadedb_embedded.jvm import start_jvm
+
+    from arcadedb.jvm import start_jvm
 
     start_jvm()
     layer = jpype.JClass("java.lang.ModuleLayer").boot()
@@ -479,7 +482,8 @@ def test_jackson_and_yaml_work_without_java_beans(tmp_path):
     YAML mapper does not touch snakeyaml's bean introspector. Run both.
     """
     import jpype
-    from arcadedb_embedded.jvm import start_jvm
+
+    from arcadedb.jvm import start_jvm
 
     start_jvm()
     mapper = jpype.JClass("com.fasterxml.jackson.databind.ObjectMapper")()

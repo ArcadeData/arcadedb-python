@@ -1,6 +1,6 @@
 """Graph algorithm SQL coverage for Python bindings."""
 
-import arcadedb_embedded as arcadedb
+import arcadedb
 
 
 def _setup_weighted_graph(db):

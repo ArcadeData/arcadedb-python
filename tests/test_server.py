@@ -16,7 +16,7 @@ import time
 
 import pytest
 
-from arcadedb_embedded import ArcadeDBServer
+from arcadedb import ArcadeDBServer
 from tests.conftest import TEST_PASSWORD, free_port
 
 
@@ -129,7 +129,7 @@ def test_default_host_is_localhost(temp_server_root):
     host feeds both ``get_studio_url()`` and the underlying ContextConfiguration,
     so the URL is a faithful proxy for the configured host.
     """
-    from arcadedb_embedded.server import ArcadeDBServer
+    from arcadedb.server import ArcadeDBServer
 
     server = ArcadeDBServer(
         root_path=temp_server_root,
@@ -155,7 +155,7 @@ def test_failed_server_start_does_not_hang_process_exit(tmp_path):
 
     code = (
         "import socket\n"
-        "from arcadedb_embedded import create_server\n"
+        "from arcadedb import create_server\n"
         "def free():\n"
         "    with socket.socket() as s:\n"
         "        s.bind(('127.0.0.1', 0))\n"

@@ -25,7 +25,7 @@ JRE_MODULE_EXCLUSIONS_FILE="$SCRIPT_DIR/jre_module_exclusions.txt"
 
 # Parameters
 PLATFORM="${1:-}"
-PACKAGE_NAME="${2:-arcadedb-embedded}"
+PACKAGE_NAME="${2:-arcadedb}"
 PACKAGE_DESCRIPTION="${3:-ArcadeDB embedded multi-model database with bundled JRE}"
 ARCADEDB_TAG="${4:-}"
 BUILD_VERSION="${5:-}"
@@ -172,7 +172,7 @@ fi
 echo ""
 
 # Step 1: Stage the ArcadeDB JARs, on every build (scripts/stage_jars.sh)
-JARS_DIR="$PY_BINDINGS_DIR/src/arcadedb_embedded/jars"
+JARS_DIR="$PY_BINDINGS_DIR/src/arcadedb/jars"
 # shellcheck source=stage_jars.sh
 source "$SCRIPT_DIR/stage_jars.sh"
 stage_jars "$JARS_DIR" "$JARS_SOURCE" "$ARCADEDB_TAG"
@@ -294,7 +294,7 @@ fi
 echo -e "${CYAN}📦 Preparing package...${NC}"
 
 # Build and copy JRE
-copy_tree_with_symlinks "$PY_BINDINGS_DIR/temp_jre" "$PY_BINDINGS_DIR/src/arcadedb_embedded/jre" "$PYTHON_WITH_BUILD"
+copy_tree_with_symlinks "$PY_BINDINGS_DIR/temp_jre" "$PY_BINDINGS_DIR/src/arcadedb/jre" "$PYTHON_WITH_BUILD"
 
 JAR_COUNT=$(ls -1 "$JARS_DIR"/*.jar | wc -l)
 echo -e "${GREEN}✅ Package prepared (${JAR_COUNT} JARs + JRE)${NC}"
@@ -378,7 +378,7 @@ WHEEL_FILE=$(ls "$DIST_DIR"/*.whl | head -n1)
 if [[ -n "$WHEEL_FILE" ]]; then
     # Extract components from wheel filename
     WHEEL_NAME=$(basename "$WHEEL_FILE")
-    # arcadedb_embedded-25.10.1-py3-none-any.whl -> arcadedb_embedded-25.10.1-py3-none-PLAT_NAME.whl
+    # arcadedb-25.10.1-py3-none-any.whl -> arcadedb-25.10.1-py3-none-PLAT_NAME.whl
     NEW_WHEEL_NAME=$(echo "$WHEEL_NAME" | sed "s|-py3-none-any\.whl|-py3-none-${PLAT_NAME}.whl|")
     if [[ "$WHEEL_NAME" != "$NEW_WHEEL_NAME" ]]; then
         mv "$WHEEL_FILE" "$DIST_DIR/$NEW_WHEEL_NAME"

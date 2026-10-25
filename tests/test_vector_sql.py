@@ -10,8 +10,8 @@ import math
 import jpype.types as jtypes
 import pytest
 
-import arcadedb_embedded as arcadedb
-from arcadedb_embedded import create_database
+import arcadedb
+from arcadedb import create_database
 
 
 @pytest.fixture

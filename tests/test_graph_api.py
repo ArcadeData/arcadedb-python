@@ -4,8 +4,8 @@ Tests for the Pythonic Graph API wrappers.
 Tests Document, Vertex, and Edge wrapper classes and their methods.
 """
 
-import arcadedb_embedded as arcadedb
-from arcadedb_embedded.graph import Document, Edge, Vertex
+import arcadedb
+from arcadedb.graph import Document, Edge, Vertex
 
 
 def test_vertex_wrapper_creation(temp_db_path):
