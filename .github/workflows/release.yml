@@ -175,8 +175,9 @@ jobs:
           wheels = sorted(pathlib.Path("dist").glob("*.whl"))
 
           # One wheel per platform and supported interpreter. The interpreters are the classifiers of
-          # pyproject.toml, which test-python-bindings.yml's matrix mirrors; the four platforms are
-          # the matrix platforms. Adding either to the matrix changes the expected count here.
+          # pyproject.toml, which the full matrix of scripts/select_matrix.py mirrors (the release runs the full
+          # matrix, not the small pull request one); the four platforms are the matrix platforms. Adding either to
+          # the matrix changes the expected count here.
           prefix = "Programming Language :: Python :: 3."
           classifiers = tomllib.load(open("pyproject.toml", "rb"))["project"]["classifiers"]
           pythons = [c.rsplit(" ", 1)[1] for c in classifiers if c.startswith(prefix)]
