@@ -512,7 +512,7 @@ jobs:
           cores="$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 2)"
           limit=()
           if [ "$FINAL" = true ]; then limit=(--max-notyet 0); fi
-          uv run --no-project --python "$PY" --with "$w" --with pytest --with numpy --with requests --with jpype1 --with pyarrow \
+          uv run --no-project --python "$PY" --with "$w" --with pytest --with setuptools --with numpy --with requests --with jpype1 --with pyarrow \
             --with polars --with pandas --with duckdb --with networkx --with "psycopg[binary]" --with adbc-driver-postgresql \
             --with redis --with neo4j --with ladybug \
             python native/wheel/parity_wheel.py --repo "$GITHUB_WORKSPACE" \
