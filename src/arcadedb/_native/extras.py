@@ -415,7 +415,14 @@ class NativeAsyncExecutor:
         self._db = database
         self._closed = False
         self._owner = database
+        # the ids (extras._callbacks) of the calls that are queued: wait_completion releases the ones that were queued before it
+        # started, close releases all of them. on_ok and on_error are executor-wide, so they keep one id each until close.
         self._cb_ids: list = []
+        self._on_ok_id = 0
+        self._on_error_id = 0
+        self._cb_lock = (
+            threading.Lock()
+        )  # guards the three above; never held across a call into the library
 
     def __enter__(self):
         return self
@@ -497,6 +504,24 @@ class NativeAsyncExecutor:
         self._op("kill")
 
     # work
+    def _queue(self, op: str, **args):
+        """Queue an async call whose callbacks (``cb``, ``ok``, ``err``) are already registered.
+
+        The library keeps those ids until the writers have run the call, which only ``wait_completion`` and ``close`` know. So a
+        call that was queued puts its ids on the list that they release, and a call that the library refuses gives them back
+        at once, as no callback of it will ever run. The ids go on the list after the call is queued, not before, so the list
+        holds only calls that ``wait_completion`` can wait for.
+        """
+        ids = [args[k] for k in ("cb", "ok", "err") if args.get(k)]
+        try:
+            self._op(op, **args)
+        except BaseException:
+            for cid in ids:
+                _forget(cid)
+            raise
+        with self._cb_lock:
+            self._cb_ids.extend(ids)
+
     def _record_callback(self, callback, kind="d"):
         from .records import _wrap_dict
 
@@ -512,7 +537,7 @@ class NativeAsyncExecutor:
         kind = "v" if hasattr(document, "get_out_edges") else "d"
         cb = self._record_callback(callback, kind) if callback is not None else 0
         err = self._error_callback(error_callback) if error_callback is not None else 0
-        self._op(
+        self._queue(
             "create_record",
             type=document._type,
             kind=kind,
@@ -527,16 +552,6 @@ class NativeAsyncExecutor:
         args = tuple(args or ())
         if args and params:
             raise ValueError("Use either positional args or named params, not both")
-        cb = 0
-        if callback is not None:
-
-            def on_result(message):
-                # the JPype wrapper calls the callback once per row of the completed statement
-                for row in NativeResultSet(self._db, message["reply"]):
-                    callback(row)
-
-            cb = _register(on_result)
-        err = self._error_callback(error_callback) if error_callback is not None else 0
         if params:
             values = dict(params)
         elif args:
@@ -547,7 +562,17 @@ class NativeAsyncExecutor:
             )
         else:
             values = None
-        self._op(op, lang=language, text=text, params=values, cb=cb, err=err)
+        cb = 0
+        if callback is not None:
+
+            def on_result(message):
+                # the JPype wrapper calls the callback once per row of the completed statement
+                for row in NativeResultSet(self._db, message["reply"]):
+                    callback(row)
+
+            cb = _register(on_result)
+        err = self._error_callback(error_callback) if error_callback is not None else 0
+        self._queue(op, lang=language, text=text, params=values, cb=cb, err=err)
 
     def query(
         self, language, query_text, callback, args=None, error_callback=None, **params
@@ -618,12 +643,13 @@ class NativeAsyncExecutor:
         callback=None,
         **properties,
     ):
+        src, dst = _rid_of(source_vertex), _rid_of(destination_vertex_or_rid)
         cb = self._edge_callback(callback) if callback is not None else 0
-        self._op(
+        self._queue(
             "new_edge",
-            src=_rid_of(source_vertex),
+            src=src,
             type=edge_type,
-            dst=_rid_of(destination_vertex_or_rid),
+            dst=dst,
             light=bool(light),
             props=properties,
             cb=cb,
@@ -660,7 +686,7 @@ class NativeAsyncExecutor:
             destination_key_names, destination_key_values, "destination"
         )
         cb = self._edge_callback(callback) if callback is not None else 0
-        self._op(
+        self._queue(
             "new_edge_by_keys",
             src_type=source_vertex_type,
             src_names=src_names,
@@ -701,7 +727,7 @@ class NativeAsyncExecutor:
                 return {"v": True if result is None else bool(result)}
 
             err = _register(on_error)
-        self._op(
+        self._queue(
             "scan_type", type=type_name, polymorphic=bool(polymorphic), cb=cb, err=err
         )
 
@@ -726,37 +752,60 @@ class NativeAsyncExecutor:
         if error_callback is not None:
             args["err"] = self._error_callback(error_callback)
         # a retry calls the block again, so the callbacks live until the executor has finished its work (wait_completion, close)
-        self._cb_ids.extend(v for k, v in args.items() if k in ("cb", "ok", "err"))
         if slot is not None:
             args["slot"] = int(slot)
-        self._op("transaction", **args)
+        self._queue("transaction", **args)
 
-    def _release_callbacks(self):
-        """Forget the callbacks of the finished ``transaction`` calls."""
-        ids, self._cb_ids = self._cb_ids, []
+    def _release_callbacks(self, ids=None):
+        """Forget the callbacks of calls that have finished (``ids``), or all that the executor holds (on close)."""
+        if ids is None:
+            with self._cb_lock:
+                ids, self._cb_ids = self._cb_ids, []
+                ids += [self._on_ok_id, self._on_error_id]
+                self._on_ok_id = self._on_error_id = 0
         for cid in ids:
             _forget(cid)
 
     def wait_completion(self, timeout_ms: Optional[int] = None):
-        if timeout_ms is None:
-            self._op("wait")
-        elif timeout_ms < 0:
+        if timeout_ms is not None and timeout_ms < 0:
             raise ValueError(f"timeout_ms must be None or >= 0, got {timeout_ms}")
-        elif timeout_ms == 0:
-            if self.is_processing():
-                raise TimeoutError("Async operations have not completed (0ms poll)")
-        elif not self._op("wait", timeout_ms=timeout_ms)["done"]:
-            raise TimeoutError(
-                f"Async operations did not complete within {timeout_ms}ms"
-            )
-        self._release_callbacks()  # nothing is pending any more
+        # the calls queued so far: a call that another thread queues while this one waits keeps its callbacks
+        with self._cb_lock:
+            finished, self._cb_ids = self._cb_ids, []
+        try:
+            if timeout_ms is None:
+                self._op("wait")
+            elif timeout_ms == 0:
+                if self.is_processing():
+                    raise TimeoutError("Async operations have not completed (0ms poll)")
+            elif not self._op("wait", timeout_ms=timeout_ms)["done"]:
+                raise TimeoutError(
+                    f"Async operations did not complete within {timeout_ms}ms"
+                )
+        except BaseException:
+            with self._cb_lock:  # still pending: the callbacks may still run
+                self._cb_ids[:0] = finished
+            raise
+        self._release_callbacks(finished)
+
+    def _set_handler(self, op: str, slot: str, cid: int):
+        """Install an executor-wide handler; it replaces the earlier one, whose id goes back."""
+        try:
+            self._op(op, cb=cid)
+        except BaseException:
+            _forget(cid)
+            raise
+        with self._cb_lock:
+            replaced = getattr(self, slot)
+            setattr(self, slot, cid)
+        _forget(replaced)
 
     def on_ok(self, callback: Callable[[], None]):
-        self._op("on_ok", cb=_register(lambda message: callback()))
+        self._set_handler("on_ok", "_on_ok_id", _register(lambda message: callback()))
         return self
 
     def on_error(self, callback: Callable[[Exception], None]):
-        self._op("on_error", cb=self._error_callback(callback))
+        self._set_handler("on_error", "_on_error_id", self._error_callback(callback))
         return self
 
     def close(self):

@@ -51,6 +51,8 @@ if BACKEND != "native":
     collect_ignore.append("test_native_log_dir.py")
     # the heap limit that the native glue puts on the isolate (a GraalVM isolate argument; the JVM build has heap_size)
     collect_ignore.append("test_native_heap.py")
+    # the native build's callback table (extras._callbacks), which the async executor releases its ids from
+    collect_ignore.append("test_native_async_callbacks.py")
 if not os.path.isfile(
     os.path.join(os.path.dirname(os.path.dirname(__file__)), "docs", "index.md")
 ):
