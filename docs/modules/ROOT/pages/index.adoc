@@ -87,7 +87,7 @@ Both packages import as `{import-name}`, so an environment holds one of them. Th
 
 == Requirements
 
-* Python 3.10 to 3.14. The wheels' CI runs all five versions on every supported platform.
+* Python 3.10 to 3.14. The wheels' CI runs all five versions on every supported platform for `main`, the nightly run and each release. A pull request runs a smaller selection (xref:development/ci.adoc[Continuous integration]).
 * Linux (x86_64 and ARM64), macOS on Apple Silicon, or Windows (x86_64).
 * No Java installation.
 
