@@ -11,7 +11,7 @@ signal cannot be sent to the own process like this (see test_sigint.py).
 
 import os
 import signal
-import subprocess
+import subprocess  # nosec B404 - test-controlled child process
 import sys
 import threading
 import time
@@ -129,7 +129,7 @@ def test_sigint_loop_in_a_fresh_process_ends_cleanly():
     """The same loop in its own process. A Ctrl-C raised as the Python callback is entered used to leave the engine a stale
     reply pointer, and the process aborted in ``free()`` (nonzero exit); pytest's own hooks hid it inside a test run.
     """
-    result = subprocess.run(
+    result = subprocess.run(  # nosec B603 - fixed argv, no shell, test-owned code string
         [sys.executable, "-c", _SIGINT_LOOP],
         capture_output=True,
         text=True,
