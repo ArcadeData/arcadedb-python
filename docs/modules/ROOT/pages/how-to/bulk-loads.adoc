@@ -73,7 +73,7 @@ This section is about a `graph_batch()` load that stops before `close()` returns
 
 * The vertices and edge records that a returned call committed are there. A load that is killed loses the work after the last commit and nothing before it.
 * The edges are not traversable. The engine writes the edge records first and links them to their vertices (the head pointers and the incoming lists) in `close()`. Until `close()` has run, `outE()`, `inE()`, `out()` and `MATCH` find none of them, but `SELECT count(*) FROM E` counts them. In the example: 70,000 edge records, 0 reachable.
-* `CHECK DATABASE` reports each of these edges as an `ORPHAN RECORD` and counts them in `unreachableEdgeRecords`. It also uses the words "was not connected from", "is not referenced back by" and "missing from that vertex's OUT/IN list" for the same state. Read the statement in the link:https://docs.arcadedb.com/[ArcadeDB SQL reference]; this page does not repeat it.
+* `CHECK DATABASE` reports each of these edges as an `ORPHAN RECORD` and counts them in `unreachableEdgeRecords`. It also uses the words "was not connected from", "is not referenced back by" and "missing from that vertex's OUT/IN list" for the same state. Read the statement in the xref:arcadedb::reference/sql/sql-database-admin.adoc#sql-check-database[`CHECK DATABASE` reference]; this page does not repeat it.
 
 === Recovery that works
 
@@ -123,4 +123,4 @@ with db.graph_batch() as batch:
 
 If you load the edges again without step 3, the old records stay in the database next to the new ones. In the probe this gave 160,000 edge records for 90,000 distinct edges. Traversal is right, because the old records are unreachable, but the edge count of the type is wrong and `CHECK DATABASE` keeps reporting the 70,000 old records.
 
-Edges are linked only when `close()` returns. A long edge load that you split over several batches, each closed, leaves only the open batch unlinked after a kill. The probe did not measure this.
+Edges are linked only when `close()` returns, and each batch links its own edges. A long edge load split over several batches, each closed before the next opens, therefore leaves only the edges of the batch that was open at the interruption unlinked.
