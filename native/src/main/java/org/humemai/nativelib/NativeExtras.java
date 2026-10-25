@@ -6,8 +6,8 @@
  * Same reply convention as ArcadeNative: a malloc'd JSON text, {"ok":true,...} or {"ok":false,"error":..,"cls":..,"chain":..}.
  *
  * Upcalls. Python registers ONE ctypes function pointer with arcadedb_n_set_upcall: CCharPointer fn(long id, CCharPointer json).
- * `id` names a Python-side callback, `json` is the message, the return value is a JSON reply that Python keeps alive until its
- * next call on the same thread (Java copies it at once). The call is a transition-to-native C function pointer call, so the
+ * `id` names a Python-side callback, `json` is the message, the return value is a JSON reply in memory from arcadedb_n_alloc
+ * (NULL for no reply); Java copies the text and frees it. The call is a transition-to-native C function pointer call, so the
  * isolate can run a safepoint or a GC while the Python callback holds the GIL and calls back into the library on its thread.
  * ctypes takes the GIL itself (PyGILState_Ensure) when a foreign Java thread (an async writer) or the engine thread inside a
  * query calls the pointer.
@@ -52,6 +52,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.VertexType;
 import org.graalvm.nativeimage.IsolateThread;
+import org.graalvm.nativeimage.UnmanagedMemory;
 import org.graalvm.nativeimage.c.function.CEntryPoint;
 import org.graalvm.nativeimage.c.function.CFunctionPointer;
 import org.graalvm.nativeimage.c.function.InvokeCFunctionPointer;
@@ -93,8 +94,24 @@ public final class NativeExtras {
     final PyCallback fn = WordFactory.pointer(raw);
     try (CTypeConversion.CCharPointerHolder in = CTypeConversion.toCString(json)) {
       final CCharPointer reply = fn.invoke(id, in.get());
-      return reply.isNull() ? null : CTypeConversion.toJavaString(reply);
+      if (reply.isNull())
+        return null;
+      try {
+        return CTypeConversion.toJavaString(reply);
+      } finally {
+        UnmanagedMemory.free(reply);
+      }
     }
+  }
+
+  /**
+   * Memory for the reply of a Python callback (see upcall: Java copies the text and frees it). Python cannot keep the reply in
+   * its own memory: a callback on a Java thread (an async writer) ends its Python thread state when it returns, and that frees
+   * what the state held before Java has read the text.
+   */
+  @CEntryPoint(name = "arcadedb_n_alloc")
+  public static CCharPointer alloc(final IsolateThread thread, final long size) {
+    return UnmanagedMemory.malloc(WordFactory.unsigned(size));
   }
 
   /** A callback failure that must not stop an async writer: reported on stderr, not lost. */

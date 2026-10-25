@@ -51,7 +51,14 @@ def _dispatch(cid, raw):
         data = json.dumps({"error": f"{type(exc).__name__}: {exc}"}).encode("utf-8")
     if data is None:
         return None
-    # kept alive until this thread's next callback: Java copies the text before it returns
+    size = len(data) + 1
+    pointer = lib.alloc(size)
+    if pointer:
+        # library memory: Java copies the text and frees it (on a Java thread this callback's Python thread state, and
+        # everything a thread-local held, is gone when it returns)
+        ctypes.memmove(pointer, data + b"\0", size)
+        return pointer
+    # a library older than arcadedb_n_alloc: kept alive until this thread's next callback
     buf = ctypes.create_string_buffer(data)
     _reply.buf = buf
     return ctypes.addressof(buf)
