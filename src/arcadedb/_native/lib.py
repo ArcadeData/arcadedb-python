@@ -7,6 +7,7 @@ import sys
 import threading
 from pathlib import Path
 
+from .. import _logdir
 from ..exceptions import ArcadeDBError
 
 _LIB_NAMES = {
@@ -28,6 +29,9 @@ FAST_ENCODE = os.environ.get("ARCADEDB_NATIVE_FASTENC", "1") != "0"
 INSERT_ROWS = os.environ.get("ARCADEDB_NATIVE_INSERT_ROWS", "1") != "0"
 # ARCADEDB_NATIVE_EXEC_MANY: the rows of an insert_many chunk that JSON text cannot carry unchanged go in one crossing (arcadedb_n_exec_many), not one call each
 EXEC_MANY = os.environ.get("ARCADEDB_NATIVE_EXEC_MANY", "1") != "0"
+
+# the directory the engine log, logging.properties and the crash files go to (None until the library is loaded)
+LOG_DIR_USED = None
 
 _lock = threading.Lock()
 _lib = None
@@ -59,6 +63,32 @@ class _Thread:
                 _lib.graal_detach_thread(self.handle)
             except Exception:  # nosec B110 - interpreter shutdown
                 pass
+
+
+def _log_isolate_args(user_args, log_dir) -> list:
+    """The isolate arguments that put the engine log in ``log_dir``; each one the user already gave is left out (theirs wins).
+
+    The engine reads ``arcadedb.server.logsDirectory`` and ``java.util.logging.config.file`` when it first logs, and the log file it
+    opens by default is ``./log/arcadedb.log`` in the working directory. An isolate argument is in place before any Java code runs.
+    """
+    posix = Path(log_dir).as_posix()
+    args = []
+    if not any(a.startswith("-Darcadedb.server.logsDirectory=") for a in user_args):
+        args.append(f"-Darcadedb.server.logsDirectory={posix}")
+    if not any(a.startswith("-Djava.util.logging.config.file=") for a in user_args):
+        args.append(
+            f"-Djava.util.logging.config.file={posix}/{_logdir.LOGGING_CONFIG_NAME}"
+        )
+    return args
+
+
+def _prepare_logging(user_args) -> list:
+    """Create the log directory, write its logging.properties and return the isolate arguments for it (see :func:`_log_isolate_args`)."""
+    global LOG_DIR_USED
+    log_dir = _logdir.usable_log_dir(_logdir.default_log_dir())
+    _logdir.write_logging_config(log_dir, _logdir.NATIVE_ENGINE_LOG_PROPERTIES)
+    LOG_DIR_USED = log_dir
+    return _log_isolate_args(user_args, log_dir)
 
 
 def _check_cpu() -> None:
@@ -112,9 +142,12 @@ def _load():
         ]
         lib.graal_create_isolate.restype = ctypes.c_int
         params = None
+        # run-time image options for the isolate (e.g. "-XX:InitialCollectionPolicy=Adaptive -XX:MaximumYoungGenerationSizePercent=20")
         iso_args = os.environ.get("ARCADEDB_NATIVE_ISOLATE_ARGS", "").split()
+        # the log directory: always set, so that nothing is written to the working directory (the same rule as the JVM build)
+        iso_args += _prepare_logging(iso_args)
         if iso_args:
-            # run-time image options for the isolate (e.g. "-XX:InitialCollectionPolicy=Adaptive -XX:MaximumYoungGenerationSizePercent=20")
+
             class _Params(ctypes.Structure):
                 _fields_ = [
                     ("version", ctypes.c_int),
