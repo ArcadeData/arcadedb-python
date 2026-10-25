@@ -6,7 +6,6 @@ is the one part of #383 the bindings wrap: every other item there is a SQL
 statement (see `test_sql_constraints_and_maintenance.py`).
 """
 
-import jpype
 import pytest
 
 import arcadedb_embedded as arcadedb
@@ -46,12 +45,12 @@ def test_read_only_open_reads_and_refuses_writes(populated_path):
 
 def test_read_only_begin_is_not_refused_the_write_and_the_commit_are(populated_path):
     """begin() returns on a read-only database; the first write raises, and so does the commit
-    (the engine starts the transaction then). A write through Document.save() reaches
-    the engine's own exception. Reads need no transaction."""
+    (the engine starts the transaction then). A write through Document.save() is an
+    ArcadeDBError like the rest of the API. Reads need no transaction."""
     with arcadedb.open_database(populated_path, read_only=True) as db:
         db.begin()  # not refused
         assert db.count_type("Note") == 2
-        with pytest.raises(jpype.JException, match="(?i)read.?only"):
+        with pytest.raises(ArcadeDBError, match="(?i)read.?only"):
             db.new_document("Note").set("n", 3).save()
         with pytest.raises(ArcadeDBError, match="(?i)read.?only"):
             db.commit()
