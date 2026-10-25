@@ -1,6 +1,6 @@
 * xref:index.adoc[ArcadeDB Python]
 * xref:installation.adoc[Installation]
-* xref:packages.adoc[Which package for which mode]
+* xref:which-package.adoc[Which package?]
 * xref:quickstart.adoc[Quickstart]
 * How-to
 ** xref:how-to/databases-and-queries.adoc[Databases and queries]

@@ -1,37 +1,48 @@
 = Installation
-:description: Install the {pkg-name} wheel, check that it works, and set JVM options.
+:description: Install the arcadedb (native) or arcadedb-jvm (JVM) wheel, check that it works, and set JVM options.
 
 // Sources: bindings docs getting-started/installation.md, the PyPI metadata of
-// arcadedb and arcadedb-native.
+// arcadedb and arcadedb-jvm.
 
 == Install
 
-[source,shell,subs="attributes+"]
-----
-pip install {pkg-name}
-----
+Pick one of the two packages. Both import as `{import-name}`.
 
-This package was published as arcadedb-embedded until 26.10.x; install arcadedb now.
+[cols="1,2,2"]
+|===
+| Package | Install | Pick this if
 
-Or with https://docs.astral.sh/uv/[uv]:
+| `{native-pkg-name}` (native, the default)
+| `pip install {native-pkg-name}` +
+`uv add {native-pkg-name}`
+| You write scripts, notebooks, tests, CLIs, serverless functions or agents. You want a fast start and a small footprint, and you need no JVM.
 
-[source,shell,subs="attributes+"]
-----
-uv add {pkg-name}
-----
+| `{jvm-pkg-name}` (JVM)
+| `pip install {jvm-pkg-name}` +
+`uv add {jvm-pkg-name}`
+| Your load is heavy and long-running, so the JIT compiler pays off. Or you need the Java-object APIs, JVM options, `jvm_kwargs` or `start_jvm`.
+|===
 
-The package is self-contained. It carries a Java 25 runtime for its platform, so you do not install Java. Its only Python dependency is `JPype1` 1.5.0 or later (the Java-Python bridge), which pip installs for you.
+Install one of them, not both. If both are installed, `import arcadedb` raises an `ImportError` that names both packages. See xref:which-package.adoc[Which package?] for the comparison, and for how to switch.
+
+// REMOVE WHEN: the old arcadedb-embedded* shims are retired and two releases have shipped with the two-package layout allow-old-name
+NOTE: *Transition note.* The first release of this layout is 26.11.1. Until `{native-pkg-name}` passes its readiness bar, it may appear only as pre-releases, `26.11.1.devN`. Install it with `pip install --pre {native-pkg-name}` or `uv add --prerelease allow {native-pkg-name}`.
+
+// REMOVE WHEN: the old arcadedb-embedded* shims are retired and two releases have shipped with the two-package layout allow-old-name
+NOTE: *Old names.* The JVM package was formerly `arcadedb-embedded`. It is now `{jvm-pkg-name}`, the same build. The native package was formerly `arcadedb-embedded-native`. It is now `{native-pkg-name}`. See xref:which-package.adoc#old-names[Old names].
+
+The JVM package is self-contained. It carries a Java 25 runtime for its platform, so you do not install Java. Its only Python dependency is `JPype1` 1.5.0 or later (the Java-Python bridge), which pip installs for you. The native package needs no Java and no JPype. Optional extras install the columnar helpers of the native package: `[numpy]`, `[arrow]`, `[pandas]` and `[polars]`.
 
 == Requirements
 
 * Python 3.11 to 3.14. The wheels' CI runs all four versions on every supported platform for `main`, the nightly run and each release. A pull request runs a smaller selection (xref:development/ci.adoc[Continuous integration]).
-* One of the four platforms below.
+* One of the four platforms below. The Windows wheel of the native build is the newest, and its test run is the least proven of the four.
 
-Every wheel is platform-specific, built on a native runner of its platform, and carries a JRE for that platform, so pip needs no hint to pick the right one.
+Every wheel is platform-specific and built on a native runner of its platform, so pip needs no hint to pick the right one. The JVM wheel also carries a JRE for its platform. The native wheel is one file for each platform, and it serves every Python version because it loads its library with `ctypes`.
 
 [cols="2,3"]
 |===
-| Platform | Wheel tag (Python 3.12)
+| Platform | Wheel tag (JVM wheel, Python 3.12)
 
 | Linux x86_64
 | `manylinux_2_34_x86_64`
@@ -52,20 +63,24 @@ Every wheel is platform-specific, built on a native runner of its platform, and 
 * The ArcadeDB engine with all models (graph, document, key/value, vector, time series) and both query languages, SQL and openCypher.
 * Vector indexes, and data import for CSV, XML and ArcadeDB JSONL.
 * The optional in-process HTTP server and, from 26.11.1, the Studio web UI. They cost nothing at run time until you call `create_server()`.
-* A bundled Java 25 runtime, trimmed with `jlink`.
+* In the JVM package: a bundled Java 25 runtime, trimmed with `jlink`. In the native package: the engine as a GraalVM native-image shared library.
 
 Engine modules the bindings do not use are left out to keep the wheel small. These include the gRPC and MongoDB wire protocols, Raft HA, and Gremlin.
 
 NOTE: *JavaScript is not available.* The GraalJS jars are left out, so `DEFINE FUNCTION ... LANGUAGE js` fails. Define functions in SQL or openCypher. Registering a Python function is planned in https://github.com/ArcadeData/arcadedb-python/pull/29[#29].
 
-NOTE: *The Studio web UI is in the wheels from 26.11.1.* Studio used to bundle ApexCharts, which is no longer open source (https://github.com/ArcadeData/arcadedb/issues/10579[ArcadeData/arcadedb#10579]). https://github.com/ArcadeData/arcadedb/pull/10627[ArcadeData/arcadedb#10627] replaced it with Apache ECharts. The earlier 26.10.x wheels on PyPI do not contain Studio. The HTTP API of the in-process server works in all of them.
+// REMOVE WHEN: the old arcadedb-embedded* shims are retired and two releases have shipped with the two-package layout allow-old-name
+NOTE: *The Studio web UI is in the JVM wheels from 26.11.1.* Studio used to bundle ApexCharts, which is no longer open source (https://github.com/ArcadeData/arcadedb/issues/10579[ArcadeData/arcadedb#10579]). https://github.com/ArcadeData/arcadedb/pull/10627[ArcadeData/arcadedb#10627] replaced it with Apache ECharts. The earlier 26.10.x wheels on PyPI do not contain Studio. The HTTP API of the in-process server works in all of them.
 
 == Verify the installation
+
+The script works with both packages. `arcadedb.__backend__` tells you which one runs: `native` or `jvm`.
 
 [source,python,subs="attributes+"]
 ----
 {import-stmt}
 print(f"ArcadeDB Python bindings version: {arcadedb.__version__}")
+print(f"Backend: {arcadedb.__backend__}")
 
 # Test database creation
 with arcadedb.create_database("./test") as db:
@@ -73,20 +88,21 @@ with arcadedb.create_database("./test") as db:
     print(f"Database working: {result.first().get('test') == 1}")
 ----
 
-Run in an empty directory, the script prints (the version matches what you installed):
+Run in an empty directory, the script prints (the version and the backend match what you installed; this output is from the JVM package):
 
 [source,text]
 ----
 ArcadeDB Python bindings version: 26.10.2.post1
+Backend: jvm
 Database working: True
 ----
 
 The engine also writes log lines to the standard error stream. The output on this page shows the standard output only.
 
 [[jvm-options]]
-== JVM options
+== JVM options (`{jvm-pkg-name}` only)
 
-Configure the bundled JVM inside Python, before the first database is created:
+The native package has no JVM, so `start_jvm`, `jvm_kwargs` and the flags below do not exist there. With `{jvm-pkg-name}`, configure the bundled JVM inside Python, before the first database is created:
 
 [source,python,subs="attributes+"]
 ----
@@ -129,18 +145,12 @@ WARNING: *One JVM configuration per process.* JVM options are locked after the J
 
 Each Python process starts its own JVM, and each JVM sees the whole container limit. With several Python processes in one container, give each process its own `heap_size`.
 
-== Native build (preview)
+== Native build notes (`{native-pkg-name}`)
 
-`{native-pkg-name}` is the same engine compiled to a GraalVM native-image shared library. It needs no JVM and no JPype, so the JVM options above do not apply to it. It is a preview of alpha quality, and its versions are pre-releases:
-
-[source,shell,subs="attributes+"]
-----
-pip install --pre {native-pkg-name}
-----
-
-It imports as `{native-import-name}`, the same name as `{pkg-name}`, so install only one of the two in an environment. If both are installed, importing `{import-name}` prints a `RuntimeWarning`, because pip overwrites one with the other without a message. Optional extras install the columnar helpers: `[numpy]`, `[arrow]`, `[pandas]` and `[polars]`. Report problems in the {repo-url}/issues[issue tracker] and say that you use the native wheel.
+The native package is the same engine compiled to a GraalVM native-image shared library. It needs no JVM and no JPype, so the JVM options above do not apply to it. A few API calls raise `NotOnNativeYet` (a `NotImplementedError`) instead of misbehaving. The list is in xref:which-package.adoc[Which package?]. Report problems in the {repo-url}/issues[issue tracker] and say which package you use.
 
 == Next steps
 
 * xref:quickstart.adoc[Quickstart]
 * xref:how-to/databases-and-queries.adoc[Databases and queries]
+* xref:which-package.adoc[Which package?]

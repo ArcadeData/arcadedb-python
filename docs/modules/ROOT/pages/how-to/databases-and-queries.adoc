@@ -5,7 +5,7 @@
 
 This guide covers the life of a database directory and the two calls that talk to it. Prefer SQL or openCypher through `db.command(...)` and `db.query(...)` for schema, inserts and graph work. The bindings also expose wrapper objects for the rest of the Java API; they are not covered here.
 
-Every script on this page ran against the published `{pkg-name}` wheel. Run each one in an empty directory.
+Every script on this page ran against the published `{jvm-pkg-name}` wheel. Run each one in an empty directory.
 
 == The life of a database
 

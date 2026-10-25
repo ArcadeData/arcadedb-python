@@ -1,7 +1,7 @@
 = Release
-:description: How a release of the arcadedb-jvm package is numbered, tagged, checked and published to PyPI.
+:description: How a release of the arcadedb-jvm and arcadedb (native) packages is numbered, tagged, checked and published to PyPI.
 
-A release is a Git tag. Pushing the tag starts the `release.yml` workflow. It builds the wheels, tests them, checks them and publishes them to PyPI with trusted publishing. The workflow stores no token.
+A release is a Git tag. Pushing the tag starts the release workflows. This repository releases two packages: `arcadedb-jvm` (the JVM build) with `release.yml`, and `arcadedb` (the native build) with `native.yml`. They build the wheels, test them, check them and publish them to PyPI with trusted publishing. The workflows store no token. The sections below describe `release.yml`; the native release is in <<_native_release,Native release>>.
 
 == Version numbering
 
@@ -63,3 +63,29 @@ The second argument is the previous release. Use `-` for the first release of th
 * A `pip download` for each of the four platforms, and a fresh install on Python 3.12 and 3.14 that opens a database and runs one SQL and one openCypher query.
 
 It prints `PASS` or `FAIL` for each step, and its exit code is the number of failures.
+
+[[_native_release]]
+== Native release
+
+The two packages release from two workflows with two PyPI environments:
+
+[cols="2,2,2"]
+|===
+| Package | Workflow | GitHub environment
+
+| `arcadedb-jvm`
+| `release.yml`
+| `pypi-jvm`
+
+| `arcadedb` (native)
+| `native.yml`
+| `pypi`
+|===
+
+The version rule above holds for both packages.
+
+* A native pre-release (`26.11.1.devN`) publishes when the builds on `linux-x86_64`, `linux-aarch64` and `macos-arm64` pass.
+* A FINAL native release (`A.B.C` or `A.B.C.postN`) needs two more things:
+** The repository variable `ARCADEDB_NATIVE_READINESS_BAR_MET` is `true`. A maintainer sets it after checking the readiness bar: the correctness fixes are merged; the full suite is green on every platform, Windows included, and on Python 3.11 to 3.14; the fault and concurrency probes pass; and the documented API raises no `NotOnNativeYet`.
+** The parity run of every platform and every Python version passes with zero `NotOnNativeYet` skips.
+* Speed parity with the JVM build is not part of the bar.

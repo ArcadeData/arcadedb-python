@@ -1,7 +1,7 @@
 = Continuous integration
 :description: Which platforms and Python versions the CI runs for a pull request, and which for main, the nightly run and a release.
 
-Two workflows test the package: `test-python-bindings.yml` builds a wheel and runs the unit tests, and `test-python-examples.yml` runs the scripts in `examples/`. Both build the wheels on a native runner of each platform.
+Two workflows test the `arcadedb-jvm` package: `test-python-bindings.yml` builds a wheel and runs the unit tests, and `test-python-examples.yml` runs the scripts in `examples/`. Both build the wheels on a native runner of each platform. A third workflow, `native.yml`, builds and tests the `arcadedb` (native) package; see <<_native_build,Native build>>.
 
 The package supports four platforms and four Python versions (3.11 to 3.14). That is 16 combinations for each workflow. A pull request does not run all of them, because the organisation shares one runner limit with ArcadeData/arcadedb. Each macOS or Windows job on a pull request delays the upstream jobs too.
 
@@ -33,6 +33,14 @@ A release always runs the full matrix, because `release.yml` expects one wheel f
 * A pull request that changes only documentation (`docs/**`, `*.adoc`, `CLAUDE.md`, `examples/README.md`, `LICENSE*`) runs nothing.
 * A draft pull request skips the platform jobs. Marking it ready for review starts them.
 * A new push to a pull request cancels the run it replaces. A run on `main` is never cancelled.
+
+== Native build
+
+The workflow `native.yml` builds the native image of the `arcadedb` package. It does not follow the table above.
+
+* A pull request runs it only when native paths change: `native/**`, `src/arcadedb/_native/**`, the native tests, or `native.yml` itself. It then runs on `linux-x86_64` with Python 3.12 only.
+* A push to `main`, the nightly run, a manual run (dispatch) and a release tag run the full platform matrix: `linux-x86_64`, `linux-aarch64`, `macos-arm64` and `windows-x64`.
+* A native image build takes about 1 to 2.5 hours for each platform. The organisation shares one runner limit with upstream ArcadeDB, so do not add runs lightly. Change the paths or the matrix of `native.yml` only for a reason that you can write down.
 
 == Change the selection
 
