@@ -83,7 +83,7 @@ def test_default_logs_land_in_the_state_dir_not_the_cwd(tmp_path):
     assert home in log_dir.parents
     assert log_dir.name == "log" and log_dir.parent.name == "arcadedb"
     assert list(log_dir.glob("arcadedb.log*")), list(log_dir.iterdir())
-    config = (log_dir / "logging.properties").read_text("iso-8859-1")
+    config = (log_dir / _logdir.logging_config_name()).read_text("iso-8859-1")
     assert "${arcadedb.server.logsDirectory}/arcadedb.log" in config
     assert "./log" not in config
 
@@ -120,9 +120,10 @@ def test_args_never_name_the_working_directory():
         # the expected directory comes from the same (cleared) environment the args were built in: on Windows the real
         # environment has LOCALAPPDATA and the cleared one falls back, so computing it outside the block would differ
         log_dir = _default_log_dir().as_posix()
+        config_name = _logdir.logging_config_name()
     assert not any("./log" in a for a in args)
     assert f"-Darcadedb.server.logsDirectory={log_dir}" in args
-    assert f"-Djava.util.logging.config.file={log_dir}/logging.properties" in args
+    assert f"-Djava.util.logging.config.file={log_dir}/{config_name}" in args
     assert f"-XX:ErrorFile={log_dir}/hs_err_pid%p.log" in args
 
 
@@ -222,7 +223,8 @@ def test_arg_values_use_forward_slashes_on_every_platform(tmp_path):
 def test_native_isolate_arguments_name_the_log_dir(tmp_path):
     args = native_lib._log_isolate_args([], tmp_path)
     assert f"-Darcadedb.server.logsDirectory={tmp_path.as_posix()}" in args
-    config = f"-Djava.util.logging.config.file={tmp_path.as_posix()}/logging.properties"
+    name = _logdir.logging_config_name()
+    config = f"-Djava.util.logging.config.file={tmp_path.as_posix()}/{name}"
     assert config in args
     assert not any("./log" in a for a in args)
 
@@ -240,7 +242,9 @@ def test_native_user_isolate_arguments_win_over_the_log_defaults(tmp_path):
 
 
 def test_native_engine_log_config_renders_like_the_jvm_one():
-    rendered = _logdir.render_logging_config(_logdir.NATIVE_ENGINE_LOG_PROPERTIES)
+    rendered = _logdir.render_logging_config(
+        _logdir.NATIVE_ENGINE_LOG_PROPERTIES, console=True
+    )
     assert "./log" not in rendered
     assert rendered.count("FileHandler.pattern") == 1
     assert "${arcadedb.server.logsDirectory}/arcadedb.log" in rendered

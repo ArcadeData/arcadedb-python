@@ -1,5 +1,5 @@
 = Where the logs go
-:description: Where the engine writes its log file on the arcadedb and arcadedb-jvm packages, how to move it, and what the packages never write.
+:description: Where the engine writes its log file on the arcadedb and arcadedb-jvm packages, how to move it, when it also logs to the console, and what the packages never write.
 
 Neither package writes a `log` directory into your working directory. The engine's own default is `./log/arcadedb.log`, relative to wherever the process started. Both packages replace it with a per-user directory, so a read-only working directory or a notebook that starts anywhere leaves no files behind.
 
@@ -23,7 +23,27 @@ The log directory is `arcadedb/log` under your state directory:
 
 When the directory cannot be created or written, the package logs a warning and uses a new `arcadedb-log-*` directory under the system temp directory.
 
-The directory holds the engine log (`arcadedb.log.0`, `arcadedb.log.1` and so on, up to 10 files of 100 MB), and the `logging.properties` that the package writes for the engine. The `arcadedb-jvm` package also keeps the JVM crash file `hs_err_pid<pid>.log` there.
+The directory holds the engine log (`arcadedb.log.0`, `arcadedb.log.1` and so on, up to 10 files of 100 MB), and the logging configuration that the package writes for the engine (`logging.properties`, or `logging-file-only.properties` when the console is off, see below). The `arcadedb-jvm` package also keeps the JVM crash file `hs_err_pid<pid>.log` there.
+
+== Console output
+
+The engine logs to its file and, on Linux and macOS, to the console too (stderr). On Windows the console log is off by default: the log goes to the file only.
+
+The reason is a Windows detail. The runtime saves the OS handle of stdout and stderr when it starts. If your program redirects file descriptor 1 or 2 later (pytest's default output capture does this around every test, and so can a service or an application that embeds the library), Windows closes that handle and can give the same handle value to the next file that is opened, for example a database file. The next console log line is then written into that database file and corrupts it. The log file does not have this problem, because the engine opens it itself.
+
+Set `ARCADEDB_LOG_CONSOLE` before the first database is opened to choose on any platform:
+
+[source,bash]
+----
+export ARCADEDB_LOG_CONSOLE=1   # also log to the console (Windows: only if your program never redirects fd 1 or 2)
+export ARCADEDB_LOG_CONSOLE=0   # log to the file only (also on Linux and macOS)
+----
+
+`1`, `true`, `yes` and `on` turn the console log on, `0`, `false`, `no` and `off` turn it off. Any other value, and no value, gives the platform default above. The package writes the configuration without the console handler to `logging-file-only.properties` in the log directory, so processes with different settings that share a directory do not replace each other's file.
+
+A `java.util.logging.config.file` that you set yourself (see below) replaces all of this: its handlers decide where the log goes.
+
+The packages themselves never print to the console on Windows: the glue code of the native build logs through the same engine log instead of writing to stderr.
 
 == Choose the directory
 

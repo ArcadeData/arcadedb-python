@@ -399,6 +399,10 @@ jobs:
           # progress log. sys capture never touches the fds, so the JVM keeps writing to
           # the runner's own pipes (its log lines appear in this job's log). No test uses
           # capfd.
+          # The package no longer logs to the console on Windows by default
+          # (ARCADEDB_LOG_CONSOLE, src/arcadedb/_logdir.py), which removes the cause, and
+          # tests/test_log_redirect.py redirects fd 1 and 2 on purpose. This flag stays
+          # until a run with the default capture has passed on the Windows legs.
           CAPTURE=""
           if [ "$RUNNER_OS" = "Windows" ]; then CAPTURE="--capture=sys"; fi
           set +e  # Don't exit on test failures

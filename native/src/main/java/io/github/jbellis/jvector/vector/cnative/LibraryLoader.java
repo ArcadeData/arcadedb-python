@@ -12,8 +12,16 @@ package io.github.jbellis.jvector.vector.cnative;
 import java.io.File;
 import java.io.InputStream;
 import java.nio.file.Files;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 public class LibraryLoader {
+  // java.util.logging, never System.err: on Windows the image caches the OS handle of stderr at start-up, and a host that redirects
+  // fd 2 afterwards closes it, so a database file opened later can get the same handle value and receive the text (see NativeExtras.swallowed).
+  private static void warn(final String message) {
+    Logger.getLogger(LibraryLoader.class.getName()).log(Level.WARNING, message); // looked up at the call, not in a static initializer
+  }
+
   private LibraryLoader() {
   }
 
@@ -47,7 +55,7 @@ public class LibraryLoader {
           System.load(f.getAbsolutePath());
           return true;
         } catch (final UnsatisfiedLinkError | RuntimeException e) {
-          System.err.println("jvector: loading " + f + " failed: " + e);
+          warn("jvector: loading " + f + " failed: " + e);
         }
       }
     }
@@ -64,7 +72,7 @@ public class LibraryLoader {
           Files.deleteIfExists(tmp.toPath());
         }
       } catch (final Exception | UnsatisfiedLinkError e) {
-        System.err.println("jvector: loading the bundled " + name + " failed: " + e);
+        warn("jvector: loading the bundled " + name + " failed: " + e);
       }
     }
     return false;

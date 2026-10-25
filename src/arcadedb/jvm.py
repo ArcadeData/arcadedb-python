@@ -22,8 +22,8 @@ import jpype.imports
 
 from . import aot as _aot
 from ._logdir import LOG_DIR_ENV as _LOG_DIR_ENV
-from ._logdir import LOGGING_CONFIG_NAME as _LOGGING_CONFIG_NAME
 from ._logdir import default_log_dir as _default_log_dir
+from ._logdir import logging_config_name as _logging_config_name
 from ._logdir import render_logging_config as _render_logging_config
 from ._logdir import usable_log_dir as _usable_log_dir
 from ._logdir import write_logging_config as _write_logging_config
@@ -436,6 +436,14 @@ def start_jvm(
         then ``arcadedb/log``). A ``-Darcadedb.server.logsDirectory=`` or
         ``-Djava.util.logging.config.file=`` in ``jvm_args`` wins over it.
 
+    ARCADEDB_LOG_CONSOLE (optional)
+        ``1`` also logs to the console (stdout/stderr), ``0`` logs to the file
+        only. Default: on, except on Windows, where a host that redirects fd 1
+        or 2 after the JVM started (pytest capture, a service) leaves the JVM
+        writing console lines to a handle that a database file can reuse.
+        Needs to be set before the first JVM start. A
+        ``-Djava.util.logging.config.file=`` in ``jvm_args`` replaces it.
+
     ARCADEDB_JVM_ERROR_FILE (optional)
         Path for JVM crash logs (default: ``hs_err_pid%p.log`` in the log
         directory above). ``-XX:ErrorFile=`` in ``jvm_args`` wins over it.
@@ -837,7 +845,7 @@ def _build_jvm_args(
         arg.startswith("-Djava.util.logging.config.file=") for arg in merged_args
     ):
         merged_args.append(
-            f"-Djava.util.logging.config.file={log_dir_posix}/{_LOGGING_CONFIG_NAME}"
+            f"-Djava.util.logging.config.file={log_dir_posix}/{_logging_config_name()}"
         )
 
     # Configure JVM crash log location (hs_err_pid*.log files)
