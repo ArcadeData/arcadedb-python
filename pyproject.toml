@@ -81,7 +81,7 @@ dev = [
     "pytest-cov",
     "numpy>=1.26.4",
     "requests>=2.33.0",  # HTTP API / docs-example tests
-    "bandit>=1.9.1",
+    "bandit>=1.9.4",
 ]
 vector = [
     "numpy>=1.26.4",
