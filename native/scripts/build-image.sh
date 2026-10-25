@@ -5,7 +5,7 @@
 # MARCH (default compatibility = baseline x86-64, what a manylinux wheel promises, PEP 600; x86-64-v3 is the GraalVM CE 25.4 default and the faster reference).
 # usage: [MARCH=x86-64-v3] [XMX=12g] [NI_EXTRA="-H:NumberOfThreads=2"] build-image.sh [OUTDIR]     A laptop with other jobs runs it through its job gate; the CI calls it directly.
 # Platforms: Linux (libarcadedb.so; on x86-64 also libjvector-x86_64.so, jvector ships the Highway library for x86-64 only here), macOS
-# (libarcadedb.dylib) and Windows in Git Bash with the MSVC environment loaded (libarcadedb.dll). The CI (native.yml) caps the
+# (libarcadedb.dylib) and Windows in Git Bash with the MSVC environment loaded (libarcadedb.dll). The CI (test-native.yml) caps the
 # builder heap and threads on the 7 GB macOS runner (XMX=5g, NI_EXTRA=-H:NumberOfThreads=2).
 #   e.g. NEED_GB=13 JOB_MEM_GB=14 quiet_build.sh bash native/scripts/build-image.sh
 set -eu

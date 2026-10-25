@@ -1,4 +1,6 @@
-name: Test Python Bindings
+# The JVM build: the `arcadedb-jvm` distribution. release-jvm.yml calls this workflow on a version tag and publishes the wheels it builds.
+# The native build, `arcadedb`, is test-native.yml / release-native.yml.
+name: Test JVM (arcadedb-jvm)
 
 on:
   push:
@@ -16,9 +18,10 @@ on:
       - "CLAUDE.md"
       - "examples/README.md"
       - "LICENSE*"
-      # the native build has its own workflow (native.yml); nothing under native/ is in the JVM wheel
+      # the native build has its own workflows; nothing under native/ is in the JVM wheel
       - "native/**"
-      - ".github/workflows/native.yml"
+      - ".github/workflows/test-native.yml"
+      - ".github/workflows/release-native.yml"
   pull_request:
     # ready_for_review: draft PRs skip the platform matrices (see the job conditions),
     # so marking one ready is what starts them.
@@ -30,9 +33,10 @@ on:
       - "CLAUDE.md"
       - "examples/README.md"
       - "LICENSE*"
-      # the native build has its own workflow (native.yml); nothing under native/ is in the JVM wheel
+      # the native build has its own workflows; nothing under native/ is in the JVM wheel
       - "native/**"
-      - ".github/workflows/native.yml"
+      - ".github/workflows/test-native.yml"
+      - ".github/workflows/release-native.yml"
 
   # A new upstream snapshot is published as arcadedata/arcadedb:latest without
   # any change here, so build and test against it every night as well. The tag
@@ -42,7 +46,7 @@ on:
   schedule:
     - cron: "0 3 * * *"
 
-  # Allow being called by other workflows (e.g., release workflow)
+  # Allow being called by other workflows (release-jvm.yml)
   workflow_call:
     inputs:
       arcadedb-tag:
@@ -75,7 +79,7 @@ on:
 # the workflow literally: github.workflow is the CALLER's name in a
 # workflow_call, which would put this workflow and its sibling in one group.
 concurrency:
-  group: test-python-bindings-${{ github.event.pull_request.number || github.run_id }}
+  group: test-jvm-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -210,7 +214,7 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
         run: |
-          matrix="$(python3 scripts/select_matrix.py bindings --event "$EVENT_NAME")"
+          matrix="$(python3 scripts/select_matrix.py jvm --event "$EVENT_NAME")"
           echo "$matrix"
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
 

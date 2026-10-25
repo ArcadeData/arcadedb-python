@@ -1,7 +1,22 @@
 = Continuous integration
 :description: Which platforms and Python versions the CI runs for a pull request, and which for main, the nightly run and a release.
 
-Two workflows test the `arcadedb-jvm` package: `test-python-bindings.yml` builds a wheel and runs the unit tests, and `test-python-examples.yml` runs the scripts in `examples/`. Both build the wheels on a native runner of each platform. A third workflow, `native.yml`, builds and tests the `arcadedb` (native) package; see <<_native_build,Native build>>.
+Each package has one test workflow and one release workflow:
+
+[cols="2,2,2"]
+|===
+| Package | Test | Release
+
+| `arcadedb-jvm` (the JVM build)
+| `test-jvm.yml`
+| `release-jvm.yml`
+
+| `arcadedb` (the native build)
+| `test-native.yml`
+| `release-native.yml`
+|===
+
+The release workflows call the test workflows (`workflow_call`) and then publish; see xref:development/release.adoc[Release]. Two workflows test the `arcadedb-jvm` package: `test-jvm.yml` builds a wheel and runs the unit tests, and `test-python-examples.yml` runs the scripts in `examples/`. Both build the wheels on a native runner of each platform. `test-native.yml` builds and tests the `arcadedb` (native) package; see <<_native_build,Native build>>.
 
 The package supports four platforms and four Python versions (3.11 to 3.14). That is 16 combinations for each workflow. A pull request does not run all of them, because the organisation shares one runner limit with ArcadeData/arcadedb. Each macOS or Windows job on a pull request delays the upstream jobs too.
 
@@ -26,7 +41,7 @@ A pull request runs 20 checks: 14 test jobs (10 and 4), the two `Download Arcade
 
 The names of the test jobs do not change: `Test arcadedb (<platform>, Python <version>)`. A check keeps its history when a pull request runs fewer of them.
 
-A release always runs the full matrix, because `release.yml` expects one wheel for each platform and Python version. The nightly run also tests against the newest `arcadedata/arcadedb:latest` image.
+A release always runs the full matrix, because `release-jvm.yml` expects one wheel for each platform and Python version. The nightly run also tests against the newest `arcadedata/arcadedb:latest` image.
 
 == Other rules
 
@@ -36,11 +51,11 @@ A release always runs the full matrix, because `release.yml` expects one wheel f
 
 == Native build
 
-The workflow `native.yml` builds the native image of the `arcadedb` package. It does not follow the table above.
+The workflow `test-native.yml` builds the native image of the `arcadedb` package and runs the test suite against the installed wheel. It does not follow the table above. It never publishes; `release-native.yml` calls it on a version tag.
 
-* A pull request runs it only when native paths change: `native/**`, `src/arcadedb/_native/**`, the native tests, or `native.yml` itself. It then runs on `linux-x86_64` with Python 3.12 only.
-* A push to `main`, the nightly run, a manual run (dispatch) and a release tag run the full platform matrix: `linux-x86_64`, `linux-aarch64`, `macos-arm64` and `windows-x64`.
-* A native image build takes about 1 to 2.5 hours for each platform. The organisation shares one runner limit with upstream ArcadeDB, so do not add runs lightly. Change the paths or the matrix of `native.yml` only for a reason that you can write down.
+* A pull request runs it only when native paths change: `native/**`, `src/arcadedb/_native/**`, the native tests, or `test-native.yml` itself. It then runs on `linux-x86_64` with Python 3.12 only.
+* A push to `main`, the nightly run, a manual run (dispatch) run all four platforms: `linux-x86_64`, `linux-aarch64`, `macos-arm64` and `windows-x64` (Python 3.12 and 3.14). A release (`release-native.yml` calls the workflow with `release: true`) runs the same four platforms on all four Python versions, 16 legs.
+* A native image build takes about 1 to 2.5 hours for each platform. The organisation shares one runner limit with upstream ArcadeDB, so do not add runs lightly. Change the paths or the matrix of `test-native.yml` only for a reason that you can write down.
 
 == Change the selection
 

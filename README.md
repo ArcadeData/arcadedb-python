@@ -3,7 +3,8 @@
 [![PyPI arcadedb](https://img.shields.io/pypi/v/arcadedb?label=arcadedb)](https://pypi.org/project/arcadedb/)
 [![PyPI arcadedb-jvm](https://img.shields.io/pypi/v/arcadedb-jvm?label=arcadedb-jvm)](https://pypi.org/project/arcadedb-jvm/)
 [![Python versions](https://img.shields.io/pypi/pyversions/arcadedb-jvm)](https://pypi.org/project/arcadedb-jvm/)
-[![Tests](https://github.com/ArcadeData/arcadedb-python/actions/workflows/test-python-bindings.yml/badge.svg)](https://github.com/ArcadeData/arcadedb-python/actions/workflows/test-python-bindings.yml)
+[![Tests JVM](https://github.com/ArcadeData/arcadedb-python/actions/workflows/test-jvm.yml/badge.svg)](https://github.com/ArcadeData/arcadedb-python/actions/workflows/test-jvm.yml)
+[![Tests native](https://github.com/ArcadeData/arcadedb-python/actions/workflows/test-native.yml/badge.svg)](https://github.com/ArcadeData/arcadedb-python/actions/workflows/test-native.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](https://github.com/ArcadeData/arcadedb-python/blob/main/LICENSE)
 
 Python bindings for [ArcadeDB](https://arcadedb.com), the multi-model database (graph, document, key/value, vector and time series, queried with SQL or openCypher). The engine runs inside your Python process, with no server and no network hop. This repository builds two packages, and both import as `arcadedb`. `arcadedb-jvm` has a sibling, `arcadedb`, the native build: pick `arcadedb` for scripts, notebooks, tests, CLIs, serverless functions and agents, and `arcadedb-jvm` for heavy, long-running loads. Status: beta.

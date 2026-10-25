@@ -1,13 +1,15 @@
-# The native build: the `arcadedb` distribution (a GraalVM native-image shared library loaded with ctypes). The JVM build,
-# `arcadedb-jvm`, is release.yml / test-python-bindings.yml.
+# The native build: the `arcadedb` distribution (a GraalVM native-image shared library loaded with ctypes). This workflow builds the
+# wheels and runs the parity suite against them; release-native.yml calls it on a version tag and publishes. The JVM build,
+# `arcadedb-jvm`, is test-jvm.yml / release-jvm.yml.
 #
 # A native image build takes about 1 to 2.5 hours per platform and the ArcadeData organisation shares a runner cap with
 # upstream ArcadeDB, so the load is selective (scripts/select_native_matrix.py holds the legs, tests/test_select_native_matrix.py pins them):
 #   pull request   only when a native path changed (the `paths` filter below); linux-x86_64, Python 3.12; not for a draft
 #   push to main   only when a native path changed; all four platforms, Python 3.12 and 3.14
 #   nightly        all four platforms, Python 3.12 and 3.14, but only when something besides docs changed in the last 25 hours (a full run on Mondays)
-#   dispatch       all four platforms, Python 3.12 and 3.14; never publishes
-#   tag A.B.C.devN | A.B.C | A.B.C.postN   all four platforms, Python 3.11 to 3.14; then publishes (see below)
+#   dispatch       all four platforms, Python 3.12 and 3.14
+#   workflow_call  from release-native.yml with `release: true`: all four platforms, Python 3.11 to 3.14
+# This workflow never publishes: it has no id-token permission and no environment.
 #
 # One wheel per platform, py3-none-<platform tag>:
 #   linux-x86_64   manylinux_2_34 container          manylinux_2_34_x86_64   libarcadedb.so + libjvector-x86_64.so
@@ -20,14 +22,9 @@
 # test suite of this repository run against the INSTALLED wheel (native/wheel/parity_wheel.py): no failure, error, crash, timeout, or skip
 # besides the counted NOTYET and NA-JVM kinds (tests/conftest.py).
 #
-# Publishing (tags only; PyPI trusted publishing, no token; a trusted publisher on the PyPI project `arcadedb` for this workflow file):
-#   A.B.C.devN       environment `pypi` (one trusted publisher for dev, final and post releases). Needs the parity run of linux-x86_64, linux-aarch64 and macos-arm64 on every Python.
-#                    Windows is published too when it passed, and is informational otherwise.
-#   A.B.C, A.B.C.postN  environment `pypi`, ONLY when the readiness bar is met: the repository variable ARCADEDB_NATIVE_READINESS_BAR_MET
-#                    is `true` (a maintainer sets it after checking the correctness fixes and the fault and concurrency probes), the parity run
-#                    of ALL four platforms on ALL four Pythons passed, and no test is a NOTYET skip. Speed parity is not part of the bar.
-#                    The bar is written down in docs/modules/ROOT/pages/development/release.adoc.
-name: Native wheel (arcadedb)
+# A leg that passes uploads a marker (native-passed-<platform>-py<version>) and the wheel (native-wheel-<platform>); release-native.yml
+# reads them to decide what may be published. Do not rename these artifacts without changing release-native.yml.
+name: Test native (arcadedb)
 
 on:
   pull_request:
@@ -39,18 +36,33 @@ on:
       - "tests/conftest.py"
       - "scripts/select_native_matrix.py"
       - "tests/test_select_native_matrix.py"
-      - ".github/workflows/native.yml"
+      - ".github/workflows/test-native.yml"
   push:
     branches: [main]
     paths: *native_paths
-    tags:
-      - "[0-9]+.[0-9]+.[0-9]+*" # 26.11.1.dev0, 26.11.1, 26.11.1.post1; the plan job rejects the rest
   schedule:
     - cron: "40 3 * * *"
+  # Called by release-native.yml on a version tag.
+  workflow_call:
+    inputs:
+      version:
+        description: "Wheel version to build (PEP 440: A.B.C.devN, A.B.C or A.B.C.postN); the release passes the tag"
+        required: true
+        type: string
+      engine:
+        description: "Engine release (Maven Central) the image links; empty = the release segment of a final version, else the newest release"
+        required: false
+        default: ""
+        type: string
+      release:
+        description: "The release legs: all four platforms and Python 3.11 to 3.14 (otherwise the small main/nightly legs)"
+        required: false
+        default: false
+        type: boolean
   workflow_dispatch:
     inputs:
       version:
-        description: "Wheel version to build (PEP 440: A.B.C.devN, A.B.C or A.B.C.postN); a tag push takes it from the tag"
+        description: "Wheel version to build (PEP 440: A.B.C.devN, A.B.C or A.B.C.postN)"
         required: false
         default: "26.11.1.dev0"
         type: string
@@ -60,9 +72,11 @@ on:
         default: ""
         type: string
 
+# The group names the workflow literally: github.workflow is the CALLER's name in a workflow_call, and the group of release-native.yml
+# must differ from this one or the two would wait for each other.
 concurrency:
-  group: native-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.ref }}
-  # A dry run is superseded by a newer one; a tag run is never cancelled (a half-done release is worse than a queued one).
+  group: test-native-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.ref }}
+  # A dry run is superseded by a newer one; a run for a tag is never cancelled (a half-done release is worse than a queued one).
   cancel-in-progress: ${{ github.ref_type != 'tag' }}
 
 permissions:
@@ -73,7 +87,7 @@ env:
   GRAALVM_BASE: https://github.com/graalvm/graalvm-ce-builds/releases/download/graal-25.4.4.1.1
   UV_VERSION: "0.12.0"
   PYTHONUTF8: "1" # Windows defaults to cp1252; the notices contain non-ASCII author names
-  # The version and engine of a run that is not a tag. The newest engine release on Maven Central is what an A.B.C.devN wheel links
+  # The version and engine of a run that does not pass them (pull request, push, nightly). The newest engine release on Maven Central is what an A.B.C.devN wheel links
   # (the A.B.C release does not exist yet); raise it when a newer release is out.
   DEFAULT_VERSION: "26.11.1.dev0"
   DEV_ENGINE: "26.10.2"
@@ -81,7 +95,7 @@ env:
 jobs:
   plan:
     name: Plan the legs
-    # a draft pull request starts the platform legs when it is marked ready, as in test-python-bindings.yml
+    # a draft pull request starts the platform legs when it is marked ready, as in test-jvm.yml
     if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -92,7 +106,6 @@ jobs:
       final: ${{ steps.ver.outputs.final }}
       build: ${{ steps.plan.outputs.build }}
       test: ${{ steps.plan.outputs.test }}
-      publish: ${{ steps.plan.outputs.publish }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -102,18 +115,12 @@ jobs:
       - name: Resolve the version and the engine
         id: ver
         env:
-          REF_TYPE: ${{ github.ref_type }}
-          REF_NAME: ${{ github.ref_name }}
           INPUT_VERSION: ${{ inputs.version }}
           INPUT_ENGINE: ${{ inputs.engine }}
         run: |
           set -euo pipefail
-          if [ "$REF_TYPE" = "tag" ]; then
-            version="$REF_NAME"
-            [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(\.(dev|post)[0-9]+)?$ ]] || { echo "::error::Tag '$version' is not A.B.C, A.B.C.devN or A.B.C.postN (bare version, no v, no aN/bN/rcN)"; exit 1; }
-          else
-            version="${INPUT_VERSION:-$DEFAULT_VERSION}"
-          fi
+          version="${INPUT_VERSION:-$DEFAULT_VERSION}"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(\.(dev|post)[0-9]+)?$ ]] || { echo "::error::Version '$version' is not A.B.C, A.B.C.devN or A.B.C.postN (no aN/bN/rcN)"; exit 1; }
           base="${version%%.dev*}"
           base="${base%%.post*}"
           if [[ "$version" == *.dev* ]]; then
@@ -128,24 +135,18 @@ jobs:
           { echo "version=$version"; echo "engine=$engine"; echo "final=$final"; } >> "$GITHUB_OUTPUT"
           echo "wheel version $version, engine $engine, final=$final"
 
-      - name: Tag must be the next version
-        if: ${{ github.ref_type == 'tag' }}
-        env:
-          TAG: ${{ github.ref_name }}
-        run: python3 -I scripts/check_version.py "$TAG" --git-remote origin --pypi arcadedb
-
       - name: Choose the legs
         id: plan
         env:
           EVENT: ${{ github.event_name }}
-          REF_TYPE: ${{ github.ref_type }}
+          RELEASE: ${{ inputs.release }}
         run: |
           set -euo pipefail
           run=true
           event="$EVENT"
-          if [ "$REF_TYPE" = "tag" ]; then event=tag; fi
+          if [ "$RELEASE" = true ]; then event=release; fi
           if [ "$EVENT" = "schedule" ]; then
-            changed="$(git log --since='25 hours ago' --format=%h -- src native tests scripts pyproject.toml .github/workflows/native.yml | wc -l)"
+            changed="$(git log --since='25 hours ago' --format=%h -- src native tests scripts pyproject.toml .github/workflows/test-native.yml | wc -l)"
             monday="$(date -u +%u)"
             if [ "$changed" = 0 ] && [ "$monday" != 1 ]; then
               run=false
@@ -534,7 +535,7 @@ jobs:
               if (skipped + 0 != 0) { print "skipped tests that are neither NOTYET nor NA-JVM: " skipped > "/dev/stderr"; exit 1 }
             }' "$tsv" | tee -a "$GITHUB_STEP_SUMMARY"
 
-      # Reached only when the gate passed: the publish jobs read these markers (one per platform and Python, holding the wheel file name).
+      # Reached only when the gate passed: release-native.yml reads these markers (one per platform and Python, holding the wheel file name).
       - name: Mark this leg as passed
         run: |
           set -euo pipefail
@@ -559,118 +560,3 @@ jobs:
             ${{ runner.temp }}/parity/parity-wheel-xml/
           if-no-files-found: warn
           retention-days: 30
-
-  # What may be published, decided once for both publish jobs: a list of the wheels whose platform passed on every required Python.
-  verify:
-    name: Verify what may be published
-    needs: [plan, build, test]
-    if: ${{ !cancelled() && needs.plan.outputs.publish == 'true' }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    outputs:
-      ok: ${{ steps.verify.outputs.ok }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          pattern: native-passed-*
-          path: passed
-          merge-multiple: true
-
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          pattern: native-wheel-*
-          path: wheels
-          merge-multiple: true
-
-      - name: Every required platform passed on every Python, and the wheels are the ones that were tested
-        id: verify
-        env:
-          VERSION: ${{ needs.plan.outputs.version }}
-          FINAL: ${{ needs.plan.outputs.final }}
-          BAR: ${{ vars.ARCADEDB_NATIVE_READINESS_BAR_MET }}
-        run: |
-          set -euo pipefail
-          mkdir -p passed dist
-          ls -l passed wheels
-          pythons="3.11 3.12 3.13 3.14"
-          if [ "$FINAL" = true ]; then
-            required="linux-x86_64 linux-aarch64 macos-arm64 windows-x64"
-            if [ "$BAR" != true ]; then
-              echo "::error::$VERSION is a final release of arcadedb (native), and the readiness bar is not marked as met (repository variable ARCADEDB_NATIVE_READINESS_BAR_MET): nothing is published. See docs/modules/ROOT/pages/development/release.adoc" >&2
-              exit 1
-            fi
-          else
-            required="linux-x86_64 linux-aarch64 macos-arm64"
-          fi
-          for key in $required; do
-            for py in $pythons; do
-              [ -f "passed/$key-py$py.ok" ] || { echo "::error::required leg $key on Python $py did not pass its parity run: nothing is published" >&2; exit 1; }
-            done
-          done
-          # every platform that passed on every Python is published (Windows is informational for a pre-release)
-          for key in linux-x86_64 linux-aarch64 macos-arm64 windows-x64; do
-            all=true
-            for py in $pythons; do [ -f "passed/$key-py$py.ok" ] || all=false; done
-            [ "$all" = true ] || continue
-            w="$(cat "passed/$key-py3.12.ok")"
-            case "$w" in
-              "arcadedb-${VERSION}-py3-none-"*.whl) ;;
-              *) echo "::error::unexpected wheel $w for version $VERSION" >&2; exit 1 ;;
-            esac
-            [ -f "wheels/$w" ] || { echo "::error::wheel $w is missing" >&2; exit 1; }
-            cp "wheels/$w" dist/
-          done
-          ls -l dist
-          echo "ok=true" >> "$GITHUB_OUTPUT"
-
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: native-release-dist
-          path: dist/*.whl
-          if-no-files-found: error
-          retention-days: 7
-
-  publish-prerelease:
-    name: Publish a pre-release to PyPI
-    needs: [plan, verify]
-    if: ${{ !cancelled() && needs.verify.result == 'success' && needs.plan.outputs.final == 'false' }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    environment:
-      name: pypi
-      url: https://pypi.org/project/arcadedb/
-    permissions:
-      id-token: write # PyPI trusted publishing (OIDC); no API token anywhere
-    steps:
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: native-release-dist
-          path: dist
-      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
-        with:
-          packages-dir: dist
-
-  # The first FINAL arcadedb (native) release. `verify` already refused it unless ARCADEDB_NATIVE_READINESS_BAR_MET is true.
-  publish:
-    name: Publish to PyPI
-    needs: [plan, verify]
-    if: ${{ !cancelled() && needs.verify.result == 'success' && needs.plan.outputs.final == 'true' }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    environment:
-      name: pypi
-      url: https://pypi.org/project/arcadedb/
-    permissions:
-      id-token: write
-    steps:
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: native-release-dist
-          path: dist
-      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
-        with:
-          packages-dir: dist

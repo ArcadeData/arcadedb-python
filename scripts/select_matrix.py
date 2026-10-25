@@ -9,13 +9,13 @@ ArcadeData/arcadedb, so every extra macOS or Windows leg on a pull request delay
 - Every other event runs the full matrix: a push to main, the nightly schedule, a manual
   dispatch, and the release workflow (which calls the workflows as `workflow_call`; the event
   name seen there is the caller's, a tag push). The release needs one wheel per platform and
-  Python version, and `release.yml` counts them.
+  Python version, and `release-jvm.yml` counts them.
 
 The selection fails open to the full matrix: an event name this script does not know runs
 everything, never less.
 
 usage:
-    select_matrix.py bindings [--event NAME]    # test-python-bindings.yml
+    select_matrix.py jvm [--event NAME]         # test-jvm.yml
     select_matrix.py examples [--event NAME]    # test-python-examples.yml
 
 `--event` defaults to $GITHUB_EVENT_NAME. The output is one line of JSON for
@@ -48,7 +48,7 @@ NEWEST = PYTHONS[-1]
 
 # The legs of a pull request, per workflow: platform -> Python versions.
 #
-# bindings: all Pythons on linux/amd64 (the cheap, fast runner and the one most contributors
+# jvm: all Pythons on linux/amd64 (the cheap, fast runner and the one most contributors
 # use), the oldest and the newest on the three other platforms. A bug that depends on the
 # interpreter shows on the ends of the range, and one that depends on the platform shows on
 # any version of it.
@@ -58,7 +58,7 @@ NEWEST = PYTHONS[-1]
 # examples 07 to 12) and per-platform steps in the workflow (a CPU torch index on macOS, UTF-8
 # on Windows), so all four platforms stay.
 PULL_REQUEST_LEGS = {
-    "bindings": {
+    "jvm": {
         "linux/amd64": PYTHONS,
         "linux/arm64": (OLDEST, NEWEST),
         "darwin/arm64": (OLDEST, NEWEST),
@@ -77,7 +77,7 @@ def _legs(per_platform: dict[str, tuple[str, ...]]) -> list[dict[str, str]]:
 
 
 def select(workflow: str, event: str) -> dict[str, list[dict[str, str]]]:
-    """The `strategy.matrix` of `workflow` ("bindings" or "examples") for `event`."""
+    """The `strategy.matrix` of `workflow` ("jvm" or "examples") for `event`."""
     if workflow not in PULL_REQUEST_LEGS:
         raise ValueError(
             f"unknown workflow {workflow!r}; use one of {sorted(PULL_REQUEST_LEGS)}"

@@ -1,4 +1,4 @@
-"""The legs of the native workflow per event: a pull request must stay small (the org shares a runner cap with upstream)."""
+"""The legs of the native test workflow per event: a pull request must stay small (the org shares a runner cap with upstream)."""
 
 import importlib.util
 import json
@@ -21,7 +21,6 @@ def test_pull_request_builds_one_platform_and_tests_one_python():
     assert [(t["key"], t["python"]) for t in chosen["test"]] == [
         ("linux-x86_64", "3.12")
     ]
-    assert chosen["publish"] is False
 
 
 def test_main_nightly_and_dispatch_build_all_four_platforms():
@@ -34,15 +33,13 @@ def test_main_nightly_and_dispatch_build_all_four_platforms():
             "windows-x64",
         ]
         assert len(chosen["test"]) == 4 * len(sel.MAIN_PYTHONS)
-        assert chosen["publish"] is False
 
 
-def test_a_release_tag_tests_every_supported_python_on_every_platform():
-    chosen = sel.select("tag")
+def test_a_release_tests_every_supported_python_on_every_platform():
+    chosen = sel.select("release")
     assert len(chosen["build"]) == 4
     assert len(chosen["test"]) == 4 * 4
     assert {t["python"] for t in chosen["test"]} == {"3.11", "3.12", "3.13", "3.14"}
-    assert chosen["publish"] is True
 
 
 def test_pythons_are_the_classifiers_of_the_native_wheel():
@@ -70,6 +67,5 @@ def test_the_script_prints_github_output_lines():
         text=True,
         check=True,
     ).stdout.splitlines()
-    assert [line.split("=", 1)[0] for line in out] == ["build", "test", "publish"]
+    assert [line.split("=", 1)[0] for line in out] == ["build", "test"]
     assert json.loads(out[0].split("=", 1)[1])[0]["key"] == "linux-x86_64"
-    assert out[2] == "publish=false"

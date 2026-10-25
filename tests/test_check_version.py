@@ -13,7 +13,7 @@ import pytest
 
 SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "check_version.py"
 PYPROJECT_FIELD = re.compile(r'^version = "([^"]+)"', re.MULTILINE)
-RELEASE_WORKFLOW = SCRIPT_PATH.parents[1] / ".github" / "workflows" / "release.yml"
+RELEASE_WORKFLOW = SCRIPT_PATH.parents[1] / ".github" / "workflows" / "release-jvm.yml"
 
 
 def _load():
