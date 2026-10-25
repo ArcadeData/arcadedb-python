@@ -52,6 +52,9 @@ if (
     sys.platform == "win32"
 ):  # conftest.py's collect_ignore does not apply to a file named on the command line
     files = [f for f in files if os.path.basename(f) not in win_files]
+if not os.path.isfile(os.path.join(pkg, "docs", "index.md")):
+    # tests/conftest.py collect-ignores test_docs_examples.py without the Markdown docs site; a file named on the command line is collected anyway
+    files = [f for f in files if os.path.basename(f) != "test_docs_examples.py"]
 if a.files:
     want = set(a.files.split(","))
     files = [f for f in files if os.path.basename(f) in want]
