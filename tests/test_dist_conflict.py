@@ -1,7 +1,8 @@
-"""The `arcadedb` and `arcadedb-native` distributions both import as `arcadedb`.
+"""The `arcadedb` (native) and `arcadedb-jvm` (JVM) distributions both import as `arcadedb`.
 
-pip overwrites one with the other without a message, so the package warns at import time when it
-finds both distributions in the installed metadata. These tests need no engine and no JVM.
+pip overwrites one with the other without a message, so each build refuses to import when the metadata of
+the other distribution is installed. `arcadedb.__backend__` says which build is running. These tests need no
+engine and no JVM.
 """
 
 import os
@@ -12,6 +13,7 @@ from importlib import metadata
 
 import pytest
 
+import arcadedb
 from arcadedb import _dist_conflict
 
 
@@ -27,37 +29,51 @@ def lookup_with(*installed):
 
 
 def test_distribution_names():
-    assert _dist_conflict.DISTRIBUTIONS == ("arcadedb", "arcadedb-native")
+    assert _dist_conflict.DISTRIBUTIONS == {"native": "arcadedb", "jvm": "arcadedb-jvm"}
 
 
-def test_both_installed_warns():
-    with pytest.warns(RuntimeWarning, match="arcadedb-native") as record:
-        assert _dist_conflict.warn_if_both_installed(
-            lookup_with("arcadedb", "arcadedb-native")
-        )
-    text = str(record[0].message)
-    assert "'arcadedb'" in text
-    assert "Install only one" in text
+def test_backend_is_one_of_the_two_builds():
+    assert arcadedb.__backend__ in ("jvm", "native")
+    assert "__backend__" in arcadedb.__all__
 
 
 @pytest.mark.parametrize(
-    "installed",
-    [("arcadedb",), ("arcadedb-native",), ()],
-    ids=["jvm", "native", "none"],
+    "backend,own,other",
+    [("jvm", "arcadedb-jvm", "arcadedb"), ("native", "arcadedb", "arcadedb-jvm")],
 )
-def test_one_or_none_installed_is_silent(installed):
+def test_the_other_distribution_installed_refuses_the_import(backend, own, other):
+    with pytest.raises(ImportError) as info:
+        _dist_conflict.check(backend, lookup_with(own, other))
+    assert isinstance(info.value, _dist_conflict.DistributionConflictError)
+    text = str(info.value)
+    # names both packages, how to fix it, and where to read more
+    assert f"'{own}'" in text and f"'{other}'" in text
+    assert "pip uninstall arcadedb arcadedb-jvm" in text
+    assert "which-package" in text
+
+
+@pytest.mark.parametrize("backend", ["jvm", "native"])
+def test_own_distribution_alone_or_none_is_silent(backend):
+    own = _dist_conflict.DISTRIBUTIONS[backend]
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        assert not _dist_conflict.warn_if_both_installed(lookup_with(*installed))
+        _dist_conflict.check(backend, lookup_with(own))
+        _dist_conflict.check(
+            backend, lookup_with()
+        )  # a source checkout: neither is installed
 
 
-def test_unreadable_metadata_never_breaks_the_import():
+@pytest.mark.parametrize("backend", ["jvm", "native"])
+def test_unreadable_metadata_never_breaks_the_import(backend):
     def broken(name):
         raise OSError("unreadable site-packages")
 
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")
-        assert not _dist_conflict.warn_if_both_installed(broken)
+    _dist_conflict.check(backend, broken)
+
+
+def test_an_unknown_backend_is_a_programming_error():
+    with pytest.raises(ValueError, match="'jvm' or 'native'"):
+        _dist_conflict.check("python", lookup_with())
 
 
 def fake_dist_info(site, name, version):
@@ -70,32 +86,39 @@ def fake_dist_info(site, name, version):
 
 
 def import_arcadedb(extra_site):
-    """Import arcadedb in a fresh interpreter with `extra_site` ahead on sys.path; return stderr."""
+    """Import arcadedb in a fresh interpreter with `extra_site` ahead on sys.path; return the CompletedProcess."""
     env = dict(os.environ)
     # sys.path of this run (installed wheel or source checkout) follows the fake site
     env["PYTHONPATH"] = os.pathsep.join([str(extra_site)] + [p for p in sys.path if p])
-    result = subprocess.run(  # nosec B603 - fixed argv, no shell
+    return subprocess.run(  # nosec B603 - fixed argv, no shell
         [sys.executable, "-W", "default", "-c", "import arcadedb"],
         capture_output=True,
         text=True,
         env=env,
         check=False,
     )
+
+
+def sibling():
+    """The distribution of the other build than the one under test."""
+    return _dist_conflict.DISTRIBUTIONS[
+        _dist_conflict.other_backend(arcadedb.__backend__)
+    ]
+
+
+def test_import_fails_when_the_other_distribution_is_installed_too(tmp_path):
+    site = tmp_path / "site"
+    fake_dist_info(site, sibling(), "26.11.1")
+    result = import_arcadedb(site)
+    assert result.returncode != 0
+    assert "DistributionConflictError" in result.stderr
+    assert "pip uninstall arcadedb arcadedb-jvm" in result.stderr
+    assert "'arcadedb'" in result.stderr and "'arcadedb-jvm'" in result.stderr
+
+
+def test_import_is_silent_when_only_this_distribution_is_installed(tmp_path):
+    site = tmp_path / "site"
+    fake_dist_info(site, _dist_conflict.DISTRIBUTIONS[arcadedb.__backend__], "26.11.1")
+    result = import_arcadedb(site)
     assert result.returncode == 0, result.stderr
-    return result.stderr
-
-
-def test_import_warns_when_both_distributions_are_installed(tmp_path):
-    site = tmp_path / "site"
-    fake_dist_info(site, "arcadedb", "26.11.1")
-    fake_dist_info(site, "arcadedb-native", "26.11.1")
-    stderr = import_arcadedb(site)
-    assert "RuntimeWarning" in stderr
-    assert "arcadedb-native" in stderr
-    assert "Install only one" in stderr
-
-
-def test_import_is_silent_with_the_jvm_distribution_alone(tmp_path):
-    site = tmp_path / "site"
-    fake_dist_info(site, "arcadedb", "26.11.1")
-    assert "Install only one" not in import_arcadedb(site)
+    assert "pip uninstall" not in result.stderr
