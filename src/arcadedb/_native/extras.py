@@ -1,6 +1,6 @@
 """Native backend coverage beyond the DSL core: GraphBatch, the async executor, database settings, import/export and Python
 functions in SQL, over the ``arcadedb_n_gb*``, ``arcadedb_n_async``, ``arcadedb_n_dbset``, ``arcadedb_n_import``,
-``arcadedb_n_export`` and ``arcadedb_n_udf_register`` entry points (``NativeExtras.java``).
+``arcadedb_n_export`` and ``arcadedb_n_cb`` entry points (``NativeExtras.java``).
 
 Callbacks (async completions, error handlers, Python functions called from SQL) go through ONE ctypes function pointer that
 ``_ensure_upcall`` registers with the library: the engine thread (or an async writer thread) calls ``_dispatch(id, json)``,
@@ -10,13 +10,17 @@ ctypes takes the GIL for the call, and the reply is JSON (see the header of ``Na
 import ctypes
 import itertools
 import json
+import sys
 import threading
+import weakref
 from collections.abc import Mapping
 from typing import Any, Callable, Iterable, Optional
 
+from ..callbacks import EventHandle as _BaseEventHandle
+from ..callbacks import check_event, check_function
 from ..exceptions import ArcadeDBError
 from ..graph_batch import GraphBatch as _BaseGraphBatch
-from . import lib, not_yet
+from . import interrupts, lib, not_yet
 from .codec import _PLAIN, _default, _prep, loads
 
 # -------------------------------------------------------------------------------------------------------- upcall
@@ -43,6 +47,7 @@ def _dispatch(cid, raw):
         reply = fn(message) if fn is not None else None
         data = None if reply is None else _enc(reply).encode("utf-8")
     except BaseException as exc:  # nosec B110 - an exception must not cross the C frame
+        interrupts.note(exc)
         data = json.dumps({"error": f"{type(exc).__name__}: {exc}"}).encode("utf-8")
     if data is None:
         return None
@@ -52,10 +57,32 @@ def _dispatch(cid, raw):
     return ctypes.addressof(buf)
 
 
+def _install_unraisable_hook() -> None:
+    """Keep a Ctrl-C that arrives as the callback is entered.
+
+    CPython runs a pending signal handler at the first bytecode of a function, so a KeyboardInterrupt can be raised before
+    ``_dispatch`` reaches its ``try``: ctypes then reports it as unraisable and returns NULL to the engine. The hook records it
+    as the interrupt of this thread (the engine fails the statement on a NULL reply, and the error becomes the
+    KeyboardInterrupt); every other unraisable exception goes to the hook that was there.
+    """
+    previous = sys.unraisablehook
+
+    def hook(unraisable):
+        if unraisable.object is _dispatch and isinstance(
+            unraisable.exc_value, KeyboardInterrupt
+        ):
+            interrupts.note(unraisable.exc_value)
+        else:
+            previous(unraisable)
+
+    sys.unraisablehook = hook
+
+
 def _ensure_upcall() -> None:
     global _upcall_ref
     if _upcall_ref is not None:
         return
+    _install_unraisable_hook()
     lib.call_void(
         "arcadedb_n_set_upcall", ctypes.cast(_make_pointer(), ctypes.c_void_p)
     )
@@ -65,6 +92,13 @@ def _make_pointer():
     global _upcall_ref
     _upcall_ref = _UPCALL_TYPE(_dispatch)
     return _upcall_ref
+
+
+def _forget(cid) -> None:
+    """Drop a callback the engine no longer holds (an unregistered function, a removed listener, a replaced function)."""
+    if cid:
+        with _callbacks_lock:
+            _callbacks.pop(cid, None)
 
 
 def _register(fn: Callable) -> int:
@@ -789,31 +823,164 @@ def export_database(
     )["stats"]
 
 
-# -------------------------------------------------------------------------------------------------------- Python functions in SQL
+# -------------------------------------------------------------------------------------------------------- Python functions in SQL and record events
+
+_MAX_LONG = 2**63
 
 
-def register_function(
-    name: str, fn: Callable, min_args: int = 0, max_args: int = -1
-) -> None:
-    """Make ``fn`` callable from SQL as ``name(..)``: ``SELECT name(a, b) FROM T``.
+def _check_result(value) -> None:
+    """A function result the engine can carry: an int past a Java long is an OverflowError, as on the JPype path."""
+    t = type(value)
+    if t is int:
+        if not -_MAX_LONG <= value < _MAX_LONG:
+            raise OverflowError("Python int too large to convert to Java long")
+    elif t is list or t is tuple:
+        for item in value:
+            _check_result(item)
+    elif t is dict:
+        for item in value.values():
+            _check_result(item)
 
-    ``fn`` receives the argument values as Python values and returns a value of a type a parameter can carry (str, int, float,
-    bool, None, list, dict, Decimal, datetime). An exception raised by ``fn`` fails the statement with its text. Registration is
-    process-wide (the engine's function factory), like any engine function; ``max_args`` < 0 means any number.
-    """
+
+def _record_or_value(database, value):
+    """A record the engine sent as a dict with ``@rid``, ``@type`` and ``@cat`` becomes a Document, Vertex or Edge."""
+    if type(value) is dict and "@type" in value and "@cat" in value:
+        from .records import _wrap_dict
+
+        return _wrap_dict(database, value)
+    return value
+
+
+def _function_handler(fn: Callable, database_ref) -> Callable:
+    def handler(message):
+        database = database_ref()
+        result = fn(*[_record_or_value(database, a) for a in message.get("args", [])])
+        _check_result(result)
+        return {"v": result}
+
+    return handler
+
+
+def _event_handler(event: str, fn: Callable, database_ref) -> Callable:
+    is_before = event.startswith("before_")
 
     def handler(message):
-        try:
-            return {"v": fn(*message.get("args", []))}
-        except Exception as exc:
-            return {"error": f"{type(exc).__name__}: {exc}"}
+        from .records import _wrap_dict
 
-    cid = _register(handler)
-    _call(
-        "Failed to register the function",
-        "arcadedb_n_udf_register",
-        lib.b(name),
-        cid,
-        int(min_args),
-        int(max_args if max_args >= 0 else 2**31 - 1),
-    )
+        result = fn(_wrap_dict(database_ref(), message["rec"]))
+        return {"v": not (is_before and result is False)}
+
+    return handler
+
+
+class NativeEventHandle(_BaseEventHandle):
+    """A registered record event callback; ``remove()`` stops it (also a context manager, as on the JPype backend)."""
+
+    def __init__(self, registrations, event, type_name, handle, cid):
+        super().__init__(None, event, type_name, handle, None)
+        self._registrations = registrations
+        self._cid = cid
+
+    def remove(self) -> None:
+        if not self._active:
+            return
+        self._active = False
+        self._registrations._events.discard(self)
+        try:
+            _call(
+                f"Failed to remove '{self.event}' callback",
+                "arcadedb_n_cb",
+                lib.b("ev_remove"),
+                lib.b(json.dumps({"h": self._java_handle})),
+            )
+        finally:
+            _forget(self._cid)
+
+
+class Registrations:
+    """The Python functions and event callbacks one ``NativeDatabase`` registered, to remove them when it closes.
+
+    The engine keeps functions for the whole process, so each database removes its own; the checks and the replies are those
+    of the JPype backend (``arcadedb.callbacks``), the engine side is ``arcadedb_n_cb`` in ``NativeExtras.java``.
+    """
+
+    def __init__(self, database):
+        # weak: the callbacks hold the database only for wrapping records, and the registry must not keep it alive
+        self._database_ref = weakref.ref(database)
+        self._h = database._h
+        self._functions: dict = {}  # lower-case name -> (engine handle, callback id)
+        self._events: set = set()
+
+    def _cb(self, prefix: str, op: str, **args) -> dict:
+        reply = _call(prefix, "arcadedb_n_cb", lib.b(op), lib.b(json.dumps(args)))
+        if "refused" in reply:
+            raise ArcadeDBError(reply["refused"])
+        return reply
+
+    def register_function(
+        self, name, fn, min_args, max_args, deterministic, replace
+    ) -> None:
+        min_args, max_args = check_function(name, fn, min_args, max_args)
+        cid = _register(_function_handler(fn, self._database_ref))
+        try:
+            reply = self._cb(
+                f"Failed to register function '{name}'",
+                "fn_register",
+                name=name,
+                cb=cid,
+                min=min_args,
+                max=min(max_args, 2**31 - 1),
+                det=bool(deterministic),
+                replace=bool(replace),
+            )
+        except BaseException:
+            _forget(cid)
+            raise
+        _forget(reply.get("dropped"))  # the function this one replaced
+        self._functions[name.lower()] = (reply["h"], cid)
+
+    def unregister_function(self, name: str) -> None:
+        entry = self._functions.pop(str(name).lower(), None)
+        if entry is None:
+            raise ArcadeDBError(
+                f"No Python function '{name}' is registered through this database"
+            )
+        try:
+            self._cb(f"Failed to unregister '{name}'", "fn_unregister", h=entry[0])
+        finally:
+            _forget(entry[1])
+
+    def on(self, event: str, fn: Callable, type_name: Optional[str]):
+        check_event(event, fn)
+        cid = _register(_event_handler(event, fn, self._database_ref))
+        try:
+            reply = self._cb(
+                f"Failed to register '{event}' callback",
+                "ev_register",
+                db=self._h,
+                type=type_name,
+                event=event,
+                cb=cid,
+            )
+        except BaseException:
+            _forget(cid)
+            raise
+        handle = NativeEventHandle(self, event, type_name, reply["h"], cid)
+        self._events.add(handle)
+        return handle
+
+    def clear(self) -> None:
+        """Remove everything this database registered (called when it closes); a failure here must not stop the close."""
+        functions, self._functions = self._functions, {}
+        events, self._events = self._events, set()
+        for handle, cid in functions.values():
+            try:
+                self._cb("", "fn_unregister", h=handle)
+            except Exception:  # nosec B110 - the library may be shutting down
+                pass
+            _forget(cid)
+        for event in events:
+            try:
+                event.remove()
+            except Exception:  # nosec B110
+                pass

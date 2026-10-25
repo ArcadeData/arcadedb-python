@@ -67,7 +67,7 @@ Every wheel is platform-specific and built on a native runner of its platform, s
 
 Engine modules the bindings do not use are left out to keep the wheel small. These include the gRPC and MongoDB wire protocols, Raft HA, and Gremlin.
 
-NOTE: *JavaScript is not available.* The GraalJS jars are left out, so `DEFINE FUNCTION ... LANGUAGE js` fails. Define functions in SQL or openCypher. Registering a Python function is planned in https://github.com/ArcadeData/arcadedb-python/pull/29[#29].
+NOTE: *JavaScript is not available.* The GraalJS jars are left out, so `DEFINE FUNCTION ... LANGUAGE js` fails. Define functions in SQL or openCypher, or register a Python function with `Database.register_function` (it works on both packages).
 
 // REMOVE WHEN: the old arcadedb-embedded* shims are retired and two releases have shipped with the two-package layout allow-old-name
 NOTE: *The Studio web UI is in the JVM wheels from 26.11.1.* Studio used to bundle ApexCharts, which is no longer open source (https://github.com/ArcadeData/arcadedb/issues/10579[ArcadeData/arcadedb#10579]). https://github.com/ArcadeData/arcadedb/pull/10627[ArcadeData/arcadedb#10627] replaced it with Apache ECharts. The earlier 26.10.x wheels on PyPI do not contain Studio. The HTTP API of the in-process server works in all of them.

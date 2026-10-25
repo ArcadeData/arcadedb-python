@@ -5,7 +5,7 @@ selects it (with ``ARCADEDB_NATIVE_LIB`` pointing at a library you built); the d
 library (``libarcadedb``) that Python loads with ``ctypes``: no JVM, no JPype. The surface is the DSL-first core:
 databases, ``query``/``command`` for SQL and openCypher, transactions, results and the in-process server.
 
-What is not on native yet (each raises :class:`NotOnNativeYet`): Python UDFs and record callbacks, ``GraphBatch``, the
+What is not on native yet (each raises :class:`NotOnNativeYet`): ``GraphBatch``, the
 async executor, the Java-object APIs (``Document``/``Vertex``/``Edge`` wrappers, ``new_vertex``, ``new_document``,
 ``schema``, ``get_java_database``), the columnar/Arrow readers other than a simple row conversion, importers and
 exporters that go through Java objects, and every JVM setting (``jvm_kwargs``, ``start_jvm``).

@@ -146,6 +146,8 @@ def _load():
             ctypes.POINTER(ctypes.c_void_p),
         ]
         lib.graal_attach_thread.restype = ctypes.c_int
+        lib.graal_get_current_thread.argtypes = [ctypes.c_void_p]
+        lib.graal_get_current_thread.restype = ctypes.c_void_p
         lib.graal_detach_thread.argtypes = [ctypes.c_void_p]
         lib.graal_detach_thread.restype = ctypes.c_int
         # a Java long is 64 bits on every platform; C long is 32 bits on Windows, so L is long long (the same size as c_long elsewhere)
@@ -176,7 +178,7 @@ def _load():
             "arcadedb_n_async": [P, L, S, S],
             "arcadedb_n_import": [P, L, S],
             "arcadedb_n_export": [P, L, S, S, I, S],
-            "arcadedb_n_udf_register": [P, S, L, I, I],
+            "arcadedb_n_cb": [P, S, S],
             "arcadedb_n_set_upcall": [P, P],
             "arcadedb_free": [P, P],
         }
@@ -222,6 +224,13 @@ def loaded() -> bool:
 def _thread_handle():
     t = getattr(_local, "thread", None)
     if t is None:
+        # A Java thread that runs a Python callback (an async writer, an engine thread) is attached to the isolate already.
+        # Attaching it again would hand Python an owned handle that detaches the thread, while it still runs Java code, as
+        # soon as the callback's Python thread state ends: the process aborts.
+        current = _lib.graal_get_current_thread(_isolate)
+        if current:
+            t = _local.thread = _Thread(ctypes.c_void_p(current), owned=False)
+            return t.handle
         thread = ctypes.c_void_p()
         rc = _lib.graal_attach_thread(_isolate, ctypes.byref(thread))
         if rc != 0:
