@@ -11,6 +11,11 @@
 #   workflow_call  from release-native.yml with `release: true`: all four platforms, Python 3.11 to 3.14
 # This workflow never publishes: it has no id-token permission and no environment.
 #
+# Beside the full parity runs, the `pyver` job installs the already built linux-x86_64 wheel (py3-none: no rebuild) into the Pythons the full
+# runs of the event leave out (a pull request: 3.11, 3.13, 3.14; main, nightly, dispatch: 3.11, 3.13; a release: none) and into the free-threaded
+# 3.14t, and runs a small subset of the tests there (about 20 s of tests per Python). It is informational: release-native.yml does not need it.
+# scripts/select_native_matrix.py decides its legs.
+#
 # One wheel per platform, py3-none-<platform tag>:
 #   linux-x86_64   manylinux_2_34 container          manylinux_2_34_x86_64   libarcadedb.so + libjvector-x86_64.so
 #   linux-aarch64  manylinux_2_34 aarch64 container  manylinux_2_34_aarch64  libarcadedb.so
@@ -106,6 +111,7 @@ jobs:
       final: ${{ steps.ver.outputs.final }}
       build: ${{ steps.plan.outputs.build }}
       test: ${{ steps.plan.outputs.test }}
+      pyver: ${{ steps.plan.outputs.pyver }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -524,6 +530,7 @@ jobs:
         run: |
           set -euo pipefail
           tsv="$T/parity/parity-wheel.tsv"
+          # the pyver job has a copy of this awk: keep the two in sync
           awk -F'\t' '
             NR == 1 { next }
             $1 == "TOTAL" { passed = $2; failed = $3; err = $4; notyet = $5; na = $6; skipped = $7; tot = 1; next }
@@ -556,6 +563,127 @@ jobs:
         if: ${{ !cancelled() }}
         with:
           name: native-parity-${{ matrix.key }}-py${{ matrix.python }}
+          path: |
+            ${{ runner.temp }}/parity/parity-wheel.tsv
+            ${{ runner.temp }}/parity/parity-wheel.run.log
+            ${{ runner.temp }}/parity/parity-wheel-xml/
+          if-no-files-found: warn
+          retention-days: 30
+
+  # The cheap Python-version coverage of the wheel of linux-x86_64 (py3-none: the same file for every Python, nothing is rebuilt): a subset of
+  # the test files, not the whole suite. The legs are the supported Pythons the full parity runs of this event leave out, plus the
+  # free-threaded 3.14t (scripts/select_native_matrix.py).
+  # INFORMATIONAL for now: release-native.yml (verify and the publish jobs) reads only the native-passed-* markers and the native-wheel-* wheels,
+  # never an artifact of this job, so a red leg never blocks a release. Promote it once it has been green for a while.
+  # 3.14t runs without polars, and so without test_dataframe_ingest.py (it imports polars at module level): polars ships abi3 wheels only
+  # (polars and polars-runtime-32 have no cp314t wheel, and an abi3 wheel cannot be installed on a free-threaded build). The other
+  # dependencies of the subset (numpy, pandas, pyarrow, jpype1, requests) all have cp314t wheels. polars is an optional extra of the wheel.
+  pyver:
+    name: Python ${{ matrix.python }} on the wheel (linux-x86_64)
+    needs: [plan, build]
+    # The linux-x86_64 build may have failed: then there is no wheel to download and this shows red, as the test job does.
+    if: ${{ !cancelled() && needs.plan.outputs.run == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.pyver) }}
+    env:
+      KEY: linux-x86_64
+      PY: ${{ matrix.python }}
+      WITH_POLARS: ${{ matrix.polars }}
+      FREE_THREADED: ${{ matrix.freethreaded }}
+      # The subset: ctypes layer and database lifecycle (test_core, test_native_udf), queries and results (test_resultset), parameters
+      # (test_parameter_binding), type conversion (test_type_conversion), transactions (test_transaction_config), async (test_async_executor),
+      # threads (test_concurrency, test_free_threading), vectors (test_vector), numpy (test_numpy_support), arrow (test_resultset_arrow), pandas
+      # and arrow readers (test_columnar_readers). test_dataframe_ingest (pandas, polars and arrow ingest) is added where polars installs.
+      SUBSET: test_core.py,test_resultset.py,test_type_conversion.py,test_parameter_binding.py,test_transaction_config.py,test_async_executor.py,test_vector.py,test_numpy_support.py,test_resultset_arrow.py,test_columnar_readers.py,test_native_udf.py,test_concurrency.py,test_free_threading.py
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Paths
+        run: echo "T=$RUNNER_TEMP" >> "$GITHUB_ENV"
+
+      - name: Install uv
+        run: |
+          installer="$(mktemp)"
+          curl -LsSf --retry 5 --retry-all-errors --retry-delay 5 -o "$installer" "https://astral.sh/uv/${UV_VERSION}/install.sh"
+          sh "$installer"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      # The wheel of the build job, not a rebuild: the very file the test job installs.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: native-wheel-linux-x86_64
+          path: ${{ runner.temp }}/wheel
+
+      - name: Run the subset against the installed wheel
+        run: |
+          set -euo pipefail
+          w="$(ls "$T"/wheel/*.whl)"
+          mkdir -p "$T/parity"
+          files="$SUBSET"
+          with_polars=()
+          if [ "$WITH_POLARS" = true ]; then
+            files="$files,test_dataframe_ingest.py"
+            with_polars=(--with polars)
+          fi
+          echo "python $PY, files: $files"
+          cores="$(nproc)"
+          uv run --no-project --python "$PY" --with "$w" --with pytest --with numpy --with requests --with jpype1 --with pyarrow \
+            --with pandas ${with_polars[@]+"${with_polars[@]}"} \
+            python native/wheel/parity_wheel.py --repo "$GITHUB_WORKSPACE" --files "$files" \
+              --out "$T/parity/parity-wheel.tsv" --cores "0-$((cores - 1))" | tee "$T/parity/parity-wheel.run.log"
+
+      # A free-threaded leg only means something if the GIL stays off once the wheel and the extension modules are loaded.
+      - name: Report whether the GIL is enabled
+        run: |
+          set -euo pipefail
+          w="$(ls "$T"/wheel/*.whl)"
+          uv run --no-project --python "$PY" --with "$w" --with numpy --with pandas --with pyarrow --with jpype1 python - <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
+          import os
+          import sys
+
+          import arcadedb  # noqa: F401
+          import jpype  # noqa: F401
+          import numpy  # noqa: F401
+          import pandas  # noqa: F401
+          import pyarrow  # noqa: F401
+
+          gil = sys._is_gil_enabled() if hasattr(sys, "_is_gil_enabled") else True
+          print(f"python {sys.version.split()[0]}, GIL enabled after loading the wheel and its dependencies: {gil}")
+          if os.environ["FREE_THREADED"] == "true" and gil:
+              print("::warning::the free-threaded leg re-enabled the GIL: it does not test free threading")
+          PY
+
+      - name: "Gate: no failure, error, crash, timeout or uncounted skip"
+        run: |
+          set -euo pipefail
+          tsv="$T/parity/parity-wheel.tsv"
+          # the same awk as the gate of the test job: keep the two in sync
+          awk -F'\t' '
+            NR == 1 { next }
+            $1 == "TOTAL" { passed = $2; failed = $3; err = $4; notyet = $5; na = $6; skipped = $7; tot = 1; next }
+            $8 != "" { bad = bad " " $1 "(" $8 ")" }
+            END {
+              if (!tot) { print "no TOTAL row" > "/dev/stderr"; exit 1 }
+              printf "parity %s py%s: passed=%s failed=%s error=%s notyet=%s na_jvm=%s skipped=%s\n", ENVIRON["KEY"], ENVIRON["PY"], passed, failed, err, notyet, na, skipped
+              if (bad != "") { print "files with a status:" bad > "/dev/stderr"; exit 1 }
+              if (passed + 0 == 0 || failed + 0 != 0 || err + 0 != 0) exit 1
+              # this repository accepts no skips; NOTYET and NA-JVM are the two counted kinds of the native build
+              if (skipped + 0 != 0) { print "skipped tests that are neither NOTYET nor NA-JVM: " skipped > "/dev/stderr"; exit 1 }
+            }' "$tsv" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ !cancelled() }}
+        with:
+          name: native-parity-pyver-py${{ matrix.python }}
           path: |
             ${{ runner.temp }}/parity/parity-wheel.tsv
             ${{ runner.temp }}/parity/parity-wheel.run.log

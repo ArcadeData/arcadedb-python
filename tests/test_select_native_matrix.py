@@ -67,5 +67,63 @@ def test_the_script_prints_github_output_lines():
         text=True,
         check=True,
     ).stdout.splitlines()
-    assert [line.split("=", 1)[0] for line in out] == ["build", "test"]
+    assert [line.split("=", 1)[0] for line in out] == ["build", "test", "pyver"]
     assert json.loads(out[0].split("=", 1)[1])[0]["key"] == "linux-x86_64"
+    assert [leg["python"] for leg in json.loads(out[2].split("=", 1)[1])] == [
+        "3.11",
+        "3.13",
+        "3.14",
+        "3.14t",
+    ]
+
+
+def _pyver(event):
+    return [
+        (leg["python"], leg["freethreaded"], leg["polars"])
+        for leg in sel.select(event)["pyver"]
+    ]
+
+
+def test_the_python_version_job_covers_what_the_full_parity_run_leaves_out():
+    # a pull request tests 3.12 only: the other three Pythons and the free-threaded one run the cheap subset
+    assert _pyver("pull_request") == [
+        ("3.11", False, True),
+        ("3.13", False, True),
+        ("3.14", False, True),
+        ("3.14t", True, False),
+    ]
+    # main, nightly and dispatch test 3.12 and 3.14 in full
+    for event in ("push", "schedule", "workflow_dispatch"):
+        assert _pyver(event) == [
+            ("3.11", False, True),
+            ("3.13", False, True),
+            ("3.14t", True, False),
+        ]
+    # a release tests 3.11 to 3.14 in full: only the free-threaded build is left
+    assert _pyver("release") == [("3.14t", True, False)]
+
+
+def test_the_python_version_job_never_repeats_a_full_parity_leg_and_has_no_polars_on_a_free_threaded_python():
+    for event in ("pull_request", "push", "schedule", "workflow_dispatch", "release"):
+        chosen = sel.select(event)
+        full = {t["python"] for t in chosen["test"]}
+        assert not full & {leg["python"] for leg in chosen["pyver"]}, event
+        assert any(leg["freethreaded"] for leg in chosen["pyver"]), event
+        for leg in chosen["pyver"]:
+            assert leg["polars"] is (not leg["freethreaded"]), leg
+
+
+def test_the_release_does_not_need_the_python_version_job():
+    workflows = ROOT / ".github" / "workflows"
+    test_native = (workflows / "test-native.yml").read_text()
+    release = (workflows / "release-native.yml").read_text()
+    assert re.search(r"^  pyver:\n", test_native, re.M)
+    # no job of either workflow waits for it
+    for text in (test_native, release):
+        for needs in re.findall(r"^    needs: (.*)$", text, re.M):
+            assert "pyver" not in needs, needs
+    # release-native.yml reads the markers and the wheels only, never the artifacts of the pyver job
+    patterns = re.findall(r"^\s+pattern: (.*)$", release, re.M)
+    assert patterns and all(
+        p in ("native-passed-*", "native-wheel-*") for p in patterns
+    ), patterns
