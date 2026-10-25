@@ -50,7 +50,7 @@ test = [
     "pytest>=9.0.3",
     "pytest-cov",
     "numpy>=1.26.4",
-    "requests>=2.33.0",  # HTTP API / docs-example tests
+    "requests>=2.34.2",  # HTTP API / docs-example tests
     # Real clients for the bundled wire protocols. Test-only: none of these
     # reaches an end user's install, and without them three shipped protocols
     # are covered by nothing but the jars being present in the archive.
@@ -80,7 +80,7 @@ dev = [
     "pytest>=9.0.3",
     "pytest-cov",
     "numpy>=1.26.4",
-    "requests>=2.33.0",  # HTTP API / docs-example tests
+    "requests>=2.34.2",  # HTTP API / docs-example tests
     "bandit>=1.9.1",
 ]
 vector = [
