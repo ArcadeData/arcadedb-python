@@ -1057,6 +1057,174 @@ class Database:
             )
         return n
 
+    def insert_dataframe(
+        self,
+        type_name: str,
+        df,
+        *,
+        batch_size: int = 10_000,
+        parallel: bool = False,
+    ) -> int:
+        """Load a pandas or Polars DataFrame into a type, in batches.
+
+        The DataFrame is read as an Arrow table (see :meth:`insert_arrow`, which
+        takes that table directly and has the type mapping, the declared-type
+        rules, and the failure contract). Each column becomes a typed array
+        that crosses the bridge once per batch: integers, floats, and booleans
+        without nulls as one buffer copy, anything else per element. A document
+        type gets documents; a vertex type gets vertices. An edge type is
+        refused: load the vertices, then buffer the edges with
+        ``graph_batch().new_edges()``.
+
+        What differs by library: a pandas ``NaN`` in a float column is pandas'
+        missing value and loads as a null, while a Polars ``NaN`` stays a
+        ``NaN`` (Polars keeps null and NaN apart). The pandas index is not
+        loaded (``df.reset_index()`` makes it a column), and pandas column
+        names must be strings. A Polars ``LazyFrame`` must be ``.collect()``-ed
+        first.
+
+        Args:
+            type_name: Target type (must exist, with or without declared
+                properties).
+            df: A pandas or Polars ``DataFrame``. Any object that speaks the
+                Arrow PyCapsule interface also works.
+            batch_size: Rows per batch. Each batch is converted, then written
+                and committed on its own, so memory stays bounded for a large
+                frame.
+            parallel: Document types only: hand each batch to the async
+                executor's parallel bucket writers (see :meth:`insert_columns`).
+
+        Returns:
+            Number of records written.
+
+        Raises:
+            ImportError: If pyarrow is not installed.
+            ValueError: If the frame has no columns, duplicate or non-string
+                column names, ``batch_size`` is not a positive integer, or
+                ``parallel`` is used with a vertex type.
+            TypeError: If a column has a type with no ArcadeDB mapping (time of
+                day, duration, map), or one that does not load into the property
+                type ``type_name`` declares for it (a float column into an
+                INTEGER property would truncate). Raised before anything is
+                written.
+            ArcadeDBError: If the type does not exist or is an edge type, or the
+                load fails (a duplicate key, a value the declared type refuses).
+                The batch in flight is rolled back; batches before it stay
+                committed, and the message says how many rows that is. A
+                transaction the caller opened is left to the caller (for
+                documents; a vertex load refuses to run inside one): the
+                batches join it, the message then says the rows were written
+                in your transaction, not committed, and a rollback removes them.
+
+        Example:
+            >>> import pandas as pd
+            >>> df = pd.DataFrame({"id": [1, 2], "name": ["a", "b"]})
+            >>> db.insert_dataframe("User", df)
+            2
+        """
+        from .dataframe import insert_table, to_arrow_table
+
+        self._check_not_closed()
+        table = to_arrow_table(df, what="insert_dataframe()")
+        return insert_table(
+            self,
+            type_name,
+            table,
+            batch_size=batch_size,
+            parallel=parallel,
+            what="insert_dataframe()",
+        )
+
+    def insert_arrow(
+        self,
+        type_name: str,
+        table,
+        *,
+        batch_size: int = 10_000,
+        parallel: bool = False,
+    ) -> int:
+        """Load an Arrow table into a type, in batches.
+
+        The Arrow counterpart of :meth:`insert_columns`: each Arrow column is
+        converted to the typed array ``insert_columns`` sends across the bridge
+        (``DocumentBatcher.insertColumns``), so a document type loads at that
+        path's speed; a vertex type loads through ``GraphBatch``. Documents and
+        vertices only: an edge type is refused.
+
+        A property the type does not declare takes the stored type below; a
+        declared property converts to its declared type.
+
+        | Arrow type | Stored as |
+        |---|---|
+        | int8 to int64, uint8 to uint32 | LONG (uint64 up to 2**63 - 1) |
+        | float16, float32, float64 | DOUBLE (float32 widens exactly) |
+        | bool | BOOLEAN |
+        | string, large_string, string_view | STRING |
+        | dictionary (categorical) | its value type |
+        | binary, large_binary | byte[] |
+        | timestamp without a time zone, any unit | a UTC date-time, the wall clock as it shows |
+        | timestamp with a time zone, any unit | a UTC date-time, converted to UTC |
+        | date32, date64 | DATE |
+        | decimal128, decimal256 | DECIMAL |
+        | list, large_list, fixed_size_list | LIST (ARRAY_OF_* when declared so) |
+        | struct | MAP |
+        | null (only nulls) | no value |
+
+        A date-time is a UTC wall clock. A declared property keeps its own
+        precision: DATETIME milliseconds, DATETIME_MICROS microseconds,
+        DATETIME_NANOS nanoseconds, DATETIME_SECOND seconds; a column the type
+        does not declare keeps the input's precision. Nanosecond input is read
+        from the integer epoch value, so it is not cut to microseconds on the
+        way in. Reading back is coarser: ``Result.get()`` returns a Python
+        ``datetime`` (microseconds at most) and ``to_arrow()``, ``to_polars()``,
+        ``to_dataframe()`` and ``to_columns()`` return milliseconds. Time-of-day, duration, and map
+        columns have no mapping and raise ``TypeError``. A null is stored as a
+        missing property.
+
+        A column loads into a declared property when the engine converts it
+        without guessing: integers into BYTE, SHORT, INTEGER, LONG, FLOAT,
+        DOUBLE, DECIMAL, or STRING (a value past the target's range fails the
+        load); floats into FLOAT, DOUBLE, DECIMAL, or STRING (never into an
+        integer property, which would truncate); booleans into BOOLEAN or
+        STRING; timestamps into any DATETIME precision or STRING; dates into DATE,
+        any DATETIME, or STRING; strings into STRING or LINK (RIDs). Anything else
+        raises ``TypeError`` before a row is written.
+
+        Args:
+            type_name: Target type (must exist).
+            table: A ``pyarrow.Table``, ``RecordBatch``, or ``RecordBatchReader``
+                (read whole), or any object that speaks the Arrow PyCapsule
+                interface.
+            batch_size: Rows per batch; each batch is written and committed on
+                its own.
+            parallel: Document types only: as in :meth:`insert_columns`.
+
+        Returns:
+            Number of records written.
+
+        Raises:
+            ImportError: If pyarrow is not installed.
+            ValueError, TypeError, ArcadeDBError: As for :meth:`insert_dataframe`.
+
+        Example:
+            >>> import pyarrow as pa
+            >>> table = pa.table({"id": [1, 2], "name": ["a", "b"]})
+            >>> db.insert_arrow("User", table)
+            2
+        """
+        from .dataframe import insert_table, to_arrow_table
+
+        self._check_not_closed()
+        arrow_table = to_arrow_table(table, what="insert_arrow()")
+        return insert_table(
+            self,
+            type_name,
+            arrow_table,
+            batch_size=batch_size,
+            parallel=parallel,
+            what="insert_arrow()",
+        )
+
     def close(self):
         """Close the database."""
         if not self._closed and self._java_db is not None:
@@ -1228,6 +1396,8 @@ class Database:
         pq_clusters: Optional[int] = None,
         pq_center_globally: Optional[bool] = None,
         pq_training_limit: Optional[int] = None,
+        rerank_oversample: Optional[int] = None,
+        fused_pq: Optional[bool] = None,
         build_graph_now: bool = True,
     ) -> "VectorIndex":
         """
@@ -1261,6 +1431,7 @@ class Database:
                 In current ArcadeDB engine builds, PRODUCT also requires enough indexed
                 vectors per bucket for PQ training; for tiny corpora, set `pq_clusters`
                 explicitly to a small value or prefer INT8/BINARY/NONE.
+                PRODUCT is not recommended; see ArcadeDB #10514.
             encoding: Optional storage encoding for the underlying vector property.
                 Use "INT8" when the document property stores pre-quantized bytes in a
                 `BINARY` property. When using INT8 encoding, set quantization to "NONE"
@@ -1292,7 +1463,17 @@ class Database:
             pq_center_globally: Whether to globally center vectors before PQ.
                 Requires quantization="PRODUCT".
             pq_training_limit: Max vectors to use for PQ training. Requires
-                quantization="PRODUCT".
+                quantization="PRODUCT". The codebook is trained on a random sample
+                of this size (the engine caps it at 128000).
+            rerank_oversample: Candidates per requested neighbour that a search
+                walking on the PQ codes scores again on the stored vectors
+                (maps to the index setting "rerankOversample"; the engine default
+                is 10, 0 returns the PQ scores alone, negative is refused).
+                Requires quantization="PRODUCT". A query can override it with the
+                `rerank` option of `vectorNeighbors`.
+            fused_pq: Whether the graph file stores the PQ codes of every node's
+                neighbours inline (jvector FusedPQ; maps to the index setting
+                "fusedPQ"; off by default). Requires quantization="PRODUCT".
             build_graph_now: If True (default), eagerly builds the vector graph
                 immediately after index creation. If False, graph preparation is
                 deferred and may happen lazily on first search.
@@ -1302,7 +1483,10 @@ class Database:
                 lookups.
             add_hierarchy: Whether to build hierarchical layers in the HNSW graph
                 (Default is True). If None, uses the engine default. Set explicitly to
-                True/False to force the behavior.
+                True/False to force the behavior. The default of True is a deliberate
+                choice of these bindings: the engine itself defaults to False, so a
+                SQL ``CREATE INDEX ... LSM_VECTOR`` without ``"addHierarchy"`` builds a
+                flat graph. Record the value you use when you compare results.
 
         Returns:
             VectorIndex object
@@ -1336,6 +1520,8 @@ class Database:
                     pq_clusters,
                     pq_center_globally,
                     pq_training_limit,
+                    rerank_oversample,
+                    fused_pq,
                 )
             ):
                 if not quantization or quantization.upper() != "PRODUCT":
@@ -1396,6 +1582,10 @@ class Database:
                 builder.withPQTrainingLimit(int(pq_training_limit))
 
             metadata_cfg = {}
+            if rerank_oversample is not None:
+                metadata_cfg["rerankOversample"] = int(rerank_oversample)
+            if fused_pq is not None:
+                metadata_cfg["fusedPQ"] = bool(fused_pq)
             if store_vectors_in_graph:
                 metadata_cfg["storeVectorsInGraph"] = True
             if add_hierarchy is not None:
