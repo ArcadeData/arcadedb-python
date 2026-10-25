@@ -50,10 +50,10 @@ def _run_snippet_subprocess(
     ]
     if (
         "arcadedb." in combined_source
-        and "import arcadedb_embedded as arcadedb" not in combined_source
-        and "from arcadedb_embedded import" not in combined_source
+        and "import arcadedb" not in combined_source
+        and "from arcadedb import" not in combined_source
     ):
-        parts.extend(["", "import arcadedb_embedded as arcadedb"])
+        parts.extend(["", "import arcadedb"])
     if preamble.strip():
         parts.extend(["", textwrap.dedent(preamble).strip()])
     if snippet.strip():
@@ -114,7 +114,7 @@ def _run_doc_block_with_open_db(
         setup_code = "    pass"
     wrapped = "\n".join(
         [
-            "import arcadedb_embedded as arcadedb",
+            "import arcadedb",
             "",
             f'with arcadedb.create_database("./{db_name}") as db:',
             setup_code,
@@ -268,7 +268,7 @@ def test_docs_installation_examples(temp_dir_factory):
     )
     _run_doc_block(
         "getting-started/installation.md",
-        "from arcadedb_embedded.jvm import start_jvm",
+        "from arcadedb.jvm import start_jvm",
         base_dir / "installation_jvm",
     )
     _run_doc_block(
@@ -314,7 +314,7 @@ def test_docs_index_and_quickstart_examples(temp_dir_factory):
     )
 
     existing_db_preamble = textwrap.dedent("""
-        import arcadedb_embedded as arcadedb
+        import arcadedb
         with arcadedb.create_database("./quickstart") as db:
             db.command("sql", "CREATE DOCUMENT TYPE Person")
             with db.transaction():
@@ -328,7 +328,7 @@ def test_docs_index_and_quickstart_examples(temp_dir_factory):
     )
     _run_snippet_subprocess(
         textwrap.dedent("""
-            import arcadedb_embedded as arcadedb
+            import arcadedb
 
             with arcadedb.create_database("./mydb") as db:
                 db.command("sql", "CREATE DOCUMENT TYPE Person")
@@ -443,7 +443,7 @@ def test_docs_example_pages(temp_dir_factory):
         setup=simple_setup,
     )
     social_network_script = textwrap.dedent('''
-        import arcadedb_embedded as arcadedb
+        import arcadedb
 
         with arcadedb.create_database("./social_network_db") as db:
             db.command("sql", "CREATE VERTEX TYPE Person")

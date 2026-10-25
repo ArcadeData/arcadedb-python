@@ -16,17 +16,17 @@ import zipfile
 
 import pytest
 
-from arcadedb_embedded import jvm
+from arcadedb import jvm
 
 RES = "fixture_res"  # a name the package itself never ships, so the fallback runs
 
 
 def _wheel(dist, name, files, mtime):
-    """Write a wheel containing arcadedb_embedded/<RES>/<file> entries."""
+    """Write a wheel containing arcadedb/<RES>/<file> entries."""
     path = dist / name
     with zipfile.ZipFile(path, "w") as z:
         for fname, body in files.items():
-            z.writestr(f"arcadedb_embedded/{RES}/{fname}", body)
+            z.writestr(f"arcadedb/{RES}/{fname}", body)
     os.utime(path, (mtime, mtime))
     return path
 
@@ -41,8 +41,8 @@ def project(tmp_path, monkeypatch):
 def test_newest_wheel_is_chosen_by_build_time_not_by_name(project):
     """A reverse string sort ranks 26.9.1 above 26.10.1 because "9" > "1"."""
     dist = project / "dist"
-    _wheel(dist, "arcadedb_embedded-26.9.1-py3-none-any.whl", {"v.txt": "old"}, 1_000)
-    _wheel(dist, "arcadedb_embedded-26.10.1-py3-none-any.whl", {"v.txt": "new"}, 2_000)
+    _wheel(dist, "arcadedb-26.9.1-py3-none-any.whl", {"v.txt": "old"}, 1_000)
+    _wheel(dist, "arcadedb-26.10.1-py3-none-any.whl", {"v.txt": "new"}, 2_000)
 
     out = jvm._extract_runtime_resource(RES)
 
@@ -52,7 +52,7 @@ def test_newest_wheel_is_chosen_by_build_time_not_by_name(project):
 def test_a_rebuilt_wheel_replaces_the_cache_and_leaves_nothing_behind(project):
     """The June 4 failure: a newer wheel appears and the old extraction stays."""
     dist = project / "dist"
-    name = "arcadedb_embedded-26.10.1.dev0-py3-none-any.whl"
+    name = "arcadedb-26.10.1.dev0-py3-none-any.whl"
     _wheel(dist, name, {"engine-26.6.1.jar": "june", "only-in-old.jar": "x"}, 1_000)
     first = jvm._extract_runtime_resource(RES)
     assert (first / "engine-26.6.1.jar").exists()
@@ -70,7 +70,7 @@ def test_a_rebuilt_wheel_replaces_the_cache_and_leaves_nothing_behind(project):
 def test_an_unchanged_wheel_is_not_re_extracted(project):
     """The cache is still a cache: the same wheel does not pay extraction twice."""
     dist = project / "dist"
-    _wheel(dist, "arcadedb_embedded-26.10.1-py3-none-any.whl", {"a.jar": "a"}, 1_000)
+    _wheel(dist, "arcadedb-26.10.1-py3-none-any.whl", {"a.jar": "a"}, 1_000)
     out = jvm._extract_runtime_resource(RES)
     (out / "marker").write_text("still here")
 
@@ -82,12 +82,12 @@ def test_an_unchanged_wheel_is_not_re_extracted(project):
 def test_a_cache_from_before_stamping_is_treated_as_stale(project):
     """Every cache that exists today predates the stamp, and must not be trusted."""
     dist = project / "dist"
-    legacy = project / ".runtime-cache" / "arcadedb_embedded" / RES
+    legacy = project / ".runtime-cache" / "arcadedb" / RES
     legacy.mkdir(parents=True)
     (legacy / "engine-26.6.1.jar").write_text("june")
     _wheel(
         dist,
-        "arcadedb_embedded-26.10.1-py3-none-any.whl",
+        "arcadedb-26.10.1-py3-none-any.whl",
         {"engine-26.10.1.jar": "sep"},
         2_000,
     )

@@ -23,7 +23,7 @@ import random
 import shutil
 import time
 
-import arcadedb_embedded as arcadedb
+import arcadedb
 
 DIM = 16
 K = 5

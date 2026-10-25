@@ -157,7 +157,7 @@ class TestInsertManyParallelReportsFailures:
     """
 
     def test_duplicate_key_raises_instead_of_dropping(self, temp_db):
-        import arcadedb_embedded as arcadedb
+        import arcadedb
 
         temp_db.command("sql", "CREATE DOCUMENT TYPE ParDup BUCKETS 4")
         temp_db.command("sql", "CREATE PROPERTY ParDup.id INTEGER")
@@ -287,7 +287,7 @@ class TestInsertManyStreams:
         db.command("sql", f"CREATE INDEX ON {name} (k) UNIQUE")
 
     def test_rows_are_written_while_the_iterable_is_read(self, temp_db):
-        from arcadedb_embedded import core
+        from arcadedb import core
 
         self._point_type(temp_db, "Stream")
         chunk = core._INSERT_MANY_CHUNK
@@ -306,7 +306,7 @@ class TestInsertManyStreams:
         assert _count(temp_db, "Stream") == 3 * chunk
 
     def test_python_memory_does_not_grow_with_the_row_count(self, temp_db):
-        from arcadedb_embedded import core
+        from arcadedb import core
 
         # Rows produced but not yet handed to the engine are what Python holds.
         # Counting them at every chunk boundary needs no allocator hook: this
@@ -331,7 +331,7 @@ class TestInsertManyStreams:
         assert _count(temp_db, "StreamMem") == n
 
     def test_commit_every_counts_across_chunks(self, temp_db):
-        from arcadedb_embedded import ArcadeDBError, core
+        from arcadedb import ArcadeDBError, core
 
         self._point_type(temp_db, "StreamBatch")
         chunk = core._INSERT_MANY_CHUNK
@@ -345,7 +345,7 @@ class TestInsertManyStreams:
         assert _count(temp_db, "StreamBatch") == 2 * every
 
     def test_commit_every_zero_is_one_transaction(self, temp_db):
-        from arcadedb_embedded import ArcadeDBError, core
+        from arcadedb import ArcadeDBError, core
 
         self._point_type(temp_db, "StreamOne")
         rows = [{"k": i} for i in range(2 * core._INSERT_MANY_CHUNK + 5)]
@@ -356,7 +356,7 @@ class TestInsertManyStreams:
         assert _count(temp_db, "StreamOne") == 0
 
     def test_an_error_from_the_iterable_keeps_committed_batches(self, temp_db):
-        from arcadedb_embedded import core
+        from arcadedb import core
 
         self._point_type(temp_db, "StreamGenErr")
         chunk = core._INSERT_MANY_CHUNK
@@ -372,7 +372,7 @@ class TestInsertManyStreams:
         assert _count(temp_db, "StreamGenErr") == chunk
 
     def test_a_chunk_off_the_json_path_does_not_change_the_others(self, temp_db):
-        from arcadedb_embedded import core
+        from arcadedb import core
 
         chunk = core._INSERT_MANY_CHUNK
         temp_db.command("sql", "CREATE DOCUMENT TYPE StreamMixed")
@@ -383,7 +383,7 @@ class TestInsertManyStreams:
 
     @pytest.mark.parametrize("with_fallback_chunk", [False, True])
     def test_parallel_streams_every_row(self, temp_db, with_fallback_chunk):
-        from arcadedb_embedded import core
+        from arcadedb import core
 
         chunk = core._INSERT_MANY_CHUNK
         temp_db.command("sql", "CREATE DOCUMENT TYPE StreamPar BUCKETS 4")
@@ -402,7 +402,7 @@ class TestInsertManyStreams:
         assert _count(temp_db, "StreamPar") == n
 
     def test_parallel_duplicate_in_a_later_chunk_raises(self, temp_db):
-        from arcadedb_embedded import ArcadeDBError, core
+        from arcadedb import ArcadeDBError, core
 
         chunk = core._INSERT_MANY_CHUNK
         temp_db.command("sql", "CREATE DOCUMENT TYPE StreamParDup BUCKETS 4")
@@ -445,7 +445,7 @@ class TestVectorColumns:
     def test_float_array_column_to_columns(self, temp_db):
         import numpy as np
 
-        import arcadedb_embedded as arcadedb
+        import arcadedb
 
         temp_db.command("sql", "CREATE DOCUMENT TYPE Emb")
         temp_db.command("sql", "CREATE PROPERTY Emb.vid INTEGER")
@@ -601,7 +601,7 @@ class TestAppendSamplesNumpy:
 
 class TestVectorColumnsDataFrame:
     def test_vector_column_to_dataframe(self, temp_db):
-        import arcadedb_embedded as arcadedb
+        import arcadedb
 
         pd = __import__("pytest").importorskip("pandas")
         temp_db.command("sql", "CREATE DOCUMENT TYPE EmbDf")

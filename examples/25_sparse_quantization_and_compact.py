@@ -27,7 +27,7 @@ import time
 
 import jpype.types as jtypes
 
-import arcadedb_embedded as arcadedb
+import arcadedb
 
 DIMENSIONS = 30_000
 TOKENS_PER_DOC = 40

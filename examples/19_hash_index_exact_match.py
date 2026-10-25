@@ -28,7 +28,7 @@ import argparse
 import shutil
 from pathlib import Path
 
-import arcadedb_embedded as arcadedb
+import arcadedb
 
 PRODUCTS = [
     {

@@ -660,7 +660,7 @@ class ResultSet:
         Reads :meth:`to_arrow` and hands the table to Polars, so nulls keep
         their type (a nullable integer stays an integer column) and a DECIMAL
         column is a Polars ``Decimal``. Requires polars and pyarrow
-        (``pip install 'arcadedb-embedded[polars]'``).
+        (``pip install 'arcadedb[polars]'``).
 
         Args:
             batch_size: Rows per bridge crossing, as in :meth:`to_arrow`.
@@ -682,14 +682,14 @@ class ResultSet:
         except ImportError as exc:
             raise ImportError(
                 "polars is required for to_polars(). "
-                "Install with: pip install 'arcadedb-embedded[polars]'"
+                "Install with: pip install 'arcadedb[polars]'"
             ) from exc
         table = self.to_arrow(batch_size=batch_size, columns=columns)
         if table is None:
             raise ImportError(
                 "to_polars() reads through Arrow, which needs pyarrow and numpy "
                 "and the bundled bridge jar. "
-                "Install with: pip install 'arcadedb-embedded[polars]'"
+                "Install with: pip install 'arcadedb[polars]'"
             )
         return pl.from_arrow(table)
 

@@ -26,7 +26,7 @@ import re
 import shutil
 import time
 
-import arcadedb_embedded as arcadedb
+import arcadedb
 
 
 def parse_args() -> argparse.Namespace:

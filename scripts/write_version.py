@@ -15,7 +15,7 @@ if sys.platform == "win32":
 
 def write_version_file(ver, out_path):
     """Write version to _version.py"""
-    version_file_content = f'''"""Version information for arcadedb_embedded package.
+    version_file_content = f'''"""Version information for arcadedb package.
 Generated automatically during build from the bundled ArcadeDB engine jar.
 """
 
@@ -41,8 +41,8 @@ if __name__ == "__main__":
     try:
         version = extract_version(jars_dir)
 
-        # Write to src/arcadedb_embedded/_version.py
-        output_path = bindings_dir / "src/arcadedb_embedded/_version.py"
+        # Write to src/arcadedb/_version.py
+        output_path = bindings_dir / "src/arcadedb/_version.py"
         write_version_file(version, output_path)
 
     except (ValueError, FileNotFoundError, OSError) as e:

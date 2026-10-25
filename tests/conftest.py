@@ -170,7 +170,7 @@ def temp_db_path():
 @pytest.fixture
 def temp_db():
     """Create a temporary database, yield it, and clean up."""
-    import arcadedb_embedded as arcadedb
+    import arcadedb
 
     temp_dir = tempfile.mkdtemp(prefix="arcadedb_test_db_")
     db_path = os.path.join(temp_dir, "test_db")
@@ -246,7 +246,7 @@ def pytest_unconfigure(config):
     """
     import sys
 
-    from arcadedb_embedded.jvm import shutdown_jvm
+    from arcadedb.jvm import shutdown_jvm
 
     # Flush all output to ensure we see test results
     sys.stdout.flush()

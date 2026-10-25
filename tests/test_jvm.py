@@ -5,9 +5,9 @@ import os
 import jpype
 import pytest
 
-import arcadedb_embedded as arcadedb
-from arcadedb_embedded import jvm
-from arcadedb_embedded.exceptions import ArcadeDBError
+import arcadedb
+from arcadedb import jvm
+from arcadedb.exceptions import ArcadeDBError
 
 
 @pytest.fixture(autouse=True)
@@ -72,7 +72,7 @@ def test_interpreter_exits_with_unclosed_database(tmp_path):
     import sys as _sys
 
     script = (
-        "import arcadedb_embedded as a\n"
+        "import arcadedb as a\n"
         f"db = a.create_database({str(tmp_path / 'leak_db')!r})\n"
         "db.command('sql', 'CREATE DOCUMENT TYPE Doc')\n"
         "print('OK', flush=True)\n"
@@ -141,7 +141,7 @@ def test_default_heap_resolves_in_a_fresh_jvm(tmp_path):
     import sys as _sys
 
     script = (
-        "import arcadedb_embedded as a\n"
+        "import arcadedb as a\n"
         f"db = a.create_database({str(tmp_path / 'heap_db')!r})\n"
         "import jpype\n"
         "Runtime = jpype.JClass('java.lang.Runtime')\n"
@@ -195,7 +195,7 @@ def test_xms_larger_than_max_heap_raises_before_start(tmp_path, kwargs):
     import sys as _sys
 
     script = (
-        "import arcadedb_embedded as a\n"
+        "import arcadedb as a\n"
         "try:\n"
         f"    a.create_database({str(tmp_path / 'xms_db')!r}, jvm_kwargs={kwargs!r})\n"
         "except ValueError as e:\n"

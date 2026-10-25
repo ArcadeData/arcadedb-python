@@ -35,8 +35,8 @@ def test_the_scan_sees_the_old_refresh():
     old = (
         "        (\n"
         '            cd "$REPO_ROOT" &&\n'
-        "                uv lock --upgrade-package arcadedb-embedded &&\n"
-        "                uv sync --reinstall-package arcadedb-embedded\n"
+        "                uv lock --upgrade-package arcadedb &&\n"
+        "                uv sync --reinstall-package arcadedb\n"
         "        )\n"
         "    # uv lock in a comment is not a command\n"
     )

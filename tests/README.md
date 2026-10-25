@@ -12,7 +12,7 @@ uv venv
 
 # After each build: the wheel and its test extra into .venv. --reinstall-package,
 # as a rebuild keeps the version (26.11.1.dev0)
-uv pip install --reinstall-package arcadedb-embedded "$(ls dist/*.whl | head -1)[test]"
+uv pip install --reinstall-package arcadedb "$(ls dist/*.whl | head -1)[test]"
 
 # Run all tests
 uv run pytest
@@ -34,5 +34,5 @@ The server tests do not skip when the server stack is absent: the wheel always s
 
 ## Need Help?
 
-- **Found a bug?** [Open an issue](https://github.com/humemai/arcadedb-embedded-python/issues)
+- **Found a bug?** [Open an issue](https://github.com/ArcadeData/arcadedb-python/issues)
 - **Contributing?** Read the [Contributing Guide](https://docs.humem.ai/arcadedb/latest/development/contributing/)

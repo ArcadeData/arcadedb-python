@@ -28,7 +28,7 @@ import random as _random
 
 import pytest
 
-import arcadedb_embedded as arcadedb
+import arcadedb
 
 DIM = 8
 BASE = 300  # threshold = max(100, min(300*0.2, 50_000)) = 100

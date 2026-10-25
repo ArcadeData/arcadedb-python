@@ -1,6 +1,6 @@
 """Geo predicate SQL coverage for Python bindings."""
 
-import arcadedb_embedded as arcadedb
+import arcadedb
 
 
 def test_geo_predicate_sql_within_and_intersects(temp_db_path):

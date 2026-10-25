@@ -42,7 +42,7 @@ import shutil
 import time
 from pathlib import Path
 
-import arcadedb_embedded as arcadedb
+import arcadedb
 
 GAV_NAME = "roadNet"
 CITY_CODE_WIDTH = 6

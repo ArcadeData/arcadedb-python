@@ -11,10 +11,10 @@ import jpype
 import numpy as np
 import pytest
 
-import arcadedb_embedded as arcadedb
-from arcadedb_embedded import core, results
-from arcadedb_embedded.core import Database
-from arcadedb_embedded.exceptions import ArcadeDBError
+import arcadedb
+from arcadedb import core, results
+from arcadedb.core import Database
+from arcadedb.exceptions import ArcadeDBError
 
 
 @pytest.fixture

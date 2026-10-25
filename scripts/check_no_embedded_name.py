@@ -14,7 +14,7 @@ and the old repository name `arcadedb-embedded-python`) and the title `ArcadeDB 
 What the allowlist lets through, and why:
 
 * Whole files that are history or that must name the old package to do their job: the plan and spec
-  documents under docs/superpowers/, a changelog, the rename codemod, this script, and the codemod test.
+  documents under docs/superpowers/, a changelog, and this script.
 * References to issues of the old repository, written `humemai/arcadedb-embedded-python#123`. They
   point at real threads, so they keep their text.
 * The sentence "This package was published as arcadedb-embedded until 26.10.x; install arcadedb now."
@@ -45,9 +45,7 @@ ALLOWED_PATHS: tuple[str, ...] = (
     "CHANGELOG*",
     "HISTORY*",
     "NEWS*",
-    "scripts/rename_to_arcadedb.py",
     "scripts/check_no_embedded_name.py",
-    "tests/test_rename_codemod.py",
 )
 
 # Text that is removed from a line before it is scanned: issue references of the old repository.

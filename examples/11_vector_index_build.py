@@ -531,7 +531,7 @@ def ingest_vectors_arcadedb(
 
     if use_int8_encoding and to_java_byte_array is None:
         raise RuntimeError(
-            "arcadedb_embedded does not expose to_java_byte_array; update the "
+            "arcadedb does not expose to_java_byte_array; update the "
             "local wheel before using --encoding INT8"
         )
 
@@ -2113,7 +2113,7 @@ def main() -> None:
 
     if args.backend == "arcadedb_sql":
         stop_cpu = start_cpu_logger(2)
-        import arcadedb_embedded as arcadedb
+        import arcadedb
 
         jvm_kwargs: Dict[str, str] = {}
         heap_size = arcadedb_heap_size

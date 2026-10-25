@@ -91,7 +91,7 @@ def _extract_runtime_resource(resource_name: str) -> Path:
     project_dir = _project_dir()
     dist_dir = project_dir / "dist"
     wheels = sorted(
-        dist_dir.glob("arcadedb_embedded-*.whl"),
+        dist_dir.glob("arcadedb-*.whl"),
         key=lambda p: p.stat().st_mtime_ns,
         reverse=True,
     )
@@ -102,7 +102,7 @@ def _extract_runtime_resource(resource_name: str) -> Path:
     stamp = f"{wheel.name} {st.st_size} {st.st_mtime_ns}"
 
     cache_root = project_dir / ".runtime-cache"
-    extracted_root = cache_root / "arcadedb_embedded"
+    extracted_root = cache_root / "arcadedb"
     extracted_resource_dir = extracted_root / resource_name
     stamp_file = cache_root / f".extracted-from-{resource_name}"
 
@@ -119,7 +119,7 @@ def _extract_runtime_resource(resource_name: str) -> Path:
         stamp_file.unlink(missing_ok=True)
 
     cache_root.mkdir(parents=True, exist_ok=True)
-    prefix = f"arcadedb_embedded/{resource_name}/"
+    prefix = f"arcadedb/{resource_name}/"
 
     with zipfile.ZipFile(wheel) as wheel_zip:
         members = [name for name in wheel_zip.namelist() if name.startswith(prefix)]
@@ -165,7 +165,7 @@ def jar_fingerprint(per_jar: bool = False) -> dict:
 
     So: hash what is actually on disk. Two installs agree iff this agrees.
 
-        >>> import arcadedb_embedded as adb
+        >>> import arcadedb as adb
         >>> adb.jar_fingerprint()["sha256"][:12]
         'a3f1c0d8b214'
 
@@ -431,7 +431,7 @@ def start_jvm(
         generated logging.properties. Default: a per-user state directory,
         never the working directory (Linux ``$XDG_STATE_HOME`` or
         ``~/.local/state``, macOS ``~/Library/Logs``, Windows ``%LOCALAPPDATA%``,
-        then ``arcadedb-embedded/log``). A ``-Darcadedb.server.logsDirectory=`` or
+        then ``arcadedb/log``). A ``-Darcadedb.server.logsDirectory=`` or
         ``-Djava.util.logging.config.file=`` in ``jvm_args`` wins over it.
 
     ARCADEDB_JVM_ERROR_FILE (optional)
@@ -727,13 +727,13 @@ def _state_base_dir() -> Path:
 def _default_log_dir() -> Path:
     """Where the engine log, the crash log and logging.properties go.
 
-    ``ARCADEDB_LOG_DIR`` if set, else ``arcadedb-embedded/log`` under the
+    ``ARCADEDB_LOG_DIR`` if set, else ``arcadedb/log`` under the
     per-user state directory. Never the working directory.
     """
     override = os.environ.get(_LOG_DIR_ENV)
     if override:
         return Path(os.path.abspath(os.path.expanduser(override)))
-    return _state_base_dir() / "arcadedb-embedded" / "log"
+    return _state_base_dir() / "arcadedb" / "log"
 
 
 def _read_engine_log_properties(jar_files: Iterable[str]) -> Optional[str]:
@@ -780,7 +780,7 @@ def _prepare_log_dir(log_dir: Path, jar_files: Iterable[str]) -> Path:
         if not os.access(log_dir, os.W_OK | os.X_OK):
             raise OSError(f"{log_dir} is not writable")
     except OSError as exc:
-        fallback = Path(tempfile.mkdtemp(prefix="arcadedb-embedded-log-"))
+        fallback = Path(tempfile.mkdtemp(prefix="arcadedb-log-"))
         _LOGGER.warning(
             "Cannot use %s for ArcadeDB logs (%s); using %s. Set %s to choose one.",
             log_dir,

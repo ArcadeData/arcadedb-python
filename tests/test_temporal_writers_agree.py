@@ -18,12 +18,13 @@ Author: Luca Garulli (l.garulli@arcadedata.com)
 import datetime as dt
 import json
 
-import arcadedb_embedded as arcadedb  # noqa: F401  (starts the JVM through the fixtures)
 import jpype
 import numpy as np
 import pytest
-from arcadedb_embedded import results
-from arcadedb_embedded.exceptions import ArcadeDBError
+
+import arcadedb  # noqa: F401  (starts the JVM through the fixtures)
+from arcadedb import results
+from arcadedb.exceptions import ArcadeDBError
 
 MIDNIGHT_UTC_2024_01_02 = 1704153600000
 DAY_MS = 86_400_000

@@ -2313,7 +2313,7 @@ def main() -> None:
     runtime_versions: dict[str, str | None] = {}
 
     if args.backend == "arcadedb_sql":
-        import arcadedb_embedded as arcadedb
+        import arcadedb
 
         stop_cpu = start_cpu_logger(2)
         jvm_kwargs: Dict[str, str] = {}

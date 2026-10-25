@@ -31,7 +31,7 @@ import pytest
 
 _SCRIPT = textwrap.dedent("""
     import os, shutil, tempfile, json, datetime, decimal
-    import arcadedb_embedded as A
+    import arcadedb as A
     root = tempfile.mkdtemp(prefix="shadow")
     db = A.create_database(os.path.join(root, "db"))
     try:
@@ -74,9 +74,9 @@ def test_a_java_or_com_folder_on_the_path_does_not_break_conversion(tmp_path, fo
     # child quietly imported the installed, unfixed wheel, and the test measured
     # the wrong code in both directions. Pin it to the parent's package by
     # absolute path, and assert below that it got there.
-    import arcadedb_embedded
+    import arcadedb
 
-    pkg_dir = os.path.dirname(arcadedb_embedded.__file__)
+    pkg_dir = os.path.dirname(arcadedb.__file__)
     env = os.environ.copy()
     env["PYTHONPATH"] = os.pathsep.join(
         [os.path.dirname(pkg_dir)]
@@ -100,7 +100,7 @@ def test_a_java_or_com_folder_on_the_path_does_not_break_conversion(tmp_path, fo
 
     assert os.path.realpath(out["loaded_from"]) == os.path.realpath(
         pkg_dir
-    ), "the child imported a different arcadedb_embedded than the one under test"
+    ), "the child imported a different arcadedb than the one under test"
 
     assert out["name"] == "Ada", f"strings came back as {out['name']!r}"
     assert out["name_type"] == "str"

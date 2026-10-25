@@ -49,7 +49,7 @@ from pathlib import Path
 
 import numpy as np
 
-import arcadedb_embedded as arcadedb
+import arcadedb
 
 # Try to import sentence_transformers
 try:

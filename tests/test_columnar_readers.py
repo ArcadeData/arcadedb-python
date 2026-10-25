@@ -14,7 +14,7 @@ from decimal import Decimal
 
 import pytest
 
-import arcadedb_embedded as arcadedb
+import arcadedb
 
 pa = pytest.importorskip("pyarrow")
 pd = pytest.importorskip("pandas")
@@ -252,7 +252,7 @@ def test_export_to_csv_header_is_the_union_of_the_rows(events_db, tmp_path):
     contains fields not in fieldnames" after part of the file was written (#113)."""
     import csv
 
-    from arcadedb_embedded.exporter import export_to_csv
+    from arcadedb.exporter import export_to_csv
 
     path = str(tmp_path / "events.csv")
     export_to_csv(events_db.query("sql", "SELECT FROM Event ORDER BY n"), path)
@@ -273,7 +273,7 @@ def test_export_to_csv_names_a_column_that_first_appears_after_the_header(
     """Across batches the header cannot grow: the export says which column
     arrived too late and what to do, not a bare writer error. The batch size of
     the export is 10,000 rows, so the last of 10,001 rows is in the second."""
-    from arcadedb_embedded.exporter import export_to_csv
+    from arcadedb.exporter import export_to_csv
 
     with arcadedb.create_database(temp_db_path) as db:
         db.command("sql", "CREATE DOCUMENT TYPE Row")

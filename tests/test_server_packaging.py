@@ -39,7 +39,7 @@ REQUIRED_JAR_PREFIXES = [
 
 
 def _jar_names():
-    from arcadedb_embedded.jvm import get_jar_path
+    from arcadedb.jvm import get_jar_path
 
     jar_dir = get_jar_path()
     assert os.path.isdir(jar_dir), f"jar directory missing: {jar_dir}"
@@ -66,9 +66,9 @@ def test_server_api_is_importable_and_exported():
 
     Both halves matter: the classes existing but not being exported is the
     same breakage from a user's point of view, since the documented import is
-    ``from arcadedb_embedded import create_server``.
+    ``from arcadedb import create_server``.
     """
-    import arcadedb_embedded as adb
+    import arcadedb as adb
 
     assert hasattr(adb, "ArcadeDBServer"), "ArcadeDBServer not importable"
     assert hasattr(adb, "create_server"), "create_server not importable"
@@ -85,7 +85,7 @@ def test_studio_jar_carries_no_classes():
     and the documentation needs revisiting, so assert the premise rather than
     trusting it.
     """
-    from arcadedb_embedded.jvm import get_jar_path
+    from arcadedb.jvm import get_jar_path
 
     jar_dir = get_jar_path()
     studio = [n for n in os.listdir(jar_dir) if n.startswith("arcadedb-studio")]
@@ -109,7 +109,7 @@ def test_no_apexcharts_in_the_package():
     scripts/verify_wheel_licences.py guards the wheel at build time; this checks what
     pip actually installed.
     """
-    from arcadedb_embedded.jvm import get_jar_path
+    from arcadedb.jvm import get_jar_path
 
     package_dir = os.path.dirname(get_jar_path())
     for root, _dirs, files in os.walk(package_dir):
@@ -132,7 +132,7 @@ def test_server_starts_and_serves_http(temp_server_root):
     work together, which is the claim a user actually cares about.
     """
     requests = pytest.importorskip("requests")
-    from arcadedb_embedded import create_server
+    from arcadedb import create_server
     from tests.conftest import TEST_PASSWORD, free_port
 
     with create_server(
@@ -182,7 +182,7 @@ def served(temp_server_root):
     """A started server, a database named ``packaging``, and an authenticated session."""
     import requests
 
-    from arcadedb_embedded import create_server
+    from arcadedb import create_server
     from tests.conftest import TEST_PASSWORD, free_port
 
     with create_server(

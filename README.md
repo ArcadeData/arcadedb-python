@@ -1,7 +1,7 @@
 # ArcadeDB Python
 
-[![PyPI](https://img.shields.io/pypi/v/arcadedb-embedded)](https://pypi.org/project/arcadedb-embedded/)
-[![Python versions](https://img.shields.io/pypi/pyversions/arcadedb-embedded)](https://pypi.org/project/arcadedb-embedded/)
+[![PyPI](https://img.shields.io/pypi/v/arcadedb)](https://pypi.org/project/arcadedb/)
+[![Python versions](https://img.shields.io/pypi/pyversions/arcadedb)](https://pypi.org/project/arcadedb/)
 [![Tests](https://github.com/ArcadeData/arcadedb-python/actions/workflows/test-python-bindings.yml/badge.svg)](https://github.com/ArcadeData/arcadedb-python/actions/workflows/test-python-bindings.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](https://github.com/ArcadeData/arcadedb-python/blob/main/LICENSE)
 
@@ -10,17 +10,19 @@ Python bindings for [ArcadeDB](https://arcadedb.com), the multi-model database (
 ## Install
 
 ```bash
-pip install arcadedb-embedded   # or: uv add arcadedb-embedded
+pip install arcadedb   # or: uv add arcadedb
 ```
+
+This package was published as arcadedb-embedded until 26.10.x; install arcadedb now.
 
 - Python 3.10 to 3.14. CI builds and tests all five versions on every platform below.
 - Linux x86_64 and ARM64, macOS on Apple Silicon, Windows x86_64. One wheel per platform and Python version.
-- Import name: `arcadedb_embedded`. Optional extras: `arrow`, `pandas`, `vector`.
+- Import name: `arcadedb`. Optional extras: `arrow`, `pandas`, `vector`.
 
 ## Quick start
 
 ```python
-import arcadedb_embedded as arcadedb
+import arcadedb
 
 with arcadedb.create_database("./mydb") as db:
     db.command("sql", "CREATE DOCUMENT TYPE Person")
@@ -51,11 +53,11 @@ For several processes, other languages, HA or replication, run the regular [Arca
 
 | Package | What it is | Status |
 |---|---|---|
-| [`arcadedb-embedded`](https://pypi.org/project/arcadedb-embedded/) | These bindings: the engine on a bundled JVM. The package this README describes | Release 26.10.2.post1 |
-| [`arcadedb-embedded-native`](https://pypi.org/project/arcadedb-embedded-native/) | The same API with the engine compiled ahead of time by GraalVM Community Edition: no JVM, no JPype. Import `arcadedb_native`, Python 3.11 or later | Preview of alpha quality: `pip install --pre arcadedb-embedded-native`, currently 26.10.2.dev1 |
-| [`arcadedb`](https://pypi.org/project/arcadedb/) and [`arcadedb-native`](https://pypi.org/project/arcadedb-native/) | Names reserved for the project. Today `arcadedb` 0.0.1 only installs `arcadedb-embedded`, and `arcadedb-native` 26.10.2.dev1 only installs `arcadedb-embedded-native` | Placeholders |
+| [`arcadedb`](https://pypi.org/project/arcadedb/) | These bindings: the engine on a bundled JVM. The package this README describes | First release from this repository: 26.11.1 |
+| [`arcadedb-native`](https://pypi.org/project/arcadedb-native/) | The same API with the engine compiled ahead of time by GraalVM Community Edition: no JVM, no JPype. Python 3.11 or later. It imports as `arcadedb`, like the JVM wheel, so install only one of the two | Not in this repository yet (porting is tracked in [#19](https://github.com/ArcadeData/arcadedb-python/issues/19)). Until then a placeholder on PyPI |
+| Formerly `arcadedb-embedded` and `arcadedb-embedded-native` | The names of these packages until 26.10.x. They import as `arcadedb_embedded` and `arcadedb_native` | Deprecated: install `arcadedb` |
 
-Two things are not true yet. The native build is not in this repository (porting is tracked in [#19](https://github.com/ArcadeData/arcadedb-python/issues/19)), and releases do not come from this repository: the wheels on PyPI are still built and published from [humemai/arcadedb-embedded-python](https://github.com/humemai/arcadedb-embedded-python). A release workflow for this repository is in review in [#22](https://github.com/ArcadeData/arcadedb-python/pull/22).
+Releases from this repository start with 26.11.1. The 26.10.x wheels were built and published from [humemai/arcadedb-embedded-python](https://github.com/humemai/arcadedb-embedded-python). <!-- allow-old-name -->
 
 ## Documentation
 
@@ -80,11 +82,11 @@ Tests run against the built wheel, not the source tree: install the wheel with i
 
 ## Contributing
 
-Open an [issue](https://github.com/ArcadeData/arcadedb-python/issues) or a pull request. Run `pre-commit run --all-files` first, and add a regression test with every fix. The rest of the bindings work from `humemai/arcadedb-embedded-python` is ported here one pull request at a time; [#19](https://github.com/ArcadeData/arcadedb-python/issues/19) lists what is done and what is next.
+Open an [issue](https://github.com/ArcadeData/arcadedb-python/issues) or a pull request. Run `pre-commit run --all-files` first, and add a regression test with every fix. The rest of the bindings work from `humemai/arcadedb-embedded-python` is ported here one pull request at a time; [#19](https://github.com/ArcadeData/arcadedb-python/issues/19) lists what is done and what is next. <!-- allow-old-name -->
 
 ## Where this code comes from
 
-It moved here from `bindings/python` in [ArcadeData/arcadedb](https://github.com/ArcadeData/arcadedb) at `ee04bd202abce0183c6263a3c4d8a61a4d526960`, with its git history. Issue numbers in older commit messages refer to that repository. [humemai/arcadedb-embedded-python](https://github.com/humemai/arcadedb-embedded-python) is the fork where the bindings kept developing (runtime fixes, JRE trim, native build, benchmarks). Its benchmark tooling stays there.
+It moved here from `bindings/python` in [ArcadeData/arcadedb](https://github.com/ArcadeData/arcadedb) at `ee04bd202abce0183c6263a3c4d8a61a4d526960`, with its git history. Issue numbers in older commit messages refer to that repository. [humemai/arcadedb-embedded-python](https://github.com/humemai/arcadedb-embedded-python) is the fork where the bindings kept developing (runtime fixes, JRE trim, native build, benchmarks). Its benchmark tooling stays there. <!-- allow-old-name -->
 
 ## License
 

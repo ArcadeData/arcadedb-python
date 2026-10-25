@@ -2,7 +2,7 @@
 
 import pytest
 
-import arcadedb_embedded as arcadedb
+import arcadedb
 
 
 def test_hash_index_schema_create_discover_and_query(temp_db_path):

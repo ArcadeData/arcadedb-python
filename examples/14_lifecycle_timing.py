@@ -25,8 +25,8 @@ import uuid
 from pathlib import Path
 from typing import Dict, List
 
-import arcadedb_embedded as arcadedb
-from arcadedb_embedded.jvm import start_jvm
+import arcadedb
+from arcadedb.jvm import start_jvm
 
 
 def server_open_close_timing(root: str, rounds: int = 3) -> None:

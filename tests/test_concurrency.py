@@ -19,8 +19,8 @@ from statistics import mean
 
 import pytest
 
-import arcadedb_embedded as arcadedb
-from arcadedb_embedded.exceptions import ArcadeDBError
+import arcadedb
+from arcadedb.exceptions import ArcadeDBError
 
 
 @pytest.fixture
@@ -51,7 +51,7 @@ def _open_in_child_process(db_path):
     another process holds the database's file lock.
     """
     code = textwrap.dedent(f"""
-        import arcadedb_embedded as arcadedb
+        import arcadedb
         try:
             arcadedb.open_database({db_path!r}).close()
             print("RESULT OPENED")

@@ -52,8 +52,8 @@ def test_a_clean_wheel_passes(tmp_path, capsys):
     wheel = _wheel(
         tmp_path / "a-1-py3-none-any.whl",
         {
-            "arcadedb_embedded/jars/arcadedb-server-1.jar": _jar({"A.class": b"x"}),
-            "arcadedb_embedded/server.py": b"",
+            "arcadedb/jars/arcadedb-server-1.jar": _jar({"A.class": b"x"}),
+            "arcadedb/server.py": b"",
         },
     )
     assert module.main([str(wheel)]) == 0
@@ -65,7 +65,7 @@ def test_a_studio_jar_with_echarts_passes(tmp_path, capsys):
     wheel = _wheel(
         tmp_path / "a-1-py3-none-any.whl",
         {
-            "arcadedb_embedded/jars/arcadedb-studio-26.11.1.jar": _jar(
+            "arcadedb/jars/arcadedb-studio-26.11.1.jar": _jar(
                 {
                     "static/index.html": b"x",
                     "static/dist/js/echarts.min.js": b"x",
@@ -81,7 +81,7 @@ def test_an_echarts_file_outside_a_jar_passes(tmp_path):
     module = _load()
     wheel = _wheel(
         tmp_path / "a-1-py3-none-any.whl",
-        {"arcadedb_embedded/static/dist/js/echarts.min.js": b"x"},
+        {"arcadedb/static/dist/js/echarts.min.js": b"x"},
     )
     assert module.main([str(wheel)]) == 0
 
@@ -90,7 +90,7 @@ def test_an_apexcharts_file_fails_the_wheel(tmp_path, capsys):
     module = _load()
     wheel = _wheel(
         tmp_path / "a-1-py3-none-any.whl",
-        {"arcadedb_embedded/static/dist/js/apexcharts.min.js": b"x"},
+        {"arcadedb/static/dist/js/apexcharts.min.js": b"x"},
     )
     assert module.main([str(wheel)]) == 1
     err = capsys.readouterr().err
@@ -103,7 +103,7 @@ def test_a_studio_jar_from_an_older_engine_fails_the_wheel(tmp_path, capsys):
     wheel = _wheel(
         tmp_path / "a-1-py3-none-any.whl",
         {
-            "arcadedb_embedded/jars/arcadedb-studio-26.10.2.jar": _jar(
+            "arcadedb/jars/arcadedb-studio-26.10.2.jar": _jar(
                 {
                     "static/index.html": b"x",
                     "static/dist/js/apexcharts.min.js": b"x",
@@ -121,11 +121,7 @@ def test_a_renamed_jar_that_carries_apexcharts_fails_the_wheel(tmp_path, capsys)
     module = _load()
     wheel = _wheel(
         tmp_path / "a-1-py3-none-any.whl",
-        {
-            "arcadedb_embedded/jars/ui-1.jar": _jar(
-                {"static/dist/js/ApexCharts.min.js": b"x"}
-            )
-        },
+        {"arcadedb/jars/ui-1.jar": _jar({"static/dist/js/ApexCharts.min.js": b"x"})},
     )
     assert module.main([str(wheel), str(wheel)]) == 1
     assert "ui-1.jar contains" in capsys.readouterr().err
@@ -135,7 +131,7 @@ def test_a_jar_that_is_not_a_zip_fails_the_wheel(tmp_path, capsys):
     module = _load()
     wheel = _wheel(
         tmp_path / "a-1-py3-none-any.whl",
-        {"arcadedb_embedded/jars/broken-1.jar": b"not a zip"},
+        {"arcadedb/jars/broken-1.jar": b"not a zip"},
     )
     assert module.main([str(wheel)]) == 1
     assert "cannot be checked" in capsys.readouterr().err

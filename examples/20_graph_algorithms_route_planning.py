@@ -33,7 +33,7 @@ import re
 import shutil
 from pathlib import Path
 
-import arcadedb_embedded as arcadedb
+import arcadedb
 
 SAFE_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 

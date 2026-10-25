@@ -1,7 +1,7 @@
 import os
 from unittest.mock import patch
 
-from arcadedb_embedded.jvm import _build_jvm_args
+from arcadedb.jvm import _build_jvm_args
 
 
 def test_defaults_no_env_vars():

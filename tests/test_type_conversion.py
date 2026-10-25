@@ -5,7 +5,7 @@ Tests for type conversion between Java and Python types.
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
-import arcadedb_embedded as arcadedb
+import arcadedb
 
 
 def test_basic_type_conversion(temp_db_path):
@@ -121,7 +121,7 @@ def test_offset_datetime_conversion(temp_db_path):
     """
     import jpype
 
-    from arcadedb_embedded import convert_java_to_python
+    from arcadedb import convert_java_to_python
 
     with arcadedb.create_database(temp_db_path) as db:  # starts the JVM
         db.command("sql", "CREATE DOCUMENT TYPE OffsetTest")
@@ -364,7 +364,7 @@ def test_python_to_java_conversion(temp_db_path):
             doc.set("active", True)  # bool
 
             # Convert list to Java ArrayList for compatibility
-            from arcadedb_embedded.type_conversion import convert_python_to_java
+            from arcadedb.type_conversion import convert_python_to_java
 
             doc.set("tags", convert_python_to_java(["a", "b", "c"]))  # list
             doc.set("metadata", convert_python_to_java({"key": "value"}))  # dict
@@ -496,7 +496,7 @@ def test_scalar_list_crosses_as_one_array_with_the_same_types(temp_db_path):
     import jpype
     import pytest
 
-    from arcadedb_embedded.type_conversion import convert_python_to_java
+    from arcadedb.type_conversion import convert_python_to_java
 
     with arcadedb.create_database(temp_db_path) as db:
         values = [1, -(2**63), 2**63 - 1, 1.5, float("inf"), "x", "", True, None]
@@ -553,7 +553,7 @@ def test_array_conversion(temp_db_path):
         with db.transaction():
             doc = db.new_document("ArrayTest")
             # Use Java collections via conversion
-            from arcadedb_embedded.type_conversion import convert_python_to_java
+            from arcadedb.type_conversion import convert_python_to_java
 
             doc.set("numbers", convert_python_to_java([1, 2, 3, 4, 5]))
             doc.set("names", convert_python_to_java(["Alice", "Bob", "Charlie"]))
@@ -583,7 +583,7 @@ class TestPrimitiveArrayFormats:
     def test_int_array(self):
         import jpype
 
-        from arcadedb_embedded.type_conversion import convert_java_to_python
+        from arcadedb.type_conversion import convert_java_to_python
 
         assert convert_java_to_python(jpype.JArray(jpype.JInt)([1, 2, 3])) == [1, 2, 3]
         # second conversion exercises the cached converter
@@ -592,7 +592,7 @@ class TestPrimitiveArrayFormats:
     def test_long_array(self):
         import jpype
 
-        from arcadedb_embedded.type_conversion import convert_java_to_python
+        from arcadedb.type_conversion import convert_java_to_python
 
         big = 2**40
         assert convert_java_to_python(jpype.JArray(jpype.JLong)([big, -big])) == [
@@ -601,7 +601,7 @@ class TestPrimitiveArrayFormats:
         ]
 
     def test_cache_not_poisoned_by_failure(self):
-        from arcadedb_embedded import type_conversion as tc
+        from arcadedb import type_conversion as tc
 
         class Boom:
             pass

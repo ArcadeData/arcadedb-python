@@ -10,7 +10,7 @@ import sys
 
 import pytest
 
-import arcadedb_embedded as arcadedb
+import arcadedb
 
 
 def test_insert_many_nested_values_read_as_python_in_the_same_transaction(
@@ -47,8 +47,8 @@ import json
 import sys
 from datetime import date
 
-import arcadedb_embedded as arcadedb
-from arcadedb_embedded.jvm import start_jvm
+import arcadedb
+from arcadedb.jvm import start_jvm
 
 start_jvm(heap_size="1g", jvm_args=["-Duser.timezone=" + sys.argv[2]])
 db = arcadedb.create_database(sys.argv[1])

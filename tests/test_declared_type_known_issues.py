@@ -18,7 +18,7 @@ import math
 
 import pytest
 
-import arcadedb_embedded as arcadedb
+import arcadedb
 
 
 def _five_records_one_without_v(db, name):

@@ -20,7 +20,7 @@ import threading
 import numpy as np
 import pytest
 
-import arcadedb_embedded as arcadedb
+import arcadedb
 
 THREADS = int(os.environ.get("FT_THREADS", "16"))
 REPEAT = int(os.environ.get("FT_REPEAT", "1"))
@@ -287,7 +287,7 @@ def reopen_and_close_race(tmp, n=THREADS):
 
 FIRST_START = textwrap.dedent("""
     import os, sys, threading
-    import arcadedb_embedded as arcadedb
+    import arcadedb
     n = int(sys.argv[1]); tmp = sys.argv[2]
     barrier = threading.Barrier(n); errors = []
     def run(tid):

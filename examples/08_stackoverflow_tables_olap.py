@@ -83,8 +83,8 @@ def build_benchmark_db_name(
 
 def get_arcadedb_module():
     try:
-        import arcadedb_embedded as arcadedb
-        from arcadedb_embedded.exceptions import ArcadeDBError
+        import arcadedb
+        from arcadedb.exceptions import ArcadeDBError
     except ImportError:
         return None, None
     return arcadedb, ArcadeDBError
@@ -1558,7 +1558,7 @@ def run_olap_arcadedb(
 ) -> dict:
     arcadedb, arcade_error = get_arcadedb_module()
     if arcadedb is None or arcade_error is None:
-        raise RuntimeError("arcadedb-embedded is not installed")
+        raise RuntimeError("arcadedb is not installed")
 
     if db_path.exists():
         shutil.rmtree(db_path)

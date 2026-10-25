@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-import arcadedb_embedded as arcadedb
+import arcadedb
 
 
 @pytest.fixture
@@ -407,7 +407,7 @@ class TestCSVExport:
 
     def test_export_to_csv_with_resultset(self, sample_db, temp_db_path):
         """Test CSV export using ResultSet directly."""
-        from arcadedb_embedded.exporter import export_to_csv
+        from arcadedb.exporter import export_to_csv
 
         csv_path = os.path.join(temp_db_path, "ratings.csv")
 
@@ -425,7 +425,7 @@ class TestCSVExport:
 
     def test_export_to_csv_with_list_of_dicts(self, temp_db_path):
         """Test CSV export from list of dictionaries."""
-        from arcadedb_embedded.exporter import export_to_csv
+        from arcadedb.exporter import export_to_csv
 
         csv_path = os.path.join(temp_db_path, "custom_data.csv")
 

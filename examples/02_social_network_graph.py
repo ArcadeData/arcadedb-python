@@ -27,7 +27,7 @@ ArcadeDB Query Languages:
 - SQL MATCH and OpenCypher performance varies by dataset and runtime configuration
 
 Requirements:
-- Python embedded ArcadeDB (arcadedb_embedded package)
+- Python embedded ArcadeDB (arcadedb package)
 
 Usage:
 - Run this example from the examples/ directory:
@@ -40,7 +40,7 @@ import shutil
 import sys
 import time
 
-import arcadedb_embedded as arcadedb
+import arcadedb
 
 
 def main():
@@ -285,7 +285,7 @@ def create_sample_data(db):
 
                     columns = list(properties.keys())
                     assignments = ", ".join(f"{col} = ?" for col in columns)
-                    from arcadedb_embedded.type_conversion import convert_python_to_java
+                    from arcadedb.type_conversion import convert_python_to_java
 
                     values = [
                         convert_python_to_java(properties[col]) for col in columns

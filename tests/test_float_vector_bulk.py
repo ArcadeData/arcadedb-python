@@ -13,8 +13,8 @@ from datetime import datetime
 import numpy as np
 import pytest
 
-import arcadedb_embedded as arcadedb
-from arcadedb_embedded import type_conversion
+import arcadedb
+from arcadedb import type_conversion
 
 DIM = 8
 N = 50

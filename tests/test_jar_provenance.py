@@ -18,7 +18,7 @@ than none: it invites exactly the assumption it was added to prevent.
 import hashlib
 import os
 
-import arcadedb_embedded as adb
+import arcadedb as adb
 
 
 def test_fingerprint_is_deterministic():
@@ -133,7 +133,7 @@ def test_our_jar_list_still_matches_the_wheel():
     If the bridge JAR is ever renamed, every engine comparison silently starts
     including a non-reproducible JAR again and stops meaning what it says.
     """
-    from arcadedb_embedded.jvm import _OUR_JARS
+    from arcadedb.jvm import _OUR_JARS
 
     names = {j["name"] for j in adb.jar_fingerprint(per_jar=True)["jars"]}
     missing = _OUR_JARS - names

@@ -34,7 +34,7 @@ query as a scan of the type).
 
 import pytest
 
-import arcadedb_embedded as arcadedb
+import arcadedb
 
 # id 1 has p = 1, id 2 has p = null, id 3 has no p; all have q = 7.
 THREE_RECORDS = ("id = 1, p = 1, q = 7", "id = 2, p = null, q = 7", "id = 3, q = 7")

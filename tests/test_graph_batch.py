@@ -3,8 +3,8 @@ from datetime import datetime
 
 import pytest
 
-import arcadedb_embedded as arcadedb
-from arcadedb_embedded.exceptions import ArcadeDBError
+import arcadedb
+from arcadedb.exceptions import ArcadeDBError
 
 
 def test_graph_batch_creates_vertices_and_edges(temp_db_path):

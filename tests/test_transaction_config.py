@@ -6,7 +6,7 @@ Priority 7: Transaction Configuration
 
 import pytest
 
-from arcadedb_embedded import ArcadeDBError, create_database
+from arcadedb import ArcadeDBError, create_database
 
 
 def test_set_wal_flush_modes(temp_db):

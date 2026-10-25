@@ -29,7 +29,7 @@ from datetime import date, datetime
 
 import pytest
 
-import arcadedb_embedded as arcadedb
+import arcadedb
 
 WRITTEN = datetime(2024, 3, 15, 14, 30, 45, 123000)
 WRITTEN_DAY = date(2024, 3, 15)

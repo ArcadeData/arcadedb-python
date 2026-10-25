@@ -17,10 +17,10 @@ must pop it and nothing else, in ``run_in_transaction`` and ``with db.transactio
 
 import pytest
 
-import arcadedb_embedded as arcadedb
-from arcadedb_embedded import ArcadeDBError
-from arcadedb_embedded.core import Database
-from arcadedb_embedded.server import ArcadeDBServer
+import arcadedb
+from arcadedb import ArcadeDBError
+from arcadedb.core import Database
+from arcadedb.server import ArcadeDBServer
 
 
 @pytest.fixture

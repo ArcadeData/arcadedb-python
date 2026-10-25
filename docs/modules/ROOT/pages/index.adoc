@@ -2,7 +2,7 @@
 :description: Run the ArcadeDB engine inside your Python process: install, first steps and how-to guides for the {pkg-name} package.
 
 // Sources: bindings docs index.md, api-access-methods.md and getting-started/installation.md,
-// and the PyPI description of arcadedb-embedded-native.
+// and the PyPI description of arcadedb-native.
 
 `{pkg-name}` runs the ArcadeDB engine inside your Python process. Calls cross into the engine through https://jpype.readthedocs.io/[JPype], so there is no network hop and no server to start. The wheel bundles its own Java runtime (Java 25), so you do not install Java.
 
@@ -83,7 +83,7 @@ Two packages ship for now. Both give you the same engine and the same API.
 | `pip install --pre {native-pkg-name}`
 |===
 
-The preview installs beside the default package. Its public API follows the one of `{import-name}`, so the pages in this component apply to both; the JVM-specific parts (JVM options, `jvm_kwargs`) do not apply to the native build. Check the preview's https://pypi.org/project/{native-pkg-name}/[PyPI page] for its current status before you rely on it.
+Both packages import as `{import-name}`, so an environment holds one of them. The preview's public API follows the one of the default package, so the pages in this component apply to both; the JVM-specific parts (JVM options, `jvm_kwargs`) do not apply to the native build. Check the preview's https://pypi.org/project/{native-pkg-name}/[PyPI page] for its current status before you rely on it.
 
 == Requirements
 

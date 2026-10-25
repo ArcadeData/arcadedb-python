@@ -1,5 +1,5 @@
 """
-Setup configuration for arcadedb-embedded.
+Setup configuration for arcadedb.
 
 This file forces the wheel to be platform-specific (not py3-none-any)
 because we bundle platform-specific JRE binaries.

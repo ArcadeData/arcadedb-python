@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-import arcadedb_embedded as arcadedb
+import arcadedb
 
 EXAMPLE_PATH = (
     Path(__file__).resolve().parents[1] / "examples" / "29_hybrid_memory_retrieval.py"

@@ -8,7 +8,7 @@ Tests cover:
 
 import pytest
 
-import arcadedb_embedded as arcadedb
+import arcadedb
 
 
 @pytest.fixture
@@ -126,7 +126,7 @@ class TestLSMVectorIndex:
         test_db.command("sql", "CREATE VERTEX TYPE Doc")
         test_db.command("sql", "CREATE PROPERTY Doc.embedding ARRAY_OF_FLOATS")
 
-        from arcadedb_embedded.vector import VectorIndex
+        from arcadedb.vector import VectorIndex
 
         called = {"count": 0}
         original_build_graph_now = VectorIndex.build_graph_now
@@ -148,7 +148,7 @@ class TestLSMVectorIndex:
         test_db.command("sql", "CREATE VERTEX TYPE Doc")
         test_db.command("sql", "CREATE PROPERTY Doc.embedding ARRAY_OF_FLOATS")
 
-        from arcadedb_embedded.vector import VectorIndex
+        from arcadedb.vector import VectorIndex
 
         called = {"count": 0}
         original_build_graph_now = VectorIndex.build_graph_now
@@ -180,7 +180,7 @@ class TestLSMVectorIndex:
 
             assert index is not None
             # Check if it's the wrapper
-            from arcadedb_embedded.vector import VectorIndex
+            from arcadedb.vector import VectorIndex
 
             assert isinstance(index, VectorIndex)
 
@@ -730,7 +730,7 @@ class TestLSMVectorIndex:
                 arcadedb.to_java_float_array([0.9, 0.1, 0.0]),
             )
 
-        from arcadedb_embedded import graph
+        from arcadedb import graph
 
         calls = graph._graph_calls()
         assert calls is not None
@@ -1003,7 +1003,7 @@ class TestLSMVectorIndex:
 
     def test_lsm_persistence(self, temp_db_path):
         """Test that LSM index persists across database restarts."""
-        import arcadedb_embedded as arcadedb
+        import arcadedb
 
         # 1. Create DB and Index
         with arcadedb.create_database(temp_db_path) as db:

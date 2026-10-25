@@ -17,7 +17,7 @@ import time
 import numpy as np
 import pytest
 
-import arcadedb_embedded as arcadedb
+import arcadedb
 
 
 @pytest.fixture

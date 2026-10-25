@@ -15,9 +15,9 @@ import jpype
 import numpy as np
 import pytest
 
-import arcadedb_embedded as arcadedb
-from arcadedb_embedded import results
-from arcadedb_embedded.exceptions import ArcadeDBError
+import arcadedb
+from arcadedb import results
+from arcadedb.exceptions import ArcadeDBError
 
 
 def exact(value):
@@ -366,7 +366,7 @@ def test_without_the_bridge_classes_the_plain_paths_answer_the_same(
     db, graph, monkeypatch
 ):
     """A jar without TypedRows or GraphCalls sends every caller down the plain path."""
-    from arcadedb_embedded import graph as graph_module
+    from arcadedb import graph as graph_module
 
     wide = [exact(r) for r in db.query("sql", "SELECT FROM Wide").to_list()]
     people_db, people = graph

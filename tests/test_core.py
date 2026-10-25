@@ -7,7 +7,7 @@ import json
 
 import pytest
 
-import arcadedb_embedded as arcadedb
+import arcadedb
 
 
 def test_database_creation(temp_db_path):
@@ -1043,7 +1043,7 @@ def test_failed_open_does_not_hang_process_exit(tmp_path):
     import sys
 
     code = (
-        "import arcadedb_embedded as a\n"
+        "import arcadedb as a\n"
         "try:\n"
         f"    a.open_database({str(tmp_path / 'missing_db')!r})\n"
         "except Exception:\n"

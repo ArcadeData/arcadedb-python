@@ -2,7 +2,7 @@
 
 from datetime import datetime, timezone
 
-import arcadedb_embedded as arcadedb
+import arcadedb
 
 
 def _create_timeseries(db):

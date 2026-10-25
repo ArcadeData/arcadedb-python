@@ -5,7 +5,7 @@ benchmark harness depends on (guide/vectors.md, 2026-09-07)."""
 import jpype.types as jtypes
 import pytest
 
-import arcadedb_embedded as arcadedb
+import arcadedb
 
 DIMS = 512
 

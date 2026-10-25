@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-import arcadedb_embedded as arcadedb
+import arcadedb
 
 
 @pytest.fixture

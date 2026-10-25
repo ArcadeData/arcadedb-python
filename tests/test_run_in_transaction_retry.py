@@ -19,8 +19,8 @@ import time
 import jpype
 import pytest
 
-import arcadedb_embedded as arcadedb
-from arcadedb_embedded import ArcadeDBError
+import arcadedb
+from arcadedb import ArcadeDBError
 
 
 def _java(name):

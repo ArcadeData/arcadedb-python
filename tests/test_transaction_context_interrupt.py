@@ -5,7 +5,7 @@ interrupted between begin() and the flag that records it.
 
 import pytest
 
-from arcadedb_embedded.transactions import TransactionContext
+from arcadedb.transactions import TransactionContext
 
 
 class _FakeDatabase:
