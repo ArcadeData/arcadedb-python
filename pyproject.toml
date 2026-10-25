@@ -49,7 +49,7 @@ managed = false
 test = [
     "pytest>=9.0.3",
     "pytest-cov",
-    "numpy>=1.26.4",
+    "numpy>=2.4.6",
     "requests>=2.33.0",  # HTTP API / docs-example tests
     # Real clients for the bundled wire protocols. Test-only: none of these
     # reaches an end user's install, and without them three shipped protocols
@@ -84,12 +84,12 @@ dev = [
     "mypy",
     "pytest>=9.0.3",
     "pytest-cov",
-    "numpy>=1.26.4",
+    "numpy>=2.4.6",
     "requests>=2.33.0",  # HTTP API / docs-example tests
     "bandit>=1.9.1",
 ]
 vector = [
-    "numpy>=1.26.4",
+    "numpy>=2.4.6",
 ]
 # Optional: ResultSet.to_arrow(). The columnar bridge already emits packed
 # columns with a null bitmap, so this adds no Java and no jars to the wheel;
@@ -97,7 +97,7 @@ vector = [
 # None and callers fall back to to_columns().
 arrow = [
     "pyarrow>=23.0.1",
-    "numpy>=1.26.4",
+    "numpy>=2.4.6",
 ]
 # Optional: ResultSet.to_dataframe(). Shipped and documented long before this
 # extra existed, so the only way to discover the dependency was to call the
@@ -111,7 +111,7 @@ arrow = [
 # stays as it is and is documented rather than quietly aligned.
 pandas = [
     "pandas>=2.2.0",
-    "numpy>=1.26.4",
+    "numpy>=2.4.6",
 ]
 # Optional: ResultSet.to_polars() and insert_dataframe() with a Polars frame. Both go
 # through Arrow, so pyarrow comes with it. insert_dataframe() with a pandas frame needs
@@ -120,7 +120,7 @@ pandas = [
 polars = [
     "polars>=1.0",
     "pyarrow>=23.0.1",
-    "numpy>=1.26.4",
+    "numpy>=2.4.6",
 ]
 examples = [
     "py7zr>=1.1.3",  # Required for Stack Exchange data downloads
