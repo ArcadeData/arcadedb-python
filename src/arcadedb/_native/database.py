@@ -13,7 +13,7 @@ from .._params import refuse_surplus_positionals
 from ..exceptions import ArcadeDBError
 from ..transactions import TransactionContext
 from ..type_conversion import json_bulk_dumps
-from . import interrupts, lib, not_yet
+from . import interrupts, lib, needs_jvm
 from .codec import _prep as _prep_row
 from .codec import encode_params, json_native, loads, row_default
 
@@ -850,7 +850,7 @@ class NativeDatabase:
     # -- not on native yet
 
     def get_java_database(self):
-        not_yet("get_java_database")
+        needs_jvm("get_java_database")
 
     def new_vertex(self, type_name: str):
         """A vertex that is created by ``save()`` (``CREATE VERTEX .. CONTENT``)."""
@@ -1003,11 +1003,8 @@ class NativeDatabase:
         disable_xml_limits=False,
     ):
         """Import document-shaped files (CSV, JSON, ...) through the engine's importer; same arguments as the JPype path."""
-        from ..importer import (
-            ImportResult,
-            _build_import_settings,
-            normalize_import_source,
-        )
+        from ..importer import (ImportResult, _build_import_settings,
+                                normalize_import_source)
         from . import extras
 
         self._check_not_closed()
@@ -1221,7 +1218,7 @@ class _JavaObject:
         return True
 
     def __getattr__(self, name):
-        not_yet(f"the Java object a Schema method returns ({name})")
+        needs_jvm(f"the Java object a Schema method returns ({name})")
 
 
 class NativeSchema:
@@ -1386,7 +1383,7 @@ class NativeSchema:
     def __getattr__(self, name):
         if name.startswith("_"):
             raise AttributeError(name)
-        not_yet(f"Schema.{name} (returns Java objects)")
+        needs_jvm(f"Schema.{name} (returns Java objects)")
 
 
 class NativeDatabaseFactory:

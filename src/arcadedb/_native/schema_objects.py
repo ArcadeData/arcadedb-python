@@ -8,7 +8,7 @@ import re
 
 from ..exceptions import ArcadeDBError
 from ..vector import VectorIndex as _BaseVectorIndex
-from . import not_yet
+from . import needs_jvm
 
 _PROPERTY = re.compile(r"name: (.+?), type: ([A-Z_]+)")
 
@@ -46,7 +46,7 @@ class NativeType:
     def __getattr__(self, name):
         if name.startswith("_"):
             raise AttributeError(name)
-        not_yet(f"the Java object a Schema method returns ({name})")
+        needs_jvm(f"the Java object a Schema method returns ({name})")
 
     def __repr__(self):
         return f"<Type {self.getName()}>"
@@ -80,7 +80,7 @@ class NativeIndex:
     def __getattr__(self, name):
         if name.startswith("_"):
             raise AttributeError(name)
-        not_yet(f"the Java object a Schema method returns ({name})")
+        needs_jvm(f"the Java object a Schema method returns ({name})")
 
     def __repr__(self):
         return f"<Index {self.getName()}>"

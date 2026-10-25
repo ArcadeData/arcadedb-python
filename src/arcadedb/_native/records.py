@@ -11,7 +11,7 @@ from ..exceptions import ArcadeDBError
 from ..graph import Document as _BaseDocument
 from ..graph import Edge as _BaseEdge
 from ..graph import Vertex as _BaseVertex
-from . import not_yet
+from . import needs_jvm
 from .codec import RID
 
 
@@ -84,7 +84,7 @@ class _Mixin:
         return self._type
 
     def get_java_document(self):
-        not_yet("get_java_document")
+        needs_jvm("get_java_document")
 
     # -- writing
 
