@@ -366,9 +366,11 @@ jobs:
           set -euo pipefail
           w="$(ls "$T"/wheel/dist/*.whl)"
           uvx auditwheel show "$w" | tee "$T/auditwheel.txt"
-          grep -F 'consistent with the following platform tag' "$T/auditwheel.txt"
-          grep -F "\"$PLAT\"" "$T/auditwheel.txt"
-          if grep -Eiq 'instruction set|x86_64_v[0-9]' "$T/auditwheel.txt"; then
+          # auditwheel wraps its report to the terminal width, so match on one line with the whitespace collapsed
+          tr -s '[:space:]' ' ' < "$T/auditwheel.txt" > "$T/auditwheel.flat"
+          grep -F 'consistent with the following platform tag' "$T/auditwheel.flat"
+          grep -F "\"$PLAT\"" "$T/auditwheel.flat"
+          if grep -Eiq 'instruction set|x86_64_v[0-9]' "$T/auditwheel.flat"; then
             echo "auditwheel reports an ISA warning: the image is not baseline x86-64" >&2
             exit 1
           fi

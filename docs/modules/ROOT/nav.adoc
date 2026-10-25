@@ -5,6 +5,7 @@
 * How-to
 ** xref:how-to/databases-and-queries.adoc[Databases and queries]
 ** xref:how-to/concurrency.adoc[Concurrency, processes and crashes]
+** xref:how-to/logs.adoc[Where the logs go]
 * Development
 ** xref:development/ci.adoc[Continuous integration]
 ** xref:development/release.adoc[Release]

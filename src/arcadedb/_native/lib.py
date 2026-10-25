@@ -7,6 +7,7 @@ import sys
 import threading
 from pathlib import Path
 
+from .. import _logdir
 from ..exceptions import ArcadeDBError
 
 _LIB_NAMES = {
@@ -28,6 +29,9 @@ FAST_ENCODE = os.environ.get("ARCADEDB_NATIVE_FASTENC", "1") != "0"
 INSERT_ROWS = os.environ.get("ARCADEDB_NATIVE_INSERT_ROWS", "1") != "0"
 # ARCADEDB_NATIVE_EXEC_MANY: the rows of an insert_many chunk that JSON text cannot carry unchanged go in one crossing (arcadedb_n_exec_many), not one call each
 EXEC_MANY = os.environ.get("ARCADEDB_NATIVE_EXEC_MANY", "1") != "0"
+
+# the directory the engine log, logging.properties and the crash files go to (None until the library is loaded)
+LOG_DIR_USED = None
 
 _lock = threading.Lock()
 _lib = None
@@ -59,6 +63,32 @@ class _Thread:
                 _lib.graal_detach_thread(self.handle)
             except Exception:  # nosec B110 - interpreter shutdown
                 pass
+
+
+def _log_isolate_args(user_args, log_dir) -> list:
+    """The isolate arguments that put the engine log in ``log_dir``; each one the user already gave is left out (theirs wins).
+
+    The engine reads ``arcadedb.server.logsDirectory`` and ``java.util.logging.config.file`` when it first logs, and the log file it
+    opens by default is ``./log/arcadedb.log`` in the working directory. An isolate argument is in place before any Java code runs.
+    """
+    posix = Path(log_dir).as_posix()
+    args = []
+    if not any(a.startswith("-Darcadedb.server.logsDirectory=") for a in user_args):
+        args.append(f"-Darcadedb.server.logsDirectory={posix}")
+    if not any(a.startswith("-Djava.util.logging.config.file=") for a in user_args):
+        args.append(
+            f"-Djava.util.logging.config.file={posix}/{_logdir.LOGGING_CONFIG_NAME}"
+        )
+    return args
+
+
+def _prepare_logging(user_args) -> list:
+    """Create the log directory, write its logging.properties and return the isolate arguments for it (see :func:`_log_isolate_args`)."""
+    global LOG_DIR_USED
+    log_dir = _logdir.usable_log_dir(_logdir.default_log_dir())
+    _logdir.write_logging_config(log_dir, _logdir.NATIVE_ENGINE_LOG_PROPERTIES)
+    LOG_DIR_USED = log_dir
+    return _log_isolate_args(user_args, log_dir)
 
 
 def _check_cpu() -> None:
@@ -112,9 +142,12 @@ def _load():
         ]
         lib.graal_create_isolate.restype = ctypes.c_int
         params = None
+        # run-time image options for the isolate (e.g. "-XX:InitialCollectionPolicy=Adaptive -XX:MaximumYoungGenerationSizePercent=20")
         iso_args = os.environ.get("ARCADEDB_NATIVE_ISOLATE_ARGS", "").split()
+        # the log directory: always set, so that nothing is written to the working directory (the same rule as the JVM build)
+        iso_args += _prepare_logging(iso_args)
         if iso_args:
-            # run-time image options for the isolate (e.g. "-XX:InitialCollectionPolicy=Adaptive -XX:MaximumYoungGenerationSizePercent=20")
+
             class _Params(ctypes.Structure):
                 _fields_ = [
                     ("version", ctypes.c_int),
@@ -146,6 +179,8 @@ def _load():
             ctypes.POINTER(ctypes.c_void_p),
         ]
         lib.graal_attach_thread.restype = ctypes.c_int
+        lib.graal_get_current_thread.argtypes = [ctypes.c_void_p]
+        lib.graal_get_current_thread.restype = ctypes.c_void_p
         lib.graal_detach_thread.argtypes = [ctypes.c_void_p]
         lib.graal_detach_thread.restype = ctypes.c_int
         # a Java long is 64 bits on every platform; C long is 32 bits on Windows, so L is long long (the same size as c_long elsewhere)
@@ -174,9 +209,11 @@ def _load():
             "arcadedb_n_gb_create": [P, L, S],
             "arcadedb_n_gb": [P, L, S, S],
             "arcadedb_n_async": [P, L, S, S],
+            "arcadedb_n_vindex": [P, L, S, S],
             "arcadedb_n_import": [P, L, S],
             "arcadedb_n_export": [P, L, S, S, I, S],
-            "arcadedb_n_udf_register": [P, S, L, I, I],
+            "arcadedb_n_cb": [P, S, S],
+            "arcadedb_n_alloc": [P, L],
             "arcadedb_n_set_upcall": [P, P],
             "arcadedb_free": [P, P],
         }
@@ -222,6 +259,13 @@ def loaded() -> bool:
 def _thread_handle():
     t = getattr(_local, "thread", None)
     if t is None:
+        # A Java thread that runs a Python callback (an async writer, an engine thread) is attached to the isolate already.
+        # Attaching it again would hand Python an owned handle that detaches the thread, while it still runs Java code, as
+        # soon as the callback's Python thread state ends: the process aborts.
+        current = _lib.graal_get_current_thread(_isolate)
+        if current:
+            t = _local.thread = _Thread(ctypes.c_void_p(current), owned=False)
+            return t.handle
         thread = ctypes.c_void_p()
         rc = _lib.graal_attach_thread(_isolate, ctypes.byref(thread))
         if rc != 0:
@@ -266,6 +310,16 @@ def call_bin(name: str, *args):
     finally:
         lib.arcadedb_free(th, ptr)
     return raw.decode("utf-8"), floats
+
+
+def alloc(size: int):
+    """Memory from the library's allocator (``arcadedb_n_alloc``), for the reply of a callback.
+
+    Java copies the text and frees the memory, so it must come from here and from nowhere else; it also outlives the callback's
+    Python thread state (a callback on an async writer thread ends that state as it returns).
+    """
+    lib = _lib or _load()
+    return lib.arcadedb_n_alloc(_thread_handle(), size)
 
 
 def call_void(name: str, *args) -> None:

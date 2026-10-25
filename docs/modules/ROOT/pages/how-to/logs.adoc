@@ -1,0 +1,43 @@
+= Where the logs go
+:description: Where the engine writes its log file on the arcadedb and arcadedb-jvm packages, how to move it, and what the packages never write.
+
+Neither package writes a `log` directory into your working directory. The engine's own default is `./log/arcadedb.log`, relative to wherever the process started. Both packages replace it with a per-user directory, so a read-only working directory or a notebook that starts anywhere leaves no files behind.
+
+== Default location
+
+The log directory is `arcadedb/log` under your state directory:
+
+[cols="1,3"]
+|===
+| Platform | Directory
+
+| Linux
+| `$XDG_STATE_HOME/arcadedb/log`, or `~/.local/state/arcadedb/log` when `XDG_STATE_HOME` is not set to an absolute path
+
+| macOS
+| `~/Library/Logs/arcadedb/log`
+
+| Windows
+| `%LOCALAPPDATA%\arcadedb\log`
+|===
+
+When the directory cannot be created or written, the package logs a warning and uses a new `arcadedb-log-*` directory under the system temp directory.
+
+The directory holds the engine log (`arcadedb.log.0`, `arcadedb.log.1` and so on, up to 10 files of 100 MB), and the `logging.properties` that the package writes for the engine. The `arcadedb-jvm` package also keeps the JVM crash file `hs_err_pid<pid>.log` there.
+
+== Choose the directory
+
+Set `ARCADEDB_LOG_DIR` before the first database is opened. The first call that starts the engine reads it, so setting it later has no effect in the same process.
+
+[source,bash]
+----
+export ARCADEDB_LOG_DIR=/var/log/my-app/arcadedb
+----
+
+== Settings that win over `ARCADEDB_LOG_DIR`
+
+The packages pass two Java system properties to the engine: `arcadedb.server.logsDirectory` (the directory) and `java.util.logging.config.file` (the `logging.properties` in it). If you set one of them yourself, yours is kept and the other default still applies.
+
+`arcadedb-jvm`:: Add the property to `jvm_kwargs={"jvm_args": [...]}` or to the environment variable `ARCADEDB_JVM_ARGS`, for example `-Darcadedb.server.logsDirectory=/var/log/arcadedb`.
+
+`arcadedb` (native):: Add the property to the environment variable `ARCADEDB_NATIVE_ISOLATE_ARGS`. It takes space-separated isolate arguments, so a directory in it cannot contain a space. For example `ARCADEDB_NATIVE_ISOLATE_ARGS=-Darcadedb.server.logsDirectory=/var/log/arcadedb`. Use `ARCADEDB_LOG_DIR` for a directory with a space in its name.
