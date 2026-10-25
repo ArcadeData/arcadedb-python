@@ -33,11 +33,14 @@ import org.graalvm.word.Pointer;
 import org.graalvm.word.WordFactory;
 import org.graalvm.nativeimage.c.type.CTypeConversion;
 
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Supplier;
 
 public final class ArcadeNative {
   static final Map<Long, Database> DBS = new ConcurrentHashMap<>();
@@ -291,6 +294,27 @@ public final class ArcadeNative {
     }
   }
 
+  /**
+   * arcadedb_n_next with the float32 tail of arcadedb_n_exec flag 4: float[] values of 8 or more elements of the batch come back in a binary tail
+   * ({"\u0001":["B",offset,count]} in the rows, ,"bin":total at the end of the JSON, the floats after its NUL), not as number text. Offsets are
+   * per reply. A reply without such a value is the same text arcadedb_n_next returns.
+   */
+  @CEntryPoint(name = "arcadedb_n_next_bin")
+  public static CCharPointer nextBin(final IsolateThread thread, final long rsId, final int max) {
+    ResultSet rs = null;
+    try {
+      rs = RESULT_SETS.get(rsId);
+      if (rs == null)
+        throw new IllegalArgumentException("unknown result set " + rsId);
+      final ResultSet cursor = rs;
+      return withFloatTail(() -> batchOf(rsId, cursor, max));
+    } catch (final Throwable t) {
+      RESULT_SETS.remove(rsId);
+      closeQuietly(rs);
+      return err(t);
+    }
+  }
+
   @CEntryPoint(name = "arcadedb_n_rs_close")
   public static CCharPointer rsClose(final IsolateThread thread, final long rsId) {
     closeQuietly(RESULT_SETS.remove(rsId));
@@ -488,11 +512,19 @@ public final class ArcadeNative {
     }
     if ((flags & 4) == 0)
       return out(batch(rs, max));
+    return withFloatTail(() -> batch(rs, max));
+  }
+
+  /**
+   * Runs encode with the float32 sink set (float[] values of 8 or more elements go to the tail of the reply as {"\u0001":["B",off,n]}) and returns
+   * the reply: out(text) when no vector was met, else the text with ,"bin":total, a NUL, padding to 4 bytes and the floats.
+   */
+  private static CCharPointer withFloatTail(final Supplier<String> encode) {
     final NativeCodec.FloatSink sink = new NativeCodec.FloatSink();
     NativeCodec.SINK.set(sink);
     final String reply;
     try {
-      reply = batch(rs, max);
+      reply = encode.get();
     } finally {
       NativeCodec.SINK.remove();
     }
@@ -501,13 +533,12 @@ public final class ArcadeNative {
     final byte[] b = (reply.substring(0, reply.length() - 1) + ",\"bin\":" + sink.n + "}").getBytes(StandardCharsets.UTF_8);
     final int off = (b.length + 1 + 3) & ~3;
     final CCharPointer p = UnmanagedMemory.malloc(off + 4 * sink.n);
-    for (int i = 0; i < b.length; i++)
-      p.write(i, b[i]);
-    for (int i = b.length; i < off; i++)
-      p.write(i, (byte) 0);
-    final CFloatPointer fp = (CFloatPointer) ((org.graalvm.word.Pointer) p).add(off);
-    for (int i = 0; i < sink.n; i++)
-      fp.write(i, sink.a[i]);
+    // bulk copies (Unsafe.copyMemory), not one p.write per byte: the text, the zero padding up to the 4-byte boundary, then the float32 tail in native order
+    final ByteBuffer bb = CTypeConversion.asByteBuffer(p, (int) (off + 4L * sink.n));
+    bb.put(b, 0, b.length);
+    while (bb.position() < off)
+      bb.put((byte) 0);
+    bb.order(ByteOrder.nativeOrder()).asFloatBuffer().put(sink.a, 0, sink.n);
     return p;
   }
 
@@ -704,9 +735,8 @@ public final class ArcadeNative {
   static CCharPointer out(final String s) {
     final byte[] b = s.getBytes(StandardCharsets.UTF_8);
     final CCharPointer p = UnmanagedMemory.malloc(b.length + 1);
-    for (int i = 0; i < b.length; i++)
-      p.write(i, b[i]);
-    p.write(b.length, (byte) 0);
+    // one bulk copy (Unsafe.copyMemory) and the terminating zero; this was a Java loop of p.write(i, b[i]), one byte per iteration
+    CTypeConversion.asByteBuffer(p, b.length + 1).put(b, 0, b.length).put((byte) 0);
     return p;
   }
 }
