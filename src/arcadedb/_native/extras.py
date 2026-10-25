@@ -693,8 +693,29 @@ class NativeAsyncExecutor:
             "scan_type", type=type_name, polymorphic=bool(polymorphic), cb=cb, err=err
         )
 
-    def transaction(self, *args, **kwargs):
-        not_yet("AsyncExecutor.transaction")
+    def transaction(
+        self,
+        tx_block: Callable[[], None],
+        retries: Optional[int] = None,
+        ok_callback: Optional[Callable[[], None]] = None,
+        error_callback: Optional[Callable[[Exception], None]] = None,
+        slot: Optional[int] = None,
+    ):
+        """Run ``tx_block`` on an async writer inside a transaction (the engine begins it and commits or rolls it back, retrying a conflict ``retries`` times)."""
+
+        def run(message):
+            tx_block()
+
+        args = {"cb": _register(run)}
+        if retries is not None:
+            args["retries"] = int(retries)
+        if ok_callback is not None:
+            args["ok"] = _register(lambda message: ok_callback())
+        if error_callback is not None:
+            args["err"] = self._error_callback(error_callback)
+        if slot is not None:
+            args["slot"] = int(slot)
+        self._op("transaction", **args)
 
     def wait_completion(self, timeout_ms: Optional[int] = None):
         if timeout_ms is None:

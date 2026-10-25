@@ -147,7 +147,7 @@ Each Python process starts its own JVM, and each JVM sees the whole container li
 
 == Native build notes (`{native-pkg-name}`)
 
-The native package is the same engine compiled to a GraalVM native-image shared library. It needs no JVM and no JPype, so the JVM options above do not apply to it. A few API calls raise `NotOnNativeYet` (a `NotImplementedError`) instead of misbehaving. The list is in xref:which-package.adoc[Which package?]. Report problems in the {repo-url}/issues[issue tracker] and say which package you use.
+The native package is the same engine compiled to a GraalVM native-image shared library. It needs no JVM and no JPype, so the JVM options above do not apply to it. The calls that hand out a Java object (`get_java_database`, `get_java_document`) raise `NotOnNativeYet` (a `NotImplementedError`) instead of misbehaving. The list is in xref:which-package.adoc[Which package?]. Report problems in the {repo-url}/issues[issue tracker] and say which package you use.
 
 == Next steps
 

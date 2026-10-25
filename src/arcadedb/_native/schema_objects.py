@@ -101,14 +101,30 @@ class _IndexShim:
     def getPropertyNames(self):
         return [self._prop]
 
+    def engine_info(self) -> dict:
+        """The engine's configuration of the index (the defaults it chose included), read once: it does not change after the index exists."""
+        info = self.__dict__.get("_engine_info")
+        if info is None:
+            from . import lib
+            from .extras import _call, _enc
+
+            info = self._engine_info = _call(
+                "Failed to read the vector index metadata",
+                "arcadedb_n_vindex",
+                self._db._h,
+                lib.b("metadata"),
+                lib.b(_enc({"type": self._type, "prop": self._prop})),
+            )
+        return info
+
     def getMetadata(self):
-        """Just what the PRODUCT-readiness check reads: the session's quantization and pq_clusters (engine default 256)."""
+        """Just what the PRODUCT-readiness check reads: the index's quantization and pq_clusters."""
         from types import SimpleNamespace
 
-        meta = self._db._vector_meta.get((self._type, self._prop), {})
+        info = self.engine_info()
         return SimpleNamespace(
-            quantizationType=str(meta.get("quantization") or "NONE"),
-            pqClusters=int(meta.get("pqClusters", 256)),
+            quantizationType=str(info["quantization"] or "NONE"),
+            pqClusters=int(info["pq_clusters"]),
         )
 
     def getIdPropertyName(self):
@@ -120,14 +136,15 @@ class _IndexShim:
         return int(row.get("c"))
 
     def warmUp(self):
-        return None
+        # the engine loads a persisted graph on the first search: run that search now
+        self.buildVectorGraphNow()
 
     def buildVectorGraphNow(self):
         # the engine builds the graph on the first search: one search now, on a vector of the index's dimension
-        dims = self._db._vector_dimensions.get((self._type, self._prop))
+        dims = self.engine_info()["dimensions"]
         if dims:
             self._db.query(
-                "sql", "SELECT vectorNeighbors(?, ?, 1)", self._name, [0.0] * dims
+                "sql", "SELECT vectorNeighbors(?, ?, 1)", self._name, [1.0] * dims
             ).close()
 
 
@@ -151,7 +168,7 @@ class NativeVectorIndex(_BaseVectorIndex):
         self, *, query_vector, k, allowed_rids, approximate, ef_search=None
     ):
         if approximate:
-            not_yet("VectorIndex.find_nearest_approximate over PRODUCT quantization")
+            return self._run_approximate(query_vector, k, allowed_rids)
         from .records import _wrap_dict
 
         vector = (
@@ -195,11 +212,59 @@ class NativeVectorIndex(_BaseVectorIndex):
             out.append((record, float(row.get("distance"))))
         return self._sort_results(out)[:k]
 
+    def _run_approximate(self, query_vector, k, allowed_rids):
+        """The PQ-scored search of the engine (no statement runs it): the engine returns (RID, distance), the records are loaded here."""
+        from . import lib
+        from .extras import _call, _enc
+
+        vector = (
+            query_vector.tolist()
+            if hasattr(query_vector, "tolist")
+            else list(query_vector)
+        )
+        reply = _call(
+            "Approximate search failed",
+            "arcadedb_n_vindex",
+            self._database._h,
+            lib.b("approximate"),
+            lib.b(
+                _enc(
+                    {
+                        "type": self._shim._type,
+                        "prop": self._shim._prop,
+                        "vector": vector,
+                        "k": int(k),
+                        "allowed": (
+                            [_rid_text(r) for r in allowed_rids]
+                            if allowed_rids
+                            else None
+                        ),
+                    }
+                )
+            ),
+        )
+        out = [
+            (self._database.lookup_by_rid(rid), float(distance))
+            for rid, distance in reply["hits"]
+        ]
+        return self._sort_results(out)[:k]
+
     def find_nearest_approximate(self, query_vector, k=10, allowed_rids=None):
-        """PQ approximate search needs PRODUCT quantization; the search itself has no statement form (not on native yet)."""
+        """PQ approximate search over PRODUCT quantization, the engine's own (``findNeighborsFromVectorApproximate``)."""
         if self.get_quantization() != "PRODUCT":
             raise ArcadeDBError("Approximate search requires quantization=PRODUCT (PQ)")
-        not_yet("VectorIndex.find_nearest_approximate over PRODUCT quantization")
+        self._ensure_product_quantization_ready()
+        try:
+            return self._run_search(
+                query_vector=query_vector,
+                k=k,
+                allowed_rids=allowed_rids,
+                approximate=True,
+            )
+        except ArcadeDBError:
+            raise
+        except Exception as e:
+            raise ArcadeDBError(f"Approximate search failed: {e}") from e
 
     def _lookup_query_vector_by_key(self, key):
         type_name, prop = self._shim._type, self._shim._prop
@@ -217,60 +282,72 @@ class NativeVectorIndex(_BaseVectorIndex):
         return row.get("query_vector")
 
     def get_stats(self):
-        not_yet("VectorIndex.get_stats")
+        """The engine's live counters of the primary bucket index, from its ``schema:index:<name>`` row (the row's own columns left out)."""
+        bucket = self._shim.engine_info()["bucket"]
+        rows = self._database.query(
+            "sql",
+            f"SELECT FROM schema:index:`{bucket}`",  # nosec B608 - a backtick-quoted index name the engine reported
+        ).to_list()
+        if not rows:
+            raise ArcadeDBError(
+                f"Failed to read vector index stats: no index {bucket!r}"
+            )
+        return {k: v for k, v in rows[0].items() if k not in _INDEX_ROW_COLUMNS}
 
     def get_metadata(self):
-        """The configuration this session created the index with (no engine-chosen values: the image has no accessor for them)."""
-        meta = self._database._vector_meta.get((self._shim._type, self._shim._prop))
-        if meta is None:
-            not_yet("VectorIndex.get_metadata of an index this session did not create")
-        names = {
-            "dimensions": "dimensions",
-            "similarity": "similarity_function",
-            "idPropertyName": "id_property",
-            "quantization": "quantization",
-            "maxConnections": "max_connections",
-            "beamWidth": "beam_width",
-            "graphBuildCacheSize": "graph_build_cache_size",
-            "mutationsBeforeRebuild": "mutations_before_rebuild",
-            "storeVectorsInGraph": "store_vectors_in_graph",
-            "addHierarchy": "add_hierarchy",
-            "pqSubspaces": "pq_subspaces",
-            "pqClusters": "pq_clusters",
-            "pqCenterGlobally": "pq_center_globally",
-            "pqTrainingLimit": "pq_training_limit",
-            "rerankOversample": "rerank_oversample",
-            "fusedPQ": "fused_pq",
-        }
-        buckets = [
-            r["name"]
-            for r in self._database.query(
-                "sql", "SELECT FROM schema:indexes WHERE indexType = 'LSM_VECTOR'"
-            ).to_list()
-            if r["typeName"] == self._shim._type
-            and r["properties"] == [[self._shim._prop]]
-            and "fileId" in r
-        ]
-        out = {
+        """The engine's configuration of the index: what this session created and what an index opened from disk carries, defaults included."""
+        info = self._shim.engine_info()
+        return {
             "index_name": self._shim._name,
-            "bucket_index_name": buckets[0] if buckets else None,
-            "type_name": self._shim._type,
+            "bucket_index_name": info["bucket"],
+            "type_name": info["type_name"],
             "vector_property": self._shim._prop,
+            **{k: info[k] for k in _METADATA_KEYS},
         }
-        out.update({names[k]: v for k, v in meta.items() if k in names})
-        if "similarity_function" in out:
-            out["similarity_function"] = str(out["similarity_function"]).upper()
-        if "quantization" in out:
-            out["quantization"] = str(out["quantization"]).upper()
-        return out
 
     def get_quantization(self):
-        meta = self._database._vector_meta.get((self._shim._type, self._shim._prop))
-        if meta is None:
-            not_yet(
-                "VectorIndex.get_quantization of an index this session did not create"
-            )
-        return str(meta.get("quantization") or "NONE")
+        return str(self._shim.engine_info()["quantization"] or "NONE")
+
+
+# the descriptive columns of a schema:index row; every other column is a counter of IndexInternal.getStats()
+_INDEX_ROW_COLUMNS = frozenset(
+    {
+        "name",
+        "indexType",
+        "typeName",
+        "properties",
+        "keyTypes",
+        "unique",
+        "automatic",
+        "compacting",
+        "valid",
+        "supportsOrderedIterations",
+        "nullStrategy",
+        "associatedBucketId",
+        "fileId",
+        "size",
+        "upgradeWarning",
+        "typeIndexName",
+    }
+)
+_METADATA_KEYS = (
+    "dimensions",
+    "similarity_function",
+    "id_property",
+    "quantization",
+    "max_connections",
+    "beam_width",
+    "ef_search",
+    "graph_build_cache_size",
+    "mutations_before_rebuild",
+    "store_vectors_in_graph",
+    "add_hierarchy",
+    "build_state",
+    "pq_subspaces",
+    "pq_clusters",
+    "pq_center_globally",
+    "pq_training_limit",
+)
 
 
 def _check_vector_arguments(
