@@ -25,6 +25,7 @@ import com.arcadedb.database.RecordEvents;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.async.DatabaseAsyncExecutor;
 import com.arcadedb.database.async.ErrorCallback;
+import com.arcadedb.database.async.OkCallback;
 import com.arcadedb.database.async.NewEdgeCallback;
 import com.arcadedb.engine.ErrorRecordCallback;
 import com.arcadedb.engine.WALFile;
@@ -39,6 +40,11 @@ import com.arcadedb.function.CypherBuiltinFunctions;
 import com.arcadedb.function.CypherFunctionRegistry;
 import com.arcadedb.function.FunctionRegistry;
 import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
+import com.arcadedb.index.IndexInternal;
+import com.arcadedb.index.TypeIndex;
+import com.arcadedb.index.vector.LSMVectorIndex;
+import com.arcadedb.schema.LSMVectorIndexMetadata;
+import com.arcadedb.utility.Pair;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GraphBatch;
@@ -63,8 +69,10 @@ import org.graalvm.word.WordFactory;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -264,6 +272,81 @@ public final class NativeExtras {
       default -> throw new IllegalArgumentException("unknown database setting " + o);
       }
       return ArcadeNative.OK();
+    } catch (final Throwable t) {
+      return ArcadeNative.err(t);
+    }
+  }
+
+  // ---- vector indexes: what no statement reports (the engine's configuration of an index) and the PQ search no statement runs
+
+  private static String q(final String text) {
+    return text == null ? "null" : "\"" + text.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
+  }
+
+  /**
+   * ops: metadata {type, prop} | approximate {type, prop, vector, k, allowed}. The index is the one the type has on the property; its bucket
+   * indexes are searched in turn (the caller merges). metadata describes the first bucket index, as the JPype wrapper does.
+   */
+  @CEntryPoint(name = "arcadedb_n_vindex")
+  @SuppressWarnings("unchecked")
+  public static CCharPointer vindex(final IsolateThread thread, final long dbh, final CCharPointer op, final CCharPointer argsJson) {
+    try {
+      final Database db = ArcadeNative.db(dbh);
+      final Map<String, Object> a = args(argsJson);
+      final String type = (String) a.get("type"), prop = (String) a.get("prop");
+      final TypeIndex typeIndex = db.getSchema().getType(type).getPolymorphicIndexByProperties(prop);
+      if (typeIndex == null)
+        throw new IllegalArgumentException("No vector index on " + type + "[" + prop + "]");
+      final List<LSMVectorIndex> parts = new ArrayList<>();
+      for (final IndexInternal index : typeIndex.getIndexesOnBuckets())
+        if (index instanceof LSMVectorIndex lsm)
+          parts.add(lsm);
+      if (parts.isEmpty())
+        throw new IllegalArgumentException("Underlying index is not an LSM vector index");
+      final StringBuilder sb = new StringBuilder("{\"ok\":true");
+      switch (ArcadeNative.str(op)) {
+      case "metadata" -> {
+        final LSMVectorIndex first = parts.get(0);
+        final LSMVectorIndexMetadata m = first.getMetadata();
+        sb.append(",\"bucket\":").append(q(first.getName())).append(",\"type_name\":").append(q(first.getTypeName()));
+        sb.append(",\"dimensions\":").append(m.dimensions).append(",\"similarity_function\":").append(q(String.valueOf(m.similarityFunction)));
+        sb.append(",\"id_property\":").append(q(m.idPropertyName)).append(",\"quantization\":").append(q(String.valueOf(m.quantizationType)));
+        sb.append(",\"max_connections\":").append(m.maxConnections).append(",\"beam_width\":").append(m.beamWidth);
+        sb.append(",\"ef_search\":").append(m.efSearch).append(",\"graph_build_cache_size\":").append(m.graphBuildCacheSize);
+        sb.append(",\"mutations_before_rebuild\":").append(m.mutationsBeforeRebuild).append(",\"store_vectors_in_graph\":").append(m.storeVectorsInGraph);
+        sb.append(",\"add_hierarchy\":").append(m.addHierarchy).append(",\"build_state\":").append(q(m.buildState));
+        sb.append(",\"pq_subspaces\":").append(m.pqSubspaces).append(",\"pq_clusters\":").append(m.pqClusters);
+        sb.append(",\"pq_center_globally\":").append(m.pqCenterGlobally).append(",\"pq_training_limit\":").append(m.pqTrainingLimit);
+      }
+      case "approximate" -> {
+        final List<Object> vector = (List<Object>) a.get("vector");
+        final float[] query = new float[vector.size()];
+        for (int i = 0; i < query.length; i++)
+          query[i] = ((Number) vector.get(i)).floatValue();
+        final int k = intOf(a.get("k"), 10);
+        Set<RID> allowed = null;
+        if (a.get("allowed") instanceof List<?> rids) {
+          allowed = new HashSet<>();
+          for (final Object rid : rids)
+            allowed.add(new RID(String.valueOf(rid)));
+        }
+        sb.append(",\"hits\":[");
+        boolean firstHit = true;
+        for (final LSMVectorIndex lsm : parts) {
+          final List<Pair<RID, Float>> hits = allowed != null ? lsm.findNeighborsFromVectorApproximate(query, k, allowed)
+              : lsm.findNeighborsFromVectorApproximate(query, k);
+          for (final Pair<RID, Float> hit : hits) {
+            if (!firstHit)
+              sb.append(',');
+            firstHit = false;
+            sb.append("[\"").append(hit.getFirst()).append("\",").append(hit.getSecond()).append(']');
+          }
+        }
+        sb.append(']');
+      }
+      default -> throw new IllegalArgumentException("unknown vector index op " + ArcadeNative.str(op));
+      }
+      return ArcadeNative.out(sb.append('}').toString());
     } catch (final Throwable t) {
       return ArcadeNative.err(t);
     }
@@ -542,6 +625,31 @@ public final class NativeExtras {
           ex.command(lang, text, callback);
         else
           ex.query(lang, text, callback);
+      }
+      case "transaction" -> {
+        // a block that runs on an async writer inside a transaction: Python runs it in the upcall; its failure is thrown here so the
+        // writer rolls back, retries a NeedRetryException and reports to the error callback (ok / err: per-call callbacks, slot: one writer)
+        final long okCb = a.get("ok") instanceof Number n ? n.longValue() : 0L;
+        final Database.TransactionScope scope = () -> {
+          final String reply = upcall(cb, event("tx", ""));
+          if (reply != null && reply.startsWith("{\"error\""))
+            throw new RuntimeException(String.valueOf(((Map<String, Object>) Json.parse(reply)).get("error")));
+        };
+        final int retries = intOf(a.get("retries"), 1);
+        final OkCallback ok = okCb == 0 ? null : () -> {
+          try {
+            fire("transaction ok callback", okCb, event("ok", ""));
+          } catch (final Throwable e) {
+            swallowed("transaction ok callback", e); // the writer goes on
+          }
+        };
+        final ErrorCallback error = errCb == 0 ? null : errorCallback(errCb);
+        if (a.get("retries") == null && ok == null && error == null && a.get("slot") == null)
+          ex.transaction(scope);
+        else if (a.get("slot") instanceof Number slot)
+          ex.transaction(scope, retries, ok, error, slot.intValue());
+        else
+          ex.transaction(scope, retries, ok, error);
       }
       case "on_ok" -> ex.onOk(() -> {
         try {

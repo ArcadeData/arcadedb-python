@@ -176,6 +176,7 @@ def _load():
             "arcadedb_n_gb_create": [P, L, S],
             "arcadedb_n_gb": [P, L, S, S],
             "arcadedb_n_async": [P, L, S, S],
+            "arcadedb_n_vindex": [P, L, S, S],
             "arcadedb_n_import": [P, L, S],
             "arcadedb_n_export": [P, L, S, S, I, S],
             "arcadedb_n_cb": [P, S, S],

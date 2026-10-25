@@ -693,8 +693,37 @@ class NativeAsyncExecutor:
             "scan_type", type=type_name, polymorphic=bool(polymorphic), cb=cb, err=err
         )
 
-    def transaction(self, *args, **kwargs):
-        not_yet("AsyncExecutor.transaction")
+    def transaction(
+        self,
+        tx_block: Callable[[], None],
+        retries: Optional[int] = None,
+        ok_callback: Optional[Callable[[], None]] = None,
+        error_callback: Optional[Callable[[Exception], None]] = None,
+        slot: Optional[int] = None,
+    ):
+        """Run ``tx_block`` on an async writer inside a transaction (the engine begins it and commits or rolls it back, retrying a conflict ``retries`` times)."""
+
+        def run(message):
+            tx_block()
+
+        args = {"cb": _register(run)}
+        if retries is not None:
+            args["retries"] = int(retries)
+        if ok_callback is not None:
+            args["ok"] = _register(lambda message: ok_callback())
+        if error_callback is not None:
+            args["err"] = self._error_callback(error_callback)
+        # a retry calls the block again, so the callbacks live until the executor has finished its work (wait_completion, close)
+        self._cb_ids.extend(v for k, v in args.items() if k in ("cb", "ok", "err"))
+        if slot is not None:
+            args["slot"] = int(slot)
+        self._op("transaction", **args)
+
+    def _release_callbacks(self):
+        """Forget the callbacks of the finished ``transaction`` calls."""
+        ids, self._cb_ids = self._cb_ids, []
+        for cid in ids:
+            _forget(cid)
 
     def wait_completion(self, timeout_ms: Optional[int] = None):
         if timeout_ms is None:
@@ -708,6 +737,7 @@ class NativeAsyncExecutor:
             raise TimeoutError(
                 f"Async operations did not complete within {timeout_ms}ms"
             )
+        self._release_callbacks()  # nothing is pending any more
 
     def on_ok(self, callback: Callable[[], None]):
         self._op("on_ok", cb=_register(lambda message: callback()))
@@ -724,6 +754,7 @@ class NativeAsyncExecutor:
             self._op("close")
         finally:
             self._closed = True
+            self._release_callbacks()
             owner, self._owner = self._owner, None
             if owner is not None:
                 owner._discard_async_executor(self)
