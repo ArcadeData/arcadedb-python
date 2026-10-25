@@ -239,6 +239,8 @@ class NativeVectorIndex(_BaseVectorIndex):
             "pqClusters": "pq_clusters",
             "pqCenterGlobally": "pq_center_globally",
             "pqTrainingLimit": "pq_training_limit",
+            "rerankOversample": "rerank_oversample",
+            "fusedPQ": "fused_pq",
         }
         buckets = [
             r["name"]
@@ -278,10 +280,19 @@ def _check_vector_arguments(
     pq_clusters,
     pq_center_globally,
     pq_training_limit,
+    rerank_oversample=None,
+    fused_pq=None,
 ):
     if any(
         v is not None
-        for v in (pq_subspaces, pq_clusters, pq_center_globally, pq_training_limit)
+        for v in (
+            pq_subspaces,
+            pq_clusters,
+            pq_center_globally,
+            pq_training_limit,
+            rerank_oversample,
+            fused_pq,
+        )
     ):
         if not quantization or quantization.upper() != "PRODUCT":
             raise ValueError("PQ parameters require quantization='PRODUCT'")
@@ -315,6 +326,8 @@ def create_vector_index(
     pq_clusters,
     pq_center_globally,
     pq_training_limit,
+    rerank_oversample,
+    fused_pq,
     build_graph_now,
 ):
     """``CREATE INDEX .. LSM_VECTOR METADATA {..}`` with the JPype builder's defaults and checks; returns the wrapper."""
@@ -326,6 +339,8 @@ def create_vector_index(
             pq_clusters,
             pq_center_globally,
             pq_training_limit,
+            rerank_oversample,
+            fused_pq,
         )
     except ValueError as e:
         raise ArcadeDBError(f"Failed to create vector index: {e}") from e
@@ -349,6 +364,10 @@ def create_vector_index(
     ):
         if value is not None:
             meta[key] = bool(value) if key == "pqCenterGlobally" else int(value)
+    if rerank_oversample is not None:
+        meta["rerankOversample"] = int(rerank_oversample)
+    if fused_pq is not None:
+        meta["fusedPQ"] = bool(fused_pq)
     if store_vectors_in_graph:
         meta["storeVectorsInGraph"] = True
     if add_hierarchy is not None:

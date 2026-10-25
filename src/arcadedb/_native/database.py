@@ -14,13 +14,17 @@ from ..exceptions import ArcadeDBError
 from ..transactions import TransactionContext
 from ..type_conversion import json_bulk_dumps
 from . import lib, not_yet
-from .codec import _default as codec_default
 from .codec import _prep as _prep_row
-from .codec import encode_params, json_native, loads
+from .codec import encode_params, json_native, loads, row_default
 
 _LAZY_COMMAND_ROWS = os.environ.get("ARCADEDB_NATIVE_LAZY_CMD", "1") != "0"
 _BINARY_REPLY = os.environ.get("ARCADEDB_NATIVE_BIN_REPLY", "1") != "0"
 _INSERT_MANY_CHUNK = 10_000
+_XML_LIMIT_ERROR = re.compile(r"JAXP0001000[134]")  # the JDK's XML entity limits
+_XML_LIMIT_HINT = (
+    " The JDK's XML entity limits stopped this import. Pass disable_xml_limits=True to import_documents to lift them for this"
+    " call only."
+)
 _RID_RE = re.compile(r"#?-?\d+:-?\d+")
 _FIRST_BATCH = 256
 _EPOCH_DAY_ORDINAL = date(1970, 1, 1).toordinal()
@@ -744,7 +748,7 @@ class NativeDatabase:
         all in one crossing and in the open transaction; the cursors are drained and closed. Not part of the public API.
         """
         self._check_not_closed()
-        payload = json.dumps([_prep_row(r) for r in rows], default=codec_default)
+        payload = json.dumps([_prep_row(r) for r in rows], default=row_default)
         reply = json.loads(
             lib.call(
                 "arcadedb_n_exec_many",
@@ -904,6 +908,8 @@ class NativeDatabase:
         pq_clusters=None,
         pq_center_globally=None,
         pq_training_limit=None,
+        rerank_oversample=None,
+        fused_pq=None,
         build_graph_now=True,
     ):
         """A vector index (``CREATE INDEX .. LSM_VECTOR``) and its :class:`VectorIndex` wrapper; arguments as the JPype path."""
@@ -936,6 +942,8 @@ class NativeDatabase:
             pq_clusters,
             pq_center_globally,
             pq_training_limit,
+            rerank_oversample,
+            fused_pq,
             build_graph_now,
         )
 
@@ -958,6 +966,7 @@ class NativeDatabase:
         trim_text=None,
         on_row_error=None,
         extra_settings=None,
+        disable_xml_limits=False,
     ):
         """Import document-shaped files (CSV, JSON, ...) through the engine's importer; same arguments as the JPype path."""
         from ..importer import (
@@ -987,6 +996,9 @@ class NativeDatabase:
             on_row_error=on_row_error,
             extra_settings=extra_settings,
         )
+        if disable_xml_limits:
+            # the glue lifts the JDK's XML entity limits around this one import and restores them after it
+            settings = {**settings, "__disableXmlLimits": "true"}
         try:
             stats = extras.run_import(self, settings, parallel, commit_every, wal)
             return ImportResult(
@@ -996,7 +1008,10 @@ class NativeDatabase:
                 statistics=stats or {},
             )
         except Exception as e:
-            raise ArcadeDBError(f"Document import failed: {e}") from e
+            message = f"Document import failed: {e}"
+            if not disable_xml_limits and _XML_LIMIT_ERROR.search(str(e)):
+                message += _XML_LIMIT_HINT
+            raise ArcadeDBError(message) from e
 
     def export_database(
         self,
@@ -1144,6 +1159,9 @@ def _column_values(name, values):
         else:  # a pandas extension dtype (Int64, string, boolean, category): its <NA> is a null
             values = values.to_numpy(dtype=object, na_value=None)
     if np is not None and isinstance(values, np.ndarray):
+        if values.ndim == 2 and values.dtype == np.float32 and values.shape[1] > 0:
+            # a column of vectors, as the JPype path takes it; float32 widens to the same doubles in the JSON
+            return values.tolist()
         if values.ndim != 1:
             raise ValueError(
                 f"column {name!r} is {values.ndim}-dimensional; a column is one-dimensional"

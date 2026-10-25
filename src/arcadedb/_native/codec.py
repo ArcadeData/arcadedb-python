@@ -122,6 +122,20 @@ def _dump(obj, binary):
     return text, buf, state[1]
 
 
+def row_default(value):
+    """json.dumps hook for the rows of a bulk load: a NumPy float array that is not float32 is the list it would have been
+    (a float64 array stored on an undeclared property keeps its doubles, as on the JPype path); the rest as :func:`_default`.
+    """
+    if (
+        _np is not None
+        and isinstance(value, _np.ndarray)
+        and value.dtype.kind == "f"
+        and value.dtype != _np.float32
+    ):
+        return value.tolist()
+    return _default(value)
+
+
 class RID:
     """A record id as the engine returns it in a row; passed back as a parameter it is a link, not a string.
 

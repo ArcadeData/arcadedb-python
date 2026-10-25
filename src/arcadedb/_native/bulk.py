@@ -45,7 +45,9 @@ def insert_columns_fast(db, type_name, columns, commit_every):
                 kind, arr = "d", _np.ascontiguousarray(values, dtype=_np.float64)
             elif values.ndim == 1 and k == "b":
                 kind, arr = "b", _np.ascontiguousarray(values, dtype=_np.uint8)
-            elif values.ndim == 2 and k == "f" and values.shape[1] > 0:
+            elif (
+                values.ndim == 2 and values.dtype == _np.float32 and values.shape[1] > 0
+            ):  # only a float32 matrix is a column of vectors, as on the JPype path
                 kind, arr, dim = (
                     "f",
                     _np.ascontiguousarray(values, dtype=_np.float32),
