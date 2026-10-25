@@ -1003,8 +1003,11 @@ class NativeDatabase:
         disable_xml_limits=False,
     ):
         """Import document-shaped files (CSV, JSON, ...) through the engine's importer; same arguments as the JPype path."""
-        from ..importer import (ImportResult, _build_import_settings,
-                                normalize_import_source)
+        from ..importer import (
+            ImportResult,
+            _build_import_settings,
+            normalize_import_source,
+        )
         from . import extras
 
         self._check_not_closed()
