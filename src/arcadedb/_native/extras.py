@@ -868,6 +868,14 @@ def _function_handler(fn: Callable, database_ref) -> Callable:
     return handler
 
 
+_veto = threading.local()
+
+
+def veto_count() -> int:
+    """How many ``before_*`` callbacks vetoed a change on this thread so far (``save`` tells a veto from a failure by it)."""
+    return getattr(_veto, "count", 0)
+
+
 def _event_handler(event: str, fn: Callable, database_ref) -> Callable:
     is_before = event.startswith("before_")
 
@@ -875,7 +883,10 @@ def _event_handler(event: str, fn: Callable, database_ref) -> Callable:
         from .records import _wrap_dict
 
         result = fn(_wrap_dict(database_ref(), message["rec"]))
-        return {"v": not (is_before and result is False)}
+        vetoed = is_before and result is False
+        if vetoed:
+            _veto.count = veto_count() + 1
+        return {"v": not vetoed}
 
     return handler
 

@@ -744,13 +744,18 @@ public final class NativeExtras {
     sb.append("\"@type\":");
     NativeCodec.quote(sb, doc.getTypeName());
     sb.append(",\"@cat\":\"").append(doc instanceof Vertex ? 'v' : doc instanceof Edge ? 'e' : 'd').append('"');
-    for (final String name : doc.getPropertyNames()) {
-      sb.append(',');
-      NativeCodec.quote(sb, name);
-      sb.append(':');
-      NativeCodec.append(sb, doc.get(name));
+    final StringBuilder props = new StringBuilder();
+    try {
+      for (final String name : doc.getPropertyNames()) {
+        props.append(',');
+        NativeCodec.quote(props, name);
+        props.append(':');
+        NativeCodec.append(props, doc.get(name));
+      }
+    } catch (final com.arcadedb.exception.RecordNotFoundException e) {
+      props.setLength(0); // an after_delete event of a record that was not loaded: it is gone, only its identity is left to report
     }
-    sb.append('}');
+    sb.append(props).append('}');
   }
 
   /**

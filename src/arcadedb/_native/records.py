@@ -99,9 +99,14 @@ class _Mixin:
     def save(self):
         db = self._db
         if self._rid is None:
+            from .extras import veto_count
+
+            vetoes = veto_count()
             row = db.command(
                 "sql", self._CREATE.format(t=_q(self._type)), {"row": self._props}
             ).first()
+            if row is None and veto_count() != vetoes:
+                return self  # a before_create callback vetoed it: nothing is written, no error (as on the JPype backend)
             self._adopt(row)
         else:
             db.command(
