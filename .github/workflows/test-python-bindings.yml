@@ -16,6 +16,9 @@ on:
       - "CLAUDE.md"
       - "examples/README.md"
       - "LICENSE*"
+      # the native build has its own workflow (native.yml); nothing under native/ is in the JVM wheel
+      - "native/**"
+      - ".github/workflows/native.yml"
   pull_request:
     # ready_for_review: draft PRs skip the platform matrices (see the job conditions),
     # so marking one ready is what starts them.
@@ -27,6 +30,9 @@ on:
       - "CLAUDE.md"
       - "examples/README.md"
       - "LICENSE*"
+      # the native build has its own workflow (native.yml); nothing under native/ is in the JVM wheel
+      - "native/**"
+      - ".github/workflows/native.yml"
 
   # A new upstream snapshot is published as arcadedata/arcadedb:latest without
   # any change here, so build and test against it every night as well. The tag
