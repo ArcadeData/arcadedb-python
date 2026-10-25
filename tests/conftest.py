@@ -43,6 +43,8 @@ if BACKEND != "native":
     collect_ignore.append("test_native_startup_runtime.py")
     # the XML entity limits of an import, lifted by the native glue (the JVM build lifts them with JVM system properties)
     collect_ignore.append("test_native_xml_limits.py")
+    # where the native library writes its log (isolate arguments); the JVM build is tested in test_log_dir.py
+    collect_ignore.append("test_native_log_dir.py")
 if not os.path.isfile(
     os.path.join(os.path.dirname(os.path.dirname(__file__)), "docs", "index.md")
 ):
@@ -97,6 +99,9 @@ BRIDGE_COUNT = (
 )
 NATIVE_NA_JVM_TESTS = {
     # JVM start-up, signals and settings
+    "test_log_dir.py::test_jvm_args_can_move_the_engine_log": "passes JVM arguments through jvm_kwargs (native: test_native_log_dir.py)",
+    "test_log_dir.py::test_the_engine_jar_carries_the_log_config_the_render_starts_from": "reads the engine jar, which the native wheel does not ship",
+    "test_log_dir.py::test_native_engine_log_config_matches_the_engine_jar": "reads the engine jar, which the native wheel does not ship",
     "test_sigint.py::test_ctrl_c_raises_keyboard_interrupt_and_runs_cleanup[java]": "a Java call blocked in JPype's SIGINT handler (#179)",
     "test_sigint.py::test_interrupt_true_keeps_the_jvm_handling_sigint": "start_jvm(interrupt=True): the JVM handles SIGINT",
     "test_docs_examples.py::test_docs_installation_jvm_examples": "documents start_jvm() and jvm_kwargs",
