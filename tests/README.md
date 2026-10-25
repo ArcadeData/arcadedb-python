@@ -36,7 +36,7 @@ The server tests do not skip when the server stack is absent: the wheel always s
 
 The same suite runs against the native `arcadedb` wheel (`native/wheel/parity_wheel.py`). A test is reported as a skip on the native build in two explicit ways, never by what its failure says:
 
-- `NotOnNativeYet`: the native code raised it because the feature needs a Java object API the library does not expose. The report says `NOTYET`, and a final release allows none.
+- `NotOnNativeYet`: the native code raised it because the feature needs a Java object API the library does not expose. The report says `NOTYET`, and a final release allows none. A call that is JVM-only by design (`get_java_database`, `get_java_document`, a Java object a `Schema` method returns) raises it with a message that names the `arcadedb-jvm` build; a shared test that reaches one is `NA-JVM`, or reads the value through a statement or the Python API instead.
 - A row of `NATIVE_NA_JVM_TESTS` in `tests/conftest.py`, keyed `<file>::[<Class>::]<test>`: the test reaches into the JVM on purpose (`jpype.JClass`, a Java array, `db._java_db`, counted bridge crossings). The report says `NA-JVM`. Add a row only for such a test, and give the reason. When the behaviour is shared, write a native test beside it (`test_native_*.py`, collected on the native build only).
 
 A test that fails on the native build for any other reason is a failure. Fix the native code, or mark a known engine bug with a strict `xfail`. Do not add a row to hide it.

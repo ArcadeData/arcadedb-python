@@ -41,5 +41,13 @@ def enabled() -> bool:
     return os.environ.get("ARCADEDB_BACKEND", _DEFAULT_BACKEND).lower() == "native"
 
 
+def needs_jvm(what: str):
+    """A call that hands out a Java object of the JVM build. Native has no JVM, by design: the message names the build that has it."""
+    raise NotOnNativeYet(
+        f"{what} needs the JVM build (the arcadedb-jvm package); this is the native build (the arcadedb package)"
+    )
+
+
 def not_yet(what: str):
+    """A feature the native build is still missing (none today). A final release allows no test that ends here."""
     raise NotOnNativeYet(f"{what} is not on the native backend yet")

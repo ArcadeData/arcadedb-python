@@ -91,7 +91,9 @@ if BACKEND == "native" and not os.environ.get("NATIVE_PARITY_ALL"):
 # crossings, or patches a hook of the JPype path. A failure text never puts a test on this list, and a failing test is never turned
 # into a skip: a test whose behaviour native shares has to pass on native, and one that fails there is a bug to file (an
 # xfail(strict=True) naming the BACKLOG-bindings.md row, so it turns red when fixed), not an entry here.
-# A feature the native wheel lacks on purpose raises NotOnNativeYet from the native code, which pytest_runtest_makereport reports as NOTYET.
+# A call that hands out a Java object (get_java_database, get_java_document, a Schema method's Java object) raises NotOnNativeYet from needs_jvm in the
+# native code, which pytest_runtest_makereport reports as NOTYET. A shared test must not reach one: it goes on this list, or it reads the value
+# through a statement or the Python API. Every NOTYET is a gap to close before a final release, which allows none.
 JAVA_CLASS = "builds a java.* object through JPype"
 JAVA_ARRAY = "builds a Java array through JPype (jpype.JArray)"
 JAVA_DB = "reads the Java database behind the wrapper (db._java_db)"
@@ -138,6 +140,22 @@ NATIVE_NA_JVM_TESTS = {
     "test_transaction_config.py::test_set_wal_flush_is_database_wide": JAVA_DB,
     "test_run_in_transaction_retry.py::test_contended_commits_spend_their_budget_before_failing": JAVA_DB,
     "test_float_vector_bulk.py::TestAllowedRids::test_rid_objects_and_text_mixed_still_work": "builds a Java RID (db.to_java_rid) and reads the Java RID set of the index",
+    "test_float_vector_bulk.py::TestDecision::test_a_declared_vector_column_is_taken_out": "decides on the Java database (get_java_database) and builds the bridge's FloatVectors.Matrix objects",
+    "test_float_vector_bulk.py::TestDecision::test_numpy_rows_and_ints_are_taken_out": "decides on the Java database (get_java_database) and builds the bridge's FloatVectors.Matrix objects",
+    "test_float_vector_bulk.py::TestDecision::test_the_inherited_declaration_counts": "decides on the Java database (get_java_database) and builds the bridge's FloatVectors.Matrix objects",
+    "test_float_vector_bulk.py::TestDecision::test_anything_else_stays_in_the_json": "decides on the Java database (get_java_database) and builds the bridge's FloatVectors.Matrix objects",
+    "test_float_vector_bulk.py::TestDecision::test_an_undeclared_property_stays_in_the_json": "decides on the Java database (get_java_database) and builds the bridge's FloatVectors.Matrix objects",
+    "test_float_vector_bulk.py::TestDocumentSet::test_convert_python_to_java_float32_is_one_float_array": 'asserts the converted value is a Java float[] (getClass().getName() == "[F")',
+    "test_float_vector_bulk.py::TestAllowedRids::test_the_set_holds_one_rid_per_string": "reads the Java RID set the index builds (_build_allowed_rids_set)",
+    "test_percall_calls.py::test_named_scalars_bind_as_the_plain_path_binds_them": "compares with the plain JPype path through db.get_java_database() (Database._java_parameters, core._through_bridge)",
+    "test_percall_calls.py::test_positional_scalars_bind_as_the_plain_path_binds_them": "compares with the plain JPype path through db.get_java_database() (Database._java_parameters, core._through_bridge)",
+    "test_percall_calls.py::test_a_lone_null_or_lone_java_array_keeps_the_plain_path": "compares with the plain JPype path through db.get_java_database() (Database._java_parameters, core._through_bridge)",
+    "test_percall_calls.py::test_other_values_take_the_plain_path": "compares with the plain JPype path through db.get_java_database() (Database._java_parameters, core._through_bridge)",
+    "test_light_edge_and_view_known_issues.py::test_other_ways_to_count_light_edges_an_older_version_loaded": "builds the light edges of an undeclared edge type with the deprecated Java Vertex.newLightEdge; no statement does (CREATE EDGE writes regular edges there)",
+    "test_light_edge_and_view_known_issues.py::test_one_hop_count_over_light_edges_an_older_version_loaded": "builds the light edges of an undeclared edge type with the deprecated Java Vertex.newLightEdge; no statement does (CREATE EDGE writes regular edges there)",
+    "test_vector_sql.py::TestVectorSQL::test_create_index_with_native_int8_encoding_sql": "reads encoding from the Java index metadata, which get_metadata() does not return and the native library does not expose",
+    "test_vector_sql.py::TestVectorSearchOptionsSql::test_graph_build_settings_reach_the_index": "reads neighborOverflowFactor and alphaDiversityRelaxation from the Java index metadata, which get_metadata() does not return and the native library does not expose",
+    "test_vector_sql.py::TestVectorSearchOptionsSql::test_sql_graph_settings_default_to_the_engines": "reads neighborOverflowFactor and alphaDiversityRelaxation from the Java index metadata, which get_metadata() does not return and the native library does not expose",
     "test_xml_limits.py::test_import_hitting_a_limit_names_the_option": "reads the JDK's system properties through JPype (native: test_native_xml_limits.py)",
     "test_xml_limits.py::test_per_call_option_lifts_the_limits_for_that_call_only": "reads the JDK's system properties through JPype (native: test_native_xml_limits.py)",
     "test_xml_limits.py::test_per_call_option_restores_a_value_that_was_already_set": "sets and reads a JDK system property through JPype",
