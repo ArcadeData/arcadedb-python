@@ -303,6 +303,8 @@ class NativeVectorIndex(_BaseVectorIndex):
             "type_name": info["type_name"],
             "vector_property": self._shim._prop,
             **{k: info[k] for k in _METADATA_KEYS},
+            # present when the engine the image links has them, as on the JVM build (26.10.2 has not; the glue emits them from 26.11.1 on)
+            **{k: info[k] for k in _OPTIONAL_METADATA_KEYS if k in info},
         }
 
     def get_quantization(self):
@@ -330,6 +332,7 @@ _INDEX_ROW_COLUMNS = frozenset(
         "typeIndexName",
     }
 )
+_OPTIONAL_METADATA_KEYS = ("rerank_oversample", "fused_pq")
 _METADATA_KEYS = (
     "dimensions",
     "similarity_function",

@@ -56,6 +56,10 @@ UNIT_VECTORS = [("x", [1.0, 0.0, 0.0]), ("y", [0.0, 1.0, 0.0]), ("z", [0.0, 0.0,
 PQ_VECTORS = UNIT_VECTORS + [("w", [-1.0, 0.0, 0.0])]
 
 
+# the engine reports these two only from 26.11.1 on, on both builds
+OPTIONAL_METADATA_KEYS = {"rerank_oversample", "fused_pq"}
+
+
 class TestGetStats:
     def test_counters_start_at_zero_and_track_inserts(self, temp_db):
         _make_type(temp_db)
@@ -121,13 +125,13 @@ class TestGetMetadataOfAReopenedIndex:
             beam_width=64,
             add_hierarchy=False,
         )
-        assert set(created) == METADATA_KEYS
+        assert set(created) - OPTIONAL_METADATA_KEYS == METADATA_KEYS
 
         with arcadedb.open_database(temp_db_path) as db:
             index = db.schema.get_vector_index("Doc", "embedding")
             reopened = index.get_metadata()
 
-        assert set(reopened) == METADATA_KEYS
+        assert set(reopened) - OPTIONAL_METADATA_KEYS == METADATA_KEYS
         assert reopened["dimensions"] == 4
         assert reopened["similarity_function"] == "EUCLIDEAN"
         assert reopened["id_property"] == "name"
