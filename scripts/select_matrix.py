@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Pick the platform x Python legs a CI workflow runs for the event that started it.
 
-The wheels support four platforms and five Python versions, which is 20 legs per workflow. A
+The wheels support four platforms and four Python versions, which is 16 legs per workflow. A
 pull request does not need all of them: the organisation shares one runner cap with
 ArcadeData/arcadedb, so every extra macOS or Windows leg on a pull request delays upstream too.
 
@@ -42,7 +42,7 @@ RUNNERS = {
 
 # Every Python the package supports. tests/test_select_matrix.py compares this with the
 # classifiers of pyproject.toml, so adding a version there without adding it here fails.
-PYTHONS = ("3.10", "3.11", "3.12", "3.13", "3.14")
+PYTHONS = ("3.11", "3.12", "3.13", "3.14")
 OLDEST = PYTHONS[0]
 NEWEST = PYTHONS[-1]
 

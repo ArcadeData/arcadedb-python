@@ -15,7 +15,7 @@ pip install arcadedb   # or: uv add arcadedb
 
 This package was published as arcadedb-embedded until 26.10.x; install arcadedb now.
 
-- Python 3.10 to 3.14. CI builds and tests all five versions on every platform below for `main`, every night and each release. A pull request runs a smaller selection.
+- Python 3.11 to 3.14. CI builds and tests all four versions on every platform below for `main`, every night and each release. A pull request runs a smaller selection.
 - Linux x86_64 and ARM64, macOS on Apple Silicon, Windows x86_64. One wheel per platform and Python version.
 - Import name: `arcadedb`. Optional extras: `arrow`, `pandas`, `vector`.
 

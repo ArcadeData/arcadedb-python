@@ -148,8 +148,8 @@ jobs:
       #
       # Every interpreter the package claims to support is resolved, because the
       # closure is interpreter-dependent even though the declared floors are not:
-      # 3.10 pulls exceptiongroup, tomli and typing-extensions that 3.12 does not,
-      # and 3.14 drops one more. --python-version selects the resolution target
+      # an older interpreter pulls backports (typing-extensions, for one) that a
+      # newer one does not. --python-version selects the resolution target
       # without installing anything, so this stays one job rather than a matrix.
       # The list is read from the classifiers rather than repeated here, so adding
       # an interpreter to the package cannot leave it unaudited.
@@ -267,7 +267,7 @@ jobs:
       fail-fast: false
       # Chosen by the "Select the test matrix" step of download-jars from the event that
       # started the run (scripts/select_matrix.py holds the platform and Python lists):
-      # small on pull requests, the full 4 platforms x 5 Pythons on every other event.
+      # small on pull requests, the full 4 platforms x 4 Pythons on every other event.
       # Every leg carries platform, runs-on and python-version, so the job names stay
       # "Test arcadedb (<platform>, Python <version>)".
       matrix: ${{ fromJSON(needs.download-jars.outputs.matrix) }}

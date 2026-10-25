@@ -178,15 +178,15 @@ jobs:
       BUILD_VERSION: ${{ inputs.build-version }}
       # Pin the Hugging Face cache inside the workspace so it is cacheable with
       # one path on every platform (the default differs per OS). The examples
-      # embed with sentence-transformers, and the full matrix is 20 jobs, so
-      # uncached that is 20 independent model downloads per release and 20
+      # embed with sentence-transformers, and the full matrix is 16 jobs, so
+      # uncached that is 16 independent model downloads per release and 16
       # chances for a transient hub outage to fail a release. It has happened.
       HF_HOME: ${{ github.workspace }}/.hf-cache
     strategy:
       fail-fast: false
       # Chosen by the "Select the test matrix" step of download-jars from the event that
       # started the run (scripts/select_matrix.py holds the platform and Python lists):
-      # small on pull requests, the full 4 platforms x 5 Pythons on every other event.
+      # small on pull requests, the full 4 platforms x 4 Pythons on every other event.
       # Every leg carries platform, runs-on and python-version, so the job names stay
       # "Test Python Examples (<platform>, Python <version>)".
       matrix: ${{ fromJSON(needs.download-jars.outputs.matrix) }}
