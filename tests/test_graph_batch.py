@@ -804,9 +804,8 @@ def test_two_concurrent_batches_on_one_hub_lose_no_edge(temp_db_path):
         assert not any(t.is_alive() for t in threads)
         assert errors == []
         assert db.count_type("E") == 2 * per_writer
-        out = db.query(
-            "sql", f"SELECT out('E').size() AS n FROM {hub}"
-        ).to_list()  # nosec B608 - a RID from this test
+        degree_sql = f"SELECT out('E').size() AS n FROM {hub}"  # nosec B608 - a RID from this test, no user input
+        out = db.query("sql", degree_sql).to_list()
         assert out[0]["n"] == 2 * per_writer
         assert (
             1 in refusals
