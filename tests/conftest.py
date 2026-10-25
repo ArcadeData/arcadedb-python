@@ -18,6 +18,10 @@ if sys.platform == "win32":
     collect_ignore.append("test_sigint.py")
     # test_python_function_interrupt.py sends SIGINT to its own process, which Windows cannot do either
     collect_ignore.append("test_python_function_interrupt.py")
+    # LadybugDB's compiled module does not load in this process on Windows (it falls back to a C-API library its
+    # wheel does not ship), so the Cypher half of the equivalence checks runs on Linux and macOS
+    # (humemai/arcadedb-embedded-python#347)
+    collect_ignore.append("test_equivalence_ladybug.py")
     # runs scripts/stage_jars.sh under bash with a fake docker; the bash a Windows
     # subprocess finds may be WSL's rather than Git Bash
     collect_ignore.append("test_stage_jars.py")

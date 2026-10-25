@@ -1,9 +1,9 @@
 name: arcadedb-python
 title: ArcadeDB Python
 # Unversioned, so the component is published at /arcadedb-python/.
-version: ~
+version:
 nav:
-  - modules/ROOT/nav.adoc
+- modules/ROOT/nav.adoc
 asciidoc:
   attributes:
     # Package names. Every page takes them from here.
