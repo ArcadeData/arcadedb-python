@@ -121,18 +121,27 @@ def _call(prefix: str, name: str, *args) -> dict:
 class NativeGraphBatch(_BaseGraphBatch):
     """``GraphBatch`` over the engine's batch builder in the image (same names and behaviour as the JPype wrapper)."""
 
-    _BULK_CHUNK = 10_000  # rows per crossing: small enough that a chunk's text, rows and reply die in the young generation
+    _BULK_CHUNK = 10_000  # rows per crossing of new_edges, and of create_vertices when commit_every is 0
+    # commit_every when graph_batch() gets none (the JVM build leaves it unset: one commit per flush). It is also the create_vertices
+    # chunk: each crossing is one transaction, and 1000 rows per transaction ran faster and copied less in the young GC than 10,000
+    DEFAULT_COMMIT_EVERY = 1000
 
-    def __init__(self, database, handle: int):
+    def __init__(self, database, handle: int, commit_every: int = DEFAULT_COMMIT_EVERY):
         self._db = database
         self._gb = handle
         self._closed = False
+        self._vertex_chunk = (
+            int(commit_every) if int(commit_every) > 0 else self._BULK_CHUNK
+        )
 
     @classmethod
     def create(cls, database, **options) -> "NativeGraphBatch":
         wal_flush = options.get("wal_flush")
         if wal_flush is not None:
             options["wal_flush"] = cls._to_java_wal_flush_name(wal_flush)
+        commit_every = options.get("commit_every")
+        if commit_every is None:  # an explicit value, 0 included, wins
+            commit_every = options["commit_every"] = cls.DEFAULT_COMMIT_EVERY
         given = {k: v for k, v in options.items() if v is not None}
         try:
             reply = _call(
@@ -143,7 +152,7 @@ class NativeGraphBatch(_BaseGraphBatch):
             )
         except ArcadeDBError:
             raise
-        return cls(database, reply["h"])
+        return cls(database, reply["h"], commit_every)
 
     @classmethod
     def _to_java_wal_flush_name(cls, mode: str) -> str:
@@ -222,12 +231,15 @@ class NativeGraphBatch(_BaseGraphBatch):
         )["rids"]
 
     def create_vertices(self, type_name: str, count_or_properties) -> list:
+        """The RIDs of the new vertices. Rows go in chunks of the batch's ``commit_every`` (1000 unless graph_batch() got another value;
+        0: 10,000), one crossing and one transaction per chunk: chunks that already went in stay stored if a later chunk fails.
+        """
         self._check_not_closed()
         db = self._db
         owns_transaction = not db.is_transaction_active()
         prefix = f"Failed to create batch vertices for type '{type_name}'"
         try:
-            chunk = self._BULK_CHUNK
+            chunk = self._vertex_chunk
             if isinstance(count_or_properties, int):
                 rids = []
                 for start in range(0, count_or_properties, chunk):

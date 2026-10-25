@@ -190,6 +190,10 @@ class GraphBatch:
                 ``ARRAY_OF_FLOATS`` whose value in every row is a list or a numpy
                 array of numbers of one length crosses as one binary float32
                 matrix instead of JSON text.
+
+        Large inputs cross in chunks of 100,000 rows on this build. On the native build (the ``arcadedb`` package) the chunk is the
+        batch's ``commit_every``, 1000 unless ``graph_batch()`` got another value, and each chunk is its own transaction. Chunks that
+        already went in stay stored if a later chunk fails.
         """
         self._check_not_closed()
         # From engine 26.10.1 the engine refuses to run inside a transaction the

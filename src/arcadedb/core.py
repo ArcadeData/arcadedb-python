@@ -708,7 +708,9 @@ class Database:
                 because an edge needs both endpoints.
             rows: Iterable of dicts, one per document. Read lazily, one
                 chunk at a time.
-            commit_every: Transaction batch size for the synchronous mode.
+            commit_every: Transaction batch size for the synchronous mode. Default 10,000 on this build; the native build (the
+                ``arcadedb`` package) defaults to 1000, a size measured there and not yet on the JVM. Rows that are already
+                committed stay committed if a later chunk fails.
             parallel: If True, route rows through the async executor's
                 parallel bucket writers and wait for completion before
                 returning (out-of-order writes). The maintainers' rule
@@ -2018,7 +2020,8 @@ class Database:
                 ArcadeDBError naming the type. Before 26.10.1 it was accepted, and any
                 query the planner walked from the target end returned 0 rows
                 (ArcadeData/arcadedb#8625).
-            commit_every: Commit cadence within a flush. `0` means one commit per flush.
+            commit_every: Commit cadence within a flush. `0` means one commit per flush, which is also what an unset value gives on
+                this build; the native build (the ``arcadedb`` package) defaults to 1000.
             use_wal: Write-ahead log during the import. Off by default, so a crash mid-import can lose its
                 tail; pass True for a crash-safe import (ArcadeData/arcadedb#8287).
             wal_flush: WAL flush mode: `"no"`, `"yes_nometadata"`, `"yes_full"`.

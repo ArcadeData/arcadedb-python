@@ -1,0 +1,66 @@
+= Bulk loads and commit size
+:description: The default commit size of insert_many, graph_batch and create_vertices on the arcadedb (native) and arcadedb-jvm packages, what it means for a failed load, and how to change it.
+
+`insert_many`, `graph_batch` and `GraphBatch.create_vertices` load data in transactions. The commit size is the number of rows in one transaction. It decides how much work the engine holds in memory before it commits, and how many rows stay in the database when a load fails.
+
+== Defaults
+
+[cols="2,2,2"]
+|===
+| Call | `arcadedb` (native) | `arcadedb-jvm`
+
+| `db.insert_many(type_name, rows)`
+| `commit_every=1000`
+| `commit_every=10000`
+
+| `db.graph_batch()`
+| `commit_every=1000`
+| `commit_every` not set: one commit for each flush
+
+| `batch.create_vertices(type_name, rows)`
+| 1000 rows for each call into the engine, one transaction for each call (the `commit_every` of the batch)
+| 100000 rows for each call into the engine
+|===
+
+The JVM defaults are the same as before. They stay until someone measures them on the JVM build.
+
+An explicit value always wins. `commit_every=0` gives one transaction for `insert_many` and one commit for each flush for `graph_batch`, on both packages. In a transaction that you open yourself, `insert_many` commits nothing.
+
+== Why the native defaults are smaller
+
+The in-flight transaction is the data that each young garbage collection must copy. A smaller transaction copies less. A laptop A/B on the columnar native wheel measured this with `ab.py --noise`, ABBA order, 12 clean pairs for each figure, and a clean A/A control (95 % interval of the median pair ratio, new default against old default):
+
+[cols="3,2,2,2"]
+|===
+| Load | Wall time | Data copied by the young GC | Peak RSS
+
+| `insert_many`, 1,000,000 mixed documents, `commit_every=1000`
+| 0.822 to 0.831
+| 0.55x
+| 0.955x
+
+| `GraphBatch`, 200,000 vertices and 500,000 edges, `parallel_flush`, one client thread, `commit_every=1000`
+| 0.853 to 0.864
+| 0.63x
+| 0.718x
+|===
+
+`commit_every=5000` for `insert_many` also passed (0.903 to 0.914 of the wall time). 1000 had the lower median, so it is the default. The runs used an isolate heap of 80 % of RAM. The default is now 50 %, and smaller transactions lower the heap that a load needs.
+
+== What changes for you
+
+Rows that are already committed stay committed when a later chunk fails. Only the transaction that was open is rolled back. With a smaller commit size, a failed load keeps its rows up to the last commit, and that commit is now at most 1000 rows behind the failure instead of 10,000. If you need all-or-nothing, open your own transaction, or pass `commit_every=0`.
+
+== Change the commit size
+
+[source,python]
+----
+db.insert_many("Doc", rows, commit_every=10_000)  # the old native default
+db.insert_many("Doc", rows, commit_every=0)       # one transaction for all rows
+
+with db.graph_batch(commit_every=0) as batch:     # one commit for each flush, as before
+    ...
+
+with db.graph_batch(commit_every=5000) as batch:  # also sets the create_vertices chunk
+    ...
+----
