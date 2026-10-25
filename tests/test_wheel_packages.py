@@ -61,6 +61,8 @@ def test_backend_selection_imports_without_native_library(tmp_path):
     """A fresh interpreter, as the wheel's ``test_install.py`` runs: the JVM backend is the default."""
     root = _built_root(tmp_path)
     env = {"PATH": os.environ["PATH"]}
+    if "SYSTEMROOT" in os.environ:  # a Windows child without it cannot import socket
+        env["SYSTEMROOT"] = os.environ["SYSTEMROOT"]
     if root is not None:
         env["PYTHONPATH"] = str(root)
     code = "import arcadedb.core, arcadedb._native as n;" "assert n.enabled() is False"

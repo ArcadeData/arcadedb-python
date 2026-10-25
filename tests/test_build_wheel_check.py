@@ -42,7 +42,7 @@ def test_wheel_check_finds_this_builds_wheel(tmp_path, engine, wheel_version):
     (tmp_path / "local-jars" / "lib").mkdir(parents=True)
     (tmp_path / "local-jars" / "lib" / jar_name).write_bytes(b"integration")
     (tmp_path / "dist").mkdir()
-    wheel = tmp_path / "dist" / f"arcadedb-{wheel_version}-py3-none-any.whl"
+    wheel = tmp_path / "dist" / f"arcadedb_jvm-{wheel_version}-py3-none-any.whl"
     with zipfile.ZipFile(wheel, "w") as zf:
         zf.writestr(f"arcadedb/jars/{jar_name}", b"integration")
 
