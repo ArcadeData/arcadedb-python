@@ -23,11 +23,19 @@ def clear() -> None:
     _PENDING.interrupt = None
 
 
+# What the engine says when a callback returned no reply (NativeExtras.answer): the callback ended before it could write one.
+# That happens when a Ctrl-C is raised as Python enters the callback, before its code (and its try) runs.
+_NO_REPLY = "was interrupted before Python returned a value"
+
+
 def convert(error: BaseException) -> BaseException:
-    """The ``KeyboardInterrupt`` to raise in place of ``error`` if a callback left one on this thread, else ``error``."""
+    """The ``KeyboardInterrupt`` to raise in place of ``error``: one a callback left on this thread, or the Ctrl-C that
+    ended a callback before it could reply. Else ``error`` itself."""
     interrupt = getattr(_PENDING, "interrupt", None)
     if interrupt is None:
-        return error
+        if _NO_REPLY not in str(error):
+            return error
+        interrupt = KeyboardInterrupt("interrupted while a Python function was called")
     _PENDING.interrupt = None
     interrupt.__cause__ = error
     return interrupt

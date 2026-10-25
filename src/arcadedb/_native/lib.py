@@ -279,14 +279,13 @@ def call_bin(name: str, *args):
 
 
 def alloc(size: int):
-    """Memory from the library's allocator, or None when the library is older than ``arcadedb_n_alloc``.
+    """Memory from the library's allocator (``arcadedb_n_alloc``), for the reply of a callback.
 
-    The reply of a callback goes through it: Java copies the text and frees the memory, so the reply outlives the callback's
+    Java copies the text and frees the memory, so it must come from here and from nowhere else; it also outlives the callback's
     Python thread state (a callback on an async writer thread ends that state as it returns).
     """
     lib = _lib or _load()
-    fn = getattr(lib, "arcadedb_n_alloc", None)
-    return None if fn is None else fn(_thread_handle(), size)
+    return lib.arcadedb_n_alloc(_thread_handle(), size)
 
 
 def call_void(name: str, *args) -> None:

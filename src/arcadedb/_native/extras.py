@@ -10,7 +10,6 @@ ctypes takes the GIL for the call, and the reply is JSON (see the header of ``Na
 import ctypes
 import itertools
 import json
-import sys
 import threading
 import weakref
 from collections.abc import Mapping
@@ -25,13 +24,13 @@ from .codec import _PLAIN, _default, _prep, loads
 
 # -------------------------------------------------------------------------------------------------------- upcall
 
+# (Java long id, char *json, void **out): the reply goes through *out, not through a return value (see _dispatch)
 _UPCALL_TYPE = ctypes.CFUNCTYPE(
-    ctypes.c_void_p, ctypes.c_longlong, ctypes.c_char_p
-)  # (Java long id, char *json)
+    None, ctypes.c_longlong, ctypes.c_char_p, ctypes.c_void_p
+)
 _callbacks: dict = {}
 _callback_ids = itertools.count(1)
 _callbacks_lock = threading.Lock()
-_reply = threading.local()
 _upcall_ref = None
 
 
@@ -40,7 +39,15 @@ def _enc(value) -> str:
     return json.dumps(_prep(value), default=_default)
 
 
-def _dispatch(cid, raw):
+def _dispatch(cid, raw, out):
+    """Run callback ``cid`` with the message ``raw`` and write the JSON reply to ``*out`` (Java zeroed it before the call).
+
+    The reply never travels as a return value. A C callback that returns without setting its return value hands the engine
+    whatever the return register held, here the pointer of an earlier reply, which Java had already freed: an abort in
+    ``free()``. That is what happens when a Ctrl-C is raised as this function is entered, before its ``try``. Through ``*out``
+    the engine sees NULL then, fails the statement, and the error becomes a KeyboardInterrupt (``interrupts.convert``).
+    The memory comes from the library (``arcadedb_n_alloc``): Java copies the text and frees it, so it must be nothing else.
+    """
     try:
         fn = _callbacks.get(cid)
         message = loads(raw.decode("utf-8")) if raw else {}
@@ -50,46 +57,18 @@ def _dispatch(cid, raw):
         interrupts.note(exc)
         data = json.dumps({"error": f"{type(exc).__name__}: {exc}"}).encode("utf-8")
     if data is None:
-        return None
+        return
     size = len(data) + 1
     pointer = lib.alloc(size)
     if pointer:
-        # library memory: Java copies the text and frees it (on a Java thread this callback's Python thread state, and
-        # everything a thread-local held, is gone when it returns)
         ctypes.memmove(pointer, data + b"\0", size)
-        return pointer
-    # a library older than arcadedb_n_alloc: kept alive until this thread's next callback
-    buf = ctypes.create_string_buffer(data)
-    _reply.buf = buf
-    return ctypes.addressof(buf)
-
-
-def _install_unraisable_hook() -> None:
-    """Keep a Ctrl-C that arrives as the callback is entered.
-
-    CPython runs a pending signal handler at the first bytecode of a function, so a KeyboardInterrupt can be raised before
-    ``_dispatch`` reaches its ``try``: ctypes then reports it as unraisable and returns NULL to the engine. The hook records it
-    as the interrupt of this thread (the engine fails the statement on a NULL reply, and the error becomes the
-    KeyboardInterrupt); every other unraisable exception goes to the hook that was there.
-    """
-    previous = sys.unraisablehook
-
-    def hook(unraisable):
-        if unraisable.object is _dispatch and isinstance(
-            unraisable.exc_value, KeyboardInterrupt
-        ):
-            interrupts.note(unraisable.exc_value)
-        else:
-            previous(unraisable)
-
-    sys.unraisablehook = hook
+        ctypes.c_void_p.from_address(out).value = pointer
 
 
 def _ensure_upcall() -> None:
     global _upcall_ref
     if _upcall_ref is not None:
         return
-    _install_unraisable_hook()
     lib.call_void(
         "arcadedb_n_set_upcall", ctypes.cast(_make_pointer(), ctypes.c_void_p)
     )

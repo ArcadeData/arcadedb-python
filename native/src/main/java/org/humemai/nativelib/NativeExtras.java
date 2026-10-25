@@ -5,9 +5,9 @@
  * database settings, import and export, and the Java->Python upcall (async callbacks, Python functions in SQL).
  * Same reply convention as ArcadeNative: a malloc'd JSON text, {"ok":true,...} or {"ok":false,"error":..,"cls":..,"chain":..}.
  *
- * Upcalls. Python registers ONE ctypes function pointer with arcadedb_n_set_upcall: CCharPointer fn(long id, CCharPointer json).
- * `id` names a Python-side callback, `json` is the message, the return value is a JSON reply in memory from arcadedb_n_alloc
- * (NULL for no reply); Java copies the text and frees it. The call is a transition-to-native C function pointer call, so the
+ * Upcalls. Python registers ONE ctypes function pointer with arcadedb_n_set_upcall: void fn(long id, CCharPointer json, void **out).
+ * `id` names a Python-side callback, `json` is the message, the JSON reply is written to *out as memory from arcadedb_n_alloc
+ * (left NULL for no reply); Java copies the text and frees it. The call is a transition-to-native C function pointer call, so the
  * isolate can run a safepoint or a GC while the Python callback holds the GIL and calls back into the library on its thread.
  * ctypes takes the GIL itself (PyGILState_Ensure) when a foreign Java thread (an async writer) or the engine thread inside a
  * query calls the pointer.
@@ -58,6 +58,7 @@ import org.graalvm.nativeimage.c.function.CFunctionPointer;
 import org.graalvm.nativeimage.c.function.InvokeCFunctionPointer;
 import org.graalvm.nativeimage.c.type.CCharPointer;
 import org.graalvm.nativeimage.c.type.CTypeConversion;
+import org.graalvm.word.Pointer;
 import org.graalvm.word.WordFactory;
 
 import java.util.ArrayList;
@@ -76,7 +77,7 @@ public final class NativeExtras {
 
   interface PyCallback extends CFunctionPointer {
     @InvokeCFunctionPointer
-    CCharPointer invoke(long id, CCharPointer json);
+    void invoke(long id, CCharPointer json, Pointer out);
   }
 
   private static volatile long upcallPointer;
@@ -92,15 +93,23 @@ public final class NativeExtras {
     if (raw == 0)
       throw new IllegalStateException("no Python callback is registered (arcadedb_n_set_upcall)");
     final PyCallback fn = WordFactory.pointer(raw);
+    // The reply comes back through *out, which is zeroed here, never through the return value of the call: a callback that
+    // fails before it writes (a Ctrl-C raised as Python enters it) leaves a NULL, where a C return value would be whatever the
+    // return register held.
+    final Pointer out = UnmanagedMemory.malloc(8);
+    out.writeLong(0, 0L);
     try (CTypeConversion.CCharPointerHolder in = CTypeConversion.toCString(json)) {
-      final CCharPointer reply = fn.invoke(id, in.get());
+      fn.invoke(id, in.get(), out);
+      final CCharPointer reply = out.readWord(0);
       if (reply.isNull())
         return null;
       try {
         return CTypeConversion.toJavaString(reply);
       } finally {
-        UnmanagedMemory.free(reply);
+        UnmanagedMemory.free(reply); // memory of arcadedb_n_alloc, the only kind Python writes into *out
       }
+    } finally {
+      UnmanagedMemory.free(out);
     }
   }
 

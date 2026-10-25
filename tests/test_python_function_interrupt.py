@@ -11,6 +11,8 @@ signal cannot be sent to the own process like this (see test_sigint.py).
 
 import os
 import signal
+import subprocess
+import sys
 import threading
 import time
 
@@ -82,3 +84,55 @@ def test_a_statement_that_fails_otherwise_is_still_an_arcadedb_error(db):
     with pytest.raises(arcadedb.ArcadeDBError) as raised:
         db.query("sql", "SELECT FROM NoSuchType")
     assert not isinstance(raised.value, KeyboardInterrupt)
+
+
+_SIGINT_LOOP = r"""
+import os, signal, tempfile, threading, time
+import numpy as np
+import arcadedb
+
+with tempfile.TemporaryDirectory() as directory:
+    db = arcadedb.create_database(os.path.join(directory, "db"))
+    db.command("sql", "CREATE DOCUMENT TYPE T")
+    db.insert_columns("T", {"n": np.arange(150_000, dtype=np.int64)})
+    db.register_function("plus_one", lambda x: x + 1)
+    interrupted = 0
+    for delay in (0.05, 0.15, 0.25, 0.35, 0.45, 0.55):
+        timer = threading.Timer(delay, os.kill, (os.getpid(), signal.SIGINT))
+        timer.start()
+        try:
+            db.query("sql", "SELECT sum(plus_one(n)) AS s FROM T").first()
+            done = True
+        except KeyboardInterrupt:
+            done = False
+            interrupted += 1
+        finally:
+            timer.cancel()
+            timer.join()
+        if done:
+            try:
+                time.sleep(0.05)
+            except KeyboardInterrupt:
+                interrupted += 1
+        assert db.count_type("T") == 150_000
+    db.close()
+    print("interrupted", interrupted)
+"""
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="a signal cannot be sent to the own process here"
+)
+def test_sigint_loop_in_a_fresh_process_ends_cleanly():
+    """The same loop in its own process. A Ctrl-C raised as the Python callback is entered used to leave the engine a stale
+    reply pointer, and the process aborted in ``free()`` (nonzero exit); pytest's own hooks hid it inside a test run.
+    """
+    result = subprocess.run(
+        [sys.executable, "-c", _SIGINT_LOOP],
+        capture_output=True,
+        text=True,
+        timeout=600,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr[-2000:]
+    assert int(result.stdout.split()[-1]) >= 1, result.stdout
