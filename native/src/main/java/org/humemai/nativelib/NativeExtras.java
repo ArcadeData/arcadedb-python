@@ -5,9 +5,9 @@
  * database settings, import and export, and the Java->Python upcall (async callbacks, Python functions in SQL).
  * Same reply convention as ArcadeNative: a malloc'd JSON text, {"ok":true,...} or {"ok":false,"error":..,"cls":..,"chain":..}.
  *
- * Upcalls. Python registers ONE ctypes function pointer with arcadedb_n_set_upcall: CCharPointer fn(long id, CCharPointer json).
- * `id` names a Python-side callback, `json` is the message, the return value is a JSON reply that Python keeps alive until its
- * next call on the same thread (Java copies it at once). The call is a transition-to-native C function pointer call, so the
+ * Upcalls. Python registers ONE ctypes function pointer with arcadedb_n_set_upcall: void fn(long id, CCharPointer json, void **out).
+ * `id` names a Python-side callback, `json` is the message, the JSON reply is written to *out as memory from arcadedb_n_alloc
+ * (left NULL for no reply); Java copies the text and frees it. The call is a transition-to-native C function pointer call, so the
  * isolate can run a safepoint or a GC while the Python callback holds the GIL and calls back into the library on its thread.
  * ctypes takes the GIL itself (PyGILState_Ensure) when a foreign Java thread (an async writer) or the engine thread inside a
  * query calls the pointer.
@@ -20,14 +20,33 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.DocumentCallback;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.Record;
+import com.arcadedb.database.RecordEvents;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.async.DatabaseAsyncExecutor;
 import com.arcadedb.database.async.ErrorCallback;
+import com.arcadedb.database.async.OkCallback;
 import com.arcadedb.database.async.NewEdgeCallback;
 import com.arcadedb.engine.ErrorRecordCallback;
 import com.arcadedb.engine.WALFile;
+import com.arcadedb.event.AfterRecordCreateListener;
+import com.arcadedb.event.AfterRecordDeleteListener;
+import com.arcadedb.event.AfterRecordUpdateListener;
+import com.arcadedb.event.BeforeRecordCreateListener;
+import com.arcadedb.event.BeforeRecordDeleteListener;
+import com.arcadedb.event.BeforeRecordUpdateListener;
+import com.arcadedb.exception.DatabaseOperationException;
+import com.arcadedb.function.CypherBuiltinFunctions;
+import com.arcadedb.function.CypherFunctionRegistry;
+import com.arcadedb.function.FunctionRegistry;
 import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
+import com.arcadedb.index.IndexInternal;
+import com.arcadedb.index.TypeIndex;
+import com.arcadedb.index.vector.LSMVectorIndex;
+import com.arcadedb.schema.LSMVectorIndexMetadata;
+import com.arcadedb.utility.Pair;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
+import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GraphBatch;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
@@ -39,17 +58,21 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.VertexType;
 import org.graalvm.nativeimage.IsolateThread;
+import org.graalvm.nativeimage.UnmanagedMemory;
 import org.graalvm.nativeimage.c.function.CEntryPoint;
 import org.graalvm.nativeimage.c.function.CFunctionPointer;
 import org.graalvm.nativeimage.c.function.InvokeCFunctionPointer;
 import org.graalvm.nativeimage.c.type.CCharPointer;
 import org.graalvm.nativeimage.c.type.CTypeConversion;
+import org.graalvm.word.Pointer;
 import org.graalvm.word.WordFactory;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -62,7 +85,7 @@ public final class NativeExtras {
 
   interface PyCallback extends CFunctionPointer {
     @InvokeCFunctionPointer
-    CCharPointer invoke(long id, CCharPointer json);
+    void invoke(long id, CCharPointer json, Pointer out);
   }
 
   private static volatile long upcallPointer;
@@ -78,10 +101,34 @@ public final class NativeExtras {
     if (raw == 0)
       throw new IllegalStateException("no Python callback is registered (arcadedb_n_set_upcall)");
     final PyCallback fn = WordFactory.pointer(raw);
+    // The reply comes back through *out, which is zeroed here, never through the return value of the call: a callback that
+    // fails before it writes (a Ctrl-C raised as Python enters it) leaves a NULL, where a C return value would be whatever the
+    // return register held.
+    final Pointer out = UnmanagedMemory.malloc(8);
+    out.writeLong(0, 0L);
     try (CTypeConversion.CCharPointerHolder in = CTypeConversion.toCString(json)) {
-      final CCharPointer reply = fn.invoke(id, in.get());
-      return reply.isNull() ? null : CTypeConversion.toJavaString(reply);
+      fn.invoke(id, in.get(), out);
+      final CCharPointer reply = out.readWord(0);
+      if (reply.isNull())
+        return null;
+      try {
+        return CTypeConversion.toJavaString(reply);
+      } finally {
+        UnmanagedMemory.free(reply); // memory of arcadedb_n_alloc, the only kind Python writes into *out
+      }
+    } finally {
+      UnmanagedMemory.free(out);
     }
+  }
+
+  /**
+   * Memory for the reply of a Python callback (see upcall: Java copies the text and frees it). Python cannot keep the reply in
+   * its own memory: a callback on a Java thread (an async writer) ends its Python thread state when it returns, and that frees
+   * what the state held before Java has read the text.
+   */
+  @CEntryPoint(name = "arcadedb_n_alloc")
+  public static CCharPointer alloc(final IsolateThread thread, final long size) {
+    return UnmanagedMemory.malloc(WordFactory.unsigned(size));
   }
 
   /** A callback failure that must not stop an async writer: reported on stderr, not lost. */
@@ -225,6 +272,81 @@ public final class NativeExtras {
       default -> throw new IllegalArgumentException("unknown database setting " + o);
       }
       return ArcadeNative.OK();
+    } catch (final Throwable t) {
+      return ArcadeNative.err(t);
+    }
+  }
+
+  // ---- vector indexes: what no statement reports (the engine's configuration of an index) and the PQ search no statement runs
+
+  private static String q(final String text) {
+    return text == null ? "null" : "\"" + text.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
+  }
+
+  /**
+   * ops: metadata {type, prop} | approximate {type, prop, vector, k, allowed}. The index is the one the type has on the property; its bucket
+   * indexes are searched in turn (the caller merges). metadata describes the first bucket index, as the JPype wrapper does.
+   */
+  @CEntryPoint(name = "arcadedb_n_vindex")
+  @SuppressWarnings("unchecked")
+  public static CCharPointer vindex(final IsolateThread thread, final long dbh, final CCharPointer op, final CCharPointer argsJson) {
+    try {
+      final Database db = ArcadeNative.db(dbh);
+      final Map<String, Object> a = args(argsJson);
+      final String type = (String) a.get("type"), prop = (String) a.get("prop");
+      final TypeIndex typeIndex = db.getSchema().getType(type).getPolymorphicIndexByProperties(prop);
+      if (typeIndex == null)
+        throw new IllegalArgumentException("No vector index on " + type + "[" + prop + "]");
+      final List<LSMVectorIndex> parts = new ArrayList<>();
+      for (final IndexInternal index : typeIndex.getIndexesOnBuckets())
+        if (index instanceof LSMVectorIndex lsm)
+          parts.add(lsm);
+      if (parts.isEmpty())
+        throw new IllegalArgumentException("Underlying index is not an LSM vector index");
+      final StringBuilder sb = new StringBuilder("{\"ok\":true");
+      switch (ArcadeNative.str(op)) {
+      case "metadata" -> {
+        final LSMVectorIndex first = parts.get(0);
+        final LSMVectorIndexMetadata m = first.getMetadata();
+        sb.append(",\"bucket\":").append(q(first.getName())).append(",\"type_name\":").append(q(first.getTypeName()));
+        sb.append(",\"dimensions\":").append(m.dimensions).append(",\"similarity_function\":").append(q(String.valueOf(m.similarityFunction)));
+        sb.append(",\"id_property\":").append(q(m.idPropertyName)).append(",\"quantization\":").append(q(String.valueOf(m.quantizationType)));
+        sb.append(",\"max_connections\":").append(m.maxConnections).append(",\"beam_width\":").append(m.beamWidth);
+        sb.append(",\"ef_search\":").append(m.efSearch).append(",\"graph_build_cache_size\":").append(m.graphBuildCacheSize);
+        sb.append(",\"mutations_before_rebuild\":").append(m.mutationsBeforeRebuild).append(",\"store_vectors_in_graph\":").append(m.storeVectorsInGraph);
+        sb.append(",\"add_hierarchy\":").append(m.addHierarchy).append(",\"build_state\":").append(q(m.buildState));
+        sb.append(",\"pq_subspaces\":").append(m.pqSubspaces).append(",\"pq_clusters\":").append(m.pqClusters);
+        sb.append(",\"pq_center_globally\":").append(m.pqCenterGlobally).append(",\"pq_training_limit\":").append(m.pqTrainingLimit);
+      }
+      case "approximate" -> {
+        final List<Object> vector = (List<Object>) a.get("vector");
+        final float[] query = new float[vector.size()];
+        for (int i = 0; i < query.length; i++)
+          query[i] = ((Number) vector.get(i)).floatValue();
+        final int k = intOf(a.get("k"), 10);
+        Set<RID> allowed = null;
+        if (a.get("allowed") instanceof List<?> rids) {
+          allowed = new HashSet<>();
+          for (final Object rid : rids)
+            allowed.add(new RID(String.valueOf(rid)));
+        }
+        sb.append(",\"hits\":[");
+        boolean firstHit = true;
+        for (final LSMVectorIndex lsm : parts) {
+          final List<Pair<RID, Float>> hits = allowed != null ? lsm.findNeighborsFromVectorApproximate(query, k, allowed)
+              : lsm.findNeighborsFromVectorApproximate(query, k);
+          for (final Pair<RID, Float> hit : hits) {
+            if (!firstHit)
+              sb.append(',');
+            firstHit = false;
+            sb.append("[\"").append(hit.getFirst()).append("\",").append(hit.getSecond()).append(']');
+          }
+        }
+        sb.append(']');
+      }
+      default -> throw new IllegalArgumentException("unknown vector index op " + ArcadeNative.str(op));
+      }
+      return ArcadeNative.out(sb.append('}').toString());
     } catch (final Throwable t) {
       return ArcadeNative.err(t);
     }
@@ -504,6 +626,31 @@ public final class NativeExtras {
         else
           ex.query(lang, text, callback);
       }
+      case "transaction" -> {
+        // a block that runs on an async writer inside a transaction: Python runs it in the upcall; its failure is thrown here so the
+        // writer rolls back, retries a NeedRetryException and reports to the error callback (ok / err: per-call callbacks, slot: one writer)
+        final long okCb = a.get("ok") instanceof Number n ? n.longValue() : 0L;
+        final Database.TransactionScope scope = () -> {
+          final String reply = upcall(cb, event("tx", ""));
+          if (reply != null && reply.startsWith("{\"error\""))
+            throw new RuntimeException(String.valueOf(((Map<String, Object>) Json.parse(reply)).get("error")));
+        };
+        final int retries = intOf(a.get("retries"), 1);
+        final OkCallback ok = okCb == 0 ? null : () -> {
+          try {
+            fire("transaction ok callback", okCb, event("ok", ""));
+          } catch (final Throwable e) {
+            swallowed("transaction ok callback", e); // the writer goes on
+          }
+        };
+        final ErrorCallback error = errCb == 0 ? null : errorCallback(errCb);
+        if (a.get("retries") == null && ok == null && error == null && a.get("slot") == null)
+          ex.transaction(scope);
+        else if (a.get("slot") instanceof Number slot)
+          ex.transaction(scope, retries, ok, error, slot.intValue());
+        else
+          ex.transaction(scope, retries, ok, error);
+      }
       case "on_ok" -> ex.onOk(() -> {
         try {
           fire("on_ok callback", cb, event("ok", ""));
@@ -669,39 +816,114 @@ public final class NativeExtras {
     }
   }
 
-  // ---- Python functions in SQL: arcadedb_n_udf_register(name, callbackId, minArgs, maxArgs)
+  // ---- Python functions in SQL and record events: arcadedb_n_cb(op, json)
+
+  /*
+   * One entry point for the callback registry of the Python side (functions and record events), JSON in and out like the
+   * rest: {"ok":true,..} or {"ok":true,"refused":"text"} when the request is understood but not allowed (Python raises the
+   * text as an ArcadeDBError). The engine logic is the one of the JPype bridge (src/java/com/arcadedb/python/PythonFunctions
+   * and PythonRecordEvents): same checks, same wording, same veto and failure rules; only the call into Python differs (the
+   * upcall, with JSON). Keep the two in step.
+   *
+   * ops: fn_register {name,cb,min,max,det,replace}  fn_unregister {h}  ev_register {db,type,event,cb}  ev_remove {h}
+   * A handle (h) names a registration for the unregister call; the reply to a replace or an unregister carries the callback id
+   * of the registration that went away ("dropped"), so Python can forget it.
+   */
+
+  private static final Object REGISTRY = new Object();
+  private static final Map<Long, Object> HANDLES = new ConcurrentHashMap<>();
+  private static final AtomicLong NEXT_HANDLE = new AtomicLong(1);
+
+  static String describe(final Throwable t) {
+    final String message = t.getMessage();
+    return message == null || message.isEmpty() ? t.getClass().getName() : message;
+  }
+
+  /** The reply of a Python call that must return a value: a missing reply or an {"error"} reply fails with Python's text. */
+  @SuppressWarnings("unchecked")
+  private static Map<String, Object> answer(final String reply) {
+    if (reply == null)
+      throw new IllegalStateException("the call was interrupted before Python returned a value");
+    final Map<String, Object> r = (Map<String, Object>) Json.parse(reply);
+    if (r.get("error") != null)
+      throw new IllegalStateException(String.valueOf(r.get("error")));
+    return r;
+  }
+
+  /** A record as a tagged dict with its category, for Python to wrap as a Document, Vertex or Edge. */
+  static void appendRecord(final StringBuilder sb, final Document doc) {
+    sb.append('{');
+    if (doc.getIdentity() != null) {
+      sb.append("\"@rid\":");
+      NativeCodec.quote(sb, doc.getIdentity().toString());
+      sb.append(',');
+    }
+    sb.append("\"@type\":");
+    NativeCodec.quote(sb, doc.getTypeName());
+    sb.append(",\"@cat\":\"").append(doc instanceof Vertex ? 'v' : doc instanceof Edge ? 'e' : 'd').append('"');
+    final StringBuilder props = new StringBuilder();
+    try {
+      for (final String name : doc.getPropertyNames()) {
+        props.append(',');
+        NativeCodec.quote(props, name);
+        props.append(':');
+        NativeCodec.append(props, doc.get(name));
+      }
+    } catch (final com.arcadedb.exception.RecordNotFoundException e) {
+      props.setLength(0); // an after_delete event of a record that was not loaded: it is gone, only its identity is left to report
+    }
+    sb.append(props).append('}');
+  }
 
   /**
    * A SQL function whose body is a Python callable. The engine thread that runs the statement calls the upcall with
-   * {"k":"fn","args":[..]} (tagged values, as parameters) and expects {"v":<value>} or {"error":"text"}; an error is thrown
-   * as a CommandExecutionException from the function, so the statement fails with the Python message.
+   * {"k":"fn","args":[..]} (tagged values as parameters, a record argument as a dict with @rid, @type and @cat) and expects
+   * {"v":<value>} or {"error":"text"}; any failure is thrown as a CommandExecutionException from the function, so the
+   * statement fails with the Python message.
    */
   static final class PythonFunction extends SQLFunctionAbstract {
-    private final long cb;
+    final long handle = NEXT_HANDLE.getAndIncrement();
+    final long cb;
     private final int min, max;
+    private final boolean deterministic;
+    volatile boolean revoked;
 
-    PythonFunction(final String name, final long cb, final int min, final int max) {
+    PythonFunction(final String name, final long cb, final int min, final int max, final boolean deterministic) {
       super(name);
       this.cb = cb;
       this.min = min;
       this.max = max;
+      this.deterministic = deterministic;
     }
 
     @Override
     public Object execute(final Object self, final Identifiable record, final Object result, final Object[] params, final CommandContext ctx) {
-      final StringBuilder sb = new StringBuilder("{\"k\":\"fn\",\"args\":[");
-      for (int i = 0; i < params.length; i++) {
-        if (i > 0)
-          sb.append(',');
-        NativeCodec.append(sb, params[i]);
+      final String name = getName();
+      if (revoked)
+        throw new com.arcadedb.exception.CommandExecutionException("Python function '" + name + "' was unregistered");
+      if (params.length < min || params.length > max)
+        throw new com.arcadedb.exception.CommandExecutionException(
+            "Python function '" + name + "' takes " + arity() + " argument(s), got " + params.length);
+      try {
+        final StringBuilder sb = new StringBuilder("{\"k\":\"fn\",\"args\":[");
+        for (int i = 0; i < params.length; i++) {
+          if (i > 0)
+            sb.append(',');
+          if (params[i] instanceof Document doc)
+            appendRecord(sb, doc);
+          else
+            NativeCodec.append(sb, params[i]);
+        }
+        return answer(upcall(cb, sb.append("]}").toString())).get("v");
+      } catch (final Throwable t) {
+        throw new com.arcadedb.exception.CommandExecutionException("Python function '" + name + "' failed: " + describe(t), t);
       }
-      final String reply = upcall(cb, sb.append("]}").toString());
-      if (reply == null)
-        return null;
-      @SuppressWarnings("unchecked") final Map<String, Object> r = (Map<String, Object>) Json.parse(reply);
-      if (r.get("error") != null)
-        throw new com.arcadedb.exception.CommandExecutionException(String.valueOf(r.get("error")));
-      return r.get("v");
+    }
+
+    private String arity() {
+      if (min == max)
+        return String.valueOf(min);
+      return max == Integer.MAX_VALUE ? "at least " + min : min + " to " + max;
     }
 
     @Override
@@ -715,16 +937,186 @@ public final class NativeExtras {
     }
 
     @Override
+    public boolean isDeterministic() {
+      return deterministic;
+    }
+
+    @Override
     public String getSyntax() {
-      return getName() + "(<arg>*)";
+      return getName() + "(" + (max == 0 ? "" : "<args>") + ") [Python]";
     }
   }
 
-  @CEntryPoint(name = "arcadedb_n_udf_register")
-  public static CCharPointer udfRegister(final IsolateThread thread, final CCharPointer name, final long cb, final int min, final int max) {
+  private static boolean takenByEngine(final String key) {
+    final DefaultSQLFunctionFactory factory = DefaultSQLFunctionFactory.getInstance();
+    if (factory.hasFunction(key))
+      return !(factory.getFunctionInstance(key) instanceof PythonFunction);
+    return CypherBuiltinFunctions.isBuiltin(key) || CypherFunctionRegistry.hasFunction(key) || FunctionRegistry.hasFunction(key);
+  }
+
+  private static PythonFunction pythonFunction(final String key) {
+    final DefaultSQLFunctionFactory factory = DefaultSQLFunctionFactory.getInstance();
+    return factory.hasFunction(key) && factory.getFunctionInstance(key) instanceof PythonFunction f ? f : null;
+  }
+
+  /** Revokes and unregisters a function; the callback id it had, or 0 when it was not the registered one any more. */
+  private static long removeFunction(final PythonFunction function) {
+    function.revoked = true;
+    HANDLES.remove(function.handle);
+    final String key = function.getName();
+    final DefaultSQLFunctionFactory factory = DefaultSQLFunctionFactory.getInstance();
+    if (factory.hasFunction(key) && factory.getFunctionInstance(key) == function) {
+      factory.unregister(key);
+      FunctionRegistry.unregister(key);
+    }
+    return function.cb;
+  }
+
+  /** The listener of one event of a Python callback: a before_* callback may veto, any failure fails the operation. */
+  static final class PythonListener implements BeforeRecordCreateListener, BeforeRecordUpdateListener, BeforeRecordDeleteListener,
+      AfterRecordCreateListener, AfterRecordUpdateListener, AfterRecordDeleteListener {
+    final long handle = NEXT_HANDLE.getAndIncrement();
+    final long cb;
+    final String event;
+    final RecordEvents events;
+
+    PythonListener(final RecordEvents events, final String event, final long cb) {
+      this.events = events;
+      this.event = event;
+      this.cb = cb;
+    }
+
+    private boolean dispatch(final Record record) {
+      if (!(record instanceof Document doc))
+        return true;
+      try {
+        final StringBuilder sb = new StringBuilder("{\"k\":\"ev\",\"e\":\"").append(event).append("\",\"rec\":");
+        appendRecord(sb, doc);
+        return !Boolean.FALSE.equals(answer(upcall(cb, sb.append('}').toString())).get("v"));
+      } catch (final Throwable t) {
+        throw new DatabaseOperationException("Python '" + event + "' callback failed: " + describe(t), t);
+      }
+    }
+
+    @Override
+    public boolean onBeforeCreate(final Record record) {
+      return dispatch(record);
+    }
+
+    @Override
+    public boolean onBeforeUpdate(final Record record) {
+      return dispatch(record);
+    }
+
+    @Override
+    public boolean onBeforeDelete(final Record record) {
+      return dispatch(record);
+    }
+
+    @Override
+    public void onAfterCreate(final Record record) {
+      dispatch(record);
+    }
+
+    @Override
+    public void onAfterUpdate(final Record record) {
+      dispatch(record);
+    }
+
+    @Override
+    public void onAfterDelete(final Record record) {
+      dispatch(record);
+    }
+
+    void register() {
+      switch (event) {
+      case "before_create" -> events.registerListener((BeforeRecordCreateListener) this);
+      case "before_update" -> events.registerListener((BeforeRecordUpdateListener) this);
+      case "before_delete" -> events.registerListener((BeforeRecordDeleteListener) this);
+      case "after_create" -> events.registerListener((AfterRecordCreateListener) this);
+      case "after_update" -> events.registerListener((AfterRecordUpdateListener) this);
+      case "after_delete" -> events.registerListener((AfterRecordDeleteListener) this);
+      default -> throw new IllegalArgumentException("Unknown record event: " + event);
+      }
+    }
+
+    void unregister() {
+      switch (event) {
+      case "before_create" -> events.unregisterListener((BeforeRecordCreateListener) this);
+      case "before_update" -> events.unregisterListener((BeforeRecordUpdateListener) this);
+      case "before_delete" -> events.unregisterListener((BeforeRecordDeleteListener) this);
+      case "after_create" -> events.unregisterListener((AfterRecordCreateListener) this);
+      case "after_update" -> events.unregisterListener((AfterRecordUpdateListener) this);
+      case "after_delete" -> events.unregisterListener((AfterRecordDeleteListener) this);
+      default -> throw new IllegalArgumentException("Unknown record event: " + event);
+      }
+    }
+  }
+
+  private static CCharPointer refused(final String text) {
+    final StringBuilder sb = new StringBuilder("{\"ok\":true,\"refused\":");
+    NativeCodec.quote(sb, text);
+    return ArcadeNative.out(sb.append('}').toString());
+  }
+
+  private static long longOf(final Object v) {
+    return ((Number) v).longValue();
+  }
+
+  @CEntryPoint(name = "arcadedb_n_cb")
+  public static CCharPointer callbackRegistry(final IsolateThread thread, final CCharPointer op, final CCharPointer json) {
     try {
-      DefaultSQLFunctionFactory.getInstance().register(new PythonFunction(ArcadeNative.str(name), cb, min, max));
-      return ArcadeNative.OK();
+      final Map<String, Object> a = args(json);
+      switch (ArcadeNative.str(op)) {
+      case "fn_register": {
+        final String name = String.valueOf(a.get("name"));
+        final String key = name.toLowerCase(java.util.Locale.ENGLISH);
+        synchronized (REGISTRY) {
+          if (takenByEngine(key))
+            return refused("Cannot register '" + name + "': it is already a function of the engine");
+          final PythonFunction old = pythonFunction(key);
+          if (old != null && !Boolean.TRUE.equals(a.get("replace")))
+            return refused("A Python function '" + name + "' is already registered (pass replace=True to replace it)");
+          final long dropped = old == null ? 0 : removeFunction(old);
+          final PythonFunction function = new PythonFunction(key, longOf(a.get("cb")), (int) longOf(a.get("min")), (int) longOf(a.get("max")),
+              Boolean.TRUE.equals(a.get("det")));
+          DefaultSQLFunctionFactory.getInstance().register(function);
+          HANDLES.put(function.handle, function);
+          return ArcadeNative.out("{\"ok\":true,\"h\":" + function.handle + ",\"dropped\":" + dropped + "}");
+        }
+      }
+      case "fn_unregister": {
+        synchronized (REGISTRY) {
+          final Object handle = HANDLES.get(longOf(a.get("h")));
+          final long dropped = handle instanceof PythonFunction f ? removeFunction(f) : 0;
+          return ArcadeNative.out("{\"ok\":true,\"dropped\":" + dropped + "}");
+        }
+      }
+      case "ev_register": {
+        final Database db = ArcadeNative.db(longOf(a.get("db")));
+        final String type = (String) a.get("type");
+        final RecordEvents events;
+        if (type == null)
+          events = db.getEvents();
+        else {
+          if (!db.getSchema().existsType(type))
+            return refused("Type '" + type + "' does not exist");
+          events = db.getSchema().getType(type).getEvents();
+        }
+        final PythonListener listener = new PythonListener(events, String.valueOf(a.get("event")), longOf(a.get("cb")));
+        listener.register();
+        HANDLES.put(listener.handle, listener);
+        return ArcadeNative.out("{\"ok\":true,\"h\":" + listener.handle + "}");
+      }
+      case "ev_remove": {
+        final Object handle = HANDLES.remove(longOf(a.get("h")));
+        if (handle instanceof PythonListener listener)
+          listener.unregister();
+        return ArcadeNative.out("{\"ok\":true,\"dropped\":" + (handle instanceof PythonListener l ? l.cb : 0) + "}");
+      }
+      default:
+        throw new IllegalArgumentException("unknown callback op " + ArcadeNative.str(op));
+      }
     } catch (final Throwable t) {
       return ArcadeNative.err(t);
     }

@@ -13,7 +13,7 @@ from .._params import refuse_surplus_positionals
 from ..exceptions import ArcadeDBError
 from ..transactions import TransactionContext
 from ..type_conversion import json_bulk_dumps
-from . import lib, not_yet
+from . import interrupts, lib, not_yet
 from .bulk import insert_rows_columnar
 from .codec import _prep as _prep_row
 from .codec import encode_params, json_native, loads, row_default
@@ -40,7 +40,9 @@ def _error(prefix: str, reply: dict) -> ArcadeDBError:
     exc = ArcadeDBError(f"{prefix}: {head}" if prefix else head)
     exc.native = reply
     exc.java_chain = chain
-    return exc
+    return interrupts.convert(
+        exc
+    )  # a Ctrl-C in a Python function is a KeyboardInterrupt chained from this error
 
 
 def _read_error(reply: dict) -> ArcadeDBError:
@@ -49,7 +51,7 @@ def _read_error(reply: dict) -> ArcadeDBError:
     )
     exc.native = reply
     exc.java_chain = reply.get("chain") or []
-    return exc
+    return interrupts.convert(exc)
 
 
 def _call(prefix: str, name: str, *args) -> dict:
@@ -393,6 +395,7 @@ class NativeDatabase:
         self._closed = False
         self._server_owned = owned_by_server
         self._async_executors: list = []
+        self._registry = None  # Python functions and event callbacks, once one is registered (extras.Registrations)
         self._vector_meta: dict = {}
         self._vector_dimensions: dict = {}
         self._vector_id_properties: dict = {}
@@ -413,6 +416,8 @@ class NativeDatabase:
         if self._closed:
             return
         self._close_async_executors()
+        if self._registry is not None:
+            self._registry.clear()  # before the engine closes: the functions are process-wide, the listeners die with the database
         if self._server_owned:
             # owned by the server: the engine refuses the close, and this handle is done either way
             self._closed = True
@@ -482,6 +487,7 @@ class NativeDatabase:
             refuse_surplus_positionals(
                 "command" if flags & 1 else "query", language, command, args
             )
+        interrupts.clear()
         if flags & 1 and _LAZY_COMMAND_ROWS and lib.CMD_PATH:
             # phase 8: the cursor id comes back as a long (no reply text to free and decode); the rows are read late or never
             text, buf, count = encode_params(args, binary=True)
@@ -881,11 +887,39 @@ class NativeDatabase:
         self._async_executors.append(executor)
         return executor
 
-    def register_function(self, name, fn, min_args=0, max_args=-1):
-        """Make a Python callable available to SQL (process-wide, see ``extras.register_function``)."""
-        from .extras import register_function
+    def _registrations(self):
+        from .extras import Registrations
 
-        register_function(name, fn, min_args, max_args)
+        if self._registry is None:
+            self._registry = Registrations(self)
+        return self._registry
+
+    def register_function(
+        self,
+        name,
+        fn,
+        *,
+        min_args=None,
+        max_args=None,
+        deterministic=False,
+        replace=False,
+    ):
+        """Make a Python callable available to SQL and openCypher (``Database.register_function``: process-wide, the Python
+        function is called from the engine thread that runs the statement)."""
+        self._check_not_closed()
+        self._registrations().register_function(
+            name, fn, min_args, max_args, deterministic, replace
+        )
+
+    def unregister_function(self, name):
+        """Remove a Python function registered through this database."""
+        self._check_not_closed()
+        self._registrations().unregister_function(name)
+
+    def on(self, event, fn, type_name=None):
+        """Call a Python function when a record is created, updated or deleted (``Database.on``)."""
+        self._check_not_closed()
+        return self._registrations().on(event, fn, type_name)
 
     @property
     def schema(self):

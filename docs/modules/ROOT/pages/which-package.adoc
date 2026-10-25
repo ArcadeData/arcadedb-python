@@ -82,8 +82,8 @@ The API is the same. The runtime is not. These are the differences you can plan 
 | Linux x86_64 (glibc 2.34 or later), Linux aarch64, macOS arm64, Windows x64. The Windows wheel is the newest: it is built in CI, and its test run is the least proven of the four.
 | Linux x86_64 (glibc 2.34 or later), Linux aarch64, macOS arm64, Windows x64.
 
-| Java-object APIs (`get_java_database`, `get_java_*`)
-| Not available.
+| Java-object APIs (`get_java_database`, `get_java_document`, `get_java_*`)
+| Not available. They raise `NotOnNativeYet`.
 | Available.
 
 | JVM options (`jvm_kwargs`, `start_jvm`, `-X` and `-D` flags)
@@ -91,7 +91,7 @@ The API is the same. The runtime is not. These are the differences you can plan 
 | Available. See xref:installation.adoc#jvm-options[JVM options].
 
 | A few API calls
-| Raise `NotOnNativeYet` (a `NotImplementedError`): `AsyncExecutor.transaction`, the approximate search `find_nearest_approximate` over product quantization, `get_metadata` of a foreign index, and `get_stats`.
+| None, except the Java-object calls above, which raise `NotOnNativeYet` (a `NotImplementedError`).
 | Work.
 |===
 
