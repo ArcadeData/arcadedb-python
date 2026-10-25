@@ -246,7 +246,7 @@ class TestProductQuantizationSql:
 
         _build(test_db)
 
-        assert bool(_metadata(test_db).fusedPQ) is True
+        assert _metadata(test_db)["fused_pq"] is True
         assert len(_search(test_db, queries[0])) == K
 
 
