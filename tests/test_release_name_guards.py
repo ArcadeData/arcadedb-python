@@ -24,6 +24,10 @@ GUARD_STEP = "- name: Refuse unless every wheel is the distribution"
 VERIFY_STEP = "- name: Verify wheel count, versions and sizes"
 TAG = "26.11.1.dev0"
 
+# Another distribution, as test data: the guards must refuse it (allow-old-name: scripts/check_no_embedded_name.py lets a guard test name it)
+OTHER_DIST = "arcadedb-embedded"  # allow-old-name
+OTHER_FILE_STEM = "arcadedb_embedded"  # allow-old-name
+
 # (workflow file, distribution it publishes)
 PUBLISHERS = [
     ("release-native.yml", "arcadedb"),
@@ -104,14 +108,14 @@ def test_a_pep_503_spelling_of_the_name_passes(workflow, dist, tmp_path):
 @pytest.mark.parametrize("newline", ["\n", "\r\n"], ids=["lf", "crlf"])
 def test_another_name_in_the_metadata_is_refused(workflow, dist, newline, tmp_path):
     file_name = f"{dist.replace('-', '_')}-{TAG}-py3-none-any"
-    result = _guard(workflow, dist, tmp_path, [(file_name, "arcadedb-embedded", newline)])
+    result = _guard(workflow, dist, tmp_path, [(file_name, OTHER_DIST, newline)])
     assert result.returncode != 0
     assert "Refusing to publish" in result.stdout + result.stderr
 
 
 @pytest.mark.parametrize("workflow, dist", PUBLISHERS)
 def test_another_name_in_the_file_name_is_refused(workflow, dist, tmp_path):
-    result = _guard(workflow, dist, tmp_path, [(f"arcadedb_embedded-{TAG}-py3-none-any", dist, "\r\n")])
+    result = _guard(workflow, dist, tmp_path, [(f"{OTHER_FILE_STEM}-{TAG}-py3-none-any", dist, "\r\n")])
     assert result.returncode != 0
     assert "Refusing to publish" in result.stdout + result.stderr
 
@@ -122,7 +126,7 @@ def test_one_wrong_wheel_among_right_ones_is_refused(workflow, dist, tmp_path):
     wheels = [
         (f"{right}-py3-none-manylinux_2_28_x86_64", dist, "\n"),
         (f"{right}-py3-none-win_amd64", dist, "\r\n"),
-        (f"{right}-py3-none-macosx_11_0_arm64", "arcadedb-embedded", "\n"),
+        (f"{right}-py3-none-macosx_11_0_arm64", OTHER_DIST, "\n"),
     ]
     result = _guard(workflow, dist, tmp_path, wheels)
     assert result.returncode != 0
@@ -172,7 +176,7 @@ def test_the_jvm_wheel_check_accepts_crlf_metadata_from_the_windows_wheels(tmp_p
 
 
 def test_the_jvm_wheel_check_still_refuses_wheels_of_two_distributions(tmp_path):
-    root = _jvm_release_tree(tmp_path, windows_metadata_name="arcadedb-embedded")
+    root = _jvm_release_tree(tmp_path, windows_metadata_name=OTHER_DIST)
     output = tmp_path / "github_output"
     result = _run(_script("release-jvm.yml", VERIFY_STEP), root, TAG=TAG, GITHUB_OUTPUT=str(output))
     assert result.returncode != 0
