@@ -18,6 +18,17 @@ from arcadedb.core import Database
 
 np = pytest.importorskip("numpy")
 
+# The call counts below read Database.new_document, the per-row path of the JVM wheel (one JPype crossing per row). The native build has its
+# own per-row path (INSERT ... CONTENT) that never calls it, so only the stored values are compared there.
+JVM = arcadedb.__backend__ == "jvm"
+# pandas NA/NaT and numpy datetime64 are tagged by the JVM wheel's bulk path; the native build refuses them as parameters (BACKLOG-bindings.md N-04/J-05, native column).
+NATIVE_REFUSES = pytest.mark.xfail(
+    arcadedb.__backend__ == "native",
+    strict=True,
+    raises=TypeError,
+    reason="native: cannot pass pandas NA / numpy datetime64 as a parameter (BACKLOG-bindings.md N-04/J-05)",
+)
+
 UTC9 = dt.timezone(dt.timedelta(hours=9))
 
 # name -> value; every one of these is stored by the per-row path (Document.set), so the bulk path has a stored value to match
@@ -158,6 +169,7 @@ def test_a_pandas_timestamp_is_stored_as_the_per_row_path_stores_it(
         assert _stored(db, "Bulk") == _stored(db, "Ref")
 
 
+@NATIVE_REFUSES
 def test_pandas_na_and_nat_are_nulls_on_the_bulk_path(temp_db_path, new_documents):
     """The per-row path refuses pd.NA and pd.NaT (TypeError / ValueError); insert_dataframe stores them as nulls, and so does the bulk path."""
     pd = pytest.importorskip("pandas")
@@ -178,6 +190,7 @@ def test_pandas_na_and_nat_are_nulls_on_the_bulk_path(temp_db_path, new_document
         ]
 
 
+@NATIVE_REFUSES
 def test_a_numpy_datetime64_is_the_datetime_the_per_row_path_would_store(
     temp_db_path, new_documents
 ):
@@ -251,9 +264,10 @@ def test_an_uncarriable_value_sends_its_own_row_per_row_not_the_chunk(
             return
         new_documents.clear()
         db.insert_many("Bulk", rows)
-        assert new_documents == [
-            "Bulk"
-        ], "only the row with the uncarriable value goes per row"
+        if JVM:
+            assert new_documents == [
+                "Bulk"
+            ], "only the row with the uncarriable value goes per row"
         assert _stored(db, "Bulk") == _stored(db, "Ref")
 
 
@@ -265,7 +279,8 @@ def test_rows_keep_their_insert_order_around_a_per_row_run(temp_db_path, new_doc
     with arcadedb.create_database(temp_db_path) as db:
         _create(db, "Bulk", False)
         db.insert_many("Bulk", rows)
-        assert len(new_documents) == 5
+        if JVM:
+            assert len(new_documents) == 5
         # a scan returns records in insertion (RID) order
         ids = [r.get("id") for r in db.query("sql", "SELECT id FROM Bulk").to_list()]
         assert ids == list(range(n))
@@ -314,7 +329,8 @@ def test_parallel_insert_many_sends_only_the_uncarriable_row_per_row(
     with arcadedb.create_database(temp_db_path) as db:
         _create(db, "Par", False)
         db.insert_many("Par", rows, parallel=True)
-        assert new_documents == ["Par"]
+        if JVM:
+            assert new_documents == ["Par"]
         assert db.count_type("Par") == 500
 
 
