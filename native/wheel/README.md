@@ -16,7 +16,7 @@ pip install arcadedb       # or: uv add arcadedb
 Optional extras for the columnar helpers: `[numpy]`, `[arrow]`, `[pandas]`, `[polars]`.
 
 <!-- REMOVE WHEN: the old arcadedb-embedded* shims are retired and two releases have shipped with the two-package layout allow-old-name -->
-Old names: this package was formerly `arcadedb-embedded-native`, imported as `arcadedb_native`. The old package will get a deprecation shim that points here.
+Old names: this package was formerly `arcadedb-embedded-native`, imported as `arcadedb_native`. The old project is archived on PyPI: it gets no new releases and no shim. A last release of the JVM project `arcadedb-embedded` will install this package.
 
 If `arcadedb-jvm` is installed in the same environment, `import arcadedb` raises an `ImportError` that names both packages. Run `pip uninstall arcadedb arcadedb-jvm`, then install the one you want.
 

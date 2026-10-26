@@ -6,20 +6,25 @@
 
 These packages run the ArcadeDB engine inside your Python process, with no network hop and no server to start. Two packages exist, and both use the import name `{import-name}`:
 
-[cols="1,3,3"]
+[cols="1,3,3,2"]
 |===
-| Package | Engine | Pick it for
+| Package | Engine | Pick it for | Install
 
 | `{native-pkg-name}` (the default)
 | Native: the engine compiled by GraalVM Community Edition, loaded with `ctypes`. No JVM, no JPype.
 | Scripts, notebooks, tests, CLIs, serverless functions and agents.
+| `pip install {native-pkg-name}`
 
 | `{jvm-pkg-name}`
 | JVM: the Java engine in your process through https://jpype.readthedocs.io/[JPype], with a bundled Java 25 runtime.
 | Heavy, long-running loads, and the Java-object APIs.
+| `pip install {jvm-pkg-name}`
 |===
 
-Not sure which one? Read xref:which-package.adoc[Which package?]. Install one of them, not both.
+Not sure which one? Take `{native-pkg-name}`, and read xref:which-package.adoc[Which package?] to decide for sure. Install one of them, not both.
+
+// REMOVE WHEN: the old arcadedb-embedded* shims are retired and two releases have shipped with the two-package layout allow-old-name
+NOTE: *Transition note.* The first release of this layout is 26.11.1, and `{native-pkg-name}` may first appear as pre-releases, `26.11.1.devN`. Until a final 26.11.1 is on PyPI, install it with `pip install --pre {native-pkg-name}`: a plain `pip install` finds only the 0.0.1 placeholder, which installs the old package. See xref:installation.adoc[Installation].
 
 ArcadeDB is a multi-model database: graph, document, key/value, vector and time series data live in one database, and you query it with SQL or openCypher. The bindings expose the two calls you need for that, `db.command(...)` and `db.query(...)`.
 
@@ -75,7 +80,7 @@ The two meet in one case. The bindings bundle an optional HTTP server. It is off
 [[jvm-vs-native]]
 == Native build or JVM build
 
-Both packages give you the same engine and the same API. The table in xref:which-package.adoc[Which package?] lists what differs: start-up time, memory, platforms, and the APIs that exist only on the JVM build (`get_java_database`, `jvm_kwargs`, `start_jvm`). The pages in this component apply to both packages. Parts that apply to one only say so.
+Both packages give you the same engine and the same API. xref:which-package.adoc[Which package?] lists what differs. The pages in this component apply to both packages, and a part that applies to one says so.
 
 Check which one you have with `python -c "import arcadedb; print(arcadedb.__backend__)"`. It prints `native` or `jvm`.
 

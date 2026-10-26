@@ -6,7 +6,7 @@
 
 == Install
 
-Pick one of the two packages. Both import as `{import-name}`.
+Pick one of the two packages. Both import as `{import-name}`. If you are not sure, take `{native-pkg-name}`.
 
 [cols="1,2,2"]
 |===
@@ -26,10 +26,10 @@ Pick one of the two packages. Both import as `{import-name}`.
 Install one of them, not both. If both are installed, `import arcadedb` raises an `ImportError` that names both packages. See xref:which-package.adoc[Which package?] for the comparison, and for how to switch.
 
 // REMOVE WHEN: the old arcadedb-embedded* shims are retired and two releases have shipped with the two-package layout allow-old-name
-NOTE: *Transition note.* The first release of this layout is 26.11.1. Until `{native-pkg-name}` passes its readiness bar, it may appear only as pre-releases, `26.11.1.devN`. Install it with `pip install --pre {native-pkg-name}` or `uv add --prerelease allow {native-pkg-name}`.
+NOTE: *Transition note.* The first release of this layout is 26.11.1. Until `{native-pkg-name}` passes its readiness bar, it may appear only as pre-releases, `26.11.1.devN`. Install it with `pip install --pre {native-pkg-name}` or `uv add --prerelease allow {native-pkg-name}`. A plain `pip install {native-pkg-name}` finds only the 0.0.1 placeholder, which installs the old package. The same holds for `{jvm-pkg-name}` until its 26.11.1 is released.
 
 // REMOVE WHEN: the old arcadedb-embedded* shims are retired and two releases have shipped with the two-package layout allow-old-name
-NOTE: *Old names.* The JVM package was formerly `arcadedb-embedded`. It is now `{jvm-pkg-name}`, the same build. The native package was formerly `arcadedb-embedded-native`. It is now `{native-pkg-name}`. See xref:which-package.adoc#old-names[Old names].
+NOTE: *Old names.* The JVM package was formerly `arcadedb-embedded`. It is now `{jvm-pkg-name}`, the same build. The native package was formerly `arcadedb-embedded-native`. It is now `{native-pkg-name}`, and the old project is archived. A last `arcadedb-embedded` release will install `{native-pkg-name}`, not `{jvm-pkg-name}`. See xref:which-package.adoc#old-names[Old names].
 
 The JVM package is self-contained. It carries a Java 25 runtime for its platform, so you do not install Java. Its only Python dependency is `JPype1` 1.5.0 or later (the Java-Python bridge), which pip installs for you. The native package needs no Java and no JPype. Optional extras install the columnar helpers of the native package: `[numpy]`, `[arrow]`, `[pandas]` and `[polars]`.
 
