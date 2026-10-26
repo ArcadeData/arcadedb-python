@@ -11,6 +11,12 @@ The engine's console handler is off by default on Windows (``ARCADEDB_LOG_CONSOL
 the runtime caches the OS handle of stdout and stderr at start-up. A host that redirects fd 1 or 2 afterwards (pytest's fd capture,
 a service, an embedding application) closes that handle, a database file opened later can get the same handle value, and the next
 console log line is written into that file. The log file does not have that problem: the engine opens it itself.
+
+Console logging is not the only Java code that writes to the cached handle: the runtime's own warnings, a library that prints, or
+``e.printStackTrace()`` all go through ``System.out`` and ``System.err``. So with the console off, the JVM build also points those two
+streams at ``arcadedb-stdio.log`` in the log directory, a file the library opens itself, right after the JVM starts (``jvm.py``,
+:func:`stdio_log_path`). The runtime's start-up text (``WARNING: Using incubator modules: jdk.incubator.vector``) is printed while the
+JVM is created, before any of this can run, and still goes to the real stderr of the process.
 """
 
 import os
@@ -30,6 +36,9 @@ LOGGING_CONFIG_NAME = "logging.properties"
 # The config without the console handler has its own file name, so that two processes with different console settings that share a
 # log directory never replace each other's file between the write and the engine's first log call.
 FILE_ONLY_CONFIG_NAME = "logging-file-only.properties"
+# Where Java's System.out and System.err go while the console is off. A file of its own, not arcadedb.log: the engine's file handler
+# owns that one (it rotates it, and on Windows a rename of a file another handle holds open fails).
+STDIO_LOG_NAME = "arcadedb-stdio.log"
 CONSOLE_HANDLER = "java.util.logging.ConsoleHandler"
 
 # The engine's arcadedb-log.properties without its file pattern, for the native build: the image holds the engine's copy as a
@@ -104,6 +113,11 @@ def console_enabled() -> bool:
     if value in ("0", "false", "no", "off"):
         return False
     return sys.platform != "win32"
+
+
+def stdio_log_path(log_dir: Path) -> Path:
+    """The file that Java's ``System.out`` and ``System.err`` append to while the console is off (see the module docstring)."""
+    return Path(log_dir) / STDIO_LOG_NAME
 
 
 def logging_config_name(console: Optional[bool] = None) -> str:

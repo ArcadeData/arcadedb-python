@@ -22,9 +22,11 @@ import jpype.imports
 
 from . import aot as _aot
 from ._logdir import LOG_DIR_ENV as _LOG_DIR_ENV
+from ._logdir import console_enabled as _console_enabled
 from ._logdir import default_log_dir as _default_log_dir
 from ._logdir import logging_config_name as _logging_config_name
 from ._logdir import render_logging_config as _render_logging_config
+from ._logdir import stdio_log_path as _stdio_log_path
 from ._logdir import usable_log_dir as _usable_log_dir
 from ._logdir import write_logging_config as _write_logging_config
 from ._logging import get_logger
@@ -441,8 +443,15 @@ def start_jvm(
         only. Default: on, except on Windows, where a host that redirects fd 1
         or 2 after the JVM started (pytest capture, a service) leaves the JVM
         writing console lines to a handle that a database file can reuse.
+        With the console off, Java's ``System.out`` and ``System.err`` (the
+        runtime's warnings, a library that prints) also append to
+        ``arcadedb-stdio.log`` in the log directory, for the same reason; the
+        runtime's start-up warning, printed while the JVM is created, still goes
+        to the process's stderr. With ``1`` on Windows, that risk stays: do not
+        redirect fd 1 or 2 after the first database is opened.
         Needs to be set before the first JVM start. A
-        ``-Djava.util.logging.config.file=`` in ``jvm_args`` replaces it.
+        ``-Djava.util.logging.config.file=`` in ``jvm_args`` replaces the
+        logging config, not the stream redirect.
 
     ARCADEDB_JVM_ERROR_FILE (optional)
         Path for JVM crash logs (default: ``hs_err_pid%p.log`` in the log
@@ -545,6 +554,8 @@ def start_jvm(
     except Exception as e:
         raise ArcadeDBError(f"Failed to start JVM: {e}") from e
 
+    _redirect_java_stdio(log_dir)
+
     if not _JVM_INTERRUPT:
         _restore_python_signal_handlers()
 
@@ -567,6 +578,41 @@ def start_jvm(
         import faulthandler
 
         faulthandler.disable()
+
+
+def _redirect_java_stdio(log_dir: Path) -> None:
+    """With the console off, point ``System.out`` and ``System.err`` at a file the library owns.
+
+    On Windows the runtime caches the OS handle of stdout and stderr when it starts. A host that later redirects fd 1 or 2 (pytest's
+    fd capture, a service, an embedding application) closes that handle, a database page file opened afterwards can get the same
+    handle value, and the next ``System.out`` or ``System.err`` write lands in the page file (the JVM twin of the native bug that
+    ``ARCADEDB_LOG_CONSOLE`` fixed for the engine's own console log). Removing the console log handler does not cover every writer:
+    a warning the runtime prints, a library that prints, ``printStackTrace()``. A ``PrintStream`` on a file opened here has no
+    cached handle, whatever the host does with fd 1 and 2.
+
+    Only with the console off, which is the default on Windows only: on Linux and macOS the runtime writes to fd 1 and 2 by number
+    and follows a redirect, so the default there is unchanged. ``ARCADEDB_LOG_CONSOLE=1`` on Windows keeps the runtime's own
+    streams (the risk stays; see the option's text in :func:`start_jvm`). The text the runtime prints while the JVM is created comes
+    before this runs and still goes to the process's stderr.
+    """
+    if _console_enabled():
+        return
+    path = _stdio_log_path(log_dir)
+    try:
+        system = jpype.JClass("java.lang.System")
+        stream = jpype.JClass("java.io.PrintStream")(
+            jpype.JClass("java.io.FileOutputStream")(str(path), True), True, "UTF-8"
+        )
+        system.setOut(stream)
+        system.setErr(stream)
+    except (
+        Exception
+    ) as exc:  # the console stays as it was; never stop the start for a log file
+        _LOGGER.warning(
+            "Cannot send the Java stdout and stderr to %s (%s); they keep the process's own streams",
+            path,
+            exc,
+        )
 
 
 def _aot_flags(aot: Optional[bool], jvm_args: list, classpath: str) -> list:
