@@ -59,7 +59,8 @@ print_usage() {
     echo "  windows/amd64  Windows x86_64 (native build on Windows)"
     echo ""
     echo "PYTHON_VERSION:"
-    echo "  Python version for wheel (default: 3.12); used by Linux (Docker) builds only"
+    echo "  Python of the Linux (Docker) build and its smoke test (default: 3.12); ignored on macOS and Windows."
+    echo "  The wheel is py3-none-<platform>: the same file whichever Python builds it"
     echo "  Examples: 3.11, 3.12, 3.13, 3.14"
     echo ""
     echo "JAR_LIB_DIR (optional):"
@@ -531,6 +532,10 @@ if [[ -z "$SIZE_PY" ]]; then
 else
     "$SIZE_PY" "$SCRIPT_DIR/verify_wheel_licences.py" "$NEWEST_WHEEL" || exit 1
 fi
+
+# THE TAG POLICY: one wheel for each platform, py3-none-<platform> (setup.py), the same file for every Python. A cpXY wheel
+# would be one of sixteen for a release, and an -any wheel would install where its JRE does not run.
+"$SIZE_PY" "$SCRIPT_DIR/verify_wheel_tag.py" "$NEWEST_WHEEL" || exit 1
 
 echo -e "${GREEN}🎉 Build completed successfully!${NC}"
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"

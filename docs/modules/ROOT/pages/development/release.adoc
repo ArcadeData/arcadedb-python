@@ -58,7 +58,7 @@ scripts/after_tag_verify.sh 26.11.1 26.10.1 <release-run-id>
 The second argument is the previous release. Use `-` for the first release of the package. The script checks:
 
 * The workflow run, and the conclusion of the publish job and of its upload step.
-* The files on PyPI: one wheel per supported Python version and platform, each under 100 MB, none yanked.
+* The files on PyPI: one `py3-none` wheel for each platform (the same file for every Python version), each under 100 MB, none yanked.
 * The sha256 of every file on PyPI against the wheels the workflow checked.
 * A `pip download` for each of the four platforms, and a fresh install on Python 3.12 and 3.14 that opens a database and runs one SQL and one openCypher query.
 

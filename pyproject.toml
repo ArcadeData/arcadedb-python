@@ -2,7 +2,9 @@
 # setup.py imports only setuptools, so the build needs no JPype. A build-time jpype1 was compiled from
 # source on a Python without a JPype wheel (3.15, until JPype > 1.7.1) and failed there. `build` is a
 # frontend, not a backend requirement.
-requires = ["setuptools>=61.0", "wheel"]
+# setuptools 70.1 is the first release with its own bdist_wheel command, which setup.py subclasses to
+# tag the wheel py3-none-<platform>.
+requires = ["setuptools>=70.1", "wheel"]
 build-backend = "setuptools.build_meta"
 
 # This file defines the package metadata for arcadedb.
@@ -14,7 +16,13 @@ name = "arcadedb-jvm"
 version = "0.0.0"
 description = "ArcadeDB embedded multi-model database, JVM build with a bundled JRE (no Java installation needed). The native build is the package arcadedb; both import as arcadedb"
 readme = "README.md"
-requires-python = ">=3.11"
+# The upper bound is JPype: jpype1 1.7.1 has wheels for CPython 3.11 to 3.14 and none for 3.15 (JPype
+# merged 3.15 support in jpype-project/jpype#1501, not released yet). The wheels of this package are
+# py3-none-<platform>, so the wheel tag no longer keeps pip off an interpreter: without this cap pip
+# would install the wheel on 3.15 and then try to build JPype from source.
+# REMOVE THE CAP when jpype1 ships cp315 wheels: then add the 3.15 classifier below, 3.15 to PYTHONS in
+# scripts/select_matrix.py and the cap in tests/test_select_matrix.py.
+requires-python = ">=3.11,<3.15"
 license = { text = "Apache-2.0" }
 authors = [
     { name = "Taewoon Kim", email = "taewoon@humem.ai" }
