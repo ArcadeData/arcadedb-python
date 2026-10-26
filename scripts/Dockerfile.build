@@ -30,10 +30,17 @@ FROM arcadedata/arcadedb:${ARCADEDB_TAG} AS java-builder
 
 # Stage 2: Build minimal JRE with jlink
 # Docker builds are Linux-only. macOS/Windows JREs must be created on matching native hosts.
-FROM amazoncorretto:25 AS jre-builder
+#
+# The JDK is Eclipse Temurin, not amazoncorretto:25. The Corretto IMAGE is Amazon Linux 2023 (glibc 2.34) and its JDK is
+# built against it: every binary needs GLIBC_2.34, which is what set the wheels' manylinux_2_34 floor. Temurin's Linux
+# JDK builds need glibc 2.17 at most on x86_64 and aarch64 (scripts/verify_wheel_platform_tag.py --jre prints
+# manylinux_2_17 for both), and the eclipse-temurin image carries that build unchanged. jlink copies the libraries of the
+# JDK it runs, so the bundled JRE has the same floor. Both are GPLv2 with the Classpath Exception.
+FROM eclipse-temurin:25-jdk AS jre-builder
 
 # Install required tooling (findutils for jar exclusion, binutils for jlink)
-RUN yum -y install findutils binutils && yum clean all
+RUN apt-get update && apt-get install -y --no-install-recommends findutils binutils \
+    && rm -rf /var/lib/apt/lists/*
 
 ARG TARGET_PLATFORM
 ARG USE_LOCAL_JARS
@@ -227,15 +234,13 @@ RUN echo "📌 Package name: ${PACKAGE_NAME}" && \
 # Build the wheel
 # Extract PEP 440 version from the engine jar or use BUILD_VERSION if provided.
 #
-# Wheel platform tag must match the highest glibc symbol version required by the
-# bundled JRE. amazoncorretto:25 (Amazon Linux 2023, glibc 2.34) ships a JRE
-# whose binaries link against GLIBC_2.34 at most; older glibc symbol versions
-# cannot be back-ported. Issue #4037: tagging as manylinux_2_35 prevents
-# installation on systems with glibc 2.34 (RHEL 9, Rocky 9, AlmaLinux 9, Amazon
-# Linux 2023, ...) even though the bundled JRE runs there fine. Keep the tag
-# aligned with the JRE's actual requirement; bump only when the JRE base image
-# moves to a newer glibc. The verify_wheel_platform_tag.py step below enforces
-# this invariant at build time.
+# Wheel platform tag: manylinux_2_28, the same floor as the native wheels (glibc 2.28: RHEL, Rocky and
+# AlmaLinux 8, Debian 10, Ubuntu 20.04 and newer). It is also the lowest the Python side can have: JPype's own Linux
+# wheels are manylinux_2_28. The tag is the higher of that floor and the highest GLIBC_ symbol the bundled JRE
+# references (2.17 with Temurin). Tagging higher than that locks out systems the wheel runs on (issue #4037: a
+# manylinux_2_35 tag on a JRE that needed 2.34); tagging lower lets it install where the JRE cannot run. The
+# verify_wheel_platform_tag.py step below enforces both at build time, and test-jvm.yml installs the built wheel in
+# a manylinux_2_28 container.
 ARG BUILD_VERSION=""
 RUN if [ -n "${BUILD_VERSION}" ]; then \
         export ARCADEDB_VERSION="${BUILD_VERSION}"; \
@@ -252,9 +257,9 @@ RUN if [ -n "${BUILD_VERSION}" ]; then \
     sed -i 's|^description = .*|description = "'"${PACKAGE_DESCRIPTION}"'"|' pyproject.toml && \
     if echo "${TARGET_PLATFORM}" | grep -q '^linux-'; then \
         if [ "${TARGET_PLATFORM}" = "linux-x64" ]; then \
-            WHEEL_PLAT="manylinux_2_34_x86_64"; \
+            WHEEL_PLAT="manylinux_2_28_x86_64"; \
         elif [ "${TARGET_PLATFORM}" = "linux-arm64" ]; then \
-            WHEEL_PLAT="manylinux_2_34_aarch64"; \
+            WHEEL_PLAT="manylinux_2_28_aarch64"; \
         else \
             WHEEL_PLAT=""; \
         fi; \

@@ -360,6 +360,43 @@ jobs:
           mkdir -p test-install
           cp dist/*.whl test-install/
 
+      # The tests below run on the runner (glibc 2.39). This step runs the wheel where its tag says it must
+      # work: a manylinux_2_28 container (glibc 2.28, AlmaLinux 8, the oldest system the Linux wheels are tagged for).
+      # pip refuses a wheel tagged above 2.28 there, so a JRE that raises the floor again fails here as well as in
+      # scripts/verify_wheel_platform_tag.py. The wheel's own JRE does the work: no Java in the container.
+      - name: Install and run the wheel in manylinux_2_28 (Linux only)
+        if: startsWith(matrix.platform, 'linux/')
+        shell: bash
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          PYVER: ${{ matrix.python-version }}
+        run: |
+          case "$PLATFORM" in
+            linux/amd64) ARCH=x86_64 ;;
+            linux/arm64) ARCH=aarch64 ;;
+            *) echo "unexpected platform $PLATFORM" >&2; exit 1 ;;
+          esac
+          PYTAG="cp${PYVER//./}-cp${PYVER//./}"
+          ls -l test-install/*.whl
+          docker run --rm -i -e PYTAG="$PYTAG" -v "$PWD/test-install:/wheels:ro" \
+            "quay.io/pypa/manylinux_2_28_${ARCH}:latest" bash -es <<'CONTAINER'
+          ldd --version | head -n 1
+          test -x "/opt/python/$PYTAG/bin/python" || { echo "no $PYTAG in this image" >&2; ls /opt/python >&2; exit 1; }
+          "/opt/python/$PYTAG/bin/python" -m venv /tmp/smoke
+          # --only-binary: a source build of JPype must not hide a missing wheel
+          /tmp/smoke/bin/python -m pip install --quiet --only-binary=:all: /wheels/*.whl
+          cd /tmp
+          /tmp/smoke/bin/python - <<'PYSMOKE'
+          import tempfile
+          import arcadedb
+          with tempfile.TemporaryDirectory() as tmp:
+              with arcadedb.create_database(tmp + "/smoke") as db:
+                  rows = db.query("sql", "SELECT 1 AS one").to_list()
+          assert rows and rows[0]["one"] == 1, rows
+          print("manylinux_2_28 smoke OK:", arcadedb.__version__, rows)
+          PYSMOKE
+          CONTAINER
+
       - name: Set up Python for host testing
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
