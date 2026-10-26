@@ -106,6 +106,11 @@ RUN echo "🔨 Building arcadedb-python-bridge.jar..." && \
 # Automatically detect modules with jdeps, plus ensure jdk.zipfs (for JPype) and jdk.unsupported are included
 # We exclude jboss/wildfly JARs because they have broken module descriptors that fail analysis.
 # We also do NOT provide a classpath, forcing jdeps to ignore all missing dependencies (intra-jar or external).
+#
+# The eclipse-temurin JDK has no jmods directory (JEP 493: it is built with --enable-linkable-runtime), so jlink reads
+# the modules from the JDK's own run-time image when --module-path is absent. There is no fallback that copies the
+# whole JDK: the first Temurin build did that silently and produced a 130 MB wheel (251 MB JRE), over the 100 MB limit
+# of scripts/verify_wheel_size.py. If jlink cannot build the JRE, the build stops.
 RUN echo "🔍 Analyzing JARs with jdeps..." && \
     JMODS_DIR="${JAVA_HOME}/jmods" && \
     if [ ! -d "$JMODS_DIR" ]; then JMODS_DIR="${JAVA_HOME}/lib/jmods"; fi && \
@@ -130,41 +135,38 @@ RUN echo "🔍 Analyzing JARs with jdeps..." && \
     echo "📦 Final modules list: ${REQUIRED_MODULES}" && \
     echo "📦 Required modules:" && \
     echo "$REQUIRED_MODULES" | tr ',' '\n' | sed 's/^/   - /' && \
+    echo "" && \
+    echo "🔨 Running jlink..." && \
     if [ -d "$JMODS_DIR" ]; then \
-        echo "" ; \
-        echo "🔨 Running jlink..." ; \
-        if ! jlink \
-            --module-path "$JMODS_DIR" \
-            --add-modules "${REQUIRED_MODULES}" \
-            --ignore-signing-information \
-            --strip-debug \
-            --no-man-pages \
-            --no-header-files \
-            --compress zip-9 \
-            --output /build/jre ; then \
-            echo "❌ jlink failed" ; \
-            exit 1 ; \
-        fi ; \
-        echo "" ; \
-        echo "✅ JRE build complete!" ; \
-        echo "📊 JRE size after jlink: $(du -sm /build/jre | cut -f1) MB" ; \
-        BAD_MODULES=$(/build/jre/bin/java --list-modules | sed 's/@.*//' | grep -xFf /build/jre_excluded_modules.list || true) ; \
-        if [ -n "$BAD_MODULES" ]; then \
-            echo "❌ the JRE contains excluded modules (another module requires them): $BAD_MODULES" ; \
-            exit 1 ; \
-        fi ; \
-        echo "✅ No excluded module in the JRE" ; \
-        find /build/jre -name '*.so' -type f -exec strip --strip-unneeded {} + ; \
-        echo "📊 JRE size after stripping native libraries: $(du -sm /build/jre | cut -f1) MB" ; \
+        JLINK_SOURCE="--module-path $JMODS_DIR" ; \
+        echo "   modules from ${JMODS_DIR}" ; \
     else \
-        echo "⚠️  jmods directory not found under ${JAVA_HOME}. Falling back to copying full JDK runtime." ; \
-        mkdir -p /build/jre ; \
-        cp -a ${JAVA_HOME}/bin /build/jre/bin ; \
-        cp -a ${JAVA_HOME}/lib /build/jre/lib ; \
-        cp -a ${JAVA_HOME}/conf /build/jre/conf || true ; \
-        cp -a ${JAVA_HOME}/release /build/jre/release || true ; \
-        echo "✅ Fallback JRE created from full JDK runtime." ; \
+        JLINK_SOURCE="" ; \
+        echo "   no jmods directory: linking from the run-time image of ${JAVA_HOME} (JEP 493)" ; \
     fi && \
+    if ! jlink \
+        ${JLINK_SOURCE} \
+        --add-modules "${REQUIRED_MODULES}" \
+        --ignore-signing-information \
+        --strip-debug \
+        --no-man-pages \
+        --no-header-files \
+        --compress zip-9 \
+        --output /build/jre ; then \
+        echo "❌ jlink failed" ; \
+        exit 1 ; \
+    fi && \
+    echo "" && \
+    echo "✅ JRE build complete!" && \
+    echo "📊 JRE size after jlink: $(du -sm /build/jre | cut -f1) MB" && \
+    BAD_MODULES=$(/build/jre/bin/java --list-modules | sed 's/@.*//' | grep -xFf /build/jre_excluded_modules.list || true) && \
+    if [ -n "$BAD_MODULES" ]; then \
+        echo "❌ the JRE contains excluded modules (another module requires them): $BAD_MODULES" ; \
+        exit 1 ; \
+    fi && \
+    echo "✅ No excluded module in the JRE" && \
+    find /build/jre -name '*.so' -type f -exec strip --strip-unneeded {} + && \
+    echo "📊 JRE size after stripping native libraries: $(du -sm /build/jre | cut -f1) MB" && \
     echo "" && \
     JRE_SIZE=$(du -sh /build/jre | cut -f1) && \
     echo "📊 JRE size: $JRE_SIZE" && \
