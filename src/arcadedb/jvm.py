@@ -443,9 +443,9 @@ def start_jvm(
         only. Default: on, except on Windows, where a host that redirects fd 1
         or 2 after the JVM started (pytest capture, a service) leaves the JVM
         writing console lines to a handle that a database file can reuse.
-        With the console off, Java's ``System.out`` and ``System.err`` (the
-        runtime's warnings, a library that prints) also append to
-        ``arcadedb-stdio.log`` in the log directory, for the same reason; the
+        With the console off, Java's ``System.out`` and ``System.err`` (a library
+        that prints) and the runtime's own warnings (``System.initialErr``) also
+        append to ``arcadedb-stdio.log`` in the log directory, for the same reason; the
         runtime's start-up warning, printed while the JVM is created, still goes
         to the process's stderr. With ``1`` on Windows, that risk stays: do not
         redirect fd 1 or 2 after the first database is opened.
@@ -587,8 +587,11 @@ def _redirect_java_stdio(log_dir: Path) -> None:
     fd capture, a service, an embedding application) closes that handle, a database page file opened afterwards can get the same
     handle value, and the next ``System.out`` or ``System.err`` write lands in the page file (the JVM twin of the native bug that
     ``ARCADEDB_LOG_CONSOLE`` fixed for the engine's own console log). Removing the console log handler does not cover every writer:
-    a warning the runtime prints, a library that prints, ``printStackTrace()``. A ``PrintStream`` on a file opened here has no
-    cached handle, whatever the host does with fd 1 and 2.
+    a library that prints, ``printStackTrace()``, and the runtime's own warnings. ``System.setOut`` and ``System.setErr`` reach the
+    first two; the runtime prints its own warnings (the JEP 498 warning for ``sun.misc.Unsafe``, which jvector triggers when it
+    unmaps a graph file on the first reopen of a vector index; the JEP 472 warning for restricted methods) to ``System.initialErr``,
+    a copy of the stream over the cached stderr handle that it keeps for exactly that purpose, so that is replaced too. A
+    ``PrintStream`` on a file opened here has no cached handle, whatever the host does with fd 1 and 2.
 
     Only with the console off, which is the default on Windows only: on Linux and macOS the runtime writes to fd 1 and 2 by number
     and follows a redirect, so the default there is unchanged. ``ARCADEDB_LOG_CONSOLE=1`` on Windows keeps the runtime's own
@@ -610,6 +613,21 @@ def _redirect_java_stdio(log_dir: Path) -> None:
     ) as exc:  # the console stays as it was; never stop the start for a log file
         _LOGGER.warning(
             "Cannot send the Java stdout and stderr to %s (%s); they keep the process's own streams",
+            path,
+            exc,
+        )
+        return
+    try:
+        # setErr does not reach the runtime's own warnings: they are printed to System.initialErr, the stream that the runtime made
+        # over the cached stderr handle before any application code ran (the JEP 498 warning for sun.misc.Unsafe, which jvector
+        # prints on the first reopen of a vector index; the JEP 472 warning for restricted methods). It is a plain static field of
+        # java.lang.System, which --add-opens=java.base/java.lang (a default of this package) makes writable.
+        field = system.class_.getDeclaredField("initialErr")
+        field.setAccessible(True)
+        field.set(None, stream)
+    except Exception as exc:  # the runtime's own warnings keep the cached handle
+        _LOGGER.warning(
+            "Cannot send the Java runtime's own warnings to %s (%s); they keep the process's own stderr",
             path,
             exc,
         )

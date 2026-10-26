@@ -12,10 +12,11 @@ the runtime caches the OS handle of stdout and stderr at start-up. A host that r
 a service, an embedding application) closes that handle, a database file opened later can get the same handle value, and the next
 console log line is written into that file. The log file does not have that problem: the engine opens it itself.
 
-Console logging is not the only Java code that writes to the cached handle: the runtime's own warnings, a library that prints, or
-``e.printStackTrace()`` all go through ``System.out`` and ``System.err``. So with the console off, the JVM build also points those two
-streams at ``arcadedb-stdio.log`` in the log directory, a file the library opens itself, right after the JVM starts (``jvm.py``,
-:func:`stdio_log_path`). The runtime's start-up text (``WARNING: Using incubator modules: jdk.incubator.vector``) is printed while the
+Console logging is not the only Java code that writes to the cached handle: a library that prints or ``e.printStackTrace()`` goes
+through ``System.out`` and ``System.err``, and the runtime's own warnings (the JEP 498 warning for ``sun.misc.Unsafe``, which jvector
+causes on the first reopen of a vector index) go through ``System.initialErr``, a copy of ``System.err`` that ``System.setErr`` does not
+change. So with the console off, the JVM build points all three streams at ``arcadedb-stdio.log`` in the log directory, a file the
+library opens itself, right after the JVM starts (``jvm.py``, :func:`stdio_log_path`). The runtime's start-up text (``WARNING: Using incubator modules: jdk.incubator.vector``) is printed while the
 JVM is created, before any of this can run, and still goes to the real stderr of the process.
 """
 

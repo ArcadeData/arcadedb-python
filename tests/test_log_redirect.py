@@ -8,10 +8,14 @@ validating ...``; in the tests that showed as ``Invalid vector id -N``, ``Invali
 reopen). Two fixes close it, in two layers:
 
 * The engine logs to its file only on Windows unless ``ARCADEDB_LOG_CONSOLE`` asks for the console (no JUL console handler).
-* With the console off, the JVM build also replaces Java's ``System.out`` and ``System.err`` with a stream on
-  ``arcadedb-stdio.log`` in the log directory (``jvm._redirect_java_stdio``). Text that the first fix left on the cached handle (a
-  runtime warning, a library that prints, a stack trace) reached a page file with ``Invalid position 793803132 (size=65536)`` in
-  the JVM test run 40250615309 on Windows, one run in four.
+* With the console off, the JVM build also replaces Java's ``System.out``, ``System.err`` and ``System.initialErr`` with a stream on
+  ``arcadedb-stdio.log`` in the log directory (``jvm._redirect_java_stdio``). Text that the first fix left on the cached handle
+  reached a page file with ``Invalid position 793803132 (size=65536)`` in the JVM test run 40250615309 on Windows, one run in
+  four. The text was the runtime's warning ``A terminally deprecated method in sun.misc.Unsafe has been called`` (JEP 498), which
+  jvector causes when it unmaps a graph file on the first reopen of a vector index. The runtime prints it to ``System.initialErr``,
+  the copy of ``System.err`` that it makes before application code runs and that ``System.setErr`` does not change, so replacing
+  ``System.out`` and ``System.err`` alone left it on the cached handle. (A canary file that took over the stale handle's value
+  after the host's ``dup2`` held exactly these four lines.)
 
 The redirect tests run on every platform: on POSIX writes go to fd 1 and 2 by number, so a redirect is followed and the default
 passes trivially there, and on Windows it is the real check. The console-off test also fails on POSIX without the second fix, because
@@ -46,9 +50,20 @@ LOG_LINE = re.compile(
 )
 # What the child prints through Java's System.out and System.err after every step.
 PROBE = b"ARCADEDB-STDIO-PROBE"
+# The runtime's warning for the first use of a sun.misc.Unsafe memory method (JEP 498). jvector prints it when it unmaps a graph
+# file, on the first reopen of a vector index. The runtime writes it to System.initialErr, not to System.err.
+UNSAFE_WARNING = b"A terminally deprecated method in sun.misc.Unsafe has been called"
+UNSAFE_TRIGGER_FAILED = (
+    "the child could not unmap a file with jvector's SimpleMappedReader.Supplier, the call that makes the runtime print "
+    "UNSAFE_WARNING; if jvector no longer uses sun.misc.Unsafe, pick another call that does"
+)
 # Text of the runtime's own that never belongs in a database file.
 STRAY_TEXT = re.compile(
-    LOG_LINE.pattern + rb"|" + PROBE + rb"|WARNING: Using incubator modules"
+    LOG_LINE.pattern
+    + rb"|"
+    + PROBE
+    + rb"|WARNING: Using incubator modules|"
+    + re.escape(UNSAFE_WARNING)
 )
 
 REPEATS = int(os.environ.get("ARCADEDB_REDIRECT_REPEATS", "10"))
@@ -79,6 +94,18 @@ if mode == "redirect":
 
 system = jpype.JClass("java.lang.System")
 probes = 0
+
+# the runtime's own warning, now and not at some later reopen: jvector unmaps a file with sun.misc.Unsafe.invokeCleaner
+unsafe = False
+try:
+    target = os.path.join(os.path.dirname(sink), "mapped.bin")
+    with open(target, "wb") as handle:
+        handle.write(b"x" * 64)
+    supplier = jpype.JClass("io.github.jbellis.jvector.disk.SimpleMappedReader$Supplier")
+    supplier(jpype.JClass("java.nio.file.Path").of(target, [])).close()
+    unsafe = True
+except Exception:
+    pass  # jvector changed: the reopen below still reaches the warning if the runtime prints it
 
 
 def probe(step):
@@ -142,6 +169,7 @@ with open(result, "w") as out:
             "neighbors": sorted(neighbor_counts),
             "runs": int(repeats),
             "probes": probes,
+            "unsafe": unsafe,
         },
         out,
     )
@@ -202,6 +230,7 @@ def _run(tmp_path, mode, console=None, repeats=REPEATS):
             "neighbors": [1],
             "runs": repeats,
             "probes": json.loads(result.read_text())["probes"],
+            "unsafe": json.loads(result.read_text())["unsafe"],
         },
     )
 
@@ -238,11 +267,15 @@ def test_redirect_with_the_console_off_sends_nothing_to_the_redirect_target(tmp_
     assert run.result == run.expected
     assert LOG_LINE.search(run.sink) is None, run.sink[:500]
     assert PROBE not in run.sink, run.sink[:500]
+    assert UNSAFE_WARNING not in run.sink, run.sink[:500]
     assert _stray_text_in_files(run.data_dir) == []
     assert LOG_LINE.search(_log_file_text(run.log_dir))
     # every probe, from both streams, is in the file the library owns (and nowhere else)
     assert run.stdio.count(PROBE) == 2 * run.result["probes"], run.stdio[:500]
     assert run.stdio.count(b" out ") == run.stdio.count(b" err ")
+    # the runtime's own warning is printed to System.initialErr, which setErr does not reach: it is there too
+    assert run.result["unsafe"], UNSAFE_TRIGGER_FAILED
+    assert UNSAFE_WARNING in run.stdio, run.stdio[:500]
 
 
 def test_console_log_can_be_turned_on(tmp_path):
@@ -265,7 +298,10 @@ def test_console_log_can_be_turned_off(tmp_path):
     console = run.proc.stdout + run.proc.stderr
     assert LOG_LINE.search(console) is None, console[:500]
     assert PROBE not in console, console[:500]
+    assert UNSAFE_WARNING not in console, console[:500]
     assert run.stdio.count(PROBE) == 2 * run.result["probes"], run.stdio[:500]
+    assert run.result["unsafe"], UNSAFE_TRIGGER_FAILED
+    assert UNSAFE_WARNING in run.stdio, run.stdio[:500]
     assert LOG_LINE.search(_log_file_text(run.log_dir))
 
 
