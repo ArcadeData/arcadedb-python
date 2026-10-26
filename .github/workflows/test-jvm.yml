@@ -390,23 +390,15 @@ jobs:
           echo "🧪 Testing arcadedb (with bundled JRE)..."
 
           # Run pytest with JUnit XML output for structured results
-          # WINDOWS RUNS WITH --capture=sys (humemai/arcadedb-embedded-python#10). pytest's default fd capture swaps
-          # fds 1 and 2 with dup2 around every test; on Windows that closes the OS handle
-          # the JVM cached for System.out/err at start-up, a later pipe or socket can be
-          # handed the same handle value, and the next Java log line then blocks forever
-          # in WriteFile once that pipe is full. The Java dump caught it on 2026-09-29:
-          # main thread in FileOutputStream.writeBytes under LSMVectorIndex.build's
-          # progress log. sys capture never touches the fds, so the JVM keeps writing to
-          # the runner's own pipes (its log lines appear in this job's log). No test uses
-          # capfd.
-          # The package no longer logs to the console on Windows by default
-          # (ARCADEDB_LOG_CONSOLE, src/arcadedb/_logdir.py), which removes the cause, and
-          # tests/test_log_redirect.py redirects fd 1 and 2 on purpose. This flag stays
-          # until a run with the default capture has passed on the Windows legs.
-          CAPTURE=""
-          if [ "$RUNNER_OS" = "Windows" ]; then CAPTURE="--capture=sys"; fi
+          # pytest runs with its default fd capture on every platform. Windows used to run with
+          # --capture=sys (humemai/arcadedb-embedded-python#10): the default capture swaps fds 1
+          # and 2 with dup2 around every test, which on Windows closed the OS handle the JVM had
+          # cached for System.out/err, and the next Java log line blocked forever in WriteFile
+          # (caught 2026-09-29, LSMVectorIndex.build's progress log). The package no longer logs
+          # to the console on Windows by default (ARCADEDB_LOG_CONSOLE, src/arcadedb/_logdir.py),
+          # which removes the cause; tests/test_log_redirect.py redirects fd 1 and 2 on purpose.
           set +e  # Don't exit on test failures
-          pytest tests/ -v --tb=short --color=yes --junitxml=test-results.xml $CAPTURE
+          pytest tests/ -v --tb=short --color=yes --junitxml=test-results.xml
           PYTEST_EXIT_CODE=$?
           set -e
 
