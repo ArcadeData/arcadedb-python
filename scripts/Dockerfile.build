@@ -6,7 +6,8 @@
 # Excludes JARs listed in scripts/jar_exclusions.txt to optimize size
 #
 # REQUIRED BUILD ARGS (passed from build.sh):
-#   PYTHON_VERSION - Python version for wheel (e.g., 3.11, 3.12, 3.13, 3.14)
+#   PYTHON_VERSION - Python that builds the wheel and runs its smoke test (e.g., 3.12). The wheel is py3-none-<platform>
+#                    (setup.py), so any of 3.11 to 3.14 gives the same file; the test workflow runs it on each
 #   PACKAGE_NAME - always: arcadedb-jvm
 #   PACKAGE_DESCRIPTION - package description
 #   TARGET_PLATFORM - Linux target platform for bundled JRE (linux-x64, linux-arm64)

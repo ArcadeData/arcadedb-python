@@ -92,8 +92,9 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: python3 -I scripts/check_version.py "$TAG" --git-remote origin --pypi "$DIST_NAME"
 
-  # Builds a wheel per platform and Python version and runs the unit tests on each. The called
-  # workflow uploads the wheels as wheel-<platform>-py<version> artifacts.
+  # Builds one wheel for each platform (py3-none-<platform tag>, the same file for every Python) and
+  # runs the unit tests on it, on the Pythons scripts/select_matrix.py picks. The called workflow
+  # uploads the wheels as wheel-<platform> artifacts.
   test:
     name: Unit tests and wheels
     needs: validate-version
@@ -123,10 +124,10 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Download wheels for all tested Python versions
+      - name: Download the wheels of the four platforms
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          pattern: wheel-*-py*
+          pattern: wheel-*
           path: dist/
           merge-multiple: true
 
@@ -166,34 +167,31 @@ jobs:
         run: |
           ls -lh dist/
           python3 -I - <<'PY'
-          import os, pathlib, re, subprocess, sys, tomllib, zipfile
+          import os, pathlib, re, subprocess, sys, zipfile
 
           tag = os.environ["TAG"]
           wheels = sorted(pathlib.Path("dist").glob("*.whl"))
 
-          # One wheel per platform and supported interpreter. The interpreters are the classifiers of
-          # pyproject.toml, which the full matrix of scripts/select_matrix.py mirrors (the release runs the full
-          # matrix, not the small pull request one); the four platforms are the matrix platforms. Adding either to
-          # the matrix changes the expected count here.
-          prefix = "Programming Language :: Python :: 3."
-          classifiers = tomllib.load(open("pyproject.toml", "rb"))["project"]["classifiers"]
-          pythons = [c.rsplit(" ", 1)[1] for c in classifiers if c.startswith(prefix)]
+          # One wheel for each platform, py3-none-<platform tag> (setup.py): nothing in the wheel is compiled against
+          # CPython, so the Python versions it installs on are requires-python and the classifiers of pyproject.toml,
+          # not extra files. The four platforms are the platforms of the build matrix (scripts/select_matrix.py --wheels).
+          # Adding a platform to the matrix changes the expected count here.
           platforms = {
               "linux/amd64": r"manylinux.*x86_64",
               "linux/arm64": r"manylinux.*aarch64",
               "darwin/arm64": r"macosx.*arm64",
               "windows/amd64": r"win_amd64",
           }
-          expected = len(pythons) * len(platforms)
-          print(f"wheels: {len(wheels)} (expected {expected} = {len(pythons)} Python versions x {len(platforms)} platforms)")
+          expected = len(platforms)
+          print(f"wheels: {len(wheels)} (expected {expected} = one for each of the {len(platforms)} platforms)")
           problems = []
           if len(wheels) != expected:
               problems.append(f"expected {expected} wheels, got {len(wheels)}")
           for name, pattern in platforms.items():
               n = sum(1 for w in wheels if re.search(pattern, w.name))
               print(f"  {name}: {n}")
-              if n != len(pythons):
-                  problems.append(f"{name}: expected {len(pythons)} wheels, got {n}")
+              if n != 1:
+                  problems.append(f"{name}: expected 1 wheel, got {n}")
 
           names = set()
           for w in wheels:
@@ -222,10 +220,13 @@ jobs:
           with open(os.environ["GITHUB_OUTPUT"], "a") as out:
               out.write(f"import-name={imports[0]}\n")
 
-          # Size policy: every wheel stays under 100 MB (decimal); build.sh checks the same limit.
+          # Tag policy: every wheel is py3-none-<platform>, in its name and in its WHEEL file (a cpXY wheel would be one of sixteen).
+          # Size policy: every wheel stays under 100 MB (decimal); build.sh checks the same two limits.
           # ARCADEDB_WHEEL_MAX_MB is deliberately not set: the release has no override.
-          rc = subprocess.run([sys.executable, "scripts/verify_wheel_size.py", *map(str, wheels)]).returncode
-          sys.exit(rc)
+          for script in ("verify_wheel_tag.py", "verify_wheel_size.py"):
+              rc = subprocess.run([sys.executable, f"scripts/{script}", *map(str, wheels)]).returncode
+              if rc:
+                  sys.exit(rc)
           PY
           {
             echo "## Wheels"

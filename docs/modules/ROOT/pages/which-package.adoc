@@ -78,11 +78,11 @@ The API is the same. The runtime is not. These are the differences you can plan 
 
 | Python versions
 | 3.11 to 3.15. On 3.15 the CI runs a subset of the tests.
-| 3.11 to 3.14. JPype has no 3.15 wheel yet.
+| 3.11 to 3.14. JPype has no 3.15 wheel yet, so pip refuses the package on 3.15.
 
 | Platforms
 | Linux x86_64 and aarch64 (glibc 2.28 or later), macOS arm64, Windows x64. The Windows wheel is the newest: it is built in CI, and its test run is the least proven of the four. Not built: Intel Mac, Alpine (musl), Windows on ARM. See xref:installation.adoc#requirements[Requirements].
-| Linux x86_64 and aarch64 (glibc 2.34 or later), macOS arm64, Windows x64. Not built: Intel Mac, Alpine (musl), Windows on ARM.
+| Linux x86_64 and aarch64 (glibc 2.28 or later), macOS arm64, Windows x64. Not built: Intel Mac, Alpine (musl), Windows on ARM.
 
 | Java-object APIs (`get_java_database`, `get_java_document`, `get_java_*`)
 | Not available. They raise `NotOnNativeYet`.

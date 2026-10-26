@@ -73,6 +73,7 @@ NATIVE_NOT_APPLICABLE = {
     "test_jar_closure.py": "jar closure of the JVM wheel",
     "test_java_package_shadowing.py": "JPype package import hooks",
     "test_wheel_platform_tag.py": "JVM wheel tag",
+    "test_wheel_tags.py": "JVM wheel tag (py3-none-<platform>)",
     "test_wheel_size.py": "JVM wheel size",
     "test_wheel_licences.py": "JVM wheel licences",
     "test_wheel_packages.py": "JVM wheel contents",

@@ -7,10 +7,10 @@
 #
 # <previous-version> is the release whose PyPI file set this one must match in shape. Pass - when
 # there is none (the first release of the distribution): the file set is then checked against
-# pyproject.toml, one wheel per supported Python version and platform.
+# the four platforms, one wheel (py3-none-<platform>) for each platform.
 #
 # Run it under bash (not zsh). Every step prints PASS or FAIL; the exit code is the number of FAILs.
-# Set PIN=4-5 to pin the smoke runs to those cores. It downloads about 4 GB (the 20 checked wheels of the run and four from PyPI): TMPDIR or WORK should point at a disk, not a tmpfs. Needs: gh, curl, python3, uv.
+# Set PIN=4-5 to pin the smoke runs to those cores. It downloads about 0.6 GB (the 4 checked wheels of the run and four from PyPI): TMPDIR or WORK should point at a disk, not a tmpfs. Needs: gh, curl, python3, uv.
 set -uo pipefail
 V="${1:?version}"
 PREV="${2:?previous version}"
@@ -44,35 +44,29 @@ EOF
     if awk -F'\t' '$2=="completed" && $3=="success" && $4=="success"{ok=1} END{exit ok?0:1}' "$W/publish-job.tsv"; then pass "publish job and its 'Publish to PyPI' step both succeeded"; else fail "publish job or its upload step did not succeed"; fi
 fi
 
-# (b) PyPI file set against the previous release: the same files as the previous release with the new version, minus wheels for Python versions the release dropped, each under 100 MB (decimal). With "-" as the previous version: one wheel per Python version of the pyproject.toml classifiers and per platform
+# (b) PyPI file set against the previous release: the same files as the previous release with the new version (a previous release with one cpXY wheel for each Python counts as one py3-none wheel for each platform), each under 100 MB (decimal). With "-" as the previous version: one py3-none wheel for each platform
 curl -fsS "https://pypi.org/pypi/$DIST/$V/json" -o "$W/pypi-new.json" || fail "PyPI has no $V yet"
 if [ "$PREV" = "-" ]; then
     echo '{"urls": []}' > "$W/pypi-prev.json"
 else
     curl -fsS "https://pypi.org/pypi/$DIST/$PREV/json" -o "$W/pypi-prev.json" || fail "cannot read PyPI $PREV"
 fi
-python3 - "$W/pypi-new.json" "$W/pypi-prev.json" "$V" "$PREV" "$(dirname "$0")/../pyproject.toml" << 'EOF' || FAILS=$((FAILS + 1))
-import json,re,sys,tomllib
+python3 - "$W/pypi-new.json" "$W/pypi-prev.json" "$V" "$PREV" << 'EOF' || FAILS=$((FAILS + 1))
+import json,re,sys
 new,prev,v,pv=json.load(open(sys.argv[1])),json.load(open(sys.argv[2])),sys.argv[3],sys.argv[4]
-project=tomllib.load(open(sys.argv[5],"rb"))["project"]
-# A previous release may carry wheels for an interpreter this release dropped: they are not expected again.
-floor=int(re.search(r">=\s*3\.(\d+)",project["requires-python"]).group(1))
-def kept(f):
-    m=re.search(r"-cp3(\d+)-",f)
-    return m is None or int(m.group(1))>=floor
-want={u["filename"].replace(pv,v) for u in prev["urls"] if kept(u["filename"])}
+# Releases up to 26.11.1.dev0 had one cpXY-cpXY wheel for each Python and platform; since then the wheel is py3-none-<platform>,
+# one for each platform. Read the previous file set in the new shape, so the Pythons a release drops or adds change no file.
+want={re.sub(r"-cp3\d+-cp3\d+-","-py3-none-",u["filename"]).replace(pv,v) for u in prev["urls"]}
 have={u["filename"]:u for u in new["urls"]}
 gaps=0
 if pv=="-":
-    # No release to compare with: one wheel per supported Python version and platform, as release-jvm.yml counts them.
-    pythons=[c.rsplit(".",1)[1] for c in project["classifiers"] if c.startswith("Programming Language :: Python :: 3.")]
+    # No release to compare with: one py3-none wheel for each platform, as release-jvm.yml counts them.
     plats=[r"manylinux.*x86_64",r"manylinux.*aarch64",r"macosx.*arm64",r"win_amd64"]
-    for py in pythons:
-        for plat in plats:
-            hits=[f for f in have if re.search(r"-cp3%s-"%py,f) and re.search(plat,f)]
-            want.update(hits)
-            if len(hits)!=1:
-                print("EXPECTED one wheel for Python 3.%s on %s, got %d"%(py,plat,len(hits))); gaps+=1
+    for plat in plats:
+        hits=[f for f in have if re.search(r"-py3-none-",f) and re.search(plat,f)]
+        want.update(hits)
+        if len(hits)!=1:
+            print("EXPECTED one wheel on %s, got %d"%(plat,len(hits))); gaps+=1
 missing=sorted(want-set(have)); extra=sorted(set(have)-want)
 print("files on PyPI for %s: %d (previous release had %d)"%(v,len(have),len(prev["urls"])))
 for m in missing: print("MISSING",m)
@@ -106,7 +100,7 @@ fi
 
 # (d) every platform resolves, and a fresh environment installs and works (3.12 and 3.14)
 for plat in manylinux_2_34_x86_64 manylinux_2_34_aarch64 macosx_11_0_arm64 win_amd64; do
-    if uvx pip download --no-deps --only-binary=:all: --platform "$plat" --python-version 3.12 "$DIST==$V" -d "$W/dl-$plat" > "$W/dl-$plat.log" 2>&1; then pass "pip download $plat (cp312)"; else fail "pip download $plat: $(tail -1 "$W/dl-$plat.log")"; fi
+    if uvx pip download --no-deps --only-binary=:all: --platform "$plat" --python-version 3.12 "$DIST==$V" -d "$W/dl-$plat" > "$W/dl-$plat.log" 2>&1; then pass "pip download $plat (Python 3.12)"; else fail "pip download $plat: $(tail -1 "$W/dl-$plat.log")"; fi
 done
 for py in 3.12 3.14; do
     [ -n "${SKIP_SMOKE:-}" ] && {

@@ -18,30 +18,39 @@ Each package has one test workflow and one release workflow:
 
 The release workflows call the test workflows (`workflow_call`) and then publish; see xref:development/release.adoc[Release]. Two workflows test the `arcadedb-jvm` package: `test-jvm.yml` builds a wheel and runs the unit tests, and `test-python-examples.yml` runs the scripts in `examples/`. Both build the wheels on a native runner of each platform. `test-native.yml` builds and tests the `arcadedb` (native) package; see <<_native_build,Native build>>.
 
-The package supports four platforms and four Python versions (3.11 to 3.14). That is 16 combinations for each workflow. A pull request does not run all of them, because the organisation shares one runner limit with ArcadeData/arcadedb. Each macOS or Windows job on a pull request delays the upstream jobs too.
+The package supports four platforms and four Python versions (3.11 to 3.14). That is 16 combinations. The organisation shares one runner limit with ArcadeData/arcadedb, so each macOS or Windows job delays the upstream jobs too, and not every combination runs.
+
+== One wheel for each platform
+
+The wheel of `arcadedb-jvm` is tagged `py3-none-<platform>` (`setup.py`), like the native wheel: it carries a JRE for its platform, but nothing in it is compiled against CPython. So a Python version is a test, not a build. `test-jvm.yml` has two jobs:
+
+* `Build arcadedb-jvm wheel (<platform>)` builds the wheel once for each platform and uploads it as `wheel-<platform>`. `scripts/verify_wheel_tag.py` fails the build when the wheel is not `py3-none-<platform>`.
+* `Test arcadedb (<platform>, Python <version>)` downloads that wheel and installs it into one Python. It builds nothing. The release publishes these same four files.
+
+The `requires-python` of the package is `>=3.11,<3.15`. The wheel tag no longer keeps pip off Python 3.15, so the cap does it. JPype has no 3.15 wheel yet; remove the cap, and add 3.15 to the matrix, when it has one.
 
 == What runs when
 
-The script `scripts/select_matrix.py` chooses the combinations. The first job of each workflow, `Download ArcadeDB JARs`, runs it and passes the result to the test job.
+The script `scripts/select_matrix.py` chooses the combinations. The first job of each workflow, `Download ArcadeDB JARs`, runs it and passes the result to the next jobs: the test legs, and for `test-jvm.yml` also the platforms to build (`--wheels`).
 
 [cols="2,3,3"]
 |===
 | Event | Unit tests (`Test arcadedb`) | Examples (`Test Python Examples`)
 
 | Pull request
-| `linux/amd64` on all four Python versions. `linux/arm64`, `darwin/arm64` and `windows/amd64` on Python 3.11 and 3.14.
+| 10 legs: `linux/amd64` on all four Python versions. `linux/arm64`, `darwin/arm64` and `windows/amd64` on Python 3.11 and 3.14.
 | All four platforms on Python 3.14.
 
 | Push to `main`, the nightly run, a manual run, a release
-| All 16 combinations.
+| The same 10 legs.
 | All 16 combinations.
 |===
 
-A pull request runs 20 checks: 14 test jobs (10 and 4), the two `Download ArcadeDB JARs` jobs, the two summary jobs, `Bandit security scan` and `Dependency floor audit`. The full matrix runs 38.
+The unit tests run the same 10 legs on every event, like the native package (all Python versions on one Linux platform, the oldest and the newest elsewhere). They were 16 legs on `main`, the nightly run and a release before the wheel became `py3-none`; the extra legs tested the same file again. A pull request runs 24 checks: 14 test jobs (10 and 4), 4 wheel builds, the two `Download ArcadeDB JARs` jobs, the two summary jobs, `Bandit security scan` and `Dependency floor audit`. The other events run 36: the examples run all 16 combinations there.
 
 The names of the test jobs do not change: `Test arcadedb (<platform>, Python <version>)`. A check keeps its history when a pull request runs fewer of them.
 
-A release always runs the full matrix, because `release-jvm.yml` expects one wheel for each platform and Python version. The nightly run also tests against the newest `arcadedata/arcadedb:latest` image.
+`release-jvm.yml` expects exactly four wheels, one for each platform, all `py3-none`. It checks the count, the tags, the sizes and the names before it publishes. The nightly run also tests against the newest `arcadedata/arcadedb:latest` image.
 
 == Other rules
 
@@ -60,4 +69,4 @@ The workflow `test-native.yml` builds the native image of the `arcadedb` package
 
 == Change the selection
 
-Edit `PULL_REQUEST_LEGS` in `scripts/select_matrix.py`. The test `tests/test_select_matrix.py` fixes the full matrix at 16 combinations, so a change that shrinks it fails. When you add a Python version, add it to `PYTHONS` in the script and to the classifiers in `pyproject.toml`. A test checks that both lists are the same, and that `requires-python` is the oldest of them. When you drop one, remove it from the same places and update the counts in the test.
+Edit `JVM_LEGS` (unit tests, every event) or `PULL_REQUEST_LEGS` (examples on a pull request) in `scripts/select_matrix.py`. The test `tests/test_select_matrix.py` fixes the legs, so a change that shrinks them fails. When you add a Python version, add it to `PYTHONS` in the script and to the classifiers in `pyproject.toml`. A test checks that both lists are the same, that `requires-python` starts at the oldest of them and stops before the minor after the newest. When you drop one, remove it from the same places and update the counts in the test.
