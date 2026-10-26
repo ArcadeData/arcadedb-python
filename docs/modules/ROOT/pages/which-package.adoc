@@ -62,6 +62,10 @@ The API is the same. The runtime is not. These are the differences you can plan 
 | Small footprint.
 | Larger. The JVM keeps a heap, and each Python process starts its own JVM.
 
+| Garbage collector
+| The serial collector of GraalVM Community Edition. A collection stops all threads, and the pause grows with the live data. The heap limit is 50% of the memory by default (xref:installation.adoc#native-heap[Heap size]).
+| The JVM's own collectors, G1 by default on a server-class machine. You choose them and the heap with `jvm_kwargs` (xref:installation.adoc#jvm-options[JVM options]).
+
 | Throughput on long loads
 | No JIT warm-up. Speed over a long run depends on the workload.
 | The JIT compiler makes long-running loads faster over time.
@@ -132,6 +136,13 @@ The packages had other names until 26.10.x. Search results and old tutorials may
 | Formerly `arcadedb-embedded-native`, imported as `arcadedb_native`
 | The same build, now with the import name `{import-name}`. The old preview versions were 26.10.x pre-releases.
 |===
+
+[[migrate]]
+=== Migrate from the old names
+
+. Remove the old package: `pip uninstall arcadedb-embedded arcadedb-embedded-native`.
+. Install the new one: `pip install {jvm-pkg-name}` if you used `arcadedb-embedded`, or `pip install {native-pkg-name}` if you used `arcadedb-embedded-native`. Add `--pre` while the transition note above applies.
+. Change the import: `import arcadedb_embedded` and `import arcadedb_native` both become `import {import-name}`. The builds are the same as in the table above, so the rest of your code stays.
 
 The old packages will get a deprecation shim that points to the new names. Releases of the new layout start with 26.11.1. The 26.10.x wheels were built in a separate repository of the humemai organisation.
 
