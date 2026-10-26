@@ -142,7 +142,7 @@ The packages had other names until 26.10.x. Search results and old tutorials may
 . Install the new one: `pip install {jvm-pkg-name}` if you used `arcadedb-embedded`, or `pip install {native-pkg-name}` if you used `arcadedb-embedded-native`. Add `--pre` while the transition note above applies.
 . Change the import: `import arcadedb_embedded` and `import arcadedb_native` both become `import {import-name}`. The builds are the same as in the table above, so the rest of your code stays.
 
-The old packages will get a deprecation shim that points to the new names. Releases of the new layout start with 26.11.1. The 26.10.x wheels were built in a separate repository of the humemai organisation.
+Releases of the new layout start with 26.11.1. The 26.10.x wheels were built in a separate repository of the humemai organisation.
 
 [[drivers]]
 == Packages that talk to a server
