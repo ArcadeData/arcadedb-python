@@ -680,14 +680,27 @@ class NativeDatabase:
         return row.get_element()
 
     def lookup_by_key(self, type_name: str, keys: List[str], values: List[Any]):
+        """The first record of ``type_name`` whose ``keys`` properties equal ``values``, wrapped, or None.
+
+        Index-based, as on the JVM build: the engine's own ``lookupByKey`` runs in the image, so ``keys`` must be exactly the properties of
+        a LSM_TREE or HASH index of the type or one of its supertypes, in the index's order. Anything else raises ``ArcadeDBError``
+        (a scan is ``query()`` with a ``WHERE``). No statement has that rule, hence this op and not a ``SELECT``.
+        """
         self._check_not_closed()
-        where = " AND ".join(f"`{k}` = ?" for k in keys)
-        try:
-            lookup_sql = f"SELECT FROM `{type_name}` WHERE {where} LIMIT 1"  # nosec B608 - backtick-quoted identifiers; values go through ? parameters
-            row = self.query("sql", lookup_sql, list(values)).first()
-            return row.get_element() if row is not None else None
-        except ArcadeDBError as e:
-            raise ArcadeDBError(f"Failed to lookup by key in '{type_name}': {e}") from e
+        from .extras import _enc
+
+        reply = loads(
+            lib.call(
+                "arcadedb_n_lookup",
+                self._h,
+                lib.b(type_name),
+                lib.b(_enc({"keys": [str(k) for k in keys], "values": list(values)})),
+            )
+        )
+        if not reply.get("ok"):
+            raise _error(f"Failed to lookup by key in '{type_name}'", reply)
+        row = NativeResultSet(self, reply).first()
+        return row.get_element() if row is not None else None
 
     def insert_many(
         self,

@@ -1320,11 +1320,18 @@ class Database:
 
         Args:
             type_name: Type name
-            keys: List of property names (must be indexed)
+            keys: List of property names. They must be exactly the properties of
+                a LSM_TREE or HASH index of the type or one of its supertypes, in
+                the index's order; a FULL_TEXT or vector index does not count
             values: List of property values
 
         Returns:
             The first matching record, wrapped, or None
+
+        Raises:
+            ArcadeDBError: If no such index exists (the call never scans the type;
+                use ``query()`` with a ``WHERE`` for that), or the type does not exist.
+                The native and the JVM build raise alike.
 
         Example:
             >>> user = db.lookup_by_key("User", ["email"], ["alice@example.com"])

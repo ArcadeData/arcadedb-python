@@ -40,6 +40,7 @@ import com.arcadedb.function.CypherBuiltinFunctions;
 import com.arcadedb.function.CypherFunctionRegistry;
 import com.arcadedb.function.FunctionRegistry;
 import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
+import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.vector.LSMVectorIndex;
@@ -54,6 +55,8 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.integration.exporter.Exporter;
 import com.arcadedb.integration.importer.Importer;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.InternalResultSet;
+import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
@@ -279,6 +282,27 @@ public final class NativeExtras {
       default -> throw new IllegalArgumentException("unknown database setting " + o);
       }
       return ArcadeNative.OK();
+    } catch (final Throwable t) {
+      return ArcadeNative.err(t);
+    }
+  }
+
+  // ---- Database.lookupByKey: no statement raises when no index serves the keys, as the engine's call does
+
+  /**
+   * The first record of db.lookupByKey(type, keys, values), as the reply of a statement (none or one row, drained) so that Python reads it
+   * with the reader of a SELECT. argsJson: {"keys":[property names],"values":[tagged values]}. The engine's own exceptions are the error
+   * reply, as on the JVM build: IllegalArgumentException when no LSM_TREE or HASH index of the type or a supertype is on exactly those
+   * properties, SchemaException when the type does not exist.
+   */
+  @CEntryPoint(name = "arcadedb_n_lookup")
+  public static CCharPointer lookup(final IsolateThread thread, final long dbh, final CCharPointer type, final CCharPointer argsJson) {
+    try {
+      final Database db = ArcadeNative.db(dbh);
+      final Map<String, Object> a = args(argsJson);
+      final IndexCursor cursor = db.lookupByKey(ArcadeNative.str(type), strings(a.get("keys")), objects(a.get("values")));
+      return ArcadeNative.out(
+          replyRows(cursor.hasNext() ? new InternalResultSet(new ResultInternal(cursor.next())) : new InternalResultSet()));
     } catch (final Throwable t) {
       return ArcadeNative.err(t);
     }
