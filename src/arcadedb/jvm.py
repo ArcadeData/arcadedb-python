@@ -854,6 +854,15 @@ def _build_jvm_args(
     if not any(arg.startswith("--enable-native-access") for arg in merged_args):
         merged_args.append("--enable-native-access=ALL-UNNAMED")
 
+    # JEP 498 (JDK 24 and later): the first call of a sun.misc.Unsafe memory method prints a four-line warning to System.initialErr.
+    # jvector causes it when it unmaps a graph file on the first reopen of a vector index, and a user cannot change jvector. "allow"
+    # (the JEP 471 option) switches the warning off at its source; a value in jvm_args or ARCADEDB_JVM_ARGS wins. The native build sets
+    # the same option when it builds the image (native/scripts/build-image.sh).
+    if not any(
+        arg.startswith("--sun-misc-unsafe-memory-access") for arg in merged_args
+    ):
+        merged_args.append("--sun-misc-unsafe-memory-access=allow")
+
     # Force UTF-8 regardless of OS locale to avoid silent encoding mismatches
     if not any(arg.startswith("-Dfile.encoding=") for arg in merged_args):
         merged_args.append("-Dfile.encoding=UTF8")

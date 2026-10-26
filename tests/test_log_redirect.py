@@ -17,6 +17,14 @@ reopen). Two fixes close it, in two layers:
   ``System.out`` and ``System.err`` alone left it on the cached handle. (A canary file that took over the stale handle's value
   after the host's ``dup2`` held exactly these four lines.)
 
+The runtime's warning is also switched off at its source on both builds, so that no stream has it to write: the JVM build starts with
+``--sun-misc-unsafe-memory-access=allow`` (a default of ``jvm._build_jvm_args``; a caller's own value wins), and the native image is
+built with ``-Dsun.misc.unsafe.memory.access=allow`` for its builder (``JavaArgs`` in the glue jar's ``native-image.properties``;
+the image keeps the value as a constant, a ``-D`` at run time does nothing). The native image prints the same four lines to the
+cached stderr handle otherwise (dev1 release run 40291551544, Windows: ``db0\\Doc_0_485397029700.4.262144.v0.lsmvecidx`` started with
+them; on Linux the same text reaches the redirect target). The tests below check that the text is on no stream and in no file on both
+builds, and the JVM build also runs once with the option set back to ``warn`` to keep the ``System.initialErr`` redirect tested.
+
 The redirect tests run on every platform and on both builds (the first fix is shared; the second is the JVM build's, see below):
 on POSIX writes go to fd 1 and 2 by number, so a redirect is followed and the default passes trivially there, and on Windows it is
 the real check. The JVM build's console-off test also fails on POSIX without the second fix, because the Java probes below then go
@@ -190,10 +198,12 @@ with open(result, "w") as out:
 """
 
 
-def _run(tmp_path, mode, console=None, repeats=REPEATS):
+def _run(tmp_path, mode, console=None, repeats=REPEATS, jvm_args=None):
     """Run CHILD in a fresh process. Returns the result dict, the process, the data and log directories, the redirect target's
-    text and the text of ``arcadedb-stdio.log`` (empty when there is none), in a namespace.
+    text and the text of ``arcadedb-stdio.log`` (empty when there is none), in a namespace. ``jvm_args`` is the child's
+    ``ARCADEDB_JVM_ARGS`` (the JVM build only).
     """
+    tmp_path.mkdir(exist_ok=True)
     data_dir = tmp_path / "data"
     data_dir.mkdir()
     log_dir = tmp_path / "log"
@@ -205,6 +215,8 @@ def _run(tmp_path, mode, console=None, repeats=REPEATS):
         if k not in ("ARCADEDB_LOG_CONSOLE", "ARCADEDB_LOG_DIR")
     }
     env["ARCADEDB_LOG_DIR"] = str(log_dir)
+    if jvm_args is not None:
+        env["ARCADEDB_JVM_ARGS"] = jvm_args
     if console is not None:
         env["ARCADEDB_LOG_CONSOLE"] = console
     proc = subprocess.run(  # nosec B603 - fixed argument list, no shell
@@ -286,11 +298,26 @@ def test_redirect_with_the_console_off_sends_nothing_to_the_redirect_target(tmp_
     # every probe, from both streams, is in the file the library owns (and nowhere else); the native build has none
     assert run.stdio.count(PROBE) == 2 * run.result["probes"], run.stdio[:500]
     assert run.stdio.count(b" out ") == run.stdio.count(b" err ")
+    # the runtime's JEP 498 warning is off at its source on both builds: it is on no stream (the redirect target would have it on
+    # Linux, a database file on Windows). The JVM child forced the trigger; the native one reaches it at the first reopen.
+    assert UNSAFE_WARNING not in run.sink, run.sink[:500]
+    assert UNSAFE_WARNING not in run.stdio, run.stdio[:500]
     if JVM:
-        assert UNSAFE_WARNING not in run.sink, run.sink[:500]
-        # the runtime's own warning is printed to System.initialErr, which setErr does not reach: it is there too
         assert run.result["unsafe"], UNSAFE_TRIGGER_FAILED
-        assert UNSAFE_WARNING in run.stdio, run.stdio[:500]
+        # with the option back to warn the runtime prints it to System.initialErr, which setErr does not reach: the redirect to
+        # arcadedb-stdio.log has to catch it there, and it must still be in no database file
+        warned = _run(
+            tmp_path / "warn",
+            "redirect",
+            console="0",
+            repeats=1,
+            jvm_args="--sun-misc-unsafe-memory-access=warn",
+        )
+        assert warned.result == warned.expected
+        assert warned.result["unsafe"], UNSAFE_TRIGGER_FAILED
+        assert UNSAFE_WARNING not in warned.sink, warned.sink[:500]
+        assert UNSAFE_WARNING in warned.stdio, warned.stdio[:500]
+        assert _stray_text_in_files(warned.data_dir) == []
 
 
 def test_console_log_can_be_turned_on(tmp_path):
@@ -302,6 +329,7 @@ def test_console_log_can_be_turned_on(tmp_path):
     assert LOG_LINE.search(console), console[:500]
     # the runtime keeps its own streams with the console on: the probes are on the console, there is no stdio file
     assert console.count(PROBE) == 2 * run.result["probes"], console[:500]
+    assert UNSAFE_WARNING not in console, console[:500]
     assert run.stdio == b""
     assert _stray_text_in_files(run.data_dir) == []
     assert LOG_LINE.search(_log_file_text(run.log_dir))
@@ -314,10 +342,10 @@ def test_console_log_can_be_turned_off(tmp_path):
     assert LOG_LINE.search(console) is None, console[:500]
     assert PROBE not in console, console[:500]
     assert run.stdio.count(PROBE) == 2 * run.result["probes"], run.stdio[:500]
+    assert UNSAFE_WARNING not in console, console[:500]
+    assert UNSAFE_WARNING not in run.stdio, run.stdio[:500]
     if JVM:
-        assert UNSAFE_WARNING not in console, console[:500]
         assert run.result["unsafe"], UNSAFE_TRIGGER_FAILED
-        assert UNSAFE_WARNING in run.stdio, run.stdio[:500]
     assert LOG_LINE.search(_log_file_text(run.log_dir))
 
 

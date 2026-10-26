@@ -53,6 +53,22 @@ def test_custom_jvm_args_merging():
         assert "-XX:+UseCompactObjectHeaders" in args
 
 
+def test_unsafe_memory_access_warning_is_off_by_default_and_can_be_overridden():
+    """JEP 498: ``allow`` keeps the runtime from printing its sun.misc.Unsafe warning (jvector causes it); a caller's value wins."""
+    allow = "--sun-misc-unsafe-memory-access=allow"
+    with patch.dict(os.environ, {}, clear=True):
+        args = _build_jvm_args(heap_size="4g", disable_xml_limits=True, jvm_args=None)
+        assert args.count(allow) == 1
+    with patch.dict(
+        os.environ,
+        {"ARCADEDB_JVM_ARGS": "--sun-misc-unsafe-memory-access=warn"},
+        clear=True,
+    ):
+        args = _build_jvm_args(heap_size="4g", disable_xml_limits=True, jvm_args=None)
+        assert "--sun-misc-unsafe-memory-access=warn" in args
+        assert allow not in args
+
+
 def test_polyglot_engine_default_can_be_overridden():
     """The polyglot engine is off by default and ``jvm_args`` or the env var turn it on.
 

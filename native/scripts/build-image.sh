@@ -43,6 +43,9 @@ if [ "$EXT" = dll ]; then
         dependency:build-classpath -Dmdep.outputFile=target/runtime.cp >> "$OUT/build.log" 2>&1
     echo "native-image -cp target/arcadedb-native-lib-0.0.1.jar;$(tr -d '\r\n' < target/runtime.cp) --shared" >> "$OUT/build.log"
 fi
+# native-image.properties in the glue jar also carries JavaArgs = -Dsun.misc.unsafe.memory.access=allow for the builder's JVM (JEP 498: the image
+# would print the sun.misc.Unsafe warning that jvector causes on every vector index reopen, into a database file on Windows). The build log does not
+# show a JavaArgs line; tests/test_log_redirect.py is the gate that catches a lost one.
 # the jvector force-inline filters (native-image.properties in the glue jar) must be picked up: the build output lists the option and its origin (Windows prints the path with backslashes)
 grep -a -E -q 'PriorityForceInline. \(origin\(s\): .META-INF.native-image.org\.humemai.arcadedb-native-lib.native-image\.properties' "$OUT/build.log" ||
     {
