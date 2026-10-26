@@ -44,6 +44,7 @@ import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.schema.LSMVectorIndexMetadata;
+import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.Pair;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.graph.Edge;
@@ -323,6 +324,14 @@ public final class NativeExtras {
         sb.append(",\"add_hierarchy\":").append(m.addHierarchy).append(",\"build_state\":").append(q(m.buildState));
         sb.append(",\"pq_subspaces\":").append(m.pqSubspaces).append(",\"pq_clusters\":").append(m.pqClusters);
         sb.append(",\"pq_center_globally\":").append(m.pqCenterGlobally).append(",\"pq_training_limit\":").append(m.pqTrainingLimit);
+        // rerankOversample and fusedPQ exist from engine 26.11.1 (ArcadeData/arcadedb#10545). The index's own definition JSON writes every knob the
+        // engine's metadata has, so the keys appear exactly when the linked engine has them and stay out for 26.10.2, and this class names no field
+        // that 26.10.2 lacks (it compiles and links against both).
+        final JSONObject definition = first.toJSON();
+        if (definition.has("rerankOversample"))
+          sb.append(",\"rerank_oversample\":").append(definition.getInt("rerankOversample"));
+        if (definition.has("fusedPQ"))
+          sb.append(",\"fused_pq\":").append(definition.getBoolean("fusedPQ"));
       }
       case "approximate" -> {
         final List<Object> vector = (List<Object>) a.get("vector");
