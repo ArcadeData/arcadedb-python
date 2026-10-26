@@ -2004,6 +2004,16 @@ class Database:
         flush through the same executor and is measured exact, 20,000 vertices
         and 40,000 edges with and without ``parallel_flush``.
 
+        Note:
+            ``graph_batch()`` is recommended for bulk loads. When it is called again and
+            again on types that also see deletes (a sliding window, for example), each
+            flush writes its edge records onto new pages and never reuses the space
+            that deletes freed, so the edge bucket grows (ArcadeData/arcadedb#10746).
+            For that workload write the edges with SQL ``CREATE EDGE``, or
+            ``Vertex.new_edge`` inside ``db.transaction()``. See "Known limitation:
+            graph batches next to deletes" in
+            docs/modules/ROOT/pages/how-to/bulk-loads.adoc.
+
         Args:
             batch_size: Maximum buffered edges before auto-flush.
             expected_edge_count: Hint for auto-tuning batch size when not set.
