@@ -889,6 +889,16 @@ class NativeDatabase:
         """A GraphBatch for bulk graph loads (keywords as :meth:`Database.graph_batch`). ``commit_every`` defaults to 1000 on this build
         (the JVM build leaves it unset: one commit per flush); ``commit_every=0`` gives one commit per flush here too, and an explicit value
         wins. It is also the number of rows ``create_vertices`` sends, and commits, per call into the image.
+
+        Note:
+            ``graph_batch()`` is recommended for bulk loads. When it is called again and
+            again on types that also see deletes (a sliding window, for example), each
+            flush writes its edge records onto new pages and never reuses the space
+            that deletes freed, so the edge bucket grows (ArcadeData/arcadedb#10746).
+            For that workload write the edges with SQL ``CREATE EDGE``, or
+            ``Vertex.new_edge`` inside ``db.transaction()``. See "Known limitation:
+            graph batches next to deletes" in
+            docs/modules/ROOT/pages/how-to/bulk-loads.adoc.
         """
         from .extras import NativeGraphBatch
 
