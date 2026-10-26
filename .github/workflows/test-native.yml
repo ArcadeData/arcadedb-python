@@ -34,13 +34,12 @@ name: Test native (arcadedb)
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
+    # tests/ and src/arcadedb/ are shared by both backends: a change there can break the native parity suite, so it runs too.
     paths: &native_paths
       - "native/**"
-      - "src/arcadedb/_native/**"
-      - "tests/test_native_*.py"
-      - "tests/conftest.py"
+      - "src/arcadedb/**"
+      - "tests/**"
       - "scripts/select_native_matrix.py"
-      - "tests/test_select_native_matrix.py"
       - ".github/workflows/test-native.yml"
   push:
     branches: [main]
