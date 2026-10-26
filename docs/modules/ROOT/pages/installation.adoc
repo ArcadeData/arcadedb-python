@@ -167,6 +167,18 @@ export ARCADEDB_NATIVE_ISOLATE_ARGS="-XX:MaxRAM=4g"                 # a memory s
 
 When one of these three is present, the package adds no default. Do not use `-XX:MaxRAMPercentage`. The native image does not accept it, and the isolate then fails to start with `graal_create_isolate failed (rc=22)`. The same variable also takes the engine's `-D` settings: see xref:how-to/logs.adoc[Where the logs go]. For what a native image build supports, see xref:arcadedb::how-to/operations/native-image.adoc[Native image] in the main ArcadeDB docs.
 
+[[native-limits]]
+=== Limits of the native build
+
+What the native package cannot do, or does differently from `{jvm-pkg-name}`. Read this before you pick it for a production service.
+
+* *Serial garbage collector.* GraalVM Community Edition offers one garbage collector for native images, the serial one (the G1 collector is part of Oracle GraalVM only). A collection stops all threads, and its pause grows with the amount of live data. For a heavy, long-running load, a large heap or many busy threads, use `{jvm-pkg-name}`.
+* *Heap limit of 50% by default.* The package sets `-XX:MaximumHeapSizePercent=50`, so the process holds at most half of the memory it can see. See <<native-heap>> to change it.
+* *No Java objects, no JVM options.* `get_java_database`, `get_java_document` and the other `get_java_*` calls raise `NotOnNativeYet`. `start_jvm`, `jvm_kwargs` and the flags in <<jvm-options>> do not exist.
+* *No console log on Windows by default.* The log goes to the file only. See xref:how-to/logs.adoc[Where the logs go] for the reason and for `ARCADEDB_LOG_CONSOLE`.
+* *Engine modules left out.* The gRPC and MongoDB wire protocols, Raft HA, Gremlin and the polyglot languages (JavaScript, Python as a query language) are not in the image. See <<what-is-included>>.
+* *Platforms.* Intel Macs, Alpine Linux (musl) and Windows on ARM have no wheel. See <<requirements>>.
+
 == Next steps
 
 * xref:quickstart.adoc[Quickstart]
