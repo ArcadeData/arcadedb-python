@@ -18,7 +18,10 @@ This page builds a small database from scratch. You need one of the two packages
 | Heavy, long-running loads, or the Java-object APIs.
 |===
 
-See xref:which-package.adoc[Which package?] if you are not sure. The scripts on this page ran against the published `{jvm-pkg-name}` wheel, and the output shown is what it printed. The code is the same for both packages. The wording of an error message can differ on `{native-pkg-name}`.
+See xref:which-package.adoc[Which package?] if you are not sure. If you are not sure, take `{native-pkg-name}`. Until a final 26.11.1 is on PyPI, add `--pre` to the install line of `{native-pkg-name}` (see the transition note in xref:installation.adoc[Installation]).
+
+// REMOVE WHEN: the old arcadedb-embedded* shims are retired and two releases have shipped with the two-package layout allow-old-name
+The scripts on this page ran against the JVM build, version 26.10.2.post1 (formerly `arcadedb-embedded`). The output shown is what it printed. The code is the same for both packages. The wording of an error message can differ on `{native-pkg-name}`.
 
 == Embedded mode
 

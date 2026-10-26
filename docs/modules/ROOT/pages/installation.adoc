@@ -6,7 +6,7 @@
 
 == Install
 
-Pick one of the two packages. Both import as `{import-name}`.
+Pick one of the two packages. Both import as `{import-name}`. If you are not sure, take `{native-pkg-name}`.
 
 [cols="1,2,2"]
 |===
@@ -26,36 +26,48 @@ Pick one of the two packages. Both import as `{import-name}`.
 Install one of them, not both. If both are installed, `import arcadedb` raises an `ImportError` that names both packages. See xref:which-package.adoc[Which package?] for the comparison, and for how to switch.
 
 // REMOVE WHEN: the old arcadedb-embedded* shims are retired and two releases have shipped with the two-package layout allow-old-name
-NOTE: *Transition note.* The first release of this layout is 26.11.1. Until `{native-pkg-name}` passes its readiness bar, it may appear only as pre-releases, `26.11.1.devN`. Install it with `pip install --pre {native-pkg-name}` or `uv add --prerelease allow {native-pkg-name}`.
+NOTE: *Transition note.* The first release of this layout is 26.11.1. Until `{native-pkg-name}` passes its readiness bar, it may appear only as pre-releases, `26.11.1.devN`. Install it with `pip install --pre {native-pkg-name}` or `uv add --prerelease allow {native-pkg-name}`. A plain `pip install {native-pkg-name}` finds only the 0.0.1 placeholder, which installs the old package. The same holds for `{jvm-pkg-name}` until its 26.11.1 is released.
 
 // REMOVE WHEN: the old arcadedb-embedded* shims are retired and two releases have shipped with the two-package layout allow-old-name
-NOTE: *Old names.* The JVM package was formerly `arcadedb-embedded`. It is now `{jvm-pkg-name}`, the same build. The native package was formerly `arcadedb-embedded-native`. It is now `{native-pkg-name}`. See xref:which-package.adoc#old-names[Old names].
+NOTE: *Old names.* The JVM package was formerly `arcadedb-embedded`. It is now `{jvm-pkg-name}`, the same build. The native package was formerly `arcadedb-embedded-native`. It is now `{native-pkg-name}`, and the old project is archived. A last `arcadedb-embedded` release will install `{native-pkg-name}`, not `{jvm-pkg-name}`. See xref:which-package.adoc#old-names[Old names].
 
 The JVM package is self-contained. It carries a Java 25 runtime for its platform, so you do not install Java. Its only Python dependency is `JPype1` 1.5.0 or later (the Java-Python bridge), which pip installs for you. The native package needs no Java and no JPype. Optional extras install the columnar helpers of the native package: `[numpy]`, `[arrow]`, `[pandas]` and `[polars]`.
 
+[[requirements]]
 == Requirements
 
-* Python 3.11 to 3.14. The wheels' CI runs all four versions on every supported platform for `main`, the nightly run and each release. A pull request runs a smaller selection (xref:development/ci.adoc[Continuous integration]).
-* One of the four platforms below. The Windows wheel of the native build is the newest, and its test run is the least proven of the four.
+* Python 3.11 to 3.14 for both packages. The native package also supports Python 3.15: it is one `py3-none` wheel that loads its library with `ctypes`, and the CI runs a subset of the tests on 3.15. `{jvm-pkg-name}` does not install on 3.15 yet, because its dependency JPype has no 3.15 wheel. The CI runs all four versions 3.11 to 3.14 on every supported platform for `main`, the nightly run and each release. A pull request runs a smaller selection (xref:development/ci.adoc[Continuous integration]).
+* One of the four platforms below. The Windows wheel of the native build is the newest, and its test run is the least proven of the four. It needs the Microsoft Visual C++ runtime (`VCRUNTIME140.dll`), which every CPython for Windows already brings.
 
 Every wheel is platform-specific and built on a native runner of its platform, so pip needs no hint to pick the right one. The JVM wheel also carries a JRE for its platform. The native wheel is one file for each platform, and it serves every Python version because it loads its library with `ctypes`.
 
-[cols="2,3"]
+[cols="2,3,3"]
 |===
-| Platform | Wheel tag (JVM wheel, Python 3.12)
+| Platform | Wheel tag, `{native-pkg-name}` | Wheel tag, `{jvm-pkg-name}` (Python 3.12)
 
 | Linux x86_64
-| `manylinux_2_34_x86_64`
+| `manylinux_2_28_x86_64`: glibc 2.28 or later (RHEL 8 and Rocky 8, Debian 10, Ubuntu 20.04 and newer)
+| `manylinux_2_34_x86_64`: glibc 2.34 or later (RHEL 9, Debian 12, Ubuntu 22.04 and newer)
 
 | Linux ARM64
-| `manylinux_2_34_aarch64`
+| `manylinux_2_28_aarch64`: glibc 2.28 or later
+| `manylinux_2_34_aarch64`: glibc 2.34 or later
 
 | macOS Apple Silicon
+| `macosx_11_0_arm64`
 | `macosx_11_0_arm64`
 
 | Windows x86_64
 | `win_amd64`
+| `win_amd64`
 |===
+
+Each native wheel is about 38 MB. These platforms are not built, and pip finds no wheel for them:
+
+* *Intel Macs* (macOS x86_64). Apple has sold only Apple Silicon Macs since 2023, and macOS 26 is the last release for Intel Macs. On an Intel Mac, run the Linux wheel in Docker or in a Linux virtual machine.
+* *Alpine Linux and other musl-based distributions.* The Linux wheels are for glibc. pip then says `No matching distribution found` (for a wheel file you downloaded: `is not a supported wheel on this platform`). Use a glibc image, for example `python:3.12-slim`.
+* *Windows on ARM.*
+* *Linux with an older glibc than the table*, for example Amazon Linux 2 and CentOS 7.
 
 [[what-is-included]]
 == What is included
@@ -166,6 +178,18 @@ export ARCADEDB_NATIVE_ISOLATE_ARGS="-XX:MaxRAM=4g"                 # a memory s
 ----
 
 When one of these three is present, the package adds no default. Do not use `-XX:MaxRAMPercentage`. The native image does not accept it, and the isolate then fails to start with `graal_create_isolate failed (rc=22)`. The same variable also takes the engine's `-D` settings: see xref:how-to/logs.adoc[Where the logs go]. For what a native image build supports, see xref:arcadedb::how-to/operations/native-image.adoc[Native image] in the main ArcadeDB docs.
+
+[[native-limits]]
+=== Limits of the native build
+
+What the native package cannot do, or does differently from `{jvm-pkg-name}`. Read this before you pick it for a production service.
+
+* *Serial garbage collector.* GraalVM Community Edition offers one garbage collector for native images, the serial one (the G1 collector is part of Oracle GraalVM only). A collection stops all threads, and its pause grows with the amount of live data. For a heavy, long-running load, a large heap or many busy threads, use `{jvm-pkg-name}`.
+* *Heap limit of 50% by default.* The package sets `-XX:MaximumHeapSizePercent=50`, so the process holds at most half of the memory it can see. See <<native-heap>> to change it.
+* *No Java objects, no JVM options.* `get_java_database`, `get_java_document` and the other `get_java_*` calls raise `NotOnNativeYet`. `start_jvm`, `jvm_kwargs` and the flags in <<jvm-options>> do not exist.
+* *No console log on Windows by default.* The log goes to the file only. See xref:how-to/logs.adoc[Where the logs go] for the reason and for `ARCADEDB_LOG_CONSOLE`.
+* *Engine modules left out.* The gRPC and MongoDB wire protocols, Raft HA, Gremlin and the polyglot languages (JavaScript, Python as a query language) are not in the image. See <<what-is-included>>.
+* *Platforms.* Intel Macs, Alpine Linux (musl) and Windows on ARM have no wheel. See <<requirements>>.
 
 == Next steps
 

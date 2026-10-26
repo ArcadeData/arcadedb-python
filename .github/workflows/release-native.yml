@@ -188,14 +188,16 @@ jobs:
 
       # GUARD: this workflow publishes the distribution `arcadedb` and nothing else. A wheel with another name stops the job here,
       # before anything reaches PyPI. Two checks, so neither can drift alone: the wheel file name and the Name field of its METADATA,
-      # both must be DIST_NAME.
+      # both must be DIST_NAME. Both names are stripped of whitespace and normalised as PEP 503 does before they are compared: the
+      # METADATA of a wheel built on Windows has CRLF line endings, so its Name value ends in a carriage return (26.11.1.dev0 stopped here).
+      # A name that differs in anything else is still a hard refusal (tests/test_release_name_guards.py).
       - name: Refuse unless every wheel is the distribution ${{ env.DIST_NAME }}
         run: |
           python3 -I - <<'PY'
           import os, pathlib, re, sys, zipfile
 
           want = os.environ["DIST_NAME"]
-          norm = lambda s: re.sub(r"[-_.]+", "-", s).lower()
+          norm = lambda s: re.sub(r"[-_.]+", "-", s.strip()).lower()
           wheels = sorted(pathlib.Path("dist").glob("*.whl"))
           if not wheels:
               sys.exit("no wheels in dist/")
@@ -204,9 +206,9 @@ jobs:
               file_dist = w.name.split("-")[0]
               with zipfile.ZipFile(w) as zf:
                   meta = next(n for n in zf.namelist() if n.endswith(".dist-info/METADATA"))
-                  meta_dist = re.search(r"^Name: (.+)$", zf.read(meta).decode(), re.M).group(1)
+                  meta_dist = re.search(r"^Name: (.+)$", zf.read(meta).decode(), re.M).group(1).strip()
               if norm(file_dist) != want or norm(meta_dist) != want:
-                  bad.append(f"{w.name}: file name says {file_dist}, METADATA says {meta_dist}")
+                  bad.append(f"{w.name}: file name says {file_dist!r}, METADATA says {meta_dist!r}")
           if bad:
               print("\n".join(f"::error::{b}" for b in bad))
               sys.exit(f"Refusing to publish: this workflow publishes only the distribution '{want}'.")

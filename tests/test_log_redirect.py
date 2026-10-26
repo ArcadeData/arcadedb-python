@@ -1,15 +1,34 @@
-"""A host that redirects fd 1 and 2 after the library started must not get engine log text written into database files.
+"""A host that redirects fd 1 and 2 after the library started must not get engine log text, or Java's own output, written into database files.
 
 On Windows the runtime caches the OS handle of stdout and stderr at start-up. pytest's fd capture, a service or an embedding
 application that dup2s onto fd 1 or 2 afterwards closes that handle; a database file opened later can get the same handle value,
-and the next console log line was then written into that file (a bucket file that started with
+and the next write through the cached handle was then written into that file (a bucket file that started with
 ``2026-10-25 19:37:03.759 INFO [LSMVectorIndex] Discovered and loaded graph file ...``, vector index files with ``Graph build
 validating ...``; in the tests that showed as ``Invalid vector id -N``, ``Invalid position N (size=65536)`` or no result after a
-reopen). The fix is that the engine logs to its file only on Windows unless ``ARCADEDB_LOG_CONSOLE`` asks for the console.
+reopen). Two fixes close it, in two layers:
 
-The redirect test runs on every platform: on POSIX writes go to fd 1 and 2 by number, so it passes trivially there, and on Windows
-it is the real check. It does the same work as ``test_lsm_persistence`` and ``test_lsm_vector_search_approximate_persistence`` in
-``test_vector.py``: create a vector index, build the graph, close, reopen, query.
+* The engine logs to its file only on Windows unless ``ARCADEDB_LOG_CONSOLE`` asks for the console (no JUL console handler).
+* With the console off, the JVM build also replaces Java's ``System.out``, ``System.err`` and ``System.initialErr`` with a stream on
+  ``arcadedb-stdio.log`` in the log directory (``jvm._redirect_java_stdio``). Text that the first fix left on the cached handle
+  reached a page file with ``Invalid position 793803132 (size=65536)`` in the JVM test run 40250615309 on Windows, one run in
+  four. The text was the runtime's warning ``A terminally deprecated method in sun.misc.Unsafe has been called`` (JEP 498), which
+  jvector causes when it unmaps a graph file on the first reopen of a vector index. The runtime prints it to ``System.initialErr``,
+  the copy of ``System.err`` that it makes before application code runs and that ``System.setErr`` does not change, so replacing
+  ``System.out`` and ``System.err`` alone left it on the cached handle. (A canary file that took over the stale handle's value
+  after the host's ``dup2`` held exactly these four lines.)
+
+The redirect tests run on every platform: on POSIX writes go to fd 1 and 2 by number, so a redirect is followed and the default
+passes trivially there, and on Windows it is the real check. The console-off test also fails on POSIX without the second fix, because
+the Java probes below then go to the redirect target. The child does the same work as ``test_lsm_persistence`` and
+``test_lsm_vector_search_approximate_persistence`` in ``test_vector.py`` (create a vector index, build the graph, close, reopen,
+query), ``ARCADEDB_REDIRECT_REPEATS`` times in one process (default 10), and after every step prints a probe line through Java's
+``System.out`` and ``System.err``: a write through the cached handle that hits a file whenever a database file owns the handle
+value, which no log line has to be around for. Every file under the data directory is then scanned for log text and probes.
+
+One text is not covered: the runtime prints ``WARNING: Using incubator modules: jdk.incubator.vector`` to stderr while the JVM is
+created, before the library can install its streams. In the child the JVM starts before the redirect, so that line goes to the
+parent's pipe (``proc.stderr``), never to the redirect target. Run 40250615309 showed it in the failure message only because the
+old assertion message joined stdout, stderr and the redirect target into one text; the messages below name each part.
 """
 
 import json
@@ -18,6 +37,7 @@ import re
 import subprocess  # nosec B404 - test-controlled child process
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -28,6 +48,25 @@ LOG_LINE = re.compile(
     rb"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} "
     rb"(?:SEVERE|WARNING|INFO|CONFIG|FINE|FINER|FINEST)\b"
 )
+# What the child prints through Java's System.out and System.err after every step.
+PROBE = b"ARCADEDB-STDIO-PROBE"
+# The runtime's warning for the first use of a sun.misc.Unsafe memory method (JEP 498). jvector prints it when it unmaps a graph
+# file, on the first reopen of a vector index. The runtime writes it to System.initialErr, not to System.err.
+UNSAFE_WARNING = b"A terminally deprecated method in sun.misc.Unsafe has been called"
+UNSAFE_TRIGGER_FAILED = (
+    "the child could not unmap a file with jvector's SimpleMappedReader.Supplier, the call that makes the runtime print "
+    "UNSAFE_WARNING; if jvector no longer uses sun.misc.Unsafe, pick another call that does"
+)
+# Text of the runtime's own that never belongs in a database file.
+STRAY_TEXT = re.compile(
+    LOG_LINE.pattern
+    + rb"|"
+    + PROBE
+    + rb"|WARNING: Using incubator modules|"
+    + re.escape(UNSAFE_WARNING)
+)
+
+REPEATS = int(os.environ.get("ARCADEDB_REDIRECT_REPEATS", "10"))
 
 CHILD = """
 import json
@@ -35,9 +74,11 @@ import os
 import sys
 import time
 
+import jpype
+
 import arcadedb
 
-mode, data_dir, sink, result = sys.argv[1:5]
+mode, data_dir, sink, result, repeats, marker = sys.argv[1:7]
 
 # start the library first: on Windows it caches the handles of fd 1 and 2 now
 warm = arcadedb.create_database(os.path.join(data_dir, "warm"))
@@ -51,45 +92,94 @@ if mode == "redirect":
     os.dup2(fd, 2)
     os.close(fd)
 
-db_path = os.path.join(data_dir, "db")
+system = jpype.JClass("java.lang.System")
+probes = 0
+
+# the runtime's own warning, now and not at some later reopen: jvector unmaps a file with sun.misc.Unsafe.invokeCleaner
+unsafe = False
+try:
+    target = os.path.join(os.path.dirname(sink), "mapped.bin")
+    with open(target, "wb") as handle:
+        handle.write(b"x" * 64)
+    supplier = jpype.JClass("io.github.jbellis.jvector.disk.SimpleMappedReader$Supplier")
+    supplier(jpype.JClass("java.nio.file.Path").of(target, [])).close()
+    unsafe = True
+except Exception:
+    pass  # jvector changed: the reopen below still reaches the warning if the runtime prints it
+
+
+def probe(step):
+    # a Java-level write to stdout and to stderr, as a runtime warning or a library that prints does
+    global probes
+    probes += 1
+    system.out.println(f"{marker} out {probes} {step}")
+    system.err.println(f"{marker} err {probes} {step}")
+
+
 vectors = [[1.0, 0.0, 0.0], [0.9, 0.1, 0.0], [0.8, 0.2, 0.0]]
 for i in range(256):
     vectors.append([0.01, ((i % 16) + 1) / 10.0, (((i // 16) % 16) + 1) / 10.0])
 
-with arcadedb.create_database(db_path) as db:
-    db.command("sql", "CREATE VERTEX TYPE Doc")
-    db.command("sql", "CREATE PROPERTY Doc.embedding ARRAY_OF_FLOATS")
-    index = db.create_vector_index(
-        "Doc", "embedding", dimensions=3, quantization="PRODUCT"
-    )
-    with db.transaction():
-        for vec in vectors:
-            db.command(
-                "sql",
-                "INSERT INTO Doc SET embedding = ?",
-                arcadedb.to_java_float_array(vec),
-            )
-    index.build_graph_now()
+counts = set()
+neighbor_counts = set()
+for run in range(int(repeats)):
+    db_path = os.path.join(data_dir, f"db{run}")
+    probe("before create")
+    with arcadedb.create_database(db_path) as db:
+        db.command("sql", "CREATE VERTEX TYPE Doc")
+        db.command("sql", "CREATE PROPERTY Doc.embedding ARRAY_OF_FLOATS")
+        probe("schema")
+        index = db.create_vector_index(
+            "Doc", "embedding", dimensions=3, quantization="PRODUCT"
+        )
+        probe("index")
+        with db.transaction():
+            for vec in vectors:
+                db.command(
+                    "sql",
+                    "INSERT INTO Doc SET embedding = ?",
+                    arcadedb.to_java_float_array(vec),
+                )
+        probe("insert")
+        index.build_graph_now()
+        probe("graph")
 
-with arcadedb.open_database(db_path) as db:
-    count = db.query("sql", "SELECT count(*) as count FROM Doc").first().get("count")
-    neighbors = []
-    for _ in range(100):  # the graph loads asynchronously after the reopen
-        rows = db.query(
-            "sql", "SELECT vectorNeighbors('Doc[embedding]', [1.0, 0.0, 0.0], 1) as res"
-        ).to_list()
-        neighbors = rows[0].get("res")
-        if neighbors:
-            break
-        time.sleep(0.1)
+    with arcadedb.open_database(db_path) as db:
+        probe("reopen")
+        counts.add(
+            db.query("sql", "SELECT count(*) as count FROM Doc").first().get("count")
+        )
+        neighbors = []
+        for _ in range(100):  # the graph loads asynchronously after the reopen
+            rows = db.query(
+                "sql",
+                "SELECT vectorNeighbors('Doc[embedding]', [1.0, 0.0, 0.0], 1) as res",
+            ).to_list()
+            neighbors = rows[0].get("res")
+            probe("query")
+            if neighbors:
+                break
+            time.sleep(0.1)
+        neighbor_counts.add(len(neighbors))
 
 with open(result, "w") as out:
-    json.dump({"count": count, "neighbors": len(neighbors)}, out)
+    json.dump(
+        {
+            "counts": sorted(counts),
+            "neighbors": sorted(neighbor_counts),
+            "runs": int(repeats),
+            "probes": probes,
+            "unsafe": unsafe,
+        },
+        out,
+    )
 """
 
 
-def _run(tmp_path, mode, console=None):
-    """Run CHILD in a fresh process; return (result dict, completed process, data dir, log dir, sink file)."""
+def _run(tmp_path, mode, console=None, repeats=REPEATS):
+    """Run CHILD in a fresh process. Returns the result dict, the process, the data and log directories, the redirect target's
+    text and the text of ``arcadedb-stdio.log`` (empty when there is none), in a namespace.
+    """
     data_dir = tmp_path / "data"
     data_dir.mkdir()
     log_dir = tmp_path / "log"
@@ -104,25 +194,52 @@ def _run(tmp_path, mode, console=None):
     if console is not None:
         env["ARCADEDB_LOG_CONSOLE"] = console
     proc = subprocess.run(  # nosec B603 - fixed argument list, no shell
-        [sys.executable, "-c", CHILD, mode, str(data_dir), str(sink), str(result)],
+        [
+            sys.executable,
+            "-c",
+            CHILD,
+            mode,
+            str(data_dir),
+            str(sink),
+            str(result),
+            str(repeats),
+            PROBE.decode(),
+        ],
         env=env,
         capture_output=True,
-        timeout=600,
+        timeout=1800,
     )
     sink_text = sink.read_bytes() if sink.exists() else b""
+    # Each part is named: the runtime's start-up warning is in stderr (the pipe), never in the redirect target.
     assert proc.returncode == 0, (
-        proc.stdout.decode(errors="replace")
-        + proc.stderr.decode(errors="replace")
-        + sink_text.decode(errors="replace")
+        f"child exit {proc.returncode}\n"
+        f"--- stdout:\n{proc.stdout.decode(errors='replace')}\n"
+        f"--- stderr:\n{proc.stderr.decode(errors='replace')}\n"
+        f"--- redirect target:\n{sink_text.decode(errors='replace')}"
     )
-    return json.loads(result.read_text()), proc, data_dir, log_dir, sink_text
+    stdio = log_dir / _logdir.STDIO_LOG_NAME
+    return SimpleNamespace(
+        result=json.loads(result.read_text()),
+        proc=proc,
+        data_dir=data_dir,
+        log_dir=log_dir,
+        sink=sink_text,
+        stdio=stdio.read_bytes() if stdio.exists() else b"",
+        expected={
+            "counts": [259],
+            "neighbors": [1],
+            "runs": repeats,
+            "probes": json.loads(result.read_text())["probes"],
+            "unsafe": json.loads(result.read_text())["unsafe"],
+        },
+    )
 
 
-def _log_lines_in_files(root: Path):
-    """Every file under ``root`` that holds an engine log line, with the first match."""
+def _stray_text_in_files(root: Path):
+    """Every file under ``root`` that holds engine log text, a probe or the runtime's warning, with the first match."""
     found = []
     for path in sorted(p for p in root.rglob("*") if p.is_file()):
-        match = LOG_LINE.search(path.read_bytes())
+        match = STRAY_TEXT.search(path.read_bytes())
         if match:
             found.append((str(path.relative_to(root)), match.group(0)))
     return found
@@ -133,39 +250,65 @@ def _log_file_text(log_dir: Path) -> bytes:
 
 
 def test_redirecting_fd_1_and_2_leaves_the_database_files_clean(tmp_path):
-    result, _, data_dir, log_dir, _ = _run(tmp_path, "redirect")
-    assert result == {"count": 259, "neighbors": 1}
-    assert _log_lines_in_files(data_dir) == []
+    run = _run(tmp_path, "redirect")
+    assert run.result == run.expected
+    assert (
+        run.result["probes"] >= 6 * REPEATS
+    )  # the probes ran: a clean scan is not clean because nothing wrote
+    assert _stray_text_in_files(run.data_dir) == []
     # the work did log, to the file: the scan above is not clean because nothing was logged
-    assert LOG_LINE.search(_log_file_text(log_dir)), list(log_dir.iterdir())
+    assert LOG_LINE.search(_log_file_text(run.log_dir)), list(run.log_dir.iterdir())
 
 
 def test_redirect_with_the_console_off_sends_nothing_to_the_redirect_target(tmp_path):
-    # ARCADEDB_LOG_CONSOLE=0 is the Windows default on every platform: nothing reaches fd 1 or 2 even where that is safe
-    result, _, data_dir, log_dir, sink = _run(tmp_path, "redirect", console="0")
-    assert result == {"count": 259, "neighbors": 1}
-    assert LOG_LINE.search(sink) is None, sink[:500]
-    assert _log_lines_in_files(data_dir) == []
-    assert LOG_LINE.search(_log_file_text(log_dir))
+    # ARCADEDB_LOG_CONSOLE=0 is the Windows default on every platform: nothing reaches fd 1 or 2 even where that is safe, and
+    # Java's System.out and System.err append to arcadedb-stdio.log
+    run = _run(tmp_path, "redirect", console="0")
+    assert run.result == run.expected
+    assert LOG_LINE.search(run.sink) is None, run.sink[:500]
+    assert PROBE not in run.sink, run.sink[:500]
+    assert UNSAFE_WARNING not in run.sink, run.sink[:500]
+    assert _stray_text_in_files(run.data_dir) == []
+    assert LOG_LINE.search(_log_file_text(run.log_dir))
+    # every probe, from both streams, is in the file the library owns (and nowhere else)
+    assert run.stdio.count(PROBE) == 2 * run.result["probes"], run.stdio[:500]
+    assert run.stdio.count(b" out ") == run.stdio.count(b" err ")
+    # the runtime's own warning is printed to System.initialErr, which setErr does not reach: it is there too
+    assert run.result["unsafe"], UNSAFE_TRIGGER_FAILED
+    assert UNSAFE_WARNING in run.stdio, run.stdio[:500]
 
 
 def test_console_log_can_be_turned_on(tmp_path):
     # no redirect here: on Windows the console is off by default because of the redirect hazard above, and a child whose fd 1 and 2
     # are the parent's pipes is the safe way to see that the opt-in works
-    result, proc, data_dir, log_dir, _ = _run(tmp_path, "plain", console="1")
-    assert result == {"count": 259, "neighbors": 1}
-    console = proc.stdout + proc.stderr
+    run = _run(tmp_path, "plain", console="1", repeats=1)
+    assert run.result == run.expected
+    console = run.proc.stdout + run.proc.stderr
     assert LOG_LINE.search(console), console[:500]
-    assert _log_lines_in_files(data_dir) == []
-    assert LOG_LINE.search(_log_file_text(log_dir))
+    # the runtime keeps its own streams with the console on: the probes are on the console, there is no stdio file
+    assert console.count(PROBE) == 2 * run.result["probes"], console[:500]
+    assert run.stdio == b""
+    assert _stray_text_in_files(run.data_dir) == []
+    assert LOG_LINE.search(_log_file_text(run.log_dir))
 
 
 def test_console_log_can_be_turned_off(tmp_path):
-    result, proc, _, log_dir, _ = _run(tmp_path, "plain", console="0")
-    assert result == {"count": 259, "neighbors": 1}
-    console = proc.stdout + proc.stderr
+    run = _run(tmp_path, "plain", console="0", repeats=1)
+    assert run.result == run.expected
+    console = run.proc.stdout + run.proc.stderr
     assert LOG_LINE.search(console) is None, console[:500]
-    assert LOG_LINE.search(_log_file_text(log_dir))
+    assert PROBE not in console, console[:500]
+    assert UNSAFE_WARNING not in console, console[:500]
+    assert run.stdio.count(PROBE) == 2 * run.result["probes"], run.stdio[:500]
+    assert run.result["unsafe"], UNSAFE_TRIGGER_FAILED
+    assert UNSAFE_WARNING in run.stdio, run.stdio[:500]
+    assert LOG_LINE.search(_log_file_text(run.log_dir))
+
+
+def test_the_stdio_log_is_in_the_log_dir(tmp_path):
+    assert _logdir.stdio_log_path(tmp_path) == tmp_path / "arcadedb-stdio.log"
+    # not a file the engine's file handler owns (arcadedb.log.N), so a rotation never renames it away
+    assert not _logdir.STDIO_LOG_NAME.startswith("arcadedb.log")
 
 
 @pytest.mark.parametrize(

@@ -28,7 +28,12 @@ def test_python_classifiers_match_the_jvm_wheel():
             if c.startswith("Programming Language :: Python :: 3.")
         ]
 
-    assert pythons(WHEEL / "pyproject.toml") == pythons(ROOT / "pyproject.toml")
+    # The native wheel is py3-none (ctypes) and also runs on Python 3.15; the JVM wheel cannot claim 3.15 until
+    # JPype ships cp315 wheels. That is the only allowed difference: the JVM wheel's set is the native one minus 3.15.
+    native, jvm = pythons(WHEEL / "pyproject.toml"), pythons(ROOT / "pyproject.toml")
+    native_only = {"Programming Language :: Python :: 3.15"}
+    assert [c for c in native if c not in native_only] == jvm
+    assert set(native) - set(jvm) <= native_only
 
 
 def test_the_pypi_description_names_the_sibling_in_its_first_paragraph():
