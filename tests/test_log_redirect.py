@@ -17,13 +17,18 @@ reopen). Two fixes close it, in two layers:
   ``System.out`` and ``System.err`` alone left it on the cached handle. (A canary file that took over the stale handle's value
   after the host's ``dup2`` held exactly these four lines.)
 
-The redirect tests run on every platform: on POSIX writes go to fd 1 and 2 by number, so a redirect is followed and the default
-passes trivially there, and on Windows it is the real check. The console-off test also fails on POSIX without the second fix, because
-the Java probes below then go to the redirect target. The child does the same work as ``test_lsm_persistence`` and
-``test_lsm_vector_search_approximate_persistence`` in ``test_vector.py`` (create a vector index, build the graph, close, reopen,
-query), ``ARCADEDB_REDIRECT_REPEATS`` times in one process (default 10), and after every step prints a probe line through Java's
-``System.out`` and ``System.err``: a write through the cached handle that hits a file whenever a database file owns the handle
-value, which no log line has to be around for. Every file under the data directory is then scanned for log text and probes.
+The redirect tests run on every platform and on both builds (the first fix is shared; the second is the JVM build's, see below):
+on POSIX writes go to fd 1 and 2 by number, so a redirect is followed and the default passes trivially there, and on Windows it is
+the real check. The JVM build's console-off test also fails on POSIX without the second fix, because the Java probes below then go
+to the redirect target. The child does the same work as ``test_lsm_persistence`` and ``test_lsm_vector_search_approximate_persistence``
+in ``test_vector.py`` (create a vector index, build the graph, close, reopen, query), ``ARCADEDB_REDIRECT_REPEATS`` times in one
+process (default 10). On the JVM build it prints a probe line after every step through Java's ``System.out`` and ``System.err``: a
+write through the cached handle that hits a file whenever a database file owns the handle value, which no log line has to be around
+for. Every file under the data directory is then scanned for log text and probes.
+
+The probes and the JEP 498 trigger call Java through JPype, so they run on the JVM build only (``JVM`` below). The native build has no
+JVM and no Java streams: its child runs the same steps with zero probes, and the log text in the redirect target, in the database
+files and on the console is checked the same way.
 
 One text is not covered: the runtime prints ``WARNING: Using incubator modules: jdk.incubator.vector`` to stderr while the JVM is
 created, before the library can install its streams. In the child the JVM starts before the redirect, so that line goes to the
@@ -41,7 +46,11 @@ from types import SimpleNamespace
 
 import pytest
 
+import arcadedb
 from arcadedb import _logdir
+
+# The Java-level probes and the JEP 498 trigger call Java through JPype, so they need the JVM build (arcadedb-jvm), not the native one.
+JVM = arcadedb.__backend__ == "jvm"
 
 # One engine log line as the file and console formatters write it: date, time with milliseconds, level.
 LOG_LINE = re.compile(
@@ -74,11 +83,11 @@ import os
 import sys
 import time
 
-import jpype
-
 import arcadedb
 
 mode, data_dir, sink, result, repeats, marker = sys.argv[1:7]
+# the probes and the JEP 498 trigger call Java through JPype: only the JVM build has a JVM to call
+jvm = arcadedb.__backend__ == "jvm"
 
 # start the library first: on Windows it caches the handles of fd 1 and 2 now
 warm = arcadedb.create_database(os.path.join(data_dir, "warm"))
@@ -92,25 +101,30 @@ if mode == "redirect":
     os.dup2(fd, 2)
     os.close(fd)
 
-system = jpype.JClass("java.lang.System")
 probes = 0
-
-# the runtime's own warning, now and not at some later reopen: jvector unmaps a file with sun.misc.Unsafe.invokeCleaner
 unsafe = False
-try:
-    target = os.path.join(os.path.dirname(sink), "mapped.bin")
-    with open(target, "wb") as handle:
-        handle.write(b"x" * 64)
-    supplier = jpype.JClass("io.github.jbellis.jvector.disk.SimpleMappedReader$Supplier")
-    supplier(jpype.JClass("java.nio.file.Path").of(target, [])).close()
-    unsafe = True
-except Exception:
-    pass  # jvector changed: the reopen below still reaches the warning if the runtime prints it
+if jvm:
+    import jpype
+
+    system = jpype.JClass("java.lang.System")
+
+    # the runtime's own warning, now and not at some later reopen: jvector unmaps a file with sun.misc.Unsafe.invokeCleaner
+    try:
+        target = os.path.join(os.path.dirname(sink), "mapped.bin")
+        with open(target, "wb") as handle:
+            handle.write(b"x" * 64)
+        supplier = jpype.JClass("io.github.jbellis.jvector.disk.SimpleMappedReader$Supplier")
+        supplier(jpype.JClass("java.nio.file.Path").of(target, [])).close()
+        unsafe = True
+    except Exception:
+        pass  # jvector changed: the reopen below still reaches the warning if the runtime prints it
 
 
 def probe(step):
-    # a Java-level write to stdout and to stderr, as a runtime warning or a library that prints does
+    # a Java-level write to stdout and to stderr, as a runtime warning or a library that prints does (none on the native build)
     global probes
+    if not jvm:
+        return
     probes += 1
     system.out.println(f"{marker} out {probes} {step}")
     system.err.println(f"{marker} err {probes} {step}")
@@ -252,9 +266,9 @@ def _log_file_text(log_dir: Path) -> bytes:
 def test_redirecting_fd_1_and_2_leaves_the_database_files_clean(tmp_path):
     run = _run(tmp_path, "redirect")
     assert run.result == run.expected
-    assert (
-        run.result["probes"] >= 6 * REPEATS
-    )  # the probes ran: a clean scan is not clean because nothing wrote
+    if JVM:
+        # the probes ran: a clean scan is not clean because nothing wrote
+        assert run.result["probes"] >= 6 * REPEATS
     assert _stray_text_in_files(run.data_dir) == []
     # the work did log, to the file: the scan above is not clean because nothing was logged
     assert LOG_LINE.search(_log_file_text(run.log_dir)), list(run.log_dir.iterdir())
@@ -267,15 +281,16 @@ def test_redirect_with_the_console_off_sends_nothing_to_the_redirect_target(tmp_
     assert run.result == run.expected
     assert LOG_LINE.search(run.sink) is None, run.sink[:500]
     assert PROBE not in run.sink, run.sink[:500]
-    assert UNSAFE_WARNING not in run.sink, run.sink[:500]
     assert _stray_text_in_files(run.data_dir) == []
     assert LOG_LINE.search(_log_file_text(run.log_dir))
-    # every probe, from both streams, is in the file the library owns (and nowhere else)
+    # every probe, from both streams, is in the file the library owns (and nowhere else); the native build has none
     assert run.stdio.count(PROBE) == 2 * run.result["probes"], run.stdio[:500]
     assert run.stdio.count(b" out ") == run.stdio.count(b" err ")
-    # the runtime's own warning is printed to System.initialErr, which setErr does not reach: it is there too
-    assert run.result["unsafe"], UNSAFE_TRIGGER_FAILED
-    assert UNSAFE_WARNING in run.stdio, run.stdio[:500]
+    if JVM:
+        assert UNSAFE_WARNING not in run.sink, run.sink[:500]
+        # the runtime's own warning is printed to System.initialErr, which setErr does not reach: it is there too
+        assert run.result["unsafe"], UNSAFE_TRIGGER_FAILED
+        assert UNSAFE_WARNING in run.stdio, run.stdio[:500]
 
 
 def test_console_log_can_be_turned_on(tmp_path):
@@ -298,10 +313,11 @@ def test_console_log_can_be_turned_off(tmp_path):
     console = run.proc.stdout + run.proc.stderr
     assert LOG_LINE.search(console) is None, console[:500]
     assert PROBE not in console, console[:500]
-    assert UNSAFE_WARNING not in console, console[:500]
     assert run.stdio.count(PROBE) == 2 * run.result["probes"], run.stdio[:500]
-    assert run.result["unsafe"], UNSAFE_TRIGGER_FAILED
-    assert UNSAFE_WARNING in run.stdio, run.stdio[:500]
+    if JVM:
+        assert UNSAFE_WARNING not in console, console[:500]
+        assert run.result["unsafe"], UNSAFE_TRIGGER_FAILED
+        assert UNSAFE_WARNING in run.stdio, run.stdio[:500]
     assert LOG_LINE.search(_log_file_text(run.log_dir))
 
 
