@@ -28,6 +28,10 @@ uv run pytest -m server -v
 uv run pytest -m "not server"
 ```
 
+## Tests that send SIGINT to their own process
+
+A pytest started as a background job (a shell `cmd &` without job control, many launchers and agent shells) inherits SIGINT as ignored, and Python then installs no `KeyboardInterrupt` handler. A test that sends SIGINT to its own process (`test_python_function_interrupt.py`) installs `signal.default_int_handler` for its duration and restores the old handler; without it the signal is dropped, no query is interrupted and the test fails on such a runner while it passes in CI. Check a runner with `grep SigIgn /proc/self/status` (bit `0x2` is SIGINT) or `python -c "import signal; print(signal.getsignal(signal.SIGINT))"` (`<Handlers.SIG_IGN: 1>` means ignored). A test that starts a child process for SIGINT resets the signal in the child (`test_sigint.py`, `preexec_fn`).
+
 ## No skips
 
 The server tests do not skip when the server stack is absent: the wheel always ships it, and a test that skips on a missing feature cannot notice the feature going missing (in 26.7.2 the server JARs were dropped from the wheel and the guarded tests skipped, so the suite stayed green while the feature was gone). `test_server_packaging.py` states the packaging requirement and fails without the JARs. CI also fails any skip that `scripts/check_test_skips.py` does not list, and that list is empty.

@@ -7,6 +7,13 @@ JPype converts the engine's exception, JPype fails with ``RuntimeError: Fatal er
 (jpype-project/jpype#1496), which was an ArcadeDBError in about 5% of the runs; it is a
 KeyboardInterrupt now. Not run on Windows, where a
 signal cannot be sent to the own process like this (see test_sigint.py).
+
+The test needs Python's own SIGINT handler (``signal.default_int_handler``), and Python installs it
+at startup only when SIGINT is not ignored. A pytest started as a background job inherits SIGINT as
+ignored (a shell runs ``cmd &`` without job control that way, so do many launchers and agent
+shells): ``os.kill(os.getpid(), SIGINT)`` is then dropped, no query is interrupted, and the test
+failed every time on such a runner while it passed in CI. The ``default_sigint_handler`` fixture
+installs the handler for the test and puts back what it found.
 """
 
 import os
@@ -31,7 +38,22 @@ def db(temp_db_path):
         yield database
 
 
-def test_sigint_during_a_query_that_calls_python_is_a_keyboard_interrupt(db):
+@pytest.fixture
+def default_sigint_handler():
+    """KeyboardInterrupt on SIGINT for the test, whatever the runner left (see the module docstring)."""
+    previous = signal.getsignal(signal.SIGINT)
+    signal.signal(signal.SIGINT, signal.default_int_handler)
+    try:
+        yield
+    finally:
+        # getsignal is None for a handler installed by C code: nothing to give back from Python
+        if previous is not None:
+            signal.signal(signal.SIGINT, previous)
+
+
+def test_sigint_during_a_query_that_calls_python_is_a_keyboard_interrupt(
+    db, default_sigint_handler
+):
     interrupted = 0
     for delay in (0.05, 0.09, 0.13, 0.17, 0.21, 0.25, 0.29, 0.33):
         timer = threading.Timer(delay, os.kill, (os.getpid(), signal.SIGINT))
