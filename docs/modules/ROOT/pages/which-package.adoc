@@ -9,7 +9,7 @@ Two packages give you the ArcadeDB engine inside your Python process. Both use t
 
 | `{native-pkg-name}` (the default)
 | The native build. The engine is compiled by GraalVM Community Edition into a shared library, which Python loads with `ctypes`. No JVM, no JPype, no bundled Java runtime.
-| Embedded use in scripts, notebooks, tests, CLIs, serverless functions and agents. It starts in milliseconds and holds little memory.
+| Embedded use in scripts, notebooks, tests, CLIs, serverless functions and agents. It starts fast and holds little memory, because there is no JVM.
 
 | `{jvm-pkg-name}`
 | The JVM build. The Java engine runs in your process through https://jpype.readthedocs.io/[JPype], on a bundled Java 25 runtime.
@@ -25,9 +25,7 @@ pip install {jvm-pkg-name}        # JVM, for heavy long-running loads
 If you are not sure, install `{native-pkg-name}`. You can switch later: your code does not change (see <<switching>>).
 
 // REMOVE WHEN: the old arcadedb-embedded* shims are retired and two releases have shipped with the two-package layout allow-old-name
-NOTE: *Transition note.* The first release of this layout is 26.11.1. Until the native build passes its readiness bar, `{native-pkg-name}` may appear only as pre-releases, `26.11.1.devN`. Then you install it with `pip install --pre {native-pkg-name}` (or `uv add --prerelease allow {native-pkg-name}`). The readiness bar is listed in xref:development/release.adoc[Release].
-
-A third name is planned: `arcadedb-native`. It is an alias of `{native-pkg-name}`, with the same version, and it only installs `{native-pkg-name}`. It is not published yet.
+NOTE: *Transition note.* The first release of this layout is 26.11.1. Until the native build passes its readiness bar, `{native-pkg-name}` may appear only as pre-releases, `26.11.1.devN`. Then you install it with `pip install --pre {native-pkg-name}` (or `uv add --prerelease allow {native-pkg-name}`). A plain `pip install {native-pkg-name}` finds only the 0.0.1 placeholder, which installs the old package (see <<old-names>>), until a final 26.11.1 exists. The same holds for `{jvm-pkg-name}` until its 26.11.1 is released. The readiness bar is listed in xref:development/release.adoc[Release].
 
 [[which-one-do-i-have]]
 == Check which one you have
@@ -55,12 +53,16 @@ The API is the same. The runtime is not. These are the differences you can plan 
 | | `{native-pkg-name}` (native) | `{jvm-pkg-name}` (JVM)
 
 | Start-up
-| Milliseconds. There is no JVM to start.
-| About one second or more, to start the JVM.
+| Fast. There is no JVM to start.
+| Slower. Every Python process starts a JVM first.
 
 | Memory
 | Small footprint.
 | Larger. The JVM keeps a heap, and each Python process starts its own JVM.
+
+| Garbage collector
+| The serial collector of GraalVM Community Edition. A collection stops all threads, and the pause grows with the live data. The heap limit is 50% of the memory by default (xref:installation.adoc#native-heap[Heap size]).
+| The JVM's own collectors, G1 by default on a server-class machine. You choose them and the heap with `jvm_kwargs` (xref:installation.adoc#jvm-options[JVM options]).
 
 | Throughput on long loads
 | No JIT warm-up. Speed over a long run depends on the workload.
@@ -75,12 +77,12 @@ The API is the same. The runtime is not. These are the differences you can plan 
 | Larger. It carries a Java 25 runtime for its platform.
 
 | Python versions
-| 3.11 to 3.14
-| 3.11 to 3.14
+| 3.11 to 3.15. On 3.15 the CI runs a subset of the tests.
+| 3.11 to 3.14. JPype has no 3.15 wheel yet.
 
 | Platforms
-| Linux x86_64 (glibc 2.34 or later), Linux aarch64, macOS arm64, Windows x64. The Windows wheel is the newest: it is built in CI, and its test run is the least proven of the four.
-| Linux x86_64 (glibc 2.34 or later), Linux aarch64, macOS arm64, Windows x64.
+| Linux x86_64 and aarch64 (glibc 2.28 or later), macOS arm64, Windows x64. The Windows wheel is the newest: it is built in CI, and its test run is the least proven of the four. Not built: Intel Mac, Alpine (musl), Windows on ARM. See xref:installation.adoc#requirements[Requirements].
+| Linux x86_64 and aarch64 (glibc 2.34 or later), macOS arm64, Windows x64. Not built: Intel Mac, Alpine (musl), Windows on ARM.
 
 | Java-object APIs (`get_java_database`, `get_java_document`, `get_java_*`)
 | Not available. They raise `NotOnNativeYet`.
@@ -126,14 +128,21 @@ The packages had other names until 26.10.x. Search results and old tutorials may
 
 | `{jvm-pkg-name}`
 | Formerly `arcadedb-embedded`, imported as `arcadedb_embedded`
-| The same build. Nothing changes silently in the runtime. The import name is now `{import-name}`.
+| The same JVM build, with the import name `{import-name}`. The last release of the project formerly `arcadedb-embedded` (26.11.1) will be a deprecation shim that installs `{native-pkg-name}`, the native build, and warns. If you need the JVM build, install `{jvm-pkg-name}` yourself.
 
 | `{native-pkg-name}`
 | Formerly `arcadedb-embedded-native`, imported as `arcadedb_native`
-| The same build, now with the import name `{import-name}`. The old preview versions were 26.10.x pre-releases.
+| The same build, now with the import name `{import-name}`. The old preview versions were 26.10.x pre-releases. The old project is archived on PyPI: no new releases and no shim.
 |===
 
-The old packages will get a deprecation shim that points to the new names. Releases of the new layout start with 26.11.1. The 26.10.x wheels were built in a separate repository of the humemai organisation.
+[[migrate]]
+=== Migrate from the old names
+
+. Remove the old package: `pip uninstall arcadedb-embedded arcadedb-embedded-native`.
+. Install the new one: `pip install {jvm-pkg-name}` if you used `arcadedb-embedded`, or `pip install {native-pkg-name}` if you used `arcadedb-embedded-native`. Add `--pre` while the transition note above applies.
+. Change the import: `import arcadedb_embedded` and `import arcadedb_native` both become `import {import-name}`. The builds are the same as in the table above, so the rest of your code stays.
+
+Releases of the new layout start with 26.11.1. The 26.10.x wheels were built in a separate repository of the humemai organisation.
 
 [[drivers]]
 == Packages that talk to a server

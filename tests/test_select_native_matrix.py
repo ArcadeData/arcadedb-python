@@ -50,7 +50,7 @@ def test_pythons_are_the_classifiers_of_the_native_wheel():
         for c in text["project"]["classifiers"]
         if c.startswith(prefix)
     ]
-    assert pythons == sel.ALL_PYTHONS
+    assert pythons == sel.ALL_PYTHONS + sel.PYVER_ONLY_PYTHONS
 
 
 def test_graalvm_is_community_edition_with_a_sha256_per_platform():
@@ -73,34 +73,37 @@ def test_the_script_prints_github_output_lines():
         "3.11",
         "3.13",
         "3.14",
+        "3.15",
         "3.14t",
     ]
 
 
 def _pyver(event):
     return [
-        (leg["python"], leg["freethreaded"], leg["polars"])
+        (leg["python"], leg["freethreaded"], leg["polars"], leg["jpype"])
         for leg in sel.select(event)["pyver"]
     ]
 
 
 def test_the_python_version_job_covers_what_the_full_parity_run_leaves_out():
-    # a pull request tests 3.12 only: the other three Pythons and the free-threaded one run the cheap subset
+    # a pull request tests 3.12 only: the other three Pythons, 3.15 (no jpype1 wheel yet) and the free-threaded one run the cheap subset
     assert _pyver("pull_request") == [
-        ("3.11", False, True),
-        ("3.13", False, True),
-        ("3.14", False, True),
-        ("3.14t", True, False),
+        ("3.11", False, True, True),
+        ("3.13", False, True, True),
+        ("3.14", False, True, True),
+        ("3.15", False, True, False),
+        ("3.14t", True, False, True),
     ]
     # main, nightly and dispatch test 3.12 and 3.14 in full
     for event in ("push", "schedule", "workflow_dispatch"):
         assert _pyver(event) == [
-            ("3.11", False, True),
-            ("3.13", False, True),
-            ("3.14t", True, False),
+            ("3.11", False, True, True),
+            ("3.13", False, True, True),
+            ("3.15", False, True, False),
+            ("3.14t", True, False, True),
         ]
-    # a release tests 3.11 to 3.14 in full: only the free-threaded build is left
-    assert _pyver("release") == [("3.14t", True, False)]
+    # a release tests 3.11 to 3.14 in full: 3.15 and the free-threaded build are left
+    assert _pyver("release") == [("3.15", False, True, False), ("3.14t", True, False, True)]
 
 
 def test_the_python_version_job_never_repeats_a_full_parity_leg_and_has_no_polars_on_a_free_threaded_python():
@@ -127,3 +130,15 @@ def test_the_release_does_not_need_the_python_version_job():
     assert patterns and all(
         p in ("native-passed-*", "native-wheel-*") for p in patterns
     ), patterns
+
+
+def test_the_linux_legs_build_in_the_manylinux_container_of_the_tag_and_the_workflow_gates_that_floor():
+    linux = {k: leg for k, leg in sel.PLATFORMS.items() if leg["kind"] == "linux"}
+    assert set(linux) == {"linux-x86_64", "linux-aarch64"}
+    for key, leg in linux.items():
+        arch = key.split("-", 1)[1]
+        assert leg["container"] == f"quay.io/pypa/manylinux_2_28_{arch}:latest", key
+        assert leg["plat_re"] == f"manylinux_2_28_{arch}", key
+    workflow = (ROOT / ".github" / "workflows" / "test-native.yml").read_text()
+    assert "GLIBC_2.28" in workflow
+    assert "GLIBC_2.34" not in workflow

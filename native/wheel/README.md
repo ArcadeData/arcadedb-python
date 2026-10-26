@@ -16,7 +16,7 @@ pip install arcadedb       # or: uv add arcadedb
 Optional extras for the columnar helpers: `[numpy]`, `[arrow]`, `[pandas]`, `[polars]`.
 
 <!-- REMOVE WHEN: the old arcadedb-embedded* shims are retired and two releases have shipped with the two-package layout allow-old-name -->
-Old names: this package was formerly `arcadedb-embedded-native`, imported as `arcadedb_native`. The old package will get a deprecation shim that points here.
+Old names: this package was formerly `arcadedb-embedded-native`, imported as `arcadedb_native`. The old project is archived on PyPI: it gets no new releases and no shim. A last release of the JVM project `arcadedb-embedded` will install this package.
 
 If `arcadedb-jvm` is installed in the same environment, `import arcadedb` raises an `ImportError` that names both packages. Run `pip uninstall arcadedb arcadedb-jvm`, then install the one you want.
 
@@ -45,22 +45,22 @@ with arcadedb.create_database("/tmp/demo") as db:
 
 ## Platforms
 
-CPython 3.11 to 3.14. One wheel per platform serves every Python version, because the library is loaded with `ctypes` and is not compiled against CPython. The images are built for the baseline CPU of the platform (`-march=compatibility`), so they do not need a special instruction set.
+CPython 3.11 to 3.15. One wheel per platform serves every Python version, because the library is loaded with `ctypes` and is not compiled against CPython. The images are built for the baseline CPU of the platform (`-march=compatibility`), so they do not need a special instruction set. On 3.15 the CI runs a subset of the tests, because jpype1 and ladybug, two dependencies of the full test suite, have no 3.15 wheel yet.
 
 | Platform | Wheel tag | Note |
 | --- | --- | --- |
-| Linux x86-64, glibc 2.34+ | `manylinux_2_34_x86_64` | |
-| Linux arm64, glibc 2.34+ | `manylinux_2_34_aarch64` | |
+| Linux x86-64, glibc 2.28+ | `manylinux_2_28_x86_64` | RHEL 8 and Rocky 8, Debian 10, Ubuntu 20.04 and newer |
+| Linux arm64, glibc 2.28+ | `manylinux_2_28_aarch64` | |
 | macOS arm64 | `macosx_<minos>_arm64` | |
 | Windows x64 | `win_amd64` | The newest wheel. It is built in CI, and its test run is the least proven of the four |
 
-Intel macOS and Windows arm64 are not built.
+Intel macOS, Windows arm64 and musl-based Linux (Alpine) are not built and not supported. On an Intel Mac use Docker or a Linux virtual machine; on Alpine use a glibc image such as `python:3.12-slim`.
 
 ## Not available or not yet
 
 - **JVM-only APIs do not exist**: `get_java_database()` and the other `get_java_*` calls, `start_jvm()`, `jvm_kwargs` and JVM options. There is no JVM. Use `arcadedb-jvm` if you need them.
 - **A few API calls raise `NotOnNativeYet`** (a `NotImplementedError`) instead of misbehaving: `AsyncExecutor.transaction`, `find_nearest_approximate` over product quantization, `get_metadata` of a foreign index, and `get_stats`.
-- Free-threaded Python builds are not in the CI matrix.
+- Free-threaded Python (3.14t) runs a subset of the tests in CI; it is informational and does not gate a release.
 
 The bindings' own tests run against the installed wheel (the parity run). What does not pass is the list above, or JVM-only by nature.
 

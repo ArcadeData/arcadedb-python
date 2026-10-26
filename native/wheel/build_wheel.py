@@ -7,7 +7,7 @@ Steps: copy src/arcadedb to <out>/stage/src/arcadedb (the shared tree is not dup
 rewrite `import jpype` to the bundled stub; flip the default backend to native; add the library of the build platform (libarcadedb.so on Linux,
 libarcadedb.dylib on macOS, libarcadedb.dll on Windows; on Linux x86-64 also libjvector-x86_64.so, jvector's Highway library: no other platform ships it);
 add LICENSE/NOTICE/GraalVM licence texts; check THIRD_PARTY_NOTICES.md against gen_notices.py (fails on drift); compute the platform tag from the library
-(Linux: manylinux_<glibc floor>_<x86_64|aarch64> from the GLIBC symbol versions; macOS: macosx_<minos>_arm64 from the load commands; Windows: win_amd64);
+(Linux: manylinux_<glibc floor>_<x86_64|aarch64> from the GLIBC symbol versions, never below --glibc-policy; macOS: macosx_<minos>_arm64 from the load commands; Windows: win_amd64);
 build with `uv build --wheel`. Run it on the platform the library was built on.
 """
 
@@ -42,7 +42,7 @@ def host_arch() -> str:
     }.get(m, m)
 
 
-def glibc_floor(lib: Path) -> str:
+def glibc_floor(lib: Path, policy: str) -> str:
     out = subprocess.run(
         ["objdump", "-T", str(lib)], capture_output=True, text=True, check=True
     ).stdout
@@ -50,7 +50,9 @@ def glibc_floor(lib: Path) -> str:
         tuple(map(int, m.split(".")))
         for m in re.findall(r"GLIBC_(\d+\.\d+(?:\.\d+)?)", out)
     }
-    major, minor = max(v[:2] for v in vers)
+    # never below the manylinux policy of the container the image was built in: that is what the wheel promises (PEP 600), and the
+    # symbols alone say less (libarcadedb.so built in manylinux_2_28 needs glibc 2.17 at most)
+    major, minor = max(max(v[:2] for v in vers), tuple(map(int, policy.split("."))))
     return f"manylinux_{major}_{minor}_{host_arch()}"
 
 
@@ -73,9 +75,9 @@ def macos_tag(lib: Path) -> str:
     return f"macosx_{m.group(1)}_{m.group(2)}_arm64"
 
 
-def platform_tag(lib: Path) -> str:
+def platform_tag(lib: Path, policy: str) -> str:
     if sys.platform.startswith("linux"):
-        return glibc_floor(lib)
+        return glibc_floor(lib, policy)
     if sys.platform == "darwin":
         return macos_tag(lib)
     if sys.platform == "win32":
@@ -131,6 +133,11 @@ def main():
         "--skip-notices-check",
         action="store_true",
         help="do not compare THIRD_PARTY_NOTICES.md with the gen_notices.py output (needs <lib-dir>/build.log)",
+    )
+    ap.add_argument(
+        "--glibc-policy",
+        default="2.28",
+        help="Linux: glibc of the manylinux container the image is built in; the tag is never below it (default 2.28, manylinux_2_28)",
     )
     ap.add_argument("--plat", default="", help="override the computed platform tag")
     a = ap.parse_args()
@@ -272,7 +279,7 @@ def main():
     )
     shutil.copy(HERE / "setup.py", stage / "setup.py")
 
-    plat = a.plat or platform_tag(lib_dir / libname)
+    plat = a.plat or platform_tag(lib_dir / libname, a.glibc_policy)
     print("platform tag:", plat)
     import os
 

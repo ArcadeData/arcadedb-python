@@ -7,7 +7,7 @@
 [![Tests native](https://github.com/ArcadeData/arcadedb-python/actions/workflows/test-native.yml/badge.svg)](https://github.com/ArcadeData/arcadedb-python/actions/workflows/test-native.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](https://github.com/ArcadeData/arcadedb-python/blob/main/LICENSE)
 
-Python bindings for [ArcadeDB](https://arcadedb.com), the multi-model database (graph, document, key/value, vector and time series, queried with SQL or openCypher). The engine runs inside your Python process, with no server and no network hop. This repository builds two packages, and both import as `arcadedb`. `arcadedb-jvm` has a sibling, `arcadedb`, the native build: pick `arcadedb` for scripts, notebooks, tests, CLIs, serverless functions and agents, and `arcadedb-jvm` for heavy, long-running loads. Status: beta.
+Python bindings for [ArcadeDB](https://arcadedb.com), the multi-model database (graph, document, key/value, vector and time series, queried with SQL or openCypher). The engine runs inside your Python process, with no server and no network hop. This repository builds two packages, and both import as `arcadedb`: `arcadedb` (the native build, the default) for scripts, notebooks, tests, CLIs, serverless functions and agents, and `arcadedb-jvm` (the JVM build) for heavy, long-running loads. Status: beta.
 
 | Package | Engine | Pick it for |
 |---|---|---|
@@ -24,10 +24,10 @@ pip install arcadedb-jvm   # JVM, for heavy long-running loads (or: uv add arcad
 ```
 
 <!-- REMOVE WHEN: the old arcadedb-embedded* shims are retired and two releases have shipped with the two-package layout allow-old-name -->
-> Transition note: the first release of this layout is 26.11.1. Until `arcadedb` passes its readiness bar, it may appear only as pre-releases, `26.11.1.devN`. Install it with `pip install --pre arcadedb` (or `uv add --prerelease allow arcadedb`).
+> Transition note: the first release of this layout is 26.11.1. Until `arcadedb` passes its readiness bar, it may appear only as pre-releases, `26.11.1.devN`. Install it with `pip install --pre arcadedb` (or `uv add --prerelease allow arcadedb`). A plain `pip install arcadedb` finds only the 0.0.1 placeholder, which installs the old package. The same holds for `arcadedb-jvm` until its 26.11.1 is released.
 
 <!-- REMOVE WHEN: the old arcadedb-embedded* shims are retired and two releases have shipped with the two-package layout allow-old-name -->
-> Old names: `arcadedb-jvm` was formerly `arcadedb-embedded`, and `arcadedb` was formerly `arcadedb-embedded-native`. The old packages will get a deprecation shim.
+> Old names: `arcadedb-jvm` was formerly `arcadedb-embedded`, and `arcadedb` was formerly `arcadedb-embedded-native` (archived on PyPI). A last `arcadedb-embedded` release will be a deprecation shim that installs `arcadedb`, the native build.
 
 - Python 3.11 to 3.14. CI builds and tests all four versions on every platform below for `main`, every night and each release. A pull request runs a smaller selection.
 - Linux x86_64 and ARM64, macOS on Apple Silicon, Windows x86_64, for both packages. The Windows wheel of `arcadedb` is the newest.
@@ -74,10 +74,9 @@ For several processes, other languages, HA or replication, run the official Dock
 |---|---|---|
 | [`arcadedb`](https://pypi.org/project/arcadedb/) | The native build: the engine compiled by GraalVM Community Edition, no JVM, no JPype. The default for embedded use | First release of this layout: 26.11.1. It may first appear as `26.11.1.devN` pre-releases |
 | [`arcadedb-jvm`](https://pypi.org/project/arcadedb-jvm/) | The JVM build: the Java engine on a bundled JVM, through JPype. The package this README described before the two-package layout | First release from this repository: 26.11.1 |
-| `arcadedb-native` | An alias of `arcadedb`: same version, it only installs `arcadedb` | Planned |
 
 <!-- REMOVE WHEN: the old arcadedb-embedded* shims are retired and two releases have shipped with the two-package layout allow-old-name -->
-Formerly `arcadedb-embedded` (now `arcadedb-jvm`, the same build) and formerly `arcadedb-embedded-native` (now `arcadedb`). They imported as `arcadedb_embedded` and `arcadedb_native`, and they are deprecated.
+Formerly `arcadedb-embedded` (now `arcadedb-jvm`, the same build) and formerly `arcadedb-embedded-native` (now `arcadedb`). They imported as `arcadedb_embedded` and `arcadedb_native`, and they are deprecated: `arcadedb-embedded-native` is archived, and `arcadedb-embedded` will get a last release that installs `arcadedb`.
 
 Releases from this repository start with 26.11.1. The 26.10.x wheels were built and published from [humemai/arcadedb-embedded-python](https://github.com/humemai/arcadedb-embedded-python). <!-- allow-old-name -->
 
@@ -85,7 +84,7 @@ Releases from this repository start with 26.11.1. The 26.10.x wheels were built 
 
 - Here: [`docs/`](https://github.com/ArcadeData/arcadedb-python/tree/main/docs/modules/ROOT/pages) is an Antora component (AsciiDoc) with Installation, [Which package?](https://github.com/ArcadeData/arcadedb-python/blob/main/docs/modules/ROOT/pages/which-package.adoc), Quickstart, Databases and queries, and Concurrency, processes and crashes. It covers only what is specific to the Python bindings.
 - The component is not published on docs.arcadedb.com yet; adding it as a content source is open in [ArcadeData/arcadedb-docs#505](https://github.com/ArcadeData/arcadedb-docs/pull/505).
-- The guide, API reference and example walkthroughs for the published package are still at [docs.humem.ai/arcadedb](https://docs.humem.ai/arcadedb/latest/) until those pages are ported here ([#19](https://github.com/ArcadeData/arcadedb-python/issues/19)).
+- The older guide, API reference and example walkthroughs are at [docs.humem.ai/arcadedb](https://docs.humem.ai/arcadedb/latest/). They describe the previous packages and use the import name `arcadedb_embedded`; read it as `arcadedb`. They stay until those pages are ported here ([#19](https://github.com/ArcadeData/arcadedb-python/issues/19)). <!-- allow-old-name -->
 - ArcadeDB itself (SQL, openCypher, schema, server): [docs.arcadedb.com](https://docs.arcadedb.com). It is not repeated here.
 
 ## Examples
