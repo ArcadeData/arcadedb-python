@@ -40,6 +40,9 @@ on:
       - "src/arcadedb/**"
       - "tests/**"
       - "scripts/select_native_matrix.py"
+      - "scripts/smoke_wheel.py"
+      - "pyproject.toml"
+      - "setup.py"
       - ".github/workflows/test-native.yml"
   push:
     branches: [main]
