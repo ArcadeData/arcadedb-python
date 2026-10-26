@@ -679,71 +679,28 @@ class NativeDatabase:
             raise ArcadeDBError(f"Failed to lookup RID '{rid}': record not found")
         return row.get_element()
 
-    # The index kinds that answer "the value equals the key" (the engine's Schema.INDEX_TYPE.isExactKeyLookup()); a FULL_TEXT, vector
-    # or geospatial index on the same properties does not.
-    _EXACT_KEY_INDEX_TYPES = frozenset({"LSM_TREE", "HASH"})
-
-    def _require_key_index(self, type_name: str, keys: List[str]) -> None:
-        """Raise unless ``type_name`` or a supertype has an exact-key index on exactly ``keys``, as the engine's ``lookupByKey`` does.
-
-        Without this check the ``SELECT`` of ``lookup_by_key`` scans the type when no index serves it, so the call returns a
-        record on this build and raises on the JVM build. A type that does not exist is left to that ``SELECT``, which names it.
-        """
-        from .schema_objects import NativeIndex
-
-        wanted = [str(k) for k in keys]
-        listed = "[" + ", ".join(wanted) + "]"
-        other = (
-            None  # an index on these properties that cannot answer an exact-key lookup
-        )
-        pending, seen, first = [type_name], set(), True
-        while pending:
-            name = pending.pop()
-            if name in seen:
-                continue
-            seen.add(name)
-            for row in self.query(
-                "sql", "SELECT FROM schema:indexes WHERE typeName = ?", name
-            ).to_list():
-                index = NativeIndex(row)
-                if index.getPropertyNames() != wanted:
-                    continue
-                if str(index.getType()) in self._EXACT_KEY_INDEX_TYPES:
-                    return
-                other = other or index
-            types = self.query(
-                "sql", "SELECT parentTypes FROM schema:types WHERE name = ?", name
-            ).to_list()
-            if not types:
-                if first:
-                    return  # no such type: the SELECT raises the engine's own error
-                continue
-            first = False
-            pending.extend(types[0].get("parentTypes") or [])
-        if other is not None:
-            raise ArcadeDBError(
-                f"No key index has been created on type '{type_name}' properties {listed}: "
-                f"index '{other.getName()}' is {other.getType()} and cannot look up a record by exact key"
-            )
-        raise ArcadeDBError(
-            f"No index has been created on type '{type_name}' properties {listed}"
-        )
-
     def lookup_by_key(self, type_name: str, keys: List[str], values: List[Any]):
         """The first record of ``type_name`` whose ``keys`` properties equal ``values``, wrapped, or None.
 
-        Index-based, as on the JVM build: ``keys`` must be exactly the properties of a LSM_TREE or HASH index of the type or one of
-        its supertypes, in the index's order. Anything else raises ``ArcadeDBError`` (a scan is ``query()`` with a ``WHERE``).
+        Index-based, as on the JVM build: the engine's own ``lookupByKey`` runs in the image, so ``keys`` must be exactly the properties of
+        a LSM_TREE or HASH index of the type or one of its supertypes, in the index's order. Anything else raises ``ArcadeDBError``
+        (a scan is ``query()`` with a ``WHERE``). No statement has that rule, hence this op and not a ``SELECT``.
         """
         self._check_not_closed()
-        try:
-            self._require_key_index(type_name, keys)
-            where = " AND ".join(f"`{k}` = ?" for k in keys)
-            lookup_sql = f"SELECT FROM `{type_name}` WHERE {where} LIMIT 1"  # nosec B608 - backtick-quoted identifiers; values go through ? parameters
-            row = self.query("sql", lookup_sql, list(values)).first()
-            return row.get_element() if row is not None else None
-        except ArcadeDBError as e:
-            raise ArcadeDBError(f"Failed to lookup by key in '{type_name}': {e}") from e
+        from .extras import _enc
+
+        reply = loads(
+            lib.call(
+                "arcadedb_n_lookup",
+                self._h,
+                lib.b(type_name),
+                lib.b(_enc({"keys": [str(k) for k in keys], "values": list(values)})),
+            )
+        )
+        if not reply.get("ok"):
+            raise _error(f"Failed to lookup by key in '{type_name}'", reply)
+        row = NativeResultSet(self, reply).first()
+        return row.get_element() if row is not None else None
 
     def insert_many(
         self,

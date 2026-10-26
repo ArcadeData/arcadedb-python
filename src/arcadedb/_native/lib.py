@@ -228,6 +228,7 @@ def _load():
             "arcadedb_n_diag": [P],
             "arcadedb_n_sample_dump": [P],
             "arcadedb_n_dbset": [P, L, S, S],
+            "arcadedb_n_lookup": [P, L, S, S],
             "arcadedb_n_gb_create": [P, L, S],
             "arcadedb_n_gb": [P, L, S, S],
             "arcadedb_n_async": [P, L, S, S],
