@@ -28,10 +28,10 @@ PLATFORMS: dict[str, dict] = {
     "linux-x86_64": {
         "kind": "linux",
         "runner": "ubuntu-latest",
-        "container": "quay.io/pypa/manylinux_2_34_x86_64:latest",
+        "container": "quay.io/pypa/manylinux_2_28_x86_64:latest",
         "graalvm_asset": "graalvm-community-jdk-25i4-25.0.4.1.1_linux-x64_bin.tar.gz",
         "graalvm_sha256": "05ccbbe783210b6886ff7b08fcd0b061c5dce4852b05db87284fc0e24abb08e2",
-        "plat_re": "manylinux_2_34_x86_64",
+        "plat_re": "manylinux_2_28_x86_64",
         "xmx": "12g",
         "ni_extra": "",
         "macos_target": "",
@@ -41,10 +41,10 @@ PLATFORMS: dict[str, dict] = {
     "linux-aarch64": {
         "kind": "linux",
         "runner": "ubuntu-24.04-arm",
-        "container": "quay.io/pypa/manylinux_2_34_aarch64:latest",
+        "container": "quay.io/pypa/manylinux_2_28_aarch64:latest",
         "graalvm_asset": "graalvm-community-jdk-25i4-25.0.4.1.1_linux-aarch64_bin.tar.gz",
         "graalvm_sha256": "e5f5e2f59643cf96765c741dc00b206f86c69c8c1bf843fe26050c871e0e2dbc",
-        "plat_re": "manylinux_2_34_aarch64",
+        "plat_re": "manylinux_2_28_aarch64",
         "xmx": "12g",
         "ni_extra": "",
         "macos_target": "",
@@ -84,6 +84,13 @@ PLATFORMS: dict[str, dict] = {
 # Python versions the wheel supports (the classifiers of native/wheel/pyproject.toml).
 ALL_PYTHONS = ["3.11", "3.12", "3.13", "3.14"]
 
+# Pythons the wheel supports (classifiers too) that only the `pyver` job covers: the full parity run installs test dependencies that have no wheel
+# for them yet (jpype1 1.7.1 and ladybug have no cp315 wheel; test_parameter_binding.py imports jpype at module level). The wheel itself is
+# py3-none: the library is loaded with ctypes, so only the pure-Python layer depends on the interpreter.
+PYVER_ONLY_PYTHONS = ["3.15"]
+# Pythons whose pyver leg runs without jpype1, and so without the test files that need it (test-native.yml drops them)
+NO_JPYPE_PYTHONS = ["3.15"]
+
 # Platforms whose parity run must pass before a pre-release (A.B.C.devN) is published. Windows is the newest wheel and is
 # informational for a pre-release; a FINAL release needs all four (see ALL_PLATFORMS and release-native.yml).
 PRERELEASE_REQUIRED = ["linux-x86_64", "linux-aarch64", "macos-arm64"]
@@ -101,14 +108,15 @@ MAIN_PYTHONS = ["3.12", "3.14"]
 
 
 def pyver_legs(covered: list[str]) -> list[dict]:
-    """The legs of the cheap Python-version job: every supported Python that `covered` (the full parity run) leaves out."""
+    """The legs of the cheap Python-version job: every supported Python that `covered` (the full parity run) leaves out, 3.15 and the free-threaded 3.14t."""
     return [
         {
             "python": py,
             "freethreaded": py in FREE_THREADED_PYTHONS,
             "polars": py not in FREE_THREADED_PYTHONS,
+            "jpype": py not in NO_JPYPE_PYTHONS,
         }
-        for py in ALL_PYTHONS + FREE_THREADED_PYTHONS
+        for py in ALL_PYTHONS + PYVER_ONLY_PYTHONS + FREE_THREADED_PYTHONS
         if py not in covered
     ]
 

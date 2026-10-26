@@ -12,13 +12,13 @@
 # This workflow never publishes: it has no id-token permission and no environment.
 #
 # Beside the full parity runs, the `pyver` job installs the already built linux-x86_64 wheel (py3-none: no rebuild) into the Pythons the full
-# runs of the event leave out (a pull request: 3.11, 3.13, 3.14; main, nightly, dispatch: 3.11, 3.13; a release: none) and into the free-threaded
-# 3.14t, and runs a small subset of the tests there (about 20 s of tests per Python). It is informational: release-native.yml does not need it.
+# runs of the event leave out (a pull request: 3.11, 3.13, 3.14; main, nightly, dispatch: 3.11, 3.13; a release: none), into 3.15 (always: the full suite
+# needs jpype1 and ladybug, which have no cp315 wheel yet, so 3.15 runs without the test files that need jpype1) and into the free-threaded 3.14t, and runs a small subset of the tests there (about 20 s of tests per Python). It is informational: release-native.yml does not need it.
 # scripts/select_native_matrix.py decides its legs.
 #
 # One wheel per platform, py3-none-<platform tag>:
-#   linux-x86_64   manylinux_2_34 container          manylinux_2_34_x86_64   libarcadedb.so + libjvector-x86_64.so
-#   linux-aarch64  manylinux_2_34 aarch64 container  manylinux_2_34_aarch64  libarcadedb.so
+#   linux-x86_64   manylinux_2_28 container          manylinux_2_28_x86_64   libarcadedb.so + libjvector-x86_64.so
+#   linux-aarch64  manylinux_2_28 aarch64 container  manylinux_2_28_aarch64  libarcadedb.so
 #   macos-arm64    native, heap and threads capped   macosx_<minos>_arm64    libarcadedb.dylib
 #   windows-x64    native, MSVC environment loaded   win_amd64               libarcadedb.dll
 # Only free GitHub-hosted standard runners. GraalVM Community Edition only (pinned by sha256 per platform), never Oracle GraalVM.
@@ -278,9 +278,9 @@ jobs:
           mv /usr/bin/link.exe /usr/bin/link-gnu.exe || true
           echo "link is now: $(command -v link || echo none)"
 
-      # -march=compatibility, -J-Xmx12g, -H:-VectorAPISupport, fastops.mode 1, inside the manylinux_2_34 container (glibc 2.34) so the
+      # -march=compatibility, -J-Xmx12g, -H:-VectorAPISupport, fastops.mode 1, inside the manylinux_2_28 container (glibc 2.28) so the
       # glibc floor of libarcadedb.so is a guarantee, not a property of the runner.
-      - name: Build the native image in manylinux_2_34
+      - name: Build the native image in manylinux_2_28
         if: ${{ matrix.kind == 'linux' }}
         env:
           ENGINE: ${{ needs.plan.outputs.engine }}
@@ -296,11 +296,14 @@ jobs:
             "$MANYLINUX_IMAGE" bash -euo pipefail -c '
               ldd --version | sed -n 1p # not `head -1`: under pipefail its early exit can SIGPIPE ldd
               uname -m
-              # zlib-devel, unzip and which are in the base repositories; EPEL is not needed and its mirrors fail now and then
-              for i in 1 2 3 4 5; do
-                dnf install -y --disablerepo="epel*" --setopt=install_weak_deps=False zlib-devel unzip which >/dev/null && break
-                [ "$i" -lt 5 ] && { echo "dnf failed, retry $i in $((i * 20))s" >&2; sleep $((i * 20)); } || exit 1
-              done
+              # zlib-devel, unzip and which are in the manylinux_2_28 image already; dnf runs only for a missing one (the AlmaLinux 8 mirror
+              # metadata fails now and then). EPEL is not needed and its mirrors fail too.
+              if ! rpm -q zlib-devel unzip which >/dev/null; then
+                for i in 1 2 3 4 5; do
+                  dnf install -y --disablerepo="epel*" --setopt=install_weak_deps=False zlib-devel unzip which >/dev/null && break
+                  [ "$i" -lt 5 ] && { echo "dnf failed, retry $i in $((i * 20))s" >&2; sleep $((i * 20)); } || exit 1
+                done
+              fi
               cd /work
               bash native/scripts/build-image.sh /out
             ' || { tail -n 80 "$T/lib/build.log" || true; exit 1; }
@@ -334,7 +337,7 @@ jobs:
           for so in "$T"/lib/*.so; do
             top="$(objdump -T "$so" | grep -Eo 'GLIBC_[0-9]+\.[0-9]+(\.[0-9]+)?' | sort -uV | tail -n 1)"
             echo "$(basename "$so"): highest $top"
-            [ "$(printf '%s\nGLIBC_2.34\n' "$top" | sort -V | tail -n 1)" = "GLIBC_2.34" ] || { echo "$so needs $top, above the manylinux_2_34 floor" >&2; exit 1; }
+            [ "$(printf '%s\nGLIBC_2.28\n' "$top" | sort -V | tail -n 1)" = "GLIBC_2.28" ] || { echo "$so needs $top, above the manylinux_2_28 floor" >&2; exit 1; }
           done
 
       - name: Build the wheel
@@ -369,11 +372,33 @@ jobs:
           # auditwheel wraps its report to the terminal width, so match on one line with the whitespace collapsed
           tr -s '[:space:]' ' ' < "$T/auditwheel.txt" > "$T/auditwheel.flat"
           grep -F 'consistent with the following platform tag' "$T/auditwheel.flat"
-          grep -F "\"$PLAT\"" "$T/auditwheel.flat"
+          # auditwheel names the LOWEST tag the wheel is consistent with. The wheel carries the tag of its build container (build_wheel.py
+          # --glibc-policy); the library may need less (its glibc symbols stop at 2.17, jvector's libstdc++ asks for more than manylinux2014),
+          # never more.
+          granted="$(grep -Eo 'consistent with the following platform tag: "manylinux_[0-9]+_[0-9]+' "$T/auditwheel.flat" | grep -Eo 'manylinux_[0-9]+_[0-9]+' || true)"
+          want="$(printf '%s' "$PLAT" | grep -Eo 'manylinux_[0-9]+_[0-9]+')"
+          echo "auditwheel grants ${granted:-an older policy}; the wheel is tagged $want"
+          [ "$(printf '%s\n%s\n' "${granted:-manylinux_2_5}" "$want" | sort -V | tail -n 1)" = "$want" ] || { echo "auditwheel needs a tag above $want" >&2; exit 1; }
           if grep -Eiq 'instruction set|x86_64_v[0-9]' "$T/auditwheel.flat"; then
             echo "auditwheel reports an ISA warning: the image is not baseline x86-64" >&2
             exit 1
           fi
+
+      # The tests run on the runner (glibc 2.39). This step runs the wheel where its tag says it must work: in the manylinux_2_28 container
+      # (glibc 2.28), on that image's Python 3.12, with nothing but the wheel installed.
+      - name: "Gate: the wheel installs and opens a database on glibc 2.28"
+        if: ${{ matrix.kind == 'linux' }}
+        env:
+          MANYLINUX_IMAGE: ${{ matrix.container }}
+        run: |
+          set -euo pipefail
+          docker run --rm -v "$T/wheel/dist:/wheel:ro" -v "$GITHUB_WORKSPACE/scripts/smoke_wheel.py:/smoke_wheel.py:ro" "$MANYLINUX_IMAGE" bash -euo pipefail -c '
+            ldd --version | sed -n 1p
+            /opt/python/cp312-cp312/bin/python -m venv /tmp/venv
+            /tmp/venv/bin/python -m pip install --no-index /wheel/*.whl
+            cd /tmp
+            /tmp/venv/bin/python /smoke_wheel.py
+          '
 
       - name: "Gate: the macOS library links system libraries only"
         if: ${{ matrix.kind == 'macos' }}
@@ -597,6 +622,7 @@ jobs:
       KEY: linux-x86_64
       PY: ${{ matrix.python }}
       WITH_POLARS: ${{ matrix.polars }}
+      WITH_JPYPE: ${{ matrix.jpype }}
       FREE_THREADED: ${{ matrix.freethreaded }}
       # The subset: ctypes layer and database lifecycle (test_core, test_native_udf), queries and results (test_resultset), parameters
       # (test_parameter_binding), type conversion (test_type_conversion), transactions (test_transaction_config), async (test_async_executor),
@@ -635,10 +661,17 @@ jobs:
             files="$files,test_dataframe_ingest.py"
             with_polars=(--with polars)
           fi
+          # No jpype1 wheel for this Python (3.15): leave out test_parameter_binding.py (it imports jpype at module level) and test_vector.py
+          # (four tests build Java arrays with it). Everything else of the subset needs no JVM bridge.
+          with_jpype=(--with jpype1)
+          if [ "$WITH_JPYPE" != true ]; then
+            files="$(printf '%s' "$files" | tr ',' '\n' | grep -v -x -F -e test_parameter_binding.py -e test_vector.py | paste -sd, -)"
+            with_jpype=()
+          fi
           echo "python $PY, files: $files"
           cores="$(nproc)"
-          uv run --no-project --python "$PY" --with "$w" --with pytest --with numpy --with requests --with jpype1 --with pyarrow \
-            --with pandas ${with_polars[@]+"${with_polars[@]}"} \
+          uv run --no-project --python "$PY" --with "$w" --with pytest --with numpy --with requests --with pyarrow \
+            --with pandas ${with_polars[@]+"${with_polars[@]}"} ${with_jpype[@]+"${with_jpype[@]}"} \
             python native/wheel/parity_wheel.py --repo "$GITHUB_WORKSPACE" --files "$files" \
               --out "$T/parity/parity-wheel.tsv" --cores "0-$((cores - 1))" | tee "$T/parity/parity-wheel.run.log"
 
@@ -647,15 +680,19 @@ jobs:
         run: |
           set -euo pipefail
           w="$(ls "$T"/wheel/*.whl)"
-          uv run --no-project --python "$PY" --with "$w" --with numpy --with pandas --with pyarrow --with jpype1 python - <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
+          with_jpype=(--with jpype1)
+          if [ "$WITH_JPYPE" != true ]; then with_jpype=(); fi
+          uv run --no-project --python "$PY" --with "$w" --with numpy --with pandas --with pyarrow ${with_jpype[@]+"${with_jpype[@]}"} python - <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
           import os
           import sys
 
           import arcadedb  # noqa: F401
-          import jpype  # noqa: F401
           import numpy  # noqa: F401
           import pandas  # noqa: F401
           import pyarrow  # noqa: F401
+
+          if os.environ["WITH_JPYPE"] == "true":
+              import jpype  # noqa: F401
 
           gil = sys._is_gil_enabled() if hasattr(sys, "_is_gil_enabled") else True
           print(f"python {sys.version.split()[0]}, GIL enabled after loading the wheel and its dependencies: {gil}")

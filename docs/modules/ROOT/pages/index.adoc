@@ -81,8 +81,8 @@ Check which one you have with `python -c "import arcadedb; print(arcadedb.__back
 
 == Requirements
 
-* Python 3.11 to 3.14. The wheels' CI runs all four versions on every supported platform for `main`, the nightly run and each release. A pull request runs a smaller selection (xref:development/ci.adoc[Continuous integration]).
-* Linux (x86_64 and ARM64), macOS on Apple Silicon, or Windows (x86_64). The Windows wheel of the native build is the newest.
+* Python 3.11 to 3.14, and 3.15 for `{native-pkg-name}`. The wheels' CI runs all four versions on every supported platform for `main`, the nightly run and each release. A pull request runs a smaller selection (xref:development/ci.adoc[Continuous integration]).
+* Linux (x86_64 and ARM64, glibc: no Alpine), macOS on Apple Silicon (no Intel Mac), or Windows (x86_64). The Windows wheel of the native build is the newest. The glibc floors and the other platforms that are not built are in xref:installation.adoc#requirements[Requirements].
 * No Java installation, for either package.
 
 == Links
