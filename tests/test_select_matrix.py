@@ -154,3 +154,24 @@ def test_the_jvm_workflow_builds_each_platform_once_and_tests_that_wheel():
     assert "python-version: ${{ matrix.python-version }}" not in build
     assert "scripts/build.sh" in build and "scripts/build.sh" not in test.split("\n  test-summary:")[0]
     assert "actions/download-artifact" in test and "name: wheel-" in test
+
+
+def test_the_examples_workflow_builds_each_platform_once_and_runs_the_examples_against_that_wheel():
+    text = WORKFLOWS["examples"].read_text(encoding="utf-8")
+    assert "scripts/select_matrix.py examples --event \"$EVENT_NAME\" --wheels" in text
+    assert "matrix: ${{ fromJSON(needs.download-jars.outputs.wheel-matrix) }}" in text
+    build, rest = text.split("\n  build:\n")[1].split("\n  test-examples:\n")
+    test = rest.split("\n  test-examples-summary:")[0]
+    # no Python in the build matrix, and the examples job builds nothing: it installs the wheel the build job uploaded
+    assert "python-version: ${{ matrix.python-version }}" not in build
+    assert "scripts/build.sh" in build and "scripts/verify_wheel_tag.py" in build
+    assert "scripts/build.sh" not in test
+    assert "actions/download-artifact" in test and "name: examples-wheel-" in test
+    assert "dist/" not in test
+    # release-jvm.yml publishes every wheel-* artifact of the run, and the release runs this workflow beside test-jvm.yml
+    assert "name: wheel-" not in text
+    # the legs of the pull request and of the other events are the same platforms, one build each
+    for event in ["pull_request", *NON_PULL_REQUEST_EVENTS]:
+        assert sm.select_wheels("examples", event) == {
+            "include": [{"platform": p, "runs-on": r} for p, r in PLATFORMS.items()]
+        }

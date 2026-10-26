@@ -20,6 +20,7 @@ usage:
     select_matrix.py jvm [--event NAME]             # test-jvm.yml: the test legs
     select_matrix.py jvm [--event NAME] --wheels    # test-jvm.yml: the build legs, one for each platform of the test legs
     select_matrix.py examples [--event NAME]        # test-python-examples.yml
+    select_matrix.py examples [--event NAME] --wheels   # test-python-examples.yml: the build legs, one for each platform
 
 `--event` defaults to $GITHUB_EVENT_NAME. The output is one line of JSON for
 `strategy.matrix`: {"include": [{"platform": ..., "runs-on": ..., "python-version": ...}, ...]}, and with

@@ -16,7 +16,7 @@ Each package has one test workflow and one release workflow:
 | `release-native.yml`
 |===
 
-The release workflows call the test workflows (`workflow_call`) and then publish; see xref:development/release.adoc[Release]. Two workflows test the `arcadedb-jvm` package: `test-jvm.yml` builds a wheel and runs the unit tests, and `test-python-examples.yml` runs the scripts in `examples/`. Both build the wheels on a native runner of each platform. `test-native.yml` builds and tests the `arcadedb` (native) package; see <<_native_build,Native build>>.
+The release workflows call the test workflows (`workflow_call`) and then publish; see xref:development/release.adoc[Release]. Two workflows test the `arcadedb-jvm` package: `test-jvm.yml` builds a wheel and runs the unit tests, and `test-python-examples.yml` runs the scripts in `examples/`. Both build the wheel once for each platform, on a native runner of that platform (`Build arcadedb-jvm wheel (<platform>)` and `Build wheel for examples (<platform>)`), and install that one file into each Python they test. `test-native.yml` builds and tests the `arcadedb` (native) package; see <<_native_build,Native build>>.
 
 The package supports four platforms and four Python versions (3.11 to 3.14). That is 16 combinations. The organisation shares one runner limit with ArcadeData/arcadedb, so each macOS or Windows job delays the upstream jobs too, and not every combination runs.
 
@@ -31,7 +31,7 @@ The `requires-python` of the package is `>=3.11,<3.15`. The wheel tag no longer 
 
 == What runs when
 
-The script `scripts/select_matrix.py` chooses the combinations. The first job of each workflow, `Download ArcadeDB JARs`, runs it and passes the result to the next jobs: the test legs, and for `test-jvm.yml` also the platforms to build (`--wheels`).
+The script `scripts/select_matrix.py` chooses the combinations. The first job of each workflow, `Download ArcadeDB JARs`, runs it and passes the result to the next jobs: the test legs and the platforms to build (`--wheels`).
 
 [cols="2,3,3"]
 |===
@@ -46,7 +46,7 @@ The script `scripts/select_matrix.py` chooses the combinations. The first job of
 | All 16 combinations.
 |===
 
-The unit tests run the same 10 legs on every event, like the native package (all Python versions on one Linux platform, the oldest and the newest elsewhere). They were 16 legs on `main`, the nightly run and a release before the wheel became `py3-none`; the extra legs tested the same file again. A pull request runs 24 checks: 14 test jobs (10 and 4), 4 wheel builds, the two `Download ArcadeDB JARs` jobs, the two summary jobs, `Bandit security scan` and `Dependency floor audit`. The other events run 36: the examples run all 16 combinations there.
+The unit tests run the same 10 legs on every event, like the native package (all Python versions on one Linux platform, the oldest and the newest elsewhere). They were 16 legs on `main`, the nightly run and a release before the wheel became `py3-none`; the extra legs tested the same file again. A pull request runs 28 checks: 14 test jobs (10 and 4), 8 wheel builds (4 for each workflow), the two `Download ArcadeDB JARs` jobs, the two summary jobs, `Bandit security scan` and `Dependency floor audit`. The other events run 40: the examples run all 16 combinations there, from 4 wheel builds.
 
 The names of the test jobs do not change: `Test arcadedb (<platform>, Python <version>)`. A check keeps its history when a pull request runs fewer of them.
 
