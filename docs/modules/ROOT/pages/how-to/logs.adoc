@@ -43,6 +43,8 @@ export ARCADEDB_LOG_CONSOLE=0   # log to the file only (also on Linux and macOS)
 
 A `java.util.logging.config.file` that you set yourself (see below) replaces all of this: its handlers decide where the log goes.
 
+Log lines are not the only text the runtime writes through that handle: a warning a library prints, or a printed stack trace, goes to Java's `System.out` or `System.err`, and the runtime's own warnings go to a copy of `System.err` that `System.setErr` does not change. One of them is the warning that the runtime prints once, when the first vector index is reopened (`A terminally deprecated method in sun.misc.Unsafe has been called`, from the `jvector` library). In the `arcadedb-jvm` package, with the console off (the default on Windows, or `ARCADEDB_LOG_CONSOLE=0`), the package therefore points all three at `arcadedb-stdio.log` in the log directory, a file that it opens itself, right after the JVM starts. The runtime's own start-up warning (`WARNING: Using incubator modules: jdk.incubator.vector`) is printed while the JVM is created, before the package can do this, and still goes to the stderr of your process. With `ARCADEDB_LOG_CONSOLE=1` on Windows, `System.out` and `System.err` keep the runtime's handle, so the risk above stays: do not redirect fd 1 or 2 after the first database is opened.
+
 The packages themselves never print to the console on Windows: the glue code of the native build logs through the same engine log instead of writing to stderr.
 
 == Choose the directory
