@@ -1,4 +1,7 @@
-"""Logs and the JVM crash file go to a per-user directory, never the working directory."""
+"""Logs (and, on the JVM build, the JVM crash file) go to a per-user directory, never the working directory.
+
+The subprocess tests run on both builds; the JVM-only ones are listed in conftest.NATIVE_NA_JVM_TESTS and
+test_native_log_dir.py has their native counterparts."""
 
 import os
 import subprocess  # nosec B404 - test-controlled child process
@@ -9,19 +12,29 @@ from unittest.mock import patch
 
 import pytest
 
-from arcadedb import jvm
+from arcadedb import _logdir, jvm
+from arcadedb._native import lib as native_lib
 from arcadedb.jvm import _build_jvm_args, _default_log_dir
 
 CHILD = """
 import sys
 import arcadedb
 from arcadedb import jvm
+from arcadedb._native import enabled
 
 jvm_args = sys.argv[2:]
-db = arcadedb.create_database(sys.argv[1], jvm_kwargs={"jvm_args": jvm_args})
+# the JVM build takes its settings as jvm_kwargs; the native build has none (its log settings are tested in test_native_log_dir.py)
+kwargs = {} if enabled() else {"jvm_kwargs": {"jvm_args": jvm_args}}
+db = arcadedb.create_database(sys.argv[1], **kwargs)
 db.command("sql", "CREATE DOCUMENT TYPE Doc")
 db.close()
-print("LOGDIR=" + str(jvm._LOG_DIR_USED))
+if enabled():
+    from arcadedb._native import lib
+
+    used = lib.LOG_DIR_USED
+else:
+    used = jvm._LOG_DIR_USED
+print("LOGDIR=" + str(used))
 """
 
 
@@ -70,7 +83,7 @@ def test_default_logs_land_in_the_state_dir_not_the_cwd(tmp_path):
     assert home in log_dir.parents
     assert log_dir.name == "log" and log_dir.parent.name == "arcadedb"
     assert list(log_dir.glob("arcadedb.log*")), list(log_dir.iterdir())
-    config = (log_dir / "logging.properties").read_text("iso-8859-1")
+    config = (log_dir / _logdir.logging_config_name()).read_text("iso-8859-1")
     assert "${arcadedb.server.logsDirectory}/arcadedb.log" in config
     assert "./log" not in config
 
@@ -107,9 +120,10 @@ def test_args_never_name_the_working_directory():
         # the expected directory comes from the same (cleared) environment the args were built in: on Windows the real
         # environment has LOCALAPPDATA and the cleared one falls back, so computing it outside the block would differ
         log_dir = _default_log_dir().as_posix()
+        config_name = _logdir.logging_config_name()
     assert not any("./log" in a for a in args)
     assert f"-Darcadedb.server.logsDirectory={log_dir}" in args
-    assert f"-Djava.util.logging.config.file={log_dir}/logging.properties" in args
+    assert f"-Djava.util.logging.config.file={log_dir}/{config_name}" in args
     assert f"-XX:ErrorFile={log_dir}/hs_err_pid%p.log" in args
 
 
@@ -204,3 +218,58 @@ def test_arg_values_use_forward_slashes_on_every_platform(tmp_path):
         )
     assert f"-Darcadedb.server.logsDirectory={tmp_path.as_posix()}" in args
     assert f"-XX:ErrorFile={tmp_path.as_posix()}/hs_err_pid%p.log" in args
+
+
+def test_native_isolate_arguments_name_the_log_dir(tmp_path):
+    args = native_lib._log_isolate_args([], tmp_path)
+    assert f"-Darcadedb.server.logsDirectory={tmp_path.as_posix()}" in args
+    name = _logdir.logging_config_name()
+    config = f"-Djava.util.logging.config.file={tmp_path.as_posix()}/{name}"
+    assert config in args
+    assert not any("./log" in a for a in args)
+
+
+def test_native_user_isolate_arguments_win_over_the_log_defaults(tmp_path):
+    user = [
+        "-Darcadedb.server.logsDirectory=/x/logs",
+        "-Djava.util.logging.config.file=/x/my.properties",
+    ]
+    assert native_lib._log_isolate_args(user, tmp_path) == []
+    only_dir = native_lib._log_isolate_args(user[:1], tmp_path)
+    assert len(only_dir) == 1 and only_dir[0].startswith(
+        "-Djava.util.logging.config.file="
+    )
+
+
+def test_native_engine_log_config_renders_like_the_jvm_one():
+    rendered = _logdir.render_logging_config(
+        _logdir.NATIVE_ENGINE_LOG_PROPERTIES, console=True
+    )
+    assert "./log" not in rendered
+    assert rendered.count("FileHandler.pattern") == 1
+    assert "${arcadedb.server.logsDirectory}/arcadedb.log" in rendered
+    assert "java.util.logging.FileHandler.count=10" in rendered
+    assert "handlers = java.util.logging.ConsoleHandler" in rendered
+
+
+def _settings(text):
+    """The key/value pairs of a .properties text, comments and spacing around = dropped."""
+    pairs = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if line and not line.startswith(("#", "!")):
+            key, _, value = line.partition("=")
+            pairs[key.strip()] = value.strip()
+    return pairs
+
+
+def test_native_engine_log_config_matches_the_engine_jar():
+    # The native image has no jar to read, so its log settings are a copy of the engine's arcadedb-log.properties (without
+    # the file pattern, which the render sets). This is the guard that fails when an engine upgrade changes that file.
+    import glob
+
+    jars = glob.glob(os.path.join(jvm.get_jar_path(), "*.jar"))
+    engine = _settings(jvm._read_engine_log_properties(jars))
+    engine.pop("java.util.logging.FileHandler.pattern")
+    copy = _settings(_logdir.NATIVE_ENGINE_LOG_PROPERTIES)
+    assert copy == engine

@@ -7,10 +7,19 @@ JPype converts the engine's exception, JPype fails with ``RuntimeError: Fatal er
 (jpype-project/jpype#1496), which was an ArcadeDBError in about 5% of the runs; it is a
 KeyboardInterrupt now. Not run on Windows, where a
 signal cannot be sent to the own process like this (see test_sigint.py).
+
+The test needs Python's own SIGINT handler (``signal.default_int_handler``), and Python installs it
+at startup only when SIGINT is not ignored. A pytest started as a background job inherits SIGINT as
+ignored (a shell runs ``cmd &`` without job control that way, so do many launchers and agent
+shells): ``os.kill(os.getpid(), SIGINT)`` is then dropped, no query is interrupted, and the test
+failed every time on such a runner while it passed in CI. The ``default_sigint_handler`` fixture
+installs the handler for the test and puts back what it found.
 """
 
 import os
 import signal
+import subprocess  # nosec B404 - test-controlled child process
+import sys
 import threading
 import time
 
@@ -29,7 +38,22 @@ def db(temp_db_path):
         yield database
 
 
-def test_sigint_during_a_query_that_calls_python_is_a_keyboard_interrupt(db):
+@pytest.fixture
+def default_sigint_handler():
+    """KeyboardInterrupt on SIGINT for the test, whatever the runner left (see the module docstring)."""
+    previous = signal.getsignal(signal.SIGINT)
+    signal.signal(signal.SIGINT, signal.default_int_handler)
+    try:
+        yield
+    finally:
+        # getsignal is None for a handler installed by C code: nothing to give back from Python
+        if previous is not None:
+            signal.signal(signal.SIGINT, previous)
+
+
+def test_sigint_during_a_query_that_calls_python_is_a_keyboard_interrupt(
+    db, default_sigint_handler
+):
     interrupted = 0
     for delay in (0.05, 0.09, 0.13, 0.17, 0.21, 0.25, 0.29, 0.33):
         timer = threading.Timer(delay, os.kill, (os.getpid(), signal.SIGINT))
@@ -82,3 +106,57 @@ def test_a_statement_that_fails_otherwise_is_still_an_arcadedb_error(db):
     with pytest.raises(arcadedb.ArcadeDBError) as raised:
         db.query("sql", "SELECT FROM NoSuchType")
     assert not isinstance(raised.value, KeyboardInterrupt)
+
+
+_SIGINT_LOOP = r"""
+import os, signal, tempfile, threading, time
+import numpy as np
+import arcadedb
+
+# a parent started as a background job ignores SIGINT, and a child inherits that: Python then installs no handler
+signal.signal(signal.SIGINT, signal.default_int_handler)
+with tempfile.TemporaryDirectory() as directory:
+    db = arcadedb.create_database(os.path.join(directory, "db"))
+    db.command("sql", "CREATE DOCUMENT TYPE T")
+    db.insert_columns("T", {"n": np.arange(150_000, dtype=np.int64)})
+    db.register_function("plus_one", lambda x: x + 1)
+    interrupted = 0
+    for delay in (0.05, 0.15, 0.25, 0.35, 0.45, 0.55):
+        timer = threading.Timer(delay, os.kill, (os.getpid(), signal.SIGINT))
+        timer.start()
+        try:
+            db.query("sql", "SELECT sum(plus_one(n)) AS s FROM T").first()
+            done = True
+        except KeyboardInterrupt:
+            done = False
+            interrupted += 1
+        finally:
+            timer.cancel()
+            timer.join()
+        if done:
+            try:
+                time.sleep(0.05)
+            except KeyboardInterrupt:
+                interrupted += 1
+        assert db.count_type("T") == 150_000
+    db.close()
+    print("interrupted", interrupted)
+"""
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="a signal cannot be sent to the own process here"
+)
+def test_sigint_loop_in_a_fresh_process_ends_cleanly():
+    """The same loop in its own process. A Ctrl-C raised as the Python callback is entered used to leave the engine a stale
+    reply pointer, and the process aborted in ``free()`` (nonzero exit); pytest's own hooks hid it inside a test run.
+    """
+    result = subprocess.run(  # nosec B603 - fixed argv, no shell, test-owned code string
+        [sys.executable, "-c", _SIGINT_LOOP],
+        capture_output=True,
+        text=True,
+        timeout=600,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr[-2000:]
+    assert int(result.stdout.split()[-1]) >= 1, result.stdout

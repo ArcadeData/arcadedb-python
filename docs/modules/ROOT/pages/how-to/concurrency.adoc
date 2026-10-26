@@ -12,11 +12,12 @@ Every number on this page comes from probe scripts that were run on 2026-10-24 o
 | Label | Package | Python
 
 | JVM
-| `{pkg-name}` 26.10.2.post1, OpenJDK 25.0.4.1
+| `{jvm-pkg-name}` 26.10.2.post1, OpenJDK 25.0.4.1
 | 3.12.13, GIL on
 
+// REMOVE WHEN: the old arcadedb-embedded* shims are retired and two releases have shipped with the two-package layout allow-old-name
 | Native
-| `{native-pkg-name}` 26.10.2.dev1, GraalVM CE 25.4.4.1.1 native image. A preview of alpha quality
+| The native wheel (formerly `arcadedb-embedded-native`) 26.10.2.dev1, GraalVM CE 25.4.4.1.1 native image. A preview of alpha quality, measured before the rename
 | 3.12.13, GIL on
 
 | Native, Python 3.14t
@@ -157,7 +158,7 @@ In all 15 phases (5 call styles, 3 builds) every operation landed (2,000 of 2,00
 
 == Processes
 
-One process owns an embedded database at a time. Start worker processes with `spawn` and give each its own database. If several processes must share data, run a server and use a driver: see xref:packages.adoc#drivers[Packages that talk to a server].
+One process owns an embedded database at a time. Start worker processes with `spawn` and give each its own database. If several processes must share data, run a server and use a driver: see xref:which-package.adoc#drivers[Packages that talk to a server].
 
 The probe has these cases. Each ran once per build.
 
@@ -251,4 +252,4 @@ If a process must stop and it does not react to a signal, `SIGKILL` cost no ackn
 
 The native wheel is a `py3-none` wheel, and it installed and ran on free-threaded Python 3.14.5 with the GIL off. The Python 3.14t rows in the tables above are those runs: threads, several writers, asyncio and the signal and kill probes. The probe on several processes was not run there. The runs are shorter than those on Python 3.12, as listed at the top of this page.
 
-The JVM wheel does not install on Python 3.14t. `uv` could not resolve `{pkg-name}` 26.10.2.post1 there: it reported no wheel with a matching Python version tag.
+The JVM package was not run on Python 3.14t. Its wheels up to 26.11.1.dev0 were tagged for 3.11 to 3.14 (`cp314`), so `uv` found no wheel for 3.14t (it reported no wheel with a matching Python version tag for `{jvm-pkg-name}` 26.10.2.post1). The newer wheels are `py3-none`, and JPype has a 3.14t wheel on Linux, so pip can now install the package on 3.14t. No JVM test run has been made there, so treat it as untested.

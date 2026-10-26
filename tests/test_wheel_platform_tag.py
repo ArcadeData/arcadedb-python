@@ -57,7 +57,7 @@ def test_max_glibc_in_dir_picks_highest(tmp_path: Path) -> None:
 
 def test_parse_wheel_tag_extracts_version_and_arch(tmp_path: Path) -> None:
     verifier = _load_verifier()
-    wheel = tmp_path / "arcadedb-26.4.2-py3-none-manylinux_2_34_x86_64.whl"
+    wheel = tmp_path / "arcadedb_jvm-26.4.2-py3-none-manylinux_2_34_x86_64.whl"
     wheel.write_bytes(b"")
 
     glibc, arch = verifier.parse_wheel_tag(wheel)
@@ -73,12 +73,80 @@ def test_main_succeeds_when_tag_matches(
     jre_dir.mkdir()
     _make_elf_with_glibc_symbols(jre_dir / "libjvm.so", ["2.17", "2.34"])
 
-    wheel = tmp_path / "arcadedb-26.4.2-py3-none-manylinux_2_34_x86_64.whl"
+    wheel = tmp_path / "arcadedb_jvm-26.4.2-py3-none-manylinux_2_34_x86_64.whl"
     wheel.write_bytes(b"")
 
     rc = _run_main(verifier, [str(wheel), str(jre_dir)])
     assert rc == 0
     assert "OK" in capsys.readouterr().out
+
+
+def test_main_succeeds_at_the_floor_when_jre_needs_less(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A JRE built for glibc 2.17 (Eclipse Temurin) is tagged with the floor, manylinux_2_28."""
+    verifier = _load_verifier()
+    jre_dir = tmp_path / "jre"
+    jre_dir.mkdir()
+    _make_elf_with_glibc_symbols(jre_dir / "libjvm.so", ["2.2.5", "2.17"])
+
+    wheel = tmp_path / "arcadedb_jvm-26.4.2-py3-none-manylinux_2_28_aarch64.whl"
+    wheel.write_bytes(b"")
+
+    rc = _run_main(verifier, [str(wheel), str(jre_dir)])
+    assert rc == 0
+    assert "OK" in capsys.readouterr().out
+
+
+def test_main_fails_when_tag_below_the_floor(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The JRE would run on glibc 2.17, but JPype publishes manylinux_2_28 wheels only."""
+    verifier = _load_verifier()
+    jre_dir = tmp_path / "jre"
+    jre_dir.mkdir()
+    _make_elf_with_glibc_symbols(jre_dir / "libjvm.so", ["2.17"])
+
+    wheel = tmp_path / "arcadedb_jvm-26.4.2-py3-none-manylinux_2_17_x86_64.whl"
+    wheel.write_bytes(b"")
+
+    rc = _run_main(verifier, [str(wheel), str(jre_dir)])
+    assert rc != 0
+    assert "manylinux_2_28" in capsys.readouterr().err
+
+
+def test_main_fails_when_tag_above_the_floor_and_jre(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Going back to manylinux_2_34 with a 2.17 JRE would lock out glibc 2.28 to 2.33 for no reason."""
+    verifier = _load_verifier()
+    jre_dir = tmp_path / "jre"
+    jre_dir.mkdir()
+    _make_elf_with_glibc_symbols(jre_dir / "libjvm.so", ["2.17"])
+
+    wheel = tmp_path / "arcadedb_jvm-26.4.2-py3-none-manylinux_2_34_x86_64.whl"
+    wheel.write_bytes(b"")
+
+    rc = _run_main(verifier, [str(wheel), str(jre_dir)])
+    assert rc != 0
+    assert "manylinux_2_28" in capsys.readouterr().err
+
+
+def test_jre_only_mode_prints_the_floor_or_the_jre_requirement(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    verifier = _load_verifier()
+    old = tmp_path / "old"
+    old.mkdir()
+    _make_elf_with_glibc_symbols(old / "libjvm.so", ["2.17"])
+    assert _run_main(verifier, ["--jre", str(old)]) == 0
+    assert capsys.readouterr().out.strip() == "manylinux_2_28"
+
+    new = tmp_path / "new"
+    new.mkdir()
+    _make_elf_with_glibc_symbols(new / "libjvm.so", ["2.17", "2.34"])
+    assert _run_main(verifier, ["--jre", str(new)]) == 0
+    assert capsys.readouterr().out.strip() == "manylinux_2_34"
 
 
 def test_main_fails_when_tag_higher_than_jre(
@@ -90,7 +158,7 @@ def test_main_fails_when_tag_higher_than_jre(
     jre_dir.mkdir()
     _make_elf_with_glibc_symbols(jre_dir / "libjvm.so", ["2.17", "2.34"])
 
-    wheel = tmp_path / "arcadedb-26.4.2-py3-none-manylinux_2_35_x86_64.whl"
+    wheel = tmp_path / "arcadedb_jvm-26.4.2-py3-none-manylinux_2_35_x86_64.whl"
     wheel.write_bytes(b"")
 
     rc = _run_main(verifier, [str(wheel), str(jre_dir)])
@@ -109,7 +177,7 @@ def test_main_fails_when_tag_lower_than_jre(
     jre_dir.mkdir()
     _make_elf_with_glibc_symbols(jre_dir / "libjvm.so", ["2.17", "2.36"])
 
-    wheel = tmp_path / "arcadedb-26.4.2-py3-none-manylinux_2_28_x86_64.whl"
+    wheel = tmp_path / "arcadedb_jvm-26.4.2-py3-none-manylinux_2_28_x86_64.whl"
     wheel.write_bytes(b"")
 
     rc = _run_main(verifier, [str(wheel), str(jre_dir)])
@@ -151,7 +219,7 @@ def test_dunder_version_matches_distribution_metadata():
     import arcadedb
 
     try:
-        expected = dist_version("arcadedb")
+        expected = dist_version("arcadedb-jvm")
     except PackageNotFoundError:  # source checkout, nothing to compare against
         return
     assert arcadedb.__version__ == expected

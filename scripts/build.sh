@@ -59,8 +59,9 @@ print_usage() {
     echo "  windows/amd64  Windows x86_64 (native build on Windows)"
     echo ""
     echo "PYTHON_VERSION:"
-    echo "  Python version for wheel (default: 3.12); used by Linux (Docker) builds only"
-    echo "  Examples: 3.10, 3.11, 3.12, 3.13, 3.14"
+    echo "  Python of the Linux (Docker) build and its smoke test (default: 3.12); ignored on macOS and Windows."
+    echo "  The wheel is py3-none-<platform>: the same file whichever Python builds it"
+    echo "  Examples: 3.11, 3.12, 3.13, 3.14"
     echo ""
     echo "JAR_LIB_DIR (optional):"
     echo "  Directory containing ArcadeDB JARs to embed"
@@ -261,7 +262,7 @@ else
 fi
 
 echo -e "${CYAN}📋 Build Configuration:${NC}"
-echo -e "   Package: ${YELLOW}arcadedb${NC}"
+echo -e "   Package: ${YELLOW}arcadedb-jvm${NC}"
 echo -e "   Platform: ${YELLOW}${PLATFORM}${NC}"
 echo -e "   Python Version: ${YELLOW}${PYTHON_VERSION}${NC}"
 echo -e "   JAR Source: ${YELLOW}${JAR_SOURCE_DESC}${NC}"
@@ -270,8 +271,8 @@ echo -e "   Build Method: ${YELLOW}${BUILD_METHOD}${NC}"
 echo ""
 
 # Package configuration
-PACKAGE_NAME="arcadedb"
-DESCRIPTION="ArcadeDB embedded multi-model database with bundled JRE - no Java installation required"
+PACKAGE_NAME="arcadedb-jvm"
+DESCRIPTION="ArcadeDB embedded multi-model database, JVM build with a bundled JRE (no Java installation needed)"
 
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo -e "${BLUE}Building: ${YELLOW}${PACKAGE_NAME}${NC}"
@@ -447,10 +448,10 @@ def _is_wanted(wheel_path):
 
 
 _new = [Path(p) for p in os.environ.get("NEW_WHEELS", "").split() if p.endswith(".whl")]
-wheels = _new or sorted((p for p in Path("dist").glob("arcadedb-*.whl") if _is_wanted(p)),
+wheels = _new or sorted((p for p in Path("dist").glob("arcadedb_jvm-*.whl") if _is_wanted(p)),
                         key=lambda p: p.stat().st_mtime)
 if not wheels:
-    print(f"❌ no arcadedb-{_want} wheel in dist/", file=sys.stderr)
+    print(f"❌ no arcadedb_jvm-{_want} wheel in dist/", file=sys.stderr)
     sys.exit(1)
 wheel = wheels[-1]
 if not _is_wanted(wheel):
@@ -531,6 +532,10 @@ if [[ -z "$SIZE_PY" ]]; then
 else
     "$SIZE_PY" "$SCRIPT_DIR/verify_wheel_licences.py" "$NEWEST_WHEEL" || exit 1
 fi
+
+# THE TAG POLICY: one wheel for each platform, py3-none-<platform> (setup.py), the same file for every Python. A cpXY wheel
+# would be one of sixteen for a release, and an -any wheel would install where its JRE does not run.
+"$SIZE_PY" "$SCRIPT_DIR/verify_wheel_tag.py" "$NEWEST_WHEEL" || exit 1
 
 echo -e "${GREEN}🎉 Build completed successfully!${NC}"
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"

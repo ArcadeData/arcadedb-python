@@ -8,12 +8,10 @@ import functools
 import glob
 import os
 import platform
-import re
 import shlex
 import shutil
 import signal
 import sys
-import tempfile
 import threading
 import zipfile
 from pathlib import Path
@@ -23,6 +21,14 @@ import jpype
 import jpype.imports
 
 from . import aot as _aot
+from ._logdir import LOG_DIR_ENV as _LOG_DIR_ENV
+from ._logdir import console_enabled as _console_enabled
+from ._logdir import default_log_dir as _default_log_dir
+from ._logdir import logging_config_name as _logging_config_name
+from ._logdir import render_logging_config as _render_logging_config
+from ._logdir import stdio_log_path as _stdio_log_path
+from ._logdir import usable_log_dir as _usable_log_dir
+from ._logdir import write_logging_config as _write_logging_config
 from ._logging import get_logger
 from .exceptions import ArcadeDBError
 
@@ -48,8 +54,6 @@ _MAX_HEAP_FLAG_PREFIXES = (
 _JVM_INTERRUPT = None  # the `interrupt` the running JVM was started with
 _LOG_DIR_USED = None  # the log directory the running JVM was started with
 
-_LOG_DIR_ENV = "ARCADEDB_LOG_DIR"
-_LOGGING_CONFIG_NAME = "logging.properties"
 _ENGINE_LOG_RESOURCE = "arcadedb-log.properties"
 
 
@@ -91,7 +95,7 @@ def _extract_runtime_resource(resource_name: str) -> Path:
     project_dir = _project_dir()
     dist_dir = project_dir / "dist"
     wheels = sorted(
-        dist_dir.glob("arcadedb-*.whl"),
+        dist_dir.glob("arcadedb_jvm-*.whl"),
         key=lambda p: p.stat().st_mtime_ns,
         reverse=True,
     )
@@ -434,6 +438,21 @@ def start_jvm(
         then ``arcadedb/log``). A ``-Darcadedb.server.logsDirectory=`` or
         ``-Djava.util.logging.config.file=`` in ``jvm_args`` wins over it.
 
+    ARCADEDB_LOG_CONSOLE (optional)
+        ``1`` also logs to the console (stdout/stderr), ``0`` logs to the file
+        only. Default: on, except on Windows, where a host that redirects fd 1
+        or 2 after the JVM started (pytest capture, a service) leaves the JVM
+        writing console lines to a handle that a database file can reuse.
+        With the console off, Java's ``System.out`` and ``System.err`` (a library
+        that prints) and the runtime's own warnings (``System.initialErr``) also
+        append to ``arcadedb-stdio.log`` in the log directory, for the same reason; the
+        runtime's start-up warning, printed while the JVM is created, still goes
+        to the process's stderr. With ``1`` on Windows, that risk stays: do not
+        redirect fd 1 or 2 after the first database is opened.
+        Needs to be set before the first JVM start. A
+        ``-Djava.util.logging.config.file=`` in ``jvm_args`` replaces the
+        logging config, not the stream redirect.
+
     ARCADEDB_JVM_ERROR_FILE (optional)
         Path for JVM crash logs (default: ``hs_err_pid%p.log`` in the log
         directory above). ``-XX:ErrorFile=`` in ``jvm_args`` wins over it.
@@ -535,6 +554,8 @@ def start_jvm(
     except Exception as e:
         raise ArcadeDBError(f"Failed to start JVM: {e}") from e
 
+    _redirect_java_stdio(log_dir)
+
     if not _JVM_INTERRUPT:
         _restore_python_signal_handlers()
 
@@ -557,6 +578,59 @@ def start_jvm(
         import faulthandler
 
         faulthandler.disable()
+
+
+def _redirect_java_stdio(log_dir: Path) -> None:
+    """With the console off, point ``System.out`` and ``System.err`` at a file the library owns.
+
+    On Windows the runtime caches the OS handle of stdout and stderr when it starts. A host that later redirects fd 1 or 2 (pytest's
+    fd capture, a service, an embedding application) closes that handle, a database page file opened afterwards can get the same
+    handle value, and the next ``System.out`` or ``System.err`` write lands in the page file (the JVM twin of the native bug that
+    ``ARCADEDB_LOG_CONSOLE`` fixed for the engine's own console log). Removing the console log handler does not cover every writer:
+    a library that prints, ``printStackTrace()``, and the runtime's own warnings. ``System.setOut`` and ``System.setErr`` reach the
+    first two; the runtime prints its own warnings (the JEP 498 warning for ``sun.misc.Unsafe``, which jvector triggers when it
+    unmaps a graph file on the first reopen of a vector index; the JEP 472 warning for restricted methods) to ``System.initialErr``,
+    a copy of the stream over the cached stderr handle that it keeps for exactly that purpose, so that is replaced too. A
+    ``PrintStream`` on a file opened here has no cached handle, whatever the host does with fd 1 and 2.
+
+    Only with the console off, which is the default on Windows only: on Linux and macOS the runtime writes to fd 1 and 2 by number
+    and follows a redirect, so the default there is unchanged. ``ARCADEDB_LOG_CONSOLE=1`` on Windows keeps the runtime's own
+    streams (the risk stays; see the option's text in :func:`start_jvm`). The text the runtime prints while the JVM is created comes
+    before this runs and still goes to the process's stderr.
+    """
+    if _console_enabled():
+        return
+    path = _stdio_log_path(log_dir)
+    try:
+        system = jpype.JClass("java.lang.System")
+        stream = jpype.JClass("java.io.PrintStream")(
+            jpype.JClass("java.io.FileOutputStream")(str(path), True), True, "UTF-8"
+        )
+        system.setOut(stream)
+        system.setErr(stream)
+    except (
+        Exception
+    ) as exc:  # the console stays as it was; never stop the start for a log file
+        _LOGGER.warning(
+            "Cannot send the Java stdout and stderr to %s (%s); they keep the process's own streams",
+            path,
+            exc,
+        )
+        return
+    try:
+        # setErr does not reach the runtime's own warnings: they are printed to System.initialErr, the stream that the runtime made
+        # over the cached stderr handle before any application code ran (the JEP 498 warning for sun.misc.Unsafe, which jvector
+        # prints on the first reopen of a vector index; the JEP 472 warning for restricted methods). It is a plain static field of
+        # java.lang.System, which --add-opens=java.base/java.lang (a default of this package) makes writable.
+        field = system.class_.getDeclaredField("initialErr")
+        field.setAccessible(True)
+        field.set(None, stream)
+    except Exception as exc:  # the runtime's own warnings keep the cached handle
+        _LOGGER.warning(
+            "Cannot send the Java runtime's own warnings to %s (%s); they keep the process's own stderr",
+            path,
+            exc,
+        )
 
 
 def _aot_flags(aot: Optional[bool], jvm_args: list, classpath: str) -> list:
@@ -697,45 +771,6 @@ def _dedupe_max_heap(args: list[str]) -> list[str]:
     return filtered
 
 
-def _state_base_dir() -> Path:
-    """Per-user base directory for state and logs, by platform (stdlib only).
-
-    The home directory is read only where the platform needs it, and when it
-    cannot be determined (no HOME or USERPROFILE, as in a stripped-down service
-    environment) the system temp directory is used, so this never raises.
-    """
-    if sys.platform == "win32":
-        local = os.environ.get("LOCALAPPDATA")
-        if local:
-            return Path(local)
-    elif sys.platform != "darwin":
-        xdg = os.environ.get("XDG_STATE_HOME")
-        # The XDG spec ignores a relative value.
-        if xdg and os.path.isabs(xdg):
-            return Path(xdg)
-    try:
-        home = Path.home()
-    except (RuntimeError, KeyError, OSError):
-        return Path(tempfile.gettempdir())
-    if sys.platform == "win32":
-        return home / "AppData" / "Local"
-    if sys.platform == "darwin":
-        return home / "Library" / "Logs"
-    return home / ".local" / "state"
-
-
-def _default_log_dir() -> Path:
-    """Where the engine log, the crash log and logging.properties go.
-
-    ``ARCADEDB_LOG_DIR`` if set, else ``arcadedb/log`` under the
-    per-user state directory. Never the working directory.
-    """
-    override = os.environ.get(_LOG_DIR_ENV)
-    if override:
-        return Path(os.path.abspath(os.path.expanduser(override)))
-    return _state_base_dir() / "arcadedb" / "log"
-
-
 def _read_engine_log_properties(jar_files: Iterable[str]) -> Optional[str]:
     """Read the engine's bundled ``arcadedb-log.properties`` from its jar."""
     for jar in sorted(jar_files, key=lambda j: "engine" not in os.path.basename(j)):
@@ -747,26 +782,6 @@ def _read_engine_log_properties(jar_files: Iterable[str]) -> Optional[str]:
     return None
 
 
-def _render_logging_config(engine_text: str) -> str:
-    """The engine's logging config with the file log in ``logsDirectory``.
-
-    The jar's own file hard-codes ``./log/arcadedb.log``, which lands in the
-    working directory. The engine resolves ``${arcadedb.server.logsDirectory}``
-    in the pattern, and the JVM argument that sets it is added in
-    ``_build_jvm_args``.
-    """
-    lines = [
-        line
-        for line in engine_text.splitlines()
-        if not re.match(r"\s*java\.util\.logging\.FileHandler\.pattern\s*[=:]", line)
-    ]
-    lines.append(
-        "java.util.logging.FileHandler.pattern="
-        "${arcadedb.server.logsDirectory}/arcadedb.log"
-    )
-    return "\n".join(lines) + "\n"
-
-
 def _prepare_log_dir(log_dir: Path, jar_files: Iterable[str]) -> Path:
     """Create the log directory and write its logging.properties.
 
@@ -775,32 +790,10 @@ def _prepare_log_dir(log_dir: Path, jar_files: Iterable[str]) -> Path:
     read-only home, for example), so that nothing is ever written to the
     working directory.
     """
-    try:
-        log_dir.mkdir(parents=True, exist_ok=True)
-        if not os.access(log_dir, os.W_OK | os.X_OK):
-            raise OSError(f"{log_dir} is not writable")
-    except OSError as exc:
-        fallback = Path(tempfile.mkdtemp(prefix="arcadedb-log-"))
-        _LOGGER.warning(
-            "Cannot use %s for ArcadeDB logs (%s); using %s. Set %s to choose one.",
-            log_dir,
-            exc,
-            fallback,
-            _LOG_DIR_ENV,
-        )
-        log_dir = fallback
-
+    log_dir = _usable_log_dir(log_dir)
     engine_text = _read_engine_log_properties(jar_files)
     if engine_text is not None:
-        config = log_dir / _LOGGING_CONFIG_NAME
-        rendered = _render_logging_config(engine_text)
-        try:
-            if not config.exists() or config.read_text("iso-8859-1") != rendered:
-                tmp = log_dir / f"{_LOGGING_CONFIG_NAME}.{os.getpid()}.tmp"
-                tmp.write_text(rendered, encoding="iso-8859-1", newline="\n")
-                os.replace(tmp, config)
-        except OSError as exc:
-            _LOGGER.warning("Cannot write %s: %s", config, exc)
+        _write_logging_config(log_dir, engine_text)
     return log_dir
 
 
@@ -861,6 +854,15 @@ def _build_jvm_args(
     if not any(arg.startswith("--enable-native-access") for arg in merged_args):
         merged_args.append("--enable-native-access=ALL-UNNAMED")
 
+    # JEP 498 (JDK 24 and later): the first call of a sun.misc.Unsafe memory method prints a four-line warning to System.initialErr.
+    # jvector causes it when it unmaps a graph file on the first reopen of a vector index, and a user cannot change jvector. "allow"
+    # (the JEP 471 option) switches the warning off at its source; a value in jvm_args or ARCADEDB_JVM_ARGS wins. The native build sets
+    # the same option when it builds the image (native/scripts/build-image.sh).
+    if not any(
+        arg.startswith("--sun-misc-unsafe-memory-access") for arg in merged_args
+    ):
+        merged_args.append("--sun-misc-unsafe-memory-access=allow")
+
     # Force UTF-8 regardless of OS locale to avoid silent encoding mismatches
     if not any(arg.startswith("-Dfile.encoding=") for arg in merged_args):
         merged_args.append("-Dfile.encoding=UTF8")
@@ -916,7 +918,7 @@ def _build_jvm_args(
         arg.startswith("-Djava.util.logging.config.file=") for arg in merged_args
     ):
         merged_args.append(
-            f"-Djava.util.logging.config.file={log_dir_posix}/{_LOGGING_CONFIG_NAME}"
+            f"-Djava.util.logging.config.file={log_dir_posix}/{_logging_config_name()}"
         )
 
     # Configure JVM crash log location (hs_err_pid*.log files)

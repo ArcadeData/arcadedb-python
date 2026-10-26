@@ -13,7 +13,7 @@ import pytest
 
 SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "check_version.py"
 PYPROJECT_FIELD = re.compile(r'^version = "([^"]+)"', re.MULTILINE)
-RELEASE_WORKFLOW = SCRIPT_PATH.parents[1] / ".github" / "workflows" / "release.yml"
+RELEASE_WORKFLOW = SCRIPT_PATH.parents[1] / ".github" / "workflows" / "release-jvm.yml"
 
 
 def _load():
@@ -260,4 +260,4 @@ def test_release_workflow_checks_the_tag_before_anything_is_built():
         r'python3 -I scripts/check_version\.py "\$TAG" --git-remote origin --pypi "\$DIST_NAME"',
         first_job,
     )
-    assert re.search(r"^  DIST_NAME: arcadedb$", workflow, re.MULTILINE)
+    assert re.search(r"^  DIST_NAME: arcadedb-jvm$", workflow, re.MULTILINE)

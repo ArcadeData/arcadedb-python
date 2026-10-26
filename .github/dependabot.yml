@@ -7,11 +7,21 @@ version: 2
 updates:
   # pyproject.toml is the package definition (`[tool.uv] managed = false`, no
   # uv.lock), so it is tracked as a pip project rather than a uv one.
+  #
+  # The lower bounds in pyproject.toml are the oldest versions this package
+  # supports, not the newest it was tested with. The "Dependency floor audit"
+  # job (test-jvm.yml) installs exactly those floors (`--resolution
+  # lowest-direct`, on every supported Python) and runs pip-audit on them, so a
+  # floor that is too old or vulnerable fails CI. `increase-if-necessary` keeps
+  # that meaning: Dependabot only raises a floor when the new release falls
+  # outside the declared range. Without it, every `>=` floor became a PR to
+  # raise it to the newest release, which locks users out for no reason.
   - package-ecosystem: "pip"
     directory: "/"
     schedule:
       interval: weekly
       day: "sunday"
+    versioning-strategy: increase-if-necessary
     cooldown:
       default-days: 3
     open-pull-requests-limit: 10

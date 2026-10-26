@@ -1,4 +1,8 @@
-name: Test Python Bindings
+# The JVM build: the `arcadedb-jvm` distribution. release-jvm.yml calls this workflow on a version tag and publishes the wheels it builds.
+# One wheel per platform, py3-none-<platform tag> (setup.py): the `build` job builds each once, and the `test` job installs that one file
+# into every Python (3.11 to 3.14) and runs the suite. The jars and the bundled JRE do not depend on the Python, so nothing is built per Python.
+# The native build, `arcadedb`, is test-native.yml / release-native.yml.
+name: Test JVM (arcadedb-jvm)
 
 on:
   push:
@@ -16,6 +20,10 @@ on:
       - "CLAUDE.md"
       - "examples/README.md"
       - "LICENSE*"
+      # the native build has its own workflows; nothing under native/ is in the JVM wheel
+      - "native/**"
+      - ".github/workflows/test-native.yml"
+      - ".github/workflows/release-native.yml"
   pull_request:
     # ready_for_review: draft PRs skip the platform matrices (see the job conditions),
     # so marking one ready is what starts them.
@@ -27,6 +35,10 @@ on:
       - "CLAUDE.md"
       - "examples/README.md"
       - "LICENSE*"
+      # the native build has its own workflows; nothing under native/ is in the JVM wheel
+      - "native/**"
+      - ".github/workflows/test-native.yml"
+      - ".github/workflows/release-native.yml"
 
   # A new upstream snapshot is published as arcadedata/arcadedb:latest without
   # any change here, so build and test against it every night as well. The tag
@@ -36,7 +48,7 @@ on:
   schedule:
     - cron: "0 3 * * *"
 
-  # Allow being called by other workflows (e.g., release workflow)
+  # Allow being called by other workflows (release-jvm.yml)
   workflow_call:
     inputs:
       arcadedb-tag:
@@ -69,7 +81,7 @@ on:
 # the workflow literally: github.workflow is the CALLER's name in a
 # workflow_call, which would put this workflow and its sibling in one group.
 concurrency:
-  group: test-python-bindings-${{ github.event.pull_request.number || github.run_id }}
+  group: test-jvm-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -89,7 +101,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
 
@@ -113,7 +125,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
 
@@ -148,8 +160,8 @@ jobs:
       #
       # Every interpreter the package claims to support is resolved, because the
       # closure is interpreter-dependent even though the declared floors are not:
-      # 3.10 pulls exceptiongroup, tomli and typing-extensions that 3.12 does not,
-      # and 3.14 drops one more. --python-version selects the resolution target
+      # an older interpreter pulls backports (typing-extensions, for one) that a
+      # newer one does not. --python-version selects the resolution target
       # without installing anything, so this stays one job rather than a matrix.
       # The list is read from the classifiers rather than repeated here, so adding
       # an interpreter to the package cannot leave it unaudited.
@@ -190,6 +202,7 @@ jobs:
     outputs:
       arcadedb-tag: ${{ steps.jars.outputs.arcadedb-tag }}
       matrix: ${{ steps.matrix.outputs.matrix }}
+      wheel-matrix: ${{ steps.matrix.outputs.wheel-matrix }}
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -197,6 +210,8 @@ jobs:
       # The platform x Python legs of this run (scripts/select_matrix.py): a small matrix on
       # pull requests, the full one on every other event. The organisation shares one runner
       # cap with ArcadeData/arcadedb, so a pull request does not run every combination.
+      # The wheel matrix is the platforms of those legs, one build each: the wheel is
+      # py3-none-<platform>, the same file for every Python.
       # Done first, so a failure here costs no Docker pull.
       - name: Select the test matrix
         id: matrix
@@ -204,9 +219,12 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
         run: |
-          matrix="$(python3 scripts/select_matrix.py bindings --event "$EVENT_NAME")"
+          matrix="$(python3 scripts/select_matrix.py jvm --event "$EVENT_NAME")"
+          wheel_matrix="$(python3 scripts/select_matrix.py jvm --event "$EVENT_NAME" --wheels)"
           echo "$matrix"
+          echo "$wheel_matrix"
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "wheel-matrix=$wheel_matrix" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
@@ -254,9 +272,11 @@ jobs:
           path: src/arcadedb/jars/*.jar
           retention-days: 1
 
-  # Second job: Build and test on each platform
-  test:
-    name: Test arcadedb (${{ matrix.platform }}, Python ${{ matrix.python-version }})
+  # Second job: build the wheel of each platform, once. The wheel is py3-none-<platform tag> (setup.py), so the file built here is
+  # the one every Python of the test job below installs: nothing is built per Python. build.sh takes a Python only for the Linux
+  # container that builds and smoke-tests the wheel; any of them gives the same file.
+  build:
+    name: Build arcadedb-jvm wheel (${{ matrix.platform }})
     runs-on: ${{ matrix.runs-on }}
     needs: download-jars
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
@@ -265,21 +285,18 @@ jobs:
     strategy:
       # Don't cancel other matrix jobs if one fails
       fail-fast: false
-      # Chosen by the "Select the test matrix" step of download-jars from the event that
-      # started the run (scripts/select_matrix.py holds the platform and Python lists):
-      # small on pull requests, the full 4 platforms x 5 Pythons on every other event.
-      # Every leg carries platform, runs-on and python-version, so the job names stay
-      # "Test arcadedb (<platform>, Python <version>)".
-      matrix: ${{ fromJSON(needs.download-jars.outputs.matrix) }}
+      # One leg per platform of the test matrix, from the "Select the test matrix" step of download-jars
+      # (scripts/select_matrix.py --wheels): {"include": [{"platform": ..., "runs-on": ...}, ...]}.
+      matrix: ${{ fromJSON(needs.download-jars.outputs.wheel-matrix) }}
 
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: "3.12"
 
       - name: Setup UV package manager
         shell: bash
@@ -332,28 +349,130 @@ jobs:
       #     ln -s "$PYTHON_DIR/python.exe" "$PYTHON_DIR/python3.exe" || true
       #     python3 --version
 
-      - name: Build and test arcadedb (${{ matrix.platform }})
+      - name: Build arcadedb (${{ matrix.platform }})
         shell: bash
         env:
           # The engine version download-jars read from the ARCADEDB_IMAGE_TAG jars;
           # the Docker build takes its base image by this tag, the jars from the artifact
           ARCADEDB_TAG: ${{ needs.download-jars.outputs.arcadedb-tag }}
         run: |
-          echo "🔨 Building arcadedb for ${{ matrix.platform }} with Python ${{ matrix.python-version }}..."
+          echo "🔨 Building arcadedb-jvm for ${{ matrix.platform }}..."
           # The jars download-jars fetched, on every platform, so all wheels of this
           # run carry the same engine build (and build.sh checks the integration jar)
-          ./scripts/build.sh ${{ matrix.platform }} ${{ matrix.python-version }} src/arcadedb/jars
+          ./scripts/build.sh ${{ matrix.platform }} 3.12 src/arcadedb/jars
 
-      - name: Extract wheel for additional testing
+      # build.sh already ran this; it is repeated here so the tag shows in this job's log and summary, and so a change to build.sh
+      # cannot drop it unnoticed. The wheel must be py3-none-<platform>, the file the test job installs on every Python.
+      - name: Check the wheel tag
         shell: bash
         run: |
-          mkdir -p test-install
-          cp dist/*.whl test-install/
+          python scripts/verify_wheel_tag.py dist/*.whl
+          {
+            echo "## 📦 Wheel: arcadedb-jvm (${{ matrix.platform }})"
+            echo
+            for w in dist/*.whl; do
+              echo "- \`$(basename "$w")\`, $(du -m "$w" | cut -f1) MB"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Set up Python for host testing
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      # One wheel per platform: the test job of the platform installs this file on every Python, and the release workflow
+      # publishes it (verify-wheels downloads wheel-<platform>).
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: wheel-${{ matrix.platform == 'linux/amd64' && 'linux-amd64' || matrix.platform == 'linux/arm64' && 'linux-arm64' || matrix.platform == 'darwin/amd64' && 'darwin-amd64' || matrix.platform == 'darwin/arm64' && 'darwin-arm64' || matrix.platform == 'windows/amd64' && 'windows-amd64' || 'windows-arm64' }}
+          path: dist/*.whl
+          if-no-files-found: error
+          retention-days: 7
+
+  # Third job: install the wheel of the platform into each Python and run the suite. Nothing is built here: the wheel is the file the
+  # build job made (py3-none-<platform tag>), so each Python is tested against the same file that is published.
+  test:
+    name: Test arcadedb (${{ matrix.platform }}, Python ${{ matrix.python-version }})
+    runs-on: ${{ matrix.runs-on }}
+    needs: [download-jars, build]
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    strategy:
+      # Don't cancel other matrix jobs if one fails
+      fail-fast: false
+      # Chosen by the "Select the test matrix" step of download-jars from the event that
+      # started the run (scripts/select_matrix.py holds the platform and Python lists):
+      # small on pull requests, the full 4 platforms x 4 Pythons on every other event.
+      # Every leg carries platform, runs-on and python-version, so the job names stay
+      # "Test arcadedb (<platform>, Python <version>)".
+      matrix: ${{ fromJSON(needs.download-jars.outputs.matrix) }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: ${{ matrix.python-version }}
+
+      - name: Setup UV package manager
+        shell: bash
+        run: |
+          # Retry transient network failures (a connection reset failed a whole examples job on #8897); the
+          # script is downloaded first so a retried transfer is never piped half-written into sh.
+          installer="$(mktemp)"
+          curl -LsSf --retry 5 --retry-all-errors --retry-delay 5 -o "$installer" https://astral.sh/uv/install.sh
+          sh "$installer"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.local/bin:$PATH"
+          uv --version
+
+      # The wheel of this platform, built once by the build job and the same file for every Python.
+      - name: Download the wheel of ${{ matrix.platform }}
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: wheel-${{ matrix.platform == 'linux/amd64' && 'linux-amd64' || matrix.platform == 'linux/arm64' && 'linux-arm64' || matrix.platform == 'darwin/amd64' && 'darwin-amd64' || matrix.platform == 'darwin/arm64' && 'darwin-arm64' || matrix.platform == 'windows/amd64' && 'windows-amd64' || 'windows-arm64' }}
+          path: test-install
+
+      - name: Set UTF-8 encoding (Windows only)
+        if: matrix.platform == 'windows/amd64' || matrix.platform == 'windows/arm64'
+        shell: bash
+        run: |
+          echo "PYTHONIOENCODING=utf-8" >> $GITHUB_ENV
+          echo "PYTHONUTF8=1" >> $GITHUB_ENV
+
+      # The tests below run on the runner (glibc 2.39). This step runs the wheel where its tag says it must
+      # work: a manylinux_2_28 container (glibc 2.28, AlmaLinux 8, the oldest system the Linux wheels are tagged for).
+      # pip refuses a wheel tagged above 2.28 there, so a JRE that raises the floor again fails here as well as in
+      # scripts/verify_wheel_platform_tag.py. The wheel's own JRE does the work: no Java in the container.
+      - name: Install and run the wheel in manylinux_2_28 (Linux only)
+        if: startsWith(matrix.platform, 'linux/')
+        shell: bash
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          PYVER: ${{ matrix.python-version }}
+        run: |
+          case "$PLATFORM" in
+            linux/amd64) ARCH=x86_64 ;;
+            linux/arm64) ARCH=aarch64 ;;
+            *) echo "unexpected platform $PLATFORM" >&2; exit 1 ;;
+          esac
+          PYTAG="cp${PYVER//./}-cp${PYVER//./}"
+          ls -l test-install/*.whl
+          docker run --rm -i -e PYTAG="$PYTAG" -v "$PWD/test-install:/wheels:ro" \
+            "quay.io/pypa/manylinux_2_28_${ARCH}:latest" bash -es <<'CONTAINER'
+          ldd --version | head -n 1
+          test -x "/opt/python/$PYTAG/bin/python" || { echo "no $PYTAG in this image" >&2; ls /opt/python >&2; exit 1; }
+          "/opt/python/$PYTAG/bin/python" -m venv /tmp/smoke
+          # --only-binary: a source build of JPype must not hide a missing wheel
+          /tmp/smoke/bin/python -m pip install --quiet --only-binary=:all: /wheels/*.whl
+          cd /tmp
+          /tmp/smoke/bin/python - <<'PYSMOKE'
+          import tempfile
+          import arcadedb
+          with tempfile.TemporaryDirectory() as tmp:
+              with arcadedb.create_database(tmp + "/smoke") as db:
+                  rows = db.query("sql", "SELECT 1 AS one").to_list()
+          assert rows and rows[0]["one"] == 1, rows
+          print("manylinux_2_28 smoke OK:", arcadedb.__version__, rows)
+          PYSMOKE
+          CONTAINER
 
       # Note: Java is NOT required for arcadedb (JRE is bundled)
       # This package works without any external Java installation!
@@ -364,9 +483,11 @@ jobs:
           # This list is hand-maintained and mirrors the `test` extra. It had
           # already drifted: pyarrow and pandas were missing, so to_arrow() and
           # to_dataframe() tests skipped themselves in this job while it
-          # reported green. The guard step below now fails the build if any
+          # reported green. setuptools is there for tests/test_wheel_packages.py and
+          # tests/test_wheel_tags.py, which run setup.py on a copy of the sources (this job
+          # no longer installs build tools: it builds nothing). The guard step below now fails the build if any
           # test skips for a missing import, so the next drift is loud.
-          uv pip install --system test-install/*.whl pytest pytest-cov requests numpy "psycopg[binary]" redis neo4j pyarrow pandas polars "adbc-driver-postgresql>=1.12" "duckdb>=1.4.2" "ladybug>=0.21.2" "networkx>=3.4"
+          uv pip install --system test-install/*.whl "setuptools>=84.1.0" pytest pytest-cov requests numpy "psycopg[binary]" redis neo4j pyarrow pandas polars "adbc-driver-postgresql>=1.12" "duckdb>=1.4.2" "ladybug>=0.21.2" "networkx>=3.4"
 
       - name: Run pytest on host
         id: pytest
@@ -380,19 +501,15 @@ jobs:
           echo "🧪 Testing arcadedb (with bundled JRE)..."
 
           # Run pytest with JUnit XML output for structured results
-          # WINDOWS RUNS WITH --capture=sys (humemai/arcadedb-embedded-python#10). pytest's default fd capture swaps
-          # fds 1 and 2 with dup2 around every test; on Windows that closes the OS handle
-          # the JVM cached for System.out/err at start-up, a later pipe or socket can be
-          # handed the same handle value, and the next Java log line then blocks forever
-          # in WriteFile once that pipe is full. The Java dump caught it on 2026-09-29:
-          # main thread in FileOutputStream.writeBytes under LSMVectorIndex.build's
-          # progress log. sys capture never touches the fds, so the JVM keeps writing to
-          # the runner's own pipes (its log lines appear in this job's log). No test uses
-          # capfd.
-          CAPTURE=""
-          if [ "$RUNNER_OS" = "Windows" ]; then CAPTURE="--capture=sys"; fi
+          # pytest runs with its default fd capture on every platform. Windows used to run with
+          # --capture=sys (humemai/arcadedb-embedded-python#10): the default capture swaps fds 1
+          # and 2 with dup2 around every test, which on Windows closed the OS handle the JVM had
+          # cached for System.out/err, and the next Java log line blocked forever in WriteFile
+          # (caught 2026-09-29, LSMVectorIndex.build's progress log). The package no longer logs
+          # to the console on Windows by default (ARCADEDB_LOG_CONSOLE, src/arcadedb/_logdir.py),
+          # which removes the cause; tests/test_log_redirect.py redirects fd 1 and 2 on purpose.
           set +e  # Don't exit on test failures
-          pytest tests/ -v --tb=short --color=yes --junitxml=test-results.xml $CAPTURE
+          pytest tests/ -v --tb=short --color=yes --junitxml=test-results.xml
           PYTEST_EXIT_CODE=$?
           set -e
 
@@ -506,7 +623,7 @@ jobs:
               f.write("\n")
 
               # Get wheel size and analyze contents
-              wheel_files = glob.glob("dist/*.whl")
+              wheel_files = glob.glob("test-install/*.whl")
               if wheel_files:
                   wheel_file = wheel_files[0]
 
@@ -589,25 +706,10 @@ jobs:
             .coverage
           retention-days: 7
 
-      - name: Upload wheel artifact
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: wheel-${{ matrix.platform == 'linux/amd64' && 'linux-amd64' || matrix.platform == 'linux/arm64' && 'linux-arm64' || matrix.platform == 'darwin/amd64' && 'darwin-amd64' || matrix.platform == 'darwin/arm64' && 'darwin-arm64' || matrix.platform == 'windows/amd64' && 'windows-amd64' || 'windows-arm64' }}-py${{ matrix.python-version }}
-          path: dist/*.whl
-          retention-days: 7
-
-      - name: Upload wheel artifact for release
-        if: matrix.python-version == '3.12'
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: wheel-${{ matrix.platform == 'linux/amd64' && 'linux-amd64' || matrix.platform == 'linux/arm64' && 'linux-arm64' || matrix.platform == 'darwin/amd64' && 'darwin-amd64' || matrix.platform == 'darwin/arm64' && 'darwin-arm64' || matrix.platform == 'windows/amd64' && 'windows-amd64' || 'windows-arm64' }}-test
-          path: dist/*.whl
-          retention-days: 7
-
   # Summary job that checks all platforms
   test-summary:
     name: Test Summary
-    needs: test
+    needs: [build, test]
     runs-on: ubuntu-24.04
     # Skipped (not red) when the matrix was skipped for a draft PR.
     if: always() && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
@@ -617,10 +719,10 @@ jobs:
           echo "## 🎯 Overall Test Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
-          if [ "${{ needs.test.result }}" = "success" ]; then
+          if [ "${{ needs.build.result }}" = "success" ] && [ "${{ needs.test.result }}" = "success" ]; then
             echo "✅ **All platforms passed testing!**" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "The arcadedb package has been successfully built and tested." >> $GITHUB_STEP_SUMMARY
+            echo "The arcadedb package has been successfully built (one py3-none wheel for each platform) and tested." >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "**Package**: arcadedb" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY

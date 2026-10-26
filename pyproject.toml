@@ -2,7 +2,9 @@
 # setup.py imports only setuptools, so the build needs no JPype. A build-time jpype1 was compiled from
 # source on a Python without a JPype wheel (3.15, until JPype > 1.7.1) and failed there. `build` is a
 # frontend, not a backend requirement.
-requires = ["setuptools>=61.0", "wheel"]
+# setuptools 70.1 is the first release with its own bdist_wheel command, which setup.py subclasses to
+# tag the wheel py3-none-<platform>.
+requires = ["setuptools>=70.1", "wheel"]
 build-backend = "setuptools.build_meta"
 
 # This file defines the package metadata for arcadedb.
@@ -10,22 +12,27 @@ build-backend = "setuptools.build_meta"
 # scripts/extract_version.py
 
 [project]
-name = "arcadedb"
+name = "arcadedb-jvm"
 version = "0.0.0"
-description = "ArcadeDB embedded multi-model database with bundled JRE - no Java installation required"
+description = "ArcadeDB embedded multi-model database, JVM build with a bundled JRE (no Java installation needed). The native build is the package arcadedb; both import as arcadedb"
 readme = "README.md"
-requires-python = ">=3.10"
+# The upper bound is JPype: jpype1 1.7.1 has wheels for CPython 3.11 to 3.14 and none for 3.15 (JPype
+# merged 3.15 support in jpype-project/jpype#1501, not released yet). The wheels of this package are
+# py3-none-<platform>, so the wheel tag no longer keeps pip off an interpreter: without this cap pip
+# would install the wheel on 3.15 and then try to build JPype from source.
+# REMOVE THE CAP when jpype1 ships cp315 wheels: then add the 3.15 classifier below, 3.15 to PYTHONS in
+# scripts/select_matrix.py and the cap in tests/test_select_matrix.py.
+requires-python = ">=3.11,<3.15"
 license = { text = "Apache-2.0" }
 authors = [
     { name = "Taewoon Kim", email = "taewoon@humem.ai" }
 ]
-keywords = ["database", "graph", "document", "multi-model", "nosql", "arcadedb", "embedded", "jre", "java"]
+keywords = ["database", "graph", "document", "multi-model", "nosql", "arcadedb", "embedded", "jre", "java", "jvm"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
@@ -73,6 +80,11 @@ test = [
     "duckdb>=1.4.2",
     "ladybug>=0.21.2",
     "networkx>=3.4",
+    # tests/test_wheel_packages.py runs `setup.py build_py` on a copy of the sources to prove the JVM wheel ships every
+    # subpackage; Python 3.12+ venvs have no setuptools, so without it here the test fails on those legs instead of running.
+    # Floor 84.1.0: the dependency-floor audit resolves the lowest version; pip-audit (2026-10-24) finds no known
+    # vulnerability in 84.1.0, while 78.1.1 still has PYSEC-2026-3447 and GHSA-xmj3-9gf7-h52w.
+    "setuptools>=84.1.0",
 ]
 dev = [
     "black",
@@ -111,7 +123,7 @@ pandas = [
 ]
 # Optional: ResultSet.to_polars() and insert_dataframe() with a Polars frame. Both go
 # through Arrow, so pyarrow comes with it. insert_dataframe() with a pandas frame needs
-# `pip install 'arcadedb[arrow,pandas]'` (the pandas extra alone has no pyarrow,
+# `pip install 'arcadedb-jvm[arrow,pandas]'` (the pandas extra alone has no pyarrow,
 # because to_dataframe() does not need it).
 polars = [
     "polars>=1.0",
@@ -130,7 +142,7 @@ Repository = "https://github.com/ArcadeData/arcadedb-python"
 "ArcadeDB Upstream" = "https://github.com/ArcadeData/arcadedb"
 
 [tool.setuptools]
-packages = ["arcadedb"]
+packages = ["arcadedb", "arcadedb._native"]
 package-dir = { "" = "src" }
 include-package-data = true
 

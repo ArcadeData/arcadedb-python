@@ -1,0 +1,163 @@
+= Bulk loads and commit size
+:description: The default commit size of insert_many, graph_batch and create_vertices on the arcadedb (native) and arcadedb-jvm packages, what it means for a failed load, what to do after an interrupted graph batch, how to change it, and a known limitation: a graph batch does not reuse the space of deleted edges.
+
+`insert_many`, `graph_batch` and `GraphBatch.create_vertices` load data in transactions. The commit size is the number of rows in one transaction. It decides how much work the engine holds in memory before it commits, and how many rows stay in the database when a load fails.
+
+== Defaults
+
+[cols="2,2,2"]
+|===
+| Call | `arcadedb` (native) | `arcadedb-jvm`
+
+| `db.insert_many(type_name, rows)`
+| `commit_every=1000`
+| `commit_every=10000`
+
+| `db.graph_batch()`
+| `commit_every=1000`
+| `commit_every` not set: one commit for each flush
+
+| `batch.create_vertices(type_name, rows)`
+| 1000 rows for each call into the engine, one transaction for each call (the `commit_every` of the batch)
+| 100000 rows for each call into the engine
+|===
+
+The JVM defaults are the same as before. They stay until someone measures them on the JVM build.
+
+An explicit value always wins. `commit_every=0` gives one transaction for `insert_many` and one commit for each flush for `graph_batch`, on both packages. In a transaction that you open yourself, `insert_many` commits nothing.
+
+== Why the native defaults are smaller
+
+The in-flight transaction is the data that each young garbage collection must copy. A smaller transaction copies less. A laptop A/B on the columnar native wheel measured this with `ab.py --noise`, ABBA order, 12 clean pairs for each figure, and a clean A/A control (95 % interval of the median pair ratio, new default against old default):
+
+[cols="3,2,2,2"]
+|===
+| Load | Wall time | Data copied by the young GC | Peak RSS
+
+| `insert_many`, 1,000,000 mixed documents, `commit_every=1000`
+| 0.822 to 0.831
+| 0.55x
+| 0.955x
+
+| `GraphBatch`, 200,000 vertices and 500,000 edges, `parallel_flush`, one client thread, `commit_every=1000`
+| 0.853 to 0.864
+| 0.63x
+| 0.718x
+|===
+
+`commit_every=5000` for `insert_many` also passed (0.903 to 0.914 of the wall time). 1000 had the lower median, so it is the default. The runs used an isolate heap of 80 % of RAM. The default is now 50 %, and smaller transactions lower the heap that a load needs.
+
+== What changes for you
+
+Rows that are already committed stay committed when a later chunk fails. Only the transaction that was open is rolled back. With a smaller commit size, a failed load keeps its rows up to the last commit, and that commit is now at most 1000 rows behind the failure instead of 10,000. If you need all-or-nothing, open your own transaction, or pass `commit_every=0`.
+
+== Change the commit size
+
+[source,python]
+----
+db.insert_many("Doc", rows, commit_every=10_000)  # the old native default
+db.insert_many("Doc", rows, commit_every=0)       # one transaction for all rows
+
+with db.graph_batch(commit_every=0) as batch:     # one commit for each flush, as before
+    ...
+
+with db.graph_batch(commit_every=5000) as batch:  # also sets the create_vertices chunk
+    ...
+----
+
+== Known limitation: graph batches next to deletes
+
+WARNING: *A graph batch does not reuse the space of deleted edges.* The engine writes the edge records of each `graph_batch()` flush onto new pages and never looks at the free space that deletes left on older pages. The edge bucket gains one 64 KiB page per flush and never shrinks, while the live data stays flat. Both packages are affected. The engine issue is https://github.com/ArcadeData/arcadedb/issues/10746[ArcadeData/arcadedb#10746].
+
+A one-off bulk load is not affected. The workloads that are affected call `graph_batch()` again and again on a type that also sees deletes, for example a sliding window that adds a small batch and deletes the oldest one.
+
+The measurement ran a sliding window of 60 rounds for 240 seconds on each package. Each round wrote 30 vertices and about 90 edges and deleted the oldest round with `DELETE FROM Node`, so the live edge count stayed flat. The delete order does not matter: deleting the edges before the vertices gave the same growth.
+
+[cols="3,2,2,2"]
+|===
+| How the edges were written | Package | Live edges at the end | Edge bucket at the end (MiB)
+
+| `graph_batch()`, one block for each round
+| `arcadedb` (native)
+| 5,261
+| 329.00
+
+| `graph_batch()`, one block for each round
+| `arcadedb-jvm`
+| 5,257
+| 456.62
+
+| SQL `CREATE VERTEX` and `CREATE EDGE`, one transaction for each round
+| `arcadedb` (native)
+| 5,252
+| 0.25
+
+| SQL `CREATE VERTEX` and `CREATE EDGE`, one transaction for each round
+| `arcadedb-jvm`
+| 5,269
+| 0.25
+|===
+
+An engine-level Java run of the same shape confirms the split: after 2,000 rounds the batch had 2,000 edge pages (125.0 MiB), and `newEdge` in an ordinary transaction had 4 (0.3 MiB). The cost is disk space: in the same runs a scan of the edge type and a two-hop query did not slow down while the bucket grew.
+
+If your workload deletes and inserts again, write the edges with SQL (`CREATE EDGE`) or with `Vertex.new_edge` inside `db.transaction()`. Both stayed flat in the measurement (0.25 MiB in the table). Keep `graph_batch()` for loads that add data and do not delete from the same type.
+
+== If a graph batch is interrupted
+
+This section is about a `graph_batch()` load that stops before `close()` returns, for example when the process is killed (`kill -9`, the out-of-memory killer, power loss). An exception inside a `with db.graph_batch() as batch:` block still runs `close()`. The numbers below come from a kill probe on the `arcadedb` (native) package: `kill -9` in the middle of the edge phase, the default `commit_every=1000`, with and without `use_wal=True`. In the 40 kills of the probe, no committed vertex or edge chunk was lost, no record was torn, no edge pointed at a missing vertex, and every database reopened and accepted writes. The example below is one of these kills: 30,000 vertices and 70,000 edge records were in the database afterwards.
+
+=== What is in the database
+
+* The vertices and edge records that a returned call committed are there. A load that is killed loses the work after the last commit and nothing before it.
+* The edges are not traversable. The engine writes the edge records first and links them to their vertices (the head pointers and the incoming lists) in `close()`. Until `close()` has run, `outE()`, `inE()`, `out()` and `MATCH` find none of them, but `SELECT count(*) FROM E` counts them. In the example: 70,000 edge records, 0 reachable.
+* `CHECK DATABASE` reports each of these edges as an `ORPHAN RECORD` and counts them in `unreachableEdgeRecords`. It also uses the words "was not connected from", "is not referenced back by" and "missing from that vertex's OUT/IN list" for the same state. Read the statement in the xref:arcadedb::reference/sql/sql-database-admin.adoc#sql-check-database[`CHECK DATABASE` reference]; this page does not repeat it.
+
+=== Recovery that works
+
+[cols="3,2,2,3"]
+|===
+| Step | Edge records | Reachable by traversal | `CHECK DATABASE` afterwards
+
+| After the kill, nothing done
+| 70,000
+| 0
+| 70,000 `ORPHAN RECORD` warnings
+
+| `CHECK DATABASE` (report only)
+| 70,000
+| 0
+| the same 70,000
+
+| `CHECK DATABASE FIX`
+| 70,000
+| 0
+| the same 70,000. `FIX` relinks nothing and deletes nothing here.
+
+| `CHECK DATABASE FIX DELETE ORPHANS`
+| 0
+| 0
+| nothing left to report
+
+| Then load the edges again over the existing vertices and call `close()`
+| 90,000
+| 90,000
+| 0 warnings
+|===
+
+. Run `CHECK DATABASE`. The number of `ORPHAN RECORD` warnings is the number of committed edges that traversal cannot reach.
+. Do not expect `CHECK DATABASE FIX` to repair them. It reports the same warnings before and after, in the same process and after a restart.
+. Run `CHECK DATABASE FIX DELETE ORPHANS`. It deletes every edge record that no vertex lists. The vertices stay. Use it only when the interrupted batch is the only damage, because the engine cannot tell these records from other unlisted edge records.
+. Load the edges again. Do not call `create_vertices` again with the same keys: on a type with a unique index on the key it fails with `DuplicatedKeyException` and changes nothing, and without such an index it would create the vertices twice. Look up the RIDs of the vertices that exist, buffer the edges with `new_edges`, and let `close()` link them.
+
+[source,python]
+----
+db.command("sql", "CHECK DATABASE FIX DELETE ORPHANS")
+
+rid = {r["id"]: str(r["r"]) for r in db.query("sql", "SELECT @rid AS r, id FROM V").to_list()}
+with db.graph_batch() as batch:
+    batch.new_edges([rid[s] for s in sources], "E", [rid[d] for d in targets], properties)
+----
+
+If you load the edges again without step 3, the old records stay in the database next to the new ones. In the probe this gave 160,000 edge records for 90,000 distinct edges. Traversal is right, because the old records are unreachable, but the edge count of the type is wrong and `CHECK DATABASE` keeps reporting the 70,000 old records.
+
+Edges are linked only when `close()` returns, and each batch links its own edges. A long edge load split over several batches, each closed before the next opens, therefore leaves only the edges of the batch that was open at the interruption unlinked.

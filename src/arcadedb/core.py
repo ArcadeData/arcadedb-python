@@ -14,6 +14,7 @@ from typing import Any, Callable, List, Optional
 import jpype
 
 from ._logging import get_logger
+from ._params import refuse_surplus_positionals
 from .callbacks import (
     EventHandle,
     FunctionRegistration,
@@ -402,9 +403,12 @@ class Database:
 
         Parameters bind positionally (``?``) from the extra arguments, or by
         name (``:name``, ``$name``) from a single dict. A single list or tuple
-        is the positional list itself; ``None`` binds as null.
+        is the positional list itself; ``None`` binds as null. More positional
+        values than the SQL statement has placeholders raise ``TypeError``.
         """
         self._check_not_closed()
+        if args:
+            refuse_surplus_positionals("query", language, command, args)
         clear_pending_interrupt()
         try:
             if args:
@@ -430,6 +434,8 @@ class Database:
         Parameters bind as in :meth:`query`.
         """
         self._check_not_closed()
+        if args:
+            refuse_surplus_positionals("command", language, command, args)
         clear_pending_interrupt()
         try:
             if args:
@@ -706,10 +712,15 @@ class Database:
         stays in the JSON.
 
         Args:
-            type_name: Target document type (must exist).
+            type_name: Target type (must exist): a document type gets
+                documents, a vertex type gets vertices (use ``graph_batch()``
+                when edges follow), and an edge type raises ``ArcadeDBError``
+                because an edge needs both endpoints.
             rows: Iterable of dicts, one per document. Read lazily, one
                 chunk at a time.
-            commit_every: Transaction batch size for the synchronous mode.
+            commit_every: Transaction batch size for the synchronous mode. Default 10,000 on this build; the native build (the
+                ``arcadedb`` package) defaults to 1000, a size measured there and not yet on the JVM. Rows that are already
+                committed stay committed if a later chunk fails.
             parallel: If True, route rows through the async executor's
                 parallel bucket writers and wait for completion before
                 returning (out-of-order writes). The maintainers' rule
@@ -726,7 +737,7 @@ class Database:
                 10,240); ``commit_every`` does not apply to this mode.
 
         Returns:
-            Number of documents inserted.
+            Number of records inserted.
 
         Raises:
             Exception: An exception raised by ``rows`` itself propagates
@@ -807,6 +818,14 @@ class Database:
                     pass
             raise
 
+    def _is_vertex_type(self, type_name):
+        """True when ``type_name`` is an existing vertex type (a bulk load then creates vertices)."""
+        java_schema = self._java_db.getSchema()
+        return java_schema.existsType(type_name) and isinstance(
+            java_schema.getType(type_name),
+            _java_class("com.arcadedb.schema.VertexType"),
+        )
+
     def _insert_many_chunk(self, type_name, chunk):
         """Insert one chunk of insert_many rows inside the open transaction.
 
@@ -852,8 +871,12 @@ class Database:
             self._insert_many_bulk(type_name, payload, split)
 
     def _insert_many_per_row(self, type_name, rows):
+        # vertices for a vertex type, as the bulk helper does
+        new_record = (
+            self.new_vertex if self._is_vertex_type(type_name) else self.new_document
+        )
         for row in rows:
-            doc = self.new_document(type_name)
+            doc = new_record(type_name)
             for k, v in row.items():
                 doc.set(k, v)
             doc.save()
@@ -997,7 +1020,9 @@ class Database:
         property).
 
         Args:
-            type_name: Target document type (must exist).
+            type_name: Target type (must exist): a document type gets
+                documents, a vertex type gets vertices, an edge type raises
+                ``ArcadeDBError``.
             columns: ``{property name: column}``, or a pandas ``DataFrame``.
                 Every column has the same length. A column is a numpy array
                 (integer kinds cross as ``long[]``, float kinds as ``double[]``,
@@ -1017,7 +1042,7 @@ class Database:
                 columns instead of one JSON text per batch.
 
         Returns:
-            Number of documents inserted.
+            Number of records inserted.
 
         Raises:
             ValueError: If ``columns`` is empty, a column has a different
@@ -1355,11 +1380,18 @@ class Database:
 
         Args:
             type_name: Type name
-            keys: List of property names (must be indexed)
+            keys: List of property names. They must be exactly the properties of
+                a LSM_TREE or HASH index of the type or one of its supertypes, in
+                the index's order; a FULL_TEXT or vector index does not count
             values: List of property values
 
         Returns:
             The first matching record, wrapped, or None
+
+        Raises:
+            ArcadeDBError: If no such index exists (the call never scans the type;
+                use ``query()`` with a ``WHERE`` for that), or the type does not exist.
+                The native and the JVM build raise alike.
 
         Example:
             >>> user = db.lookup_by_key("User", ["email"], ["alice@example.com"])
@@ -1396,7 +1428,7 @@ class Database:
         Lookup a record by its RID.
 
         Args:
-            rid: Record ID string (e.g. "#10:5")
+            rid: Record ID string (e.g. "#10:5"), or the RID object a row holds
 
         Returns:
             Record object (Vertex, Document, or Edge)
@@ -2039,6 +2071,16 @@ class Database:
         flush through the same executor and is measured exact, 20,000 vertices
         and 40,000 edges with and without ``parallel_flush``.
 
+        Note:
+            ``graph_batch()`` is recommended for bulk loads. When it is called again and
+            again on types that also see deletes (a sliding window, for example), each
+            flush writes its edge records onto new pages and never reuses the space
+            that deletes freed, so the edge bucket grows (ArcadeData/arcadedb#10746).
+            For that workload write the edges with SQL ``CREATE EDGE``, or
+            ``Vertex.new_edge`` inside ``db.transaction()``. See "Known limitation:
+            graph batches next to deletes" in
+            docs/modules/ROOT/pages/how-to/bulk-loads.adoc.
+
         Args:
             batch_size: Maximum buffered edges before auto-flush.
             expected_edge_count: Hint for auto-tuning batch size when not set.
@@ -2055,7 +2097,8 @@ class Database:
                 ArcadeDBError naming the type. Before 26.10.1 it was accepted, and any
                 query the planner walked from the target end returned 0 rows
                 (ArcadeData/arcadedb#8625).
-            commit_every: Commit cadence within a flush. `0` means one commit per flush.
+            commit_every: Commit cadence within a flush. `0` means one commit per flush, which is also what an unset value gives on
+                this build; the native build (the ``arcadedb`` package) defaults to 1000.
             use_wal: Write-ahead log during the import. Off by default, so a crash mid-import can lose its
                 tail; pass True for a crash-safe import (ArcadeData/arcadedb#8287).
             wal_flush: WAL flush mode: `"no"`, `"yes_nometadata"`, `"yes_full"`.
@@ -2352,6 +2395,16 @@ class Database:
 
 class DatabaseFactory:
     """Factory for creating/opening ArcadeDB databases."""
+
+    def __new__(cls, path: str, jvm_kwargs: Optional[dict] = None):
+        # ARCADEDB_BACKEND=native (experimental, native-spike branch): the factory over libarcadedb
+        from . import _native
+
+        if _native.enabled():
+            from ._native.database import NativeDatabaseFactory
+
+            return NativeDatabaseFactory(path, jvm_kwargs)
+        return super().__new__(cls)
 
     def __init__(
         self,

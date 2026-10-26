@@ -29,7 +29,7 @@ ROWS = int(
 )  # documents (and vertices with a vector) per thread
 DIM = 8
 BASE = 64  # vertices in the indexed type the searches run against
-NATIVE = os.environ.get("ARCADEDB_BACKEND", "jpype").lower() == "native"
+NATIVE = arcadedb.__backend__ == "native"
 NN = "SELECT bid FROM (SELECT expand(vectorNeighbors('Base[embedding]', ?, ?)))"
 
 

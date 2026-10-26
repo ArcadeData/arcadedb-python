@@ -6,13 +6,14 @@
 # Excludes JARs listed in scripts/jar_exclusions.txt to optimize size
 #
 # REQUIRED BUILD ARGS (passed from build.sh):
-#   PYTHON_VERSION - Python version for wheel (e.g., 3.11, 3.12, 3.13, 3.14)
-#   PACKAGE_NAME - always: arcadedb
+#   PYTHON_VERSION - Python that builds the wheel and runs its smoke test (e.g., 3.12). The wheel is py3-none-<platform>
+#                    (setup.py), so any of 3.11 to 3.14 gives the same file; the test workflow runs it on each
+#   PACKAGE_NAME - always: arcadedb-jvm
 #   PACKAGE_DESCRIPTION - package description
 #   TARGET_PLATFORM - Linux target platform for bundled JRE (linux-x64, linux-arm64)
 
 ARG PYTHON_VERSION=3.12
-ARG PACKAGE_NAME=arcadedb
+ARG PACKAGE_NAME=arcadedb-jvm
 ARG PACKAGE_DESCRIPTION="ArcadeDB embedded multi-model database with bundled JRE - no Java installation required"
 # Deterministic placeholder. The wrapper build script must pass the real ArcadeDB tag.
 ARG ARCADEDB_TAG=build-arg-required
@@ -30,10 +31,17 @@ FROM arcadedata/arcadedb:${ARCADEDB_TAG} AS java-builder
 
 # Stage 2: Build minimal JRE with jlink
 # Docker builds are Linux-only. macOS/Windows JREs must be created on matching native hosts.
-FROM amazoncorretto:25 AS jre-builder
+#
+# The JDK is Eclipse Temurin, not amazoncorretto:25. The Corretto IMAGE is Amazon Linux 2023 (glibc 2.34) and its JDK is
+# built against it: every binary needs GLIBC_2.34, which is what set the wheels' manylinux_2_34 floor. Temurin's Linux
+# JDK builds need glibc 2.17 at most on x86_64 and aarch64 (scripts/verify_wheel_platform_tag.py --jre prints
+# manylinux_2_17 for both), and the eclipse-temurin image carries that build unchanged. jlink copies the libraries of the
+# JDK it runs, so the bundled JRE has the same floor. Both are GPLv2 with the Classpath Exception.
+FROM eclipse-temurin:25-jdk AS jre-builder
 
 # Install required tooling (findutils for jar exclusion, binutils for jlink)
-RUN yum -y install findutils binutils && yum clean all
+RUN apt-get update && apt-get install -y --no-install-recommends findutils binutils \
+    && rm -rf /var/lib/apt/lists/*
 
 ARG TARGET_PLATFORM
 ARG USE_LOCAL_JARS
@@ -99,6 +107,11 @@ RUN echo "🔨 Building arcadedb-python-bridge.jar..." && \
 # Automatically detect modules with jdeps, plus ensure jdk.zipfs (for JPype) and jdk.unsupported are included
 # We exclude jboss/wildfly JARs because they have broken module descriptors that fail analysis.
 # We also do NOT provide a classpath, forcing jdeps to ignore all missing dependencies (intra-jar or external).
+#
+# The eclipse-temurin JDK has no jmods directory (JEP 493: it is built with --enable-linkable-runtime), so jlink reads
+# the modules from the JDK's own run-time image when --module-path is absent. There is no fallback that copies the
+# whole JDK: the first Temurin build did that silently and produced a 130 MB wheel (251 MB JRE), over the 100 MB limit
+# of scripts/verify_wheel_size.py. If jlink cannot build the JRE, the build stops.
 RUN echo "🔍 Analyzing JARs with jdeps..." && \
     JMODS_DIR="${JAVA_HOME}/jmods" && \
     if [ ! -d "$JMODS_DIR" ]; then JMODS_DIR="${JAVA_HOME}/lib/jmods"; fi && \
@@ -123,41 +136,38 @@ RUN echo "🔍 Analyzing JARs with jdeps..." && \
     echo "📦 Final modules list: ${REQUIRED_MODULES}" && \
     echo "📦 Required modules:" && \
     echo "$REQUIRED_MODULES" | tr ',' '\n' | sed 's/^/   - /' && \
+    echo "" && \
+    echo "🔨 Running jlink..." && \
     if [ -d "$JMODS_DIR" ]; then \
-        echo "" ; \
-        echo "🔨 Running jlink..." ; \
-        if ! jlink \
-            --module-path "$JMODS_DIR" \
-            --add-modules "${REQUIRED_MODULES}" \
-            --ignore-signing-information \
-            --strip-debug \
-            --no-man-pages \
-            --no-header-files \
-            --compress zip-9 \
-            --output /build/jre ; then \
-            echo "❌ jlink failed" ; \
-            exit 1 ; \
-        fi ; \
-        echo "" ; \
-        echo "✅ JRE build complete!" ; \
-        echo "📊 JRE size after jlink: $(du -sm /build/jre | cut -f1) MB" ; \
-        BAD_MODULES=$(/build/jre/bin/java --list-modules | sed 's/@.*//' | grep -xFf /build/jre_excluded_modules.list || true) ; \
-        if [ -n "$BAD_MODULES" ]; then \
-            echo "❌ the JRE contains excluded modules (another module requires them): $BAD_MODULES" ; \
-            exit 1 ; \
-        fi ; \
-        echo "✅ No excluded module in the JRE" ; \
-        find /build/jre -name '*.so' -type f -exec strip --strip-unneeded {} + ; \
-        echo "📊 JRE size after stripping native libraries: $(du -sm /build/jre | cut -f1) MB" ; \
+        JLINK_SOURCE="--module-path $JMODS_DIR" ; \
+        echo "   modules from ${JMODS_DIR}" ; \
     else \
-        echo "⚠️  jmods directory not found under ${JAVA_HOME}. Falling back to copying full JDK runtime." ; \
-        mkdir -p /build/jre ; \
-        cp -a ${JAVA_HOME}/bin /build/jre/bin ; \
-        cp -a ${JAVA_HOME}/lib /build/jre/lib ; \
-        cp -a ${JAVA_HOME}/conf /build/jre/conf || true ; \
-        cp -a ${JAVA_HOME}/release /build/jre/release || true ; \
-        echo "✅ Fallback JRE created from full JDK runtime." ; \
+        JLINK_SOURCE="" ; \
+        echo "   no jmods directory: linking from the run-time image of ${JAVA_HOME} (JEP 493)" ; \
     fi && \
+    if ! jlink \
+        ${JLINK_SOURCE} \
+        --add-modules "${REQUIRED_MODULES}" \
+        --ignore-signing-information \
+        --strip-debug \
+        --no-man-pages \
+        --no-header-files \
+        --compress zip-9 \
+        --output /build/jre ; then \
+        echo "❌ jlink failed" ; \
+        exit 1 ; \
+    fi && \
+    echo "" && \
+    echo "✅ JRE build complete!" && \
+    echo "📊 JRE size after jlink: $(du -sm /build/jre | cut -f1) MB" && \
+    BAD_MODULES=$(/build/jre/bin/java --list-modules | sed 's/@.*//' | grep -xFf /build/jre_excluded_modules.list || true) && \
+    if [ -n "$BAD_MODULES" ]; then \
+        echo "❌ the JRE contains excluded modules (another module requires them): $BAD_MODULES" ; \
+        exit 1 ; \
+    fi && \
+    echo "✅ No excluded module in the JRE" && \
+    find /build/jre -name '*.so' -type f -exec strip --strip-unneeded {} + && \
+    echo "📊 JRE size after stripping native libraries: $(du -sm /build/jre | cut -f1) MB" && \
     echo "" && \
     JRE_SIZE=$(du -sh /build/jre | cut -f1) && \
     echo "📊 JRE size: $JRE_SIZE" && \
@@ -227,15 +237,13 @@ RUN echo "📌 Package name: ${PACKAGE_NAME}" && \
 # Build the wheel
 # Extract PEP 440 version from the engine jar or use BUILD_VERSION if provided.
 #
-# Wheel platform tag must match the highest glibc symbol version required by the
-# bundled JRE. amazoncorretto:25 (Amazon Linux 2023, glibc 2.34) ships a JRE
-# whose binaries link against GLIBC_2.34 at most; older glibc symbol versions
-# cannot be back-ported. Issue #4037: tagging as manylinux_2_35 prevents
-# installation on systems with glibc 2.34 (RHEL 9, Rocky 9, AlmaLinux 9, Amazon
-# Linux 2023, ...) even though the bundled JRE runs there fine. Keep the tag
-# aligned with the JRE's actual requirement; bump only when the JRE base image
-# moves to a newer glibc. The verify_wheel_platform_tag.py step below enforces
-# this invariant at build time.
+# Wheel platform tag: manylinux_2_28, the same floor as the native wheels (glibc 2.28: RHEL, Rocky and
+# AlmaLinux 8, Debian 10, Ubuntu 20.04 and newer). It is also the lowest the Python side can have: JPype's own Linux
+# wheels are manylinux_2_28. The tag is the higher of that floor and the highest GLIBC_ symbol the bundled JRE
+# references (2.17 with Temurin). Tagging higher than that locks out systems the wheel runs on (issue #4037: a
+# manylinux_2_35 tag on a JRE that needed 2.34); tagging lower lets it install where the JRE cannot run. The
+# verify_wheel_platform_tag.py step below enforces both at build time, and test-jvm.yml installs the built wheel in
+# a manylinux_2_28 container.
 ARG BUILD_VERSION=""
 RUN if [ -n "${BUILD_VERSION}" ]; then \
         export ARCADEDB_VERSION="${BUILD_VERSION}"; \
@@ -252,9 +260,9 @@ RUN if [ -n "${BUILD_VERSION}" ]; then \
     sed -i 's|^description = .*|description = "'"${PACKAGE_DESCRIPTION}"'"|' pyproject.toml && \
     if echo "${TARGET_PLATFORM}" | grep -q '^linux-'; then \
         if [ "${TARGET_PLATFORM}" = "linux-x64" ]; then \
-            WHEEL_PLAT="manylinux_2_34_x86_64"; \
+            WHEEL_PLAT="manylinux_2_28_x86_64"; \
         elif [ "${TARGET_PLATFORM}" = "linux-arm64" ]; then \
-            WHEEL_PLAT="manylinux_2_34_aarch64"; \
+            WHEEL_PLAT="manylinux_2_28_aarch64"; \
         else \
             WHEEL_PLAT=""; \
         fi; \

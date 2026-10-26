@@ -34,6 +34,6 @@ def test_wildcards_for_the_old_wheel_name_are_caught_but_markdown_bold_is_not():
     for ok in (
         "**embedding** models",
         "embedded multi-model database",
-        "dist/arcadedb-*.whl",
+        "dist/arcadedb_jvm-*.whl",
     ):
         assert not mod.OLD_NAME.search(ok), ok

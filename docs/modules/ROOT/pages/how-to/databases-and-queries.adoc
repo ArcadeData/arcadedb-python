@@ -5,7 +5,7 @@
 
 This guide covers the life of a database directory and the two calls that talk to it. Prefer SQL or openCypher through `db.command(...)` and `db.query(...)` for schema, inserts and graph work. The bindings also expose wrapper objects for the rest of the Java API; they are not covered here.
 
-Every script on this page ran against the published `{pkg-name}` wheel. Run each one in an empty directory.
+Every script on this page ran against the published `{jvm-pkg-name}` wheel. Run each one in an empty directory.
 
 == The life of a database
 
@@ -210,12 +210,36 @@ Bind values as parameters instead of pasting them into the statement text. Ident
 * Named: `:name` in the statement and a dict as the one extra argument. A named parameter can hold a collection, as in `age IN :ages`.
 * `None` binds as null.
 
+A list or tuple on its own is the positional list, so it never binds as one parameter. `db.query("sql", "SELECT FROM V WHERE @rid IN ?", [rid_a, rid_b])` has two values for one `?`: the engine would bind `rid_a`, drop `rid_b` without a word and return one row where two were meant. The bindings raise `TypeError` before the statement runs when a SQL or SQLScript call has more positional values than the statement can bind, because the engine does not count them (https://github.com/ArcadeData/arcadedb/issues/10721[ArcadeData/arcadedb#10721]). To bind a list as one parameter, bind it by name or wrap it so it is the one positional value:
+
+[source,python]
+----
+db.query("sql", "SELECT FROM V WHERE @rid IN :ids", {"ids": [rid_a, rid_b]})
+db.query("sql", "SELECT FROM V WHERE @rid IN ?", [[rid_a, rid_b]])
+----
+
+The check counts the `?`, `$` and `:` characters of the SQL text, so the count is an upper bound: a `?` inside a string literal counts as a placeholder, and a call that binds is never refused. Fewer values than placeholders are not checked, and the engine binds null for the missing ones. `db.query` and `db.command` run the check; the async executor does not.
+
 === Results
 
 `db.query` returns a result set you can iterate. Two methods cover the usual needs:
 
 * `first()` returns the first row, or `None` when there is none, so `if db.query(...).first():` tests whether anything matched.
 * `to_list()` materialises the whole result as a list of dicts. Use it when you need the whole result in memory; iterate when you stop early or the result is large.
+
+=== Record ids in rows
+
+A record id inside a row value (`SELECT @rid AS r`, a `LINK` property, a list of links such as `out('Knows').@rid`) comes back as an RID object, not as text. `str(rid)` is the text (`"#10:5"`), so is an f-string, and `get_rid()` always returns text or `None`. Two RIDs of the same record are equal and hash alike, so they work in sets and as dict keys, and RIDs sort by bucket, then position. `getBucketId()`, `getPosition()`, `toString()` and `isValid()` work on the object. It goes back in as a query parameter (`WHERE @rid = ?`, or a list passed by name) and to `db.lookup_by_rid()`, as itself or as its text.
+
+[source,python,subs="attributes+"]
+----
+row = db.query("sql", "SELECT @rid AS r, name FROM User LIMIT 1").first()
+rid = row.get("r")
+print(str(rid), rid.getBucketId(), rid.getPosition())   # #1:0 1 0
+print(db.lookup_by_rid(rid).get("name"))                # the same record, from the object or from str(rid)
+----
+
+Compare record ids as `str(rid)`. A row also has an identity of its own: `result.get_rid()` returns it for a record row, an `expand()` row and a projection of `@rid` that does not alias it, and `None` for any other projection.
 
 === Pagination
 

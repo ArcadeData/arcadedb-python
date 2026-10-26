@@ -1,0 +1,48 @@
+# Template: build_wheel.py copies this into a staging directory next to the copied src/arcadedb tree and replaces @VERSION@.
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "arcadedb"
+version = "@VERSION@"
+description = "ArcadeDB embedded multi-model database, native build: the engine as a GraalVM native-image library, no JVM, no JPype. For heavy long-running loads use the JVM build, arcadedb-jvm; both import as arcadedb"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md", "licenses/**"]
+authors = [{ name = "Taewoon Kim", email = "taewoon@humem.ai" }]
+keywords = ["database", "graph", "document", "multi-model", "arcadedb", "embedded", "native-image", "graalvm", "native"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
+    "Topic :: Database",
+]
+dependencies = []
+
+[project.optional-dependencies]
+numpy = ["numpy>=1.26.4"]
+arrow = ["pyarrow>=23.0.1", "numpy>=1.26.4"]
+pandas = ["pandas>=2.2.0", "numpy>=1.26.4"]
+polars = ["polars>=1.0", "pyarrow>=23.0.1", "numpy>=1.26.4"]
+
+[project.urls]
+Homepage = "https://github.com/ArcadeData/arcadedb-python"
+Repository = "https://github.com/ArcadeData/arcadedb-python"
+"Bug Tracker" = "https://github.com/ArcadeData/arcadedb-python/issues"
+"ArcadeDB Upstream" = "https://github.com/ArcadeData/arcadedb"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+arcadedb = ["_native/*.so", "_native/*.dylib", "_native/*.dll"]

@@ -1,27 +1,24 @@
-name: Release to PyPI
+name: Release JVM (arcadedb-jvm)
 
 # Pushing a tag that is the bare version (26.11.1, 26.11.1.post1, 26.11.1.dev0; no "v", same as
 # ArcadeData/arcadedb) builds the wheels, tests them, checks them and publishes them to PyPI.
 # Versions run A.B.C.devN -> A.B.C -> A.B.C.postN; never aN, bN or rcN. devN starts at 0 and
 # restarts at 0 on a new base A.B.C, postN starts at 1; scripts/check_version.py enforces the
-# counting in the first job (a later native job passes --tag-prefix native-v for its own tags).
+# counting in the first job. The same tag also starts release-native.yml; each workflow checks the tag against its own PyPI project.
 #
 # PyPI keys a trusted publisher on this FILENAME and on the job's environment, so do not rename
 # either without changing the publisher on PyPI at the same time:
-#   project arcadedb         <- ArcadeData/arcadedb-python, workflow release.yml, environment pypi
-#   project arcadedb-native  <- same repository and workflow, environment pypi-native (not used yet)
+#   project arcadedb-jvm     <- ArcadeData/arcadedb-python, workflow release-jvm.yml, environment pypi-jvm
+#   project arcadedb         <- ArcadeData/arcadedb-python, workflow release-native.yml, environment pypi (the native build)
 # Both GitHub environments only accept deployments from tags that match [0-9]*.
 #
 # Nothing here stores a token: the publish job authenticates with PyPI trusted publishing (OIDC),
 # and only that job has the id-token permission.
 #
-# pyproject.toml names the distribution arcadedb (tracker #19).
-# The guard in the publish job refuses to publish anything that is not `arcadedb`, so this workflow
-# cannot publish another distribution from here by accident.
-#
-# TODO (native-wheel port, tracker #19): a second publish job for arcadedb-native, in environment
-# pypi-native with its own id-token permission and the same kind of guard (distribution name must
-# be arcadedb-native). There is no native job yet.
+# pyproject.toml names the distribution arcadedb-jvm (tracker #19). The wheel file is arcadedb_jvm-<version>-...
+# (PEP 427 turns the dash into an underscore). The guard in the publish job refuses to publish anything
+# that is not `arcadedb-jvm`, so this workflow cannot publish the native `arcadedb` by accident; the
+# native build has its own workflow, release-native.yml, with the same kind of guard.
 
 on:
   push:
@@ -38,7 +35,7 @@ concurrency:
 
 env:
   # The only distribution this workflow may publish. See the guard in the publish job.
-  DIST_NAME: arcadedb
+  DIST_NAME: arcadedb-jvm
 
 jobs:
   # The tag must be a bare PEP 440 version of the allowed kinds, and the next number of its base.
@@ -95,12 +92,13 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: python3 -I scripts/check_version.py "$TAG" --git-remote origin --pypi "$DIST_NAME"
 
-  # Builds a wheel per platform and Python version and runs the unit tests on each. The called
-  # workflow uploads the wheels as wheel-<platform>-py<version> artifacts.
+  # Builds one wheel for each platform (py3-none-<platform tag>, the same file for every Python) and
+  # runs the unit tests on it, on the Pythons scripts/select_matrix.py picks. The called workflow
+  # uploads the wheels as wheel-<platform> artifacts.
   test:
     name: Unit tests and wheels
     needs: validate-version
-    uses: ./.github/workflows/test-python-bindings.yml
+    uses: ./.github/workflows/test-jvm.yml
     with:
       arcadedb-tag: ${{ needs.validate-version.outputs.arcadedb-tag }}
       build-version: ${{ needs.validate-version.outputs.version }}
@@ -126,10 +124,10 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Download wheels for all tested Python versions
+      - name: Download the wheels of the four platforms
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          pattern: wheel-*-py*
+          pattern: wheel-*
           path: dist/
           merge-multiple: true
 
@@ -169,34 +167,31 @@ jobs:
         run: |
           ls -lh dist/
           python3 -I - <<'PY'
-          import os, pathlib, re, subprocess, sys, tomllib, zipfile
+          import os, pathlib, re, subprocess, sys, zipfile
 
           tag = os.environ["TAG"]
           wheels = sorted(pathlib.Path("dist").glob("*.whl"))
 
-          # One wheel per platform and supported interpreter. The interpreters are the classifiers of
-          # pyproject.toml, which the full matrix of scripts/select_matrix.py mirrors (the release runs the full
-          # matrix, not the small pull request one); the four platforms are the matrix platforms. Adding either to
-          # the matrix changes the expected count here.
-          prefix = "Programming Language :: Python :: 3."
-          classifiers = tomllib.load(open("pyproject.toml", "rb"))["project"]["classifiers"]
-          pythons = [c.rsplit(" ", 1)[1] for c in classifiers if c.startswith(prefix)]
+          # One wheel for each platform, py3-none-<platform tag> (setup.py): nothing in the wheel is compiled against
+          # CPython, so the Python versions it installs on are requires-python and the classifiers of pyproject.toml,
+          # not extra files. The four platforms are the platforms of the build matrix (scripts/select_matrix.py --wheels).
+          # Adding a platform to the matrix changes the expected count here.
           platforms = {
               "linux/amd64": r"manylinux.*x86_64",
               "linux/arm64": r"manylinux.*aarch64",
               "darwin/arm64": r"macosx.*arm64",
               "windows/amd64": r"win_amd64",
           }
-          expected = len(pythons) * len(platforms)
-          print(f"wheels: {len(wheels)} (expected {expected} = {len(pythons)} Python versions x {len(platforms)} platforms)")
+          expected = len(platforms)
+          print(f"wheels: {len(wheels)} (expected {expected} = one for each of the {len(platforms)} platforms)")
           problems = []
           if len(wheels) != expected:
               problems.append(f"expected {expected} wheels, got {len(wheels)}")
           for name, pattern in platforms.items():
               n = sum(1 for w in wheels if re.search(pattern, w.name))
               print(f"  {name}: {n}")
-              if n != len(pythons):
-                  problems.append(f"{name}: expected {len(pythons)} wheels, got {n}")
+              if n != 1:
+                  problems.append(f"{name}: expected 1 wheel, got {n}")
 
           names = set()
           for w in wheels:
@@ -207,7 +202,8 @@ jobs:
               with zipfile.ZipFile(w) as zf:
                   meta = next(n for n in zf.namelist() if n.endswith(".dist-info/METADATA"))
                   top = next(n for n in zf.namelist() if n.endswith(".dist-info/top_level.txt"))
-                  dist = re.search(r"^Name: (.+)$", zf.read(meta).decode(), re.M).group(1)
+                  # strip: the METADATA of a wheel built on Windows has CRLF line endings, so the value ends in a carriage return
+                  dist = re.search(r"^Name: (.+)$", zf.read(meta).decode(), re.M).group(1).strip()
                   imports = zf.read(top).decode().split()
               names.add((re.sub(r"[-_.]+", "-", dist).lower(), tuple(imports)))
           if len(names) != 1:
@@ -224,10 +220,13 @@ jobs:
           with open(os.environ["GITHUB_OUTPUT"], "a") as out:
               out.write(f"import-name={imports[0]}\n")
 
-          # Size policy: every wheel stays under 100 MB (decimal); build.sh checks the same limit.
+          # Tag policy: every wheel is py3-none-<platform>, in its name and in its WHEEL file (a cpXY wheel would be one of sixteen).
+          # Size policy: every wheel stays under 100 MB (decimal); build.sh checks the same two limits.
           # ARCADEDB_WHEEL_MAX_MB is deliberately not set: the release has no override.
-          rc = subprocess.run([sys.executable, "scripts/verify_wheel_size.py", *map(str, wheels)]).returncode
-          sys.exit(rc)
+          for script in ("verify_wheel_tag.py", "verify_wheel_size.py"):
+              rc = subprocess.run([sys.executable, f"scripts/{script}", *map(str, wheels)]).returncode
+              if rc:
+                  sys.exit(rc)
           PY
           {
             echo "## Wheels"
@@ -250,7 +249,7 @@ jobs:
     needs: [validate-version, verify-wheels]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
-    environment: pypi
+    environment: pypi-jvm
     permissions:
       id-token: write
     steps:
@@ -260,16 +259,19 @@ jobs:
           name: release-dist
           path: dist/
 
-      # GUARD: this workflow publishes the distribution `arcadedb` and nothing else. A wheel with
+      # GUARD: this workflow publishes the distribution `arcadedb-jvm` and nothing else. A wheel with
       # another name stops the job here, before anything reaches PyPI. Two checks, so neither can drift alone:
-      # the wheel file name and the Name field of its METADATA, both must be DIST_NAME.
+      # the wheel file name and the Name field of its METADATA, both must be DIST_NAME. Both names are stripped of whitespace and
+      # normalised as PEP 503 does before they are compared: the METADATA of a wheel built on Windows has CRLF line endings, so its Name
+      # value ends in a carriage return (26.11.1.dev0 stopped here). A name that differs in anything else is still a hard refusal
+      # (tests/test_release_name_guards.py).
       - name: Refuse unless every wheel is the distribution ${{ env.DIST_NAME }}
         run: |
           python3 -I - <<'PY'
           import os, pathlib, re, sys, zipfile
 
           want = os.environ["DIST_NAME"]
-          norm = lambda s: re.sub(r"[-_.]+", "-", s).lower()
+          norm = lambda s: re.sub(r"[-_.]+", "-", s.strip()).lower()
           wheels = sorted(pathlib.Path("dist").glob("*.whl"))
           if not wheels:
               sys.exit("no wheels in dist/")
@@ -278,9 +280,9 @@ jobs:
               file_dist = w.name.split("-")[0]
               with zipfile.ZipFile(w) as zf:
                   meta = next(n for n in zf.namelist() if n.endswith(".dist-info/METADATA"))
-                  meta_dist = re.search(r"^Name: (.+)$", zf.read(meta).decode(), re.M).group(1)
+                  meta_dist = re.search(r"^Name: (.+)$", zf.read(meta).decode(), re.M).group(1).strip()
               if norm(file_dist) != want or norm(meta_dist) != want:
-                  bad.append(f"{w.name}: file name says {file_dist}, METADATA says {meta_dist}")
+                  bad.append(f"{w.name}: file name says {file_dist!r}, METADATA says {meta_dist!r}")
           if bad:
               print("\n".join(f"::error::{b}" for b in bad))
               sys.exit(f"Refusing to publish: this workflow publishes only the distribution '{want}'.")
@@ -288,7 +290,7 @@ jobs:
           PY
 
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
         with:
           packages-dir: dist/
 
@@ -313,7 +315,7 @@ jobs:
             runs-on: windows-2025
     steps:
       - name: Set up uv
-        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
 
       - name: Install ${{ env.DIST_NAME }} from PyPI and import it
         shell: bash

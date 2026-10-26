@@ -328,3 +328,27 @@ def test_a_user_dict_that_looks_like_a_tag_is_not_decoded(temp_db_path):
         _per_row(db, "Ref", rows)
         db.insert_many("Bulk", rows)
         assert _stored(db, "Bulk") == _stored(db, "Ref")
+
+
+@pytest.mark.parametrize("parallel", [False, True], ids=["serial", "parallel"])
+def test_a_vertex_type_stays_vertices_when_a_row_goes_per_row(temp_db_path, parallel):
+    """A bulk load into a vertex type creates vertices; so must the rows that fall back to the per-row path.
+
+    One row carries NaN (not carriable by the JSON text) and the rest carry a datetime (carried as a tagged value).
+    A CREATE EDGE needs vertices at both ends, so it refuses a record that came out as a plain document.
+    """
+    n = 50
+    rows = [{"id": i, "ts": dt.datetime(2026, 1, 1, 0, 0, i % 60)} for i in range(n)]
+    rows[20]["v"] = float("nan")
+    with arcadedb.create_database(temp_db_path) as db:
+        db.command("sql", "CREATE VERTEX TYPE Vtx")
+        db.command("sql", "CREATE EDGE TYPE Knows")
+        assert db.insert_many("Vtx", rows, parallel=parallel) == n
+        with db.transaction():
+            db.command(
+                "sql",
+                "CREATE EDGE Knows FROM (SELECT FROM Vtx WHERE id = 20) "
+                "TO (SELECT FROM Vtx WHERE id = 21)",
+            )
+        assert db.query("sql", "SELECT count(*) AS n FROM Knows").to_list()[0]["n"] == 1
+        assert db.query("sql", "SELECT count(*) AS n FROM Vtx").to_list()[0]["n"] == n

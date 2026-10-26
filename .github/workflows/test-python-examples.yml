@@ -1,3 +1,5 @@
+# Runs examples/ against the `arcadedb-jvm` wheel. The wheel is py3-none-<platform tag> (setup.py): the `build` job builds it once for each
+# platform, and the `test-examples` job installs that one file into each Python and runs the examples. Nothing is built per Python.
 name: Test Python Examples
 
 on:
@@ -16,6 +18,10 @@ on:
       - "CLAUDE.md"
       - "examples/README.md"
       - "LICENSE*"
+      # the native build has its own workflows; nothing under native/ is in the JVM wheel
+      - "native/**"
+      - ".github/workflows/test-native.yml"
+      - ".github/workflows/release-native.yml"
   pull_request:
     # ready_for_review: draft PRs skip the platform matrices (see the job conditions),
     # so marking one ready is what starts them.
@@ -27,6 +33,10 @@ on:
       - "CLAUDE.md"
       - "examples/README.md"
       - "LICENSE*"
+      # the native build has its own workflows; nothing under native/ is in the JVM wheel
+      - "native/**"
+      - ".github/workflows/test-native.yml"
+      - ".github/workflows/release-native.yml"
 
   # A new upstream snapshot is published as arcadedata/arcadedb:latest without
   # any change here, so build and test against it every night as well. The tag
@@ -36,7 +46,7 @@ on:
   schedule:
     - cron: "0 4 * * *"
 
-  # Allow being called by other workflows (e.g., release workflow)
+  # Allow being called by other workflows (release-jvm.yml)
   workflow_call:
     inputs:
       arcadedb-tag:
@@ -66,7 +76,7 @@ on:
         required: false
         default: "0[1-9]_*.py 1[0-9]_*.py 2[0-9]_*.py"
 
-# SUPERSEDE, do not race (same rule in test-python-bindings.yml).
+# SUPERSEDE, do not race (same rule in test-jvm.yml).
 #
 # A force-push to a PR branch left the OLD run going alongside the new one: on
 # #6889 both 118b347ce and 75293c7a2 ran at once, and the stale one reported a
@@ -107,6 +117,7 @@ jobs:
     outputs:
       arcadedb-tag: ${{ steps.jars.outputs.arcadedb-tag }}
       matrix: ${{ steps.matrix.outputs.matrix }}
+      wheel-matrix: ${{ steps.matrix.outputs.wheel-matrix }}
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -114,6 +125,8 @@ jobs:
       # The platform x Python legs of this run (scripts/select_matrix.py): a small matrix on
       # pull requests, the full one on every other event. The organisation shares one runner
       # cap with ArcadeData/arcadedb, so a pull request does not run every combination.
+      # The wheel matrix is the platforms of those legs, one build each: the wheel is
+      # py3-none-<platform>, the same file for every Python.
       # Done first, so a failure here costs no Docker pull.
       - name: Select the test matrix
         id: matrix
@@ -122,8 +135,11 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
         run: |
           matrix="$(python3 scripts/select_matrix.py examples --event "$EVENT_NAME")"
+          wheel_matrix="$(python3 scripts/select_matrix.py examples --event "$EVENT_NAME" --wheels)"
           echo "$matrix"
+          echo "$wheel_matrix"
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "wheel-matrix=$wheel_matrix" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
@@ -168,28 +184,22 @@ jobs:
           path: src/arcadedb/jars/*.jar
           retention-days: 1
 
-  # Second job: Test examples on each platform
-  test-examples:
-    name: Test Python Examples (${{ matrix.platform }}, Python ${{ matrix.python-version }})
+  # Second job: build the wheel of each platform, once. The wheel is py3-none-<platform tag> (setup.py), so the file built here is
+  # the one every Python of the test-examples job below installs: nothing is built per Python. build.sh takes a Python only for the
+  # Linux container that builds and smoke-tests the wheel; any of them gives the same file. It also checks the size, the licences
+  # and the tag of the wheel, as in test-jvm.yml.
+  build:
+    name: Build wheel for examples (${{ matrix.platform }})
     runs-on: ${{ matrix.runs-on }}
     needs: download-jars
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     env:
       BUILD_VERSION: ${{ inputs.build-version }}
-      # Pin the Hugging Face cache inside the workspace so it is cacheable with
-      # one path on every platform (the default differs per OS). The examples
-      # embed with sentence-transformers, and the full matrix is 20 jobs, so
-      # uncached that is 20 independent model downloads per release and 20
-      # chances for a transient hub outage to fail a release. It has happened.
-      HF_HOME: ${{ github.workspace }}/.hf-cache
     strategy:
       fail-fast: false
-      # Chosen by the "Select the test matrix" step of download-jars from the event that
-      # started the run (scripts/select_matrix.py holds the platform and Python lists):
-      # small on pull requests, the full 4 platforms x 5 Pythons on every other event.
-      # Every leg carries platform, runs-on and python-version, so the job names stay
-      # "Test Python Examples (<platform>, Python <version>)".
-      matrix: ${{ fromJSON(needs.download-jars.outputs.matrix) }}
+      # One leg per platform of the test matrix, from the "Select the test matrix" step of download-jars
+      # (scripts/select_matrix.py --wheels): {"include": [{"platform": ..., "runs-on": ...}, ...]}.
+      matrix: ${{ fromJSON(needs.download-jars.outputs.wheel-matrix) }}
 
     steps:
       - name: Checkout code
@@ -213,9 +223,9 @@ jobs:
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: "3.12"
 
       - name: Setup UV package manager
         shell: bash
@@ -234,6 +244,13 @@ jobs:
         run: |
           uv pip install --system build wheel setuptools
 
+      - name: Set UTF-8 encoding (Windows only)
+        if: matrix.platform == 'windows/amd64' || matrix.platform == 'windows/arm64'
+        shell: bash
+        run: |
+          echo "PYTHONIOENCODING=utf-8" >> $GITHUB_ENV
+          echo "PYTHONUTF8=1" >> $GITHUB_ENV
+
       # Windows currently enabled, no symlink needed
       # - name: Create python3 symlink (Windows only)
       #   if: matrix.platform == 'windows/amd64' || matrix.platform == 'windows/arm64'
@@ -250,17 +267,92 @@ jobs:
           # the Docker build takes its base image by this tag, the jars from the artifact
           ARCADEDB_TAG: ${{ needs.download-jars.outputs.arcadedb-tag }}
         run: |
-          echo "🔨 Building arcadedb for ${{ matrix.platform }} with Python ${{ matrix.python-version }}..."
+          echo "🔨 Building arcadedb-jvm for ${{ matrix.platform }}..."
           # The jars download-jars fetched, on every platform, so all wheels of this
           # run carry the same engine build (and build.sh checks the integration jar)
-          ./scripts/build.sh ${{ matrix.platform }} ${{ matrix.python-version }} src/arcadedb/jars
+          ./scripts/build.sh ${{ matrix.platform }} 3.12 src/arcadedb/jars
+
+      # build.sh already ran this (and the size check); it is repeated here as in test-jvm.yml, so the tag shows in this job's log and
+      # summary and a change to build.sh cannot drop it unnoticed. The wheel must be py3-none-<platform>, the file every Python installs.
+      - name: Check the wheel tag
+        shell: bash
+        run: |
+          python scripts/verify_wheel_tag.py dist/*.whl
+          {
+            echo "## 📦 Wheel: arcadedb-jvm (${{ matrix.platform }})"
+            echo
+            for w in dist/*.whl; do
+              echo "- \`$(basename "$w")\`, $(du -m "$w" | cut -f1) MB"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # One wheel per platform, for the test-examples legs of that platform. Named examples-wheel-<platform>, not wheel-<platform>:
+      # a release runs this workflow and test-jvm.yml in one run, and release-jvm.yml publishes every wheel-* artifact.
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: examples-wheel-${{ matrix.platform == 'linux/amd64' && 'linux-amd64' || matrix.platform == 'linux/arm64' && 'linux-arm64' || matrix.platform == 'darwin/amd64' && 'darwin-amd64' || matrix.platform == 'darwin/arm64' && 'darwin-arm64' || matrix.platform == 'windows/amd64' && 'windows-amd64' || 'windows-arm64' }}
+          path: dist/*.whl
+          if-no-files-found: error
+          retention-days: 1
+
+  # Third job: install the wheel of the platform into each Python and run the examples. Nothing is built here: the wheel is
+  # the file the build job made (py3-none-<platform tag>), so each Python runs the examples against the same file that is published.
+  test-examples:
+    name: Test Python Examples (${{ matrix.platform }}, Python ${{ matrix.python-version }})
+    runs-on: ${{ matrix.runs-on }}
+    needs: [download-jars, build]
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    env:
+      # Pin the Hugging Face cache inside the workspace so it is cacheable with
+      # one path on every platform (the default differs per OS). The examples
+      # embed with sentence-transformers, and the full matrix is 16 jobs, so
+      # uncached that is 16 independent model downloads per release and 16
+      # chances for a transient hub outage to fail a release. It has happened.
+      HF_HOME: ${{ github.workspace }}/.hf-cache
+    strategy:
+      fail-fast: false
+      # Chosen by the "Select the test matrix" step of download-jars from the event that
+      # started the run (scripts/select_matrix.py holds the platform and Python lists):
+      # small on pull requests, the full 4 platforms x 4 Pythons on every other event.
+      # Every leg carries platform, runs-on and python-version, so the job names stay
+      # "Test Python Examples (<platform>, Python <version>)".
+      matrix: ${{ fromJSON(needs.download-jars.outputs.matrix) }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Setup UV package manager
+        shell: bash
+        run: |
+          # Retry transient network failures (a connection reset failed a whole examples job on #8897); the
+          # script is downloaded first so a retried transfer is never piped half-written into sh.
+          installer="$(mktemp)"
+          curl -LsSf --retry 5 --retry-all-errors --retry-delay 5 -o "$installer" https://astral.sh/uv/install.sh
+          sh "$installer"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.local/bin:$PATH"
+          uv --version
+
+      # The wheel of this platform, built once by the build job and the same file for every Python.
+      - name: Download the wheel of ${{ matrix.platform }}
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: examples-wheel-${{ matrix.platform == 'linux/amd64' && 'linux-amd64' || matrix.platform == 'linux/arm64' && 'linux-arm64' || matrix.platform == 'darwin/amd64' && 'darwin-amd64' || matrix.platform == 'darwin/arm64' && 'darwin-arm64' || matrix.platform == 'windows/amd64' && 'windows-amd64' || 'windows-arm64' }}
+          path: test-install
 
       # Note: Java is NOT required - arcadedb has bundled JRE!
 
       - name: Install ArcadeDB Python bindings
         shell: bash
         run: |
-          uv pip install --system dist/arcadedb-*.whl
+          uv pip install --system test-install/arcadedb_jvm-*.whl
 
       - name: Install example dependencies
         shell: bash
@@ -755,7 +847,7 @@ jobs:
   # Summary job that checks all platforms
   test-examples-summary:
     name: Examples Test Summary
-    needs: test-examples
+    needs: [build, test-examples]
     runs-on: ubuntu-latest
     # Skipped (not red) when the matrix was skipped for a draft PR.
     if: always() && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
@@ -766,10 +858,10 @@ jobs:
           echo "## 🎯 Overall Examples Test Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
-          if [ "${{ needs.test-examples.result }}" = "success" ]; then
+          if [ "${{ needs.build.result }}" = "success" ] && [ "${{ needs.test-examples.result }}" = "success" ]; then
             echo "✅ **All platforms passed example testing!**" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "All examples ran successfully across all enabled platforms." >> $GITHUB_STEP_SUMMARY
+            echo "All examples ran successfully across all enabled platforms, against one wheel built for each platform." >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "**Platforms tested**: linux/amd64, linux/arm64, darwin/arm64, windows/amd64" >> $GITHUB_STEP_SUMMARY
           else

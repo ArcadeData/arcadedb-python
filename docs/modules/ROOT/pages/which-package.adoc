@@ -1,0 +1,154 @@
+= Which package?
+:description: Two PyPI packages carry the ArcadeDB engine for Python, arcadedb (native) and arcadedb-jvm (JVM). Both import as arcadedb. This page says which one to install.
+
+Two packages give you the ArcadeDB engine inside your Python process. Both use the import name `{import-name}`, and they have the same public API. Install one of them, not both.
+
+[cols="1,2,3"]
+|===
+| Package | Engine | Pick it for
+
+| `{native-pkg-name}` (the default)
+| The native build. The engine is compiled by GraalVM Community Edition into a shared library, which Python loads with `ctypes`. No JVM, no JPype, no bundled Java runtime.
+| Embedded use in scripts, notebooks, tests, CLIs, serverless functions and agents. It starts fast and holds little memory, because there is no JVM.
+
+| `{jvm-pkg-name}`
+| The JVM build. The Java engine runs in your process through https://jpype.readthedocs.io/[JPype], on a bundled Java 25 runtime.
+| Heavy, long-running loads, where the JIT compiler makes the engine faster over time. Also the Java-object APIs (`get_java_database` and similar), JVM options, `jvm_kwargs` and `start_jvm`.
+|===
+
+[source,shell,subs="attributes+"]
+----
+pip install {native-pkg-name}     # native, the default
+pip install {jvm-pkg-name}        # JVM, for heavy long-running loads
+----
+
+If you are not sure, install `{native-pkg-name}`. You can switch later: your code does not change (see <<switching>>).
+
+// REMOVE WHEN: the old arcadedb-embedded* shims are retired and two releases have shipped with the two-package layout allow-old-name
+NOTE: *Transition note.* The first release of this layout is 26.11.1. Until the native build passes its readiness bar, `{native-pkg-name}` may appear only as pre-releases, `26.11.1.devN`. Then you install it with `pip install --pre {native-pkg-name}` (or `uv add --prerelease allow {native-pkg-name}`). A plain `pip install {native-pkg-name}` finds only the 0.0.1 placeholder, which installs the old package (see <<old-names>>), until a final 26.11.1 exists. The same holds for `{jvm-pkg-name}` until its 26.11.1 is released. The readiness bar is listed in xref:development/release.adoc[Release].
+
+[[which-one-do-i-have]]
+== Check which one you have
+
+[source,shell,subs="attributes+"]
+----
+python -c "import {import-name}; print({import-name}.__backend__)"
+----
+
+It prints `native` or `jvm`. You can also ask pip:
+
+[source,shell,subs="attributes+"]
+----
+pip show {native-pkg-name} {jvm-pkg-name}
+----
+
+`pip show` prints a block for each package that is installed, and a warning for the one that is not. In a correct environment exactly one of the two is installed.
+
+== What changes between them
+
+The API is the same. The runtime is not. These are the differences you can plan for.
+
+[cols="2,3,3"]
+|===
+| | `{native-pkg-name}` (native) | `{jvm-pkg-name}` (JVM)
+
+| Start-up
+| Fast. There is no JVM to start.
+| Slower. Every Python process starts a JVM first.
+
+| Memory
+| Small footprint.
+| Larger. The JVM keeps a heap, and each Python process starts its own JVM.
+
+| Garbage collector
+| The serial collector of GraalVM Community Edition. A collection stops all threads, and the pause grows with the live data. The heap limit is 50% of the memory by default (xref:installation.adoc#native-heap[Heap size]).
+| The JVM's own collectors, G1 by default on a server-class machine. You choose them and the heap with `jvm_kwargs` (xref:installation.adoc#jvm-options[JVM options]).
+
+| Throughput on long loads
+| No JIT warm-up. Speed over a long run depends on the workload.
+| The JIT compiler makes long-running loads faster over time.
+
+| Speed on your data
+| Measure on your own workload.
+| Measure on your own workload.
+
+| Wheel size
+| Smaller. It carries no Java runtime.
+| Larger. It carries a Java 25 runtime for its platform.
+
+| Python versions
+| 3.11 to 3.15. On 3.15 the CI runs a subset of the tests.
+| 3.11 to 3.14. JPype has no 3.15 wheel yet, so pip refuses the package on 3.15.
+
+| Platforms
+| Linux x86_64 and aarch64 (glibc 2.28 or later), macOS arm64, Windows x64. The Windows wheel is the newest: it is built in CI, and its test run is the least proven of the four. Not built: Intel Mac, Alpine (musl), Windows on ARM. See xref:installation.adoc#requirements[Requirements].
+| Linux x86_64 and aarch64 (glibc 2.28 or later), macOS arm64, Windows x64. Not built: Intel Mac, Alpine (musl), Windows on ARM.
+
+| Java-object APIs (`get_java_database`, `get_java_document`, `get_java_*`)
+| Not available. They raise `NotOnNativeYet`.
+| Available.
+
+| JVM options (`jvm_kwargs`, `start_jvm`, `-X` and `-D` flags)
+| Do not exist. There is no JVM.
+| Available. See xref:installation.adoc#jvm-options[JVM options].
+
+| A few API calls
+| None, except the Java-object calls above, which raise `NotOnNativeYet` (a `NotImplementedError`).
+| Work.
+|===
+
+Both packages run the same ArcadeDB engine, with the same SQL and openCypher and the same database format.
+
+[[switching]]
+== Switch from one to the other
+
+The two wheels refuse to work together. If both are installed, `import arcadedb` raises an `ImportError` that names both packages. The reason is that both wheels write into the same `arcadedb` directory, and pip would overwrite files of one with files of the other without a message. So remove both and install the one you want:
+
+[source,shell,subs="attributes+"]
+----
+pip uninstall {native-pkg-name} {jvm-pkg-name}
+pip install {jvm-pkg-name}
+----
+
+There is no extra to select a build: `{native-pkg-name}[jvm]` does not exist. Your code stays as it is, because both import as `{import-name}`. Only code that uses a JVM-only API (see the table above) needs a change when you move to the native build.
+
+== Server use
+
+Neither package is a server deployment. They embed the engine in one Python process. For HTTP access, Studio, many processes, other programming languages or high availability, run the official Docker image `arcadedata/arcadedb` and connect with a driver (see <<drivers>>). The xref:index.adoc#embedded-vs-http[Embedded bindings or the HTTP driver] section compares the two ways.
+
+// REMOVE WHEN: the old arcadedb-embedded* shims are retired and two releases have shipped with the two-package layout allow-old-name
+[[old-names]]
+== Old names
+
+The packages had other names until 26.10.x. Search results and old tutorials may still use them.
+
+[cols="2,3,3"]
+|===
+| New package | Old name | Note
+
+| `{jvm-pkg-name}`
+| Formerly `arcadedb-embedded`, imported as `arcadedb_embedded`
+| The same JVM build, with the import name `{import-name}`. The last release of the project formerly `arcadedb-embedded` (26.11.1) will be a deprecation shim that installs `{native-pkg-name}`, the native build, and warns. If you need the JVM build, install `{jvm-pkg-name}` yourself.
+
+| `{native-pkg-name}`
+| Formerly `arcadedb-embedded-native`, imported as `arcadedb_native`
+| The same build, now with the import name `{import-name}`. The old preview versions were 26.10.x pre-releases. The old project is archived on PyPI: no new releases and no shim.
+|===
+
+[[migrate]]
+=== Migrate from the old names
+
+. Remove the old package: `pip uninstall arcadedb-embedded arcadedb-embedded-native`.
+. Install the new one: `pip install {jvm-pkg-name}` if you used `arcadedb-embedded`, or `pip install {native-pkg-name}` if you used `arcadedb-embedded-native`. Add `--pre` while the transition note above applies.
+. Change the import: `import arcadedb_embedded` and `import arcadedb_native` both become `import {import-name}`. The builds are the same as in the table above, so the rest of your code stays.
+
+Releases of the new layout start with 26.11.1. The 26.10.x wheels were built in a separate repository of the humemai organisation.
+
+[[drivers]]
+== Packages that talk to a server
+
+None of these contains the engine. They connect to a running ArcadeDB server.
+
+* `{driver-pkg-name}`: the official HTTP client. See xref:arcadedb::how-to/connectivity/drivers/python-http.adoc[Python -- HTTP driver].
+* `{grpc-driver-pkg-name}`: the official gRPC client. See xref:arcadedb::how-to/connectivity/drivers/python-grpc.adoc[Python -- gRPC driver].
+* `{community-driver-pkg-name}`: a community HTTP driver by Steve Reiner and others ({community-repo-url}[stevereiner/arcadedb-python]). It is not related to this repository, whose name is also `arcadedb-python`. Check which one a tutorial installs before you copy its code.

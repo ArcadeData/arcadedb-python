@@ -32,9 +32,11 @@ import pytest
 _CHILD = """
 import atexit, sys, time
 import arcadedb
-from arcadedb.jvm import start_jvm
 
-start_jvm(heap_size="512m", interrupt=(sys.argv[3] == "1"))
+if arcadedb.__backend__ != "native":  # the native build has no JVM to start
+    from arcadedb.jvm import start_jvm
+
+    start_jvm(heap_size="512m", interrupt=(sys.argv[3] == "1"))
 db = arcadedb.create_database(sys.argv[2])
 db.command("sql", "CREATE DOCUMENT TYPE T")
 atexit.register(lambda: print("ATEXIT", flush=True))
