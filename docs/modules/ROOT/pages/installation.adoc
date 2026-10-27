@@ -100,12 +100,12 @@ with arcadedb.create_database("./test") as db:
     print(f"Database working: {result.first().get('test') == 1}")
 ----
 
-Run in an empty directory, the script prints (the version and the backend match what you installed; this output is from the JVM package):
+Run in an empty directory, the script prints (the version and the backend match what you installed; this output is from `{native-pkg-name}` 26.11.1.dev2, and `{jvm-pkg-name}` prints `Backend: jvm`):
 
 [source,text]
 ----
-ArcadeDB Python bindings version: 26.10.2.post1
-Backend: jvm
+ArcadeDB Python bindings version: 26.11.1.dev2
+Backend: native
 Database working: True
 ----
 
@@ -190,6 +190,17 @@ What the native package cannot do, or does differently from `{jvm-pkg-name}`. Re
 * *No console log on Windows by default.* The log goes to the file only. See xref:how-to/logs.adoc[Where the logs go] for the reason and for `ARCADEDB_LOG_CONSOLE`.
 * *Engine modules left out.* The gRPC and MongoDB wire protocols, Raft HA, Gremlin and the polyglot languages (JavaScript, Python as a query language) are not in the image. See <<what-is-included>>.
 * *Platforms.* Intel Macs, Alpine Linux (musl) and Windows on ARM have no wheel. See <<requirements>>.
+
+[[in-a-container]]
+== In a container
+
+The facts that matter in a container are spread over several pages. This list collects them.
+
+* *Memory limit.* `{native-pkg-name}` limits its heap to 50% of the container memory limit (the cgroup limit), and the engine also uses memory outside the heap. See <<native-heap>>. Each `{jvm-pkg-name}` process starts its own JVM, and each JVM sees the whole container limit. With several Python processes in one container, give each its own `heap_size`. See <<jvm-options>>.
+* *Transaction size.* A bulk load holds the rows of a transaction in memory until it commits, so a smaller commit size lowers the heap a load needs. See xref:how-to/bulk-loads.adoc[Bulk loads and commit size].
+* *Read-only file systems.* Neither package writes into the working directory. The log goes to a per-user state directory. When that directory cannot be written, the package logs a warning and uses a new directory under the system temp directory. To keep the log, set `ARCADEDB_LOG_DIR` to a writable volume. See xref:how-to/logs.adoc[Where the logs go]. The database directory itself must be on a writable volume.
+* *Start-up.* `{native-pkg-name}` has no JVM to start, so processes that start often, such as serverless functions and short jobs, start faster with it. See xref:which-package.adoc[Which package?].
+* *Base image.* Use a glibc-based image, for example `python:3.12-slim`. Alpine and other musl-based images have no wheel. See <<requirements>>.
 
 == Next steps
 
