@@ -1,9 +1,11 @@
 """More positional values than a statement has placeholders is a wrong call, refused before it runs.
 
 ``query("sql", "... WHERE @rid IN ?", [rid_a, rid_b])`` reads the lone list as the positional-parameter list (the documented form,
-one element per ``?``). The statement holds one ``?``, the engine binds the first element, ignores the second without a word, and
-the query returns fewer rows than the caller meant. The engine does not count (it binds null for a missing value too;
-ArcadeData/arcadedb#10721), and the bindings cannot ask it: the parsed statement's placeholder count is no public engine call.
+one element per ``?``). The statement holds one ``?``. Engines before 26.11.1 bound the first element, ignored the second without a
+word, and returned fewer rows than the caller meant (and bound null for a missing value). Since 26.11.1 the engine refuses a
+mismatched count itself (ArcadeData/arcadedb#10721); this check still runs because it fails earlier, without an engine round trip,
+with a TypeError that names the fix, and because on a build linked to an older engine nothing else stops it. The bindings cannot ask
+the engine for the count: the parsed statement's placeholder count is no public engine call.
 So the check is the one that never refuses a call that binds: an UPPER BOUND on the placeholders, the characters ``?``, ``$`` and
 ``:`` anywhere in the SQL text (a ``?`` in a string literal counts, so such a statement is checked more loosely, never refused
 wrongly). A call with more values than that bound has a value no placeholder can take.
