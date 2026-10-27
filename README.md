@@ -24,7 +24,7 @@ pip install arcadedb-jvm   # JVM, for heavy long-running loads (or: uv add arcad
 ```
 
 <!-- REMOVE WHEN: the old arcadedb-embedded* shims are retired and two releases have shipped with the two-package layout allow-old-name -->
-> Transition note: the first release of this layout is 26.11.1. Until `arcadedb` passes its readiness bar, it may appear only as pre-releases, `26.11.1.devN`. Install it with `pip install --pre arcadedb` (or `uv add --prerelease allow arcadedb`). A plain `pip install arcadedb` finds only the 0.0.1 placeholder, which installs the old package. The same holds for `arcadedb-jvm` until its 26.11.1 is released.
+> Transition note: the first release of this layout is 26.11.1. Until `arcadedb` passes its readiness bar, it may appear only as pre-releases, `26.11.1.devN`. Until a final 26.11.1 exists, PyPI holds only these pre-releases, and a plain `pip install arcadedb` or `uv add arcadedb` installs the newest one. After a final release, a plain install takes the final, and a later pre-release needs `pip install --pre arcadedb` (or `uv add --prerelease allow arcadedb`). The same holds for `arcadedb-jvm`.
 
 <!-- REMOVE WHEN: the old arcadedb-embedded* shims are retired and two releases have shipped with the two-package layout allow-old-name -->
 > Old names: `arcadedb-jvm` was formerly `arcadedb-embedded`, and `arcadedb` was formerly `arcadedb-embedded-native` (archived on PyPI). A last `arcadedb-embedded` release will be a deprecation shim that installs `arcadedb`, the native build.

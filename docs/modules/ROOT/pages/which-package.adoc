@@ -25,7 +25,7 @@ pip install {jvm-pkg-name}        # JVM, for heavy long-running loads
 If you are not sure, install `{native-pkg-name}`. You can switch later: your code does not change (see <<switching>>).
 
 // REMOVE WHEN: the old arcadedb-embedded* shims are retired and two releases have shipped with the two-package layout allow-old-name
-NOTE: *Transition note.* The first release of this layout is 26.11.1. Until the native build passes its readiness bar, `{native-pkg-name}` may appear only as pre-releases, `26.11.1.devN`. Then you install it with `pip install --pre {native-pkg-name}` (or `uv add --prerelease allow {native-pkg-name}`). A plain `pip install {native-pkg-name}` finds only the 0.0.1 placeholder, which installs the old package (see <<old-names>>), until a final 26.11.1 exists. The same holds for `{jvm-pkg-name}` until its 26.11.1 is released. The readiness bar is listed in xref:development/release.adoc[Release].
+NOTE: *Transition note.* The first release of this layout is 26.11.1. Until the native build passes its readiness bar, `{native-pkg-name}` may appear only as pre-releases, `26.11.1.devN`. Until a final 26.11.1 exists, PyPI holds only these pre-releases, and a plain `pip install {native-pkg-name}` or `uv add {native-pkg-name}` installs the newest one. After a final release, a plain install takes the final, and a later pre-release needs `pip install --pre {native-pkg-name}` (or `uv add --prerelease allow {native-pkg-name}`). The same holds for `{jvm-pkg-name}`. The readiness bar is listed in xref:development/release.adoc[Release].
 
 [[which-one-do-i-have]]
 == Check which one you have

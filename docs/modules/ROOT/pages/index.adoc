@@ -24,7 +24,7 @@ These packages run the ArcadeDB engine inside your Python process, with no netwo
 Not sure which one? Take `{native-pkg-name}`, and read xref:which-package.adoc[Which package?] to decide for sure. Install one of them, not both.
 
 // REMOVE WHEN: the old arcadedb-embedded* shims are retired and two releases have shipped with the two-package layout allow-old-name
-NOTE: *Transition note.* The first release of this layout is 26.11.1, and `{native-pkg-name}` may first appear as pre-releases, `26.11.1.devN`. Until a final 26.11.1 is on PyPI, install it with `pip install --pre {native-pkg-name}`: a plain `pip install` finds only the 0.0.1 placeholder, which installs the old package. See xref:installation.adoc[Installation].
+NOTE: *Transition note.* The first release of this layout is 26.11.1, and `{native-pkg-name}` may first appear as pre-releases, `26.11.1.devN`. Until a final 26.11.1 is on PyPI, these pre-releases are all there is, and a plain `pip install {native-pkg-name}` or `uv add {native-pkg-name}` installs the newest one. See xref:installation.adoc[Installation].
 
 ArcadeDB is a multi-model database: graph, document, key/value, vector and time series data live in one database, and you query it with SQL or openCypher. The bindings expose the two calls you need for that, `db.command(...)` and `db.query(...)`.
 
