@@ -1,5 +1,6 @@
-# Builds this component as a site of its own, until docs.arcadedb.com publishes it
-# (ArcadeData/arcadedb-docs#505). The workflow docs.yml runs it on every change under docs/.
+# Builds this component as a site of its own, for previews and the docs check of a pull request.
+# docs.arcadedb.com/arcadedb-python publishes main daily (ArcadeData/arcadedb-docs#505). The workflow
+# docs.yml runs this playbook on every change under docs/.
 # Local preview, from the repository root:
 #   npx -p @antora/cli@3.2.1 -p @antora/site-generator@3.2.1 antora docs/antora-playbook.yml
 # then open docs/build/site/index.html.

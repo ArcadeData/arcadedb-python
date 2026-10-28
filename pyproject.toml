@@ -136,7 +136,7 @@ examples = [
 
 [project.urls]
 Homepage = "https://github.com/ArcadeData/arcadedb-python"
-Documentation = "https://docs.humem.ai/arcadedb/"
+Documentation = "https://docs.arcadedb.com/arcadedb-python/"
 Repository = "https://github.com/ArcadeData/arcadedb-python"
 "Bug Tracker" = "https://github.com/ArcadeData/arcadedb-python/issues"
 "ArcadeDB Upstream" = "https://github.com/ArcadeData/arcadedb"
