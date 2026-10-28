@@ -1525,7 +1525,9 @@ class Database:
                 In current ArcadeDB engine builds, PRODUCT also requires enough indexed
                 vectors per bucket for PQ training; for tiny corpora, set `pq_clusters`
                 explicitly to a small value or prefer INT8/BINARY/NONE.
-                PRODUCT is not recommended; see ArcadeDB #10514.
+                With PRODUCT, every graph rebuild retrains the codebook and re-encodes
+                every vector (ArcadeDB #10847); measure recall and rebuild time on
+                your data before choosing it.
             encoding: Optional storage encoding for the underlying vector property.
                 Use "INT8" when the document property stores pre-quantized bytes in a
                 `BINARY` property. When using INT8 encoding, set quantization to "NONE"

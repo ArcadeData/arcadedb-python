@@ -1,0 +1,297 @@
+= Vectors
+:description: Create an LSM_VECTOR index, load vectors from lists and NumPy arrays, search with SQL, openCypher and find_nearest, and read the index counters, with what the arcadedb and arcadedb-jvm packages add.
+
+// Sources: bindings docs guide/vectors.md (the Python-specific parts), and src/arcadedb/vector.py and core.py.
+
+This page covers vector search from Python. Prefer SQL and openCypher through `db.command(...)` and `db.query(...)` for creating an index and for searching, because a search then composes with filters, projections and graph traversal. The Python wrappers (`create_vector_index`, `find_nearest`, `get_stats`, `build_graph_now`, `warm_up`) are covered where no statement does the job, or where Python adds something: NumPy arrays and lists as vectors, and the index counters.
+
+What a vector index is, its distance functions and its SQL functions belong to the main manual: {arcadedb-docs-url}/concepts/vector-search[Vector search], {arcadedb-docs-url}/how-to/data-modeling/vector-embeddings[Vector embeddings] and the {arcadedb-docs-url}/reference/extended-functions/vector[vector functions]. Bring your own embeddings from any model.
+
+The blocks on this page run one after the other against one empty database, and a test in the repository runs them that way (`tests/test_docs_vectors_page.py`). Each block that prints something is followed by its output. Every block assumes that `db` is an open database, as on xref:how-to/databases-and-queries.adoc[Databases and queries]. NumPy is optional for the bindings, but the blocks use it; add it with `uv add numpy`.
+
+== Create an index
+
+A vector index covers one property of a type. The property holds the vector, and the usual type is `ARRAY_OF_FLOATS`. The index needs the number of `dimensions`, which must match your embedding length, and a `similarity` (`COSINE`, `EUCLIDEAN` or `DOT_PRODUCT`; `create_vector_index` takes `cosine` unless you say otherwise).
+
+[source,python]
+----
+import numpy as np
+
+db.command("sql", "CREATE VERTEX TYPE Doc")
+db.command("sql", "CREATE PROPERTY Doc.name STRING")
+db.command("sql", "CREATE PROPERTY Doc.embedding ARRAY_OF_FLOATS")
+db.command(
+    "sql",
+    """
+    CREATE INDEX ON Doc (embedding) LSM_VECTOR
+    METADATA {"dimensions": 3, "similarity": "COSINE"}
+    """,
+)
+----
+
+`CREATE INDEX ... LSM_VECTOR METADATA {...}` is the main way. The engine builds the graph of the index when the statement runs, unless the metadata holds `"buildGraphNow": false`.
+
+The same index is available as a method. `db.create_vector_index(...)` runs the same engine call with Python arguments and returns a `VectorIndex` object, which has the Python-only methods used below (`find_nearest`, `get_stats`, `warm_up`). It builds the graph by default too; pass `build_graph_now=False` to skip that. For an index made with a statement, get the object with `db.schema.get_vector_index(type_name, property_name)`.
+
+=== The two paths have different defaults
+
+The statement follows the engine, and the method follows the choices of these bindings. The two build different indexes from the same dimensions and similarity:
+
+[cols="2,2,2"]
+|===
+| Setting | `CREATE INDEX ... LSM_VECTOR` | `create_vector_index(...)`
+
+| `quantization`
+| `NONE` (full precision)
+| `"INT8"`
+
+| `addHierarchy` (`add_hierarchy`)
+| `false` (a flat graph)
+| `True` (HNSW hierarchy layers)
+|===
+
+The index above has the engine's values. `get_metadata()` shows what any index has:
+
+[source,python]
+----
+index = db.schema.get_vector_index("Doc", "embedding")
+meta = index.get_metadata()
+print(meta["quantization"], meta["add_hierarchy"])
+----
+
+[source,text]
+----
+NONE False
+----
+
+Name the setting in the statement or in the call when you compare results or need the same index from both paths. `"quantization": "INT8"` and `"addHierarchy": true` in the `METADATA` give the method's index; `quantization=None` and `add_hierarchy=False` in the call give the statement's. Do not take `INT8` as the best choice from its being the method's default: check recall and speed on your own data.
+
+== Insert vectors
+
+A vector is a property value like any other. Bind it as a parameter of `INSERT`. A NumPy `float32` array crosses into the engine as one buffer. A list of Python floats also works, and a list that is the only parameter of a statement is read as the whole parameter list, so give a vector as a list only next to other parameters or by name. The details are in xref:how-to/databases-and-queries.adoc#_a_query_vector[A query vector].
+
+[source,python]
+----
+docs = [
+    ("python", [1.0, 0.0, 0.0]),
+    ("python-ish", [0.9, 0.1, 0.0]),
+    ("graph", [0.0, 1.0, 0.0]),
+    ("vector", [0.0, 0.0, 1.0]),
+]
+with db.transaction():
+    for name, vector in docs:
+        db.command(
+            "sql",
+            "INSERT INTO Doc SET name = ?, embedding = ?",
+            name,
+            np.asarray(vector, dtype=np.float32),
+        )
+----
+
+To load many vectors, use `insert_many` with one array or list per row, or `insert_columns` with a whole 2-D `float32` matrix as one column. The vectors of a chunk cross as one buffer, not as text and not one call per number. Declare the property `ARRAY_OF_FLOATS` first: that is what makes the fast path apply. See xref:how-to/bulk-loads.adoc[Bulk loads and commit size] for the commit size.
+
+[source,python]
+----
+db.command("sql", "CREATE DOCUMENT TYPE Chunk")
+db.command("sql", "CREATE PROPERTY Chunk.id LONG")
+db.command("sql", "CREATE PROPERTY Chunk.embedding ARRAY_OF_FLOATS")
+
+x = np.random.default_rng(0).random((100, 3), dtype=np.float32)
+db.insert_many("Chunk", [{"id": i, "embedding": x[i]} for i in range(len(x))])
+print(db.count_type("Chunk"))
+
+db.insert_columns("Chunk", {"id": np.arange(len(x)), "embedding": x})
+print(db.count_type("Chunk"))
+----
+
+[source,text]
+----
+100
+200
+----
+
+== Search
+
+=== SQL
+
+`vectorNeighbors(index, vector, k)` returns the `k` nearest records. The index is named `Type[property]`. Expand the result in a subquery to select properties and the `distance`. Lower is closer for every similarity.
+
+[source,python]
+----
+query = np.asarray([0.9, 0.1, 0.0], dtype=np.float32)
+rows = db.query(
+    "sql",
+    "SELECT name, distance FROM "
+    "(SELECT expand(vectorNeighbors('Doc[embedding]', ?, 2))) ORDER BY distance",
+    query,
+).to_list()
+print([row["name"] for row in rows])
+----
+
+[source,text]
+----
+['python-ish', 'python']
+----
+
+Bind the query vector as a parameter, as the block does, instead of writing the numbers into the statement text. A pasted vector makes every query a new statement to parse. The function takes a fourth argument, either the search beam as a number or a map of options (`efSearch`, `filter`, `where`, `maxDistance`, `groupBy`, `groupSize`); see the {arcadedb-docs-url}/reference/extended-functions/vector#vector-neighbors-ext[vectorNeighbors reference]. `vector.neighbors` is the same function under its dotted name.
+
+=== openCypher
+
+The Cypher procedure `db.index.vector.queryNodes(index, k, vector)` yields `node` and `score`. Its arguments are in that order, `k` before the vector. A higher `score` is closer. The procedure has no filter, so a `WHERE` after `YIELD` runs on the `k` rows only.
+
+[source,python]
+----
+rows = db.query(
+    "opencypher",
+    "CALL db.index.vector.queryNodes('Doc[embedding]', 2, $vec) "
+    "YIELD node, score RETURN node.name AS name, score ORDER BY score DESC",
+    {"vec": [0.9, 0.1, 0.0]},
+).to_list()
+print([row["name"] for row in rows])
+----
+
+[source,text]
+----
+['python-ish', 'python']
+----
+
+=== find_nearest
+
+`VectorIndex.find_nearest(query_vector, k=10, ef_search=None, allowed_rids=None)` searches without a statement. It takes a list or a NumPy array and returns a list of `(record, distance)` tuples, nearest first. Use it when you already hold the index object, or when you have a list of record ids to search within.
+
+[source,python]
+----
+for record, distance in index.find_nearest(query, k=2):
+    print(record.get("name"))
+----
+
+[source,text]
+----
+python-ish
+python
+----
+
+=== Filtered search
+
+`allowed_rids` restricts `find_nearest` to the records whose ids you list, as strings. The search considers only those records, so it still returns `k` of them.
+
+[source,python]
+----
+rows = db.query(
+    "sql",
+    "SELECT @rid AS rid FROM Doc WHERE name IN :names",
+    {"names": ["graph", "vector"]},
+).to_list()
+allowed = [str(row["rid"]) for row in rows]
+for record, distance in index.find_nearest(query, k=2, allowed_rids=allowed):
+    print(record.get("name"))
+----
+
+[source,text]
+----
+graph
+vector
+----
+
+In SQL, the `filter` option of `vectorNeighbors` does the same with a list of record ids written in the statement. The `where` option tests a condition on each candidate as the search reaches it (a map of property to value, or a condition string).
+
+Filtering the rows afterwards is the simplest way. The search runs first and the filter second, so ask for more neighbours than you need. A filter that drops rows can leave fewer than you asked for.
+
+[source,python]
+----
+rows = db.query(
+    "sql",
+    "SELECT name, distance FROM "
+    "(SELECT expand(vectorNeighbors('Doc[embedding]', ?, 4))) "
+    "WHERE name <> ? ORDER BY distance LIMIT 2",
+    query,
+    "python-ish",
+).to_list()
+print([row["name"] for row in rows])
+----
+
+[source,text]
+----
+['python', 'graph']
+----
+
+== Quantization
+
+`quantization` takes `INT8`, `BINARY`, `PRODUCT` (product quantization), or none (full precision). In a statement, it is a key of the `METADATA`. In the method, it is the `quantization` argument, and `quantization=None` means full precision. The defaults differ, as the table above shows: the statement gives `NONE`, and `create_vector_index` gives `INT8`.
+
+[source,python]
+----
+db.command("sql", "CREATE VERTEX TYPE Note")
+db.command("sql", "CREATE PROPERTY Note.title STRING")
+db.command("sql", "CREATE PROPERTY Note.embedding ARRAY_OF_FLOATS")
+with db.transaction():
+    for title, vector in docs:
+        db.command(
+            "sql",
+            "INSERT INTO Note SET title = ?, embedding = ?",
+            title,
+            np.asarray(vector, dtype=np.float32),
+        )
+
+notes = db.create_vector_index(
+    "Note", "embedding", dimensions=3, mutations_before_rebuild=5000
+)
+meta = notes.get_metadata()
+print(meta["quantization"], meta["add_hierarchy"])
+----
+
+[source,text]
+----
+INT8 True
+----
+
+Two rules hold for the quantization arguments of the method:
+
+* The `pq_*`, `rerank_oversample` and `fused_pq` arguments need `quantization="PRODUCT"`. The call raises `ValueError` otherwise. The same keys are `METADATA` keys in a statement (`pqSubspaces`, `pqClusters`, `pqCenterGlobally`, `pqTrainingLimit`, `rerankOversample`, `fusedPQ`). With `PRODUCT`, every graph rebuild retrains the codebook and re-encodes every vector (https://github.com/ArcadeData/arcadedb/issues/10847[ArcadeData/arcadedb#10847]), so measure recall and rebuild time on your own data before you choose it.
+* `encoding="INT8"` is for a `BINARY` property that already holds INT8 bytes. Set `quantization` to `"NONE"` with it. The call raises `ValueError` when both are `INT8`, because the vector would be quantized twice.
+
+== Rebuild the graph
+
+Inserts, updates and deletes collect as pending changes. When enough of them have collected, the engine rebuilds the graph in the background, and searches keep running. How many is enough comes from the database setting `arcadedb.vectorIndex.rebuildGraphRatio` and from `mutations_before_rebuild`; see xref:how-to/databases-and-queries.adoc#_database_settings[Database settings] for how to change the ratio.
+
+`mutations_before_rebuild` is a floor, not an override. The threshold is the larger of the floor and the ratio term (the graph size times the ratio, capped by `arcadedb.vectorIndex.maxPendingMutations`). A value below the ratio term changes nothing. Raise it above that term to rebuild less often. To rebuild sooner, lower the ratio.
+
+To see the value in force, and the other live counters, call `get_stats()`. It returns a dict of counter names to numbers (cache hits and misses, where vectors were read from, graph state). The keys follow the engine and can change between releases. `get_metadata()` is the stable configuration of the index instead.
+
+[source,python]
+----
+stats = notes.get_stats()
+print(stats["totalVectors"], stats["effectiveMutationsThreshold"])
+
+before = stats["searchOperations"]
+notes.find_nearest(query, k=1)
+print(notes.get_stats()["searchOperations"] > before)
+----
+
+[source,text]
+----
+4 5000
+True
+----
+
+`build_graph_now()` rebuilds the graph at once. Call it after a bulk load, so that no search waits for a lazy build.
+
+After you open a database, an index loads its saved graph on the first search, and that search pays the load. A service that restarts can call `warm_up()` on the index right after `open_database`, to pay it before the first query. It loads the saved graph and does not rebuild it, and it does nothing when the graph is in memory already.
+
+[source,python]
+----
+notes.build_graph_now()
+notes.warm_up()
+print(notes.get_size())
+----
+
+[source,text]
+----
+4
+----
+
+== Next steps
+
+* xref:how-to/databases-and-queries.adoc[Databases and queries]
+* xref:how-to/bulk-loads.adoc[Bulk loads and commit size]
+* {arcadedb-docs-url}/concepts/vector-search[Vector search in the ArcadeDB manual]
