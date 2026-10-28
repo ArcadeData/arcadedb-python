@@ -17,7 +17,7 @@ Workflow covered:
 
 Requirements:
 - pandas, polars and pyarrow
-  (pip install 'arcadedb-jvm[pandas,polars]')
+  (uv add 'arcadedb-jvm[pandas,polars]')
 """
 
 from __future__ import annotations

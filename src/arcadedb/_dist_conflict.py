@@ -3,7 +3,7 @@
 This repository builds two distributions. `arcadedb` is the native build (the engine as a GraalVM native-image
 library, loaded with ctypes) and `arcadedb-jvm` is the JVM build (the Java engine in-process through JPype).
 Both put a package named `arcadedb` into the same site-packages directory, so installing one after the other
-overwrites files of the first with files of the second, and pip says nothing. What would be imported is a mix
+overwrites files of the first with files of the second, and the installer says nothing. What would be imported is a mix
 of two builds. Package metadata still lists both, so this module looks there and raises an ImportError that
 names both packages and says how to fix it, instead of letting the mix run.
 
@@ -60,7 +60,7 @@ def message(backend: str) -> str:
         f"({kind[other_backend(backend)]} build) is installed. "
         f"Both provide the Python package 'arcadedb', so each install overwrote files of the other "
         f"without a message, and what you would import is a mix of the two builds. "
-        f"Keep one: run 'pip uninstall {DISTRIBUTIONS['native']} {DISTRIBUTIONS['jvm']}', then install "
+        f"Keep one: run 'uv remove {DISTRIBUTIONS['native']} {DISTRIBUTIONS['jvm']}', then install "
         f"'{DISTRIBUTIONS['native']}' (native, the default for most embedded use) or "
         f"'{DISTRIBUTIONS['jvm']}' (JVM, for heavy long-running loads). "
         f"Which one to pick: {DOCS_URL}"

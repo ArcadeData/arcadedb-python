@@ -333,13 +333,13 @@ class NativeResultSet:
         except ImportError as exc:
             raise ImportError(
                 "polars is required for to_polars(). "
-                "Install with: pip install 'arcadedb[polars]'"
+                "Install with: uv add 'arcadedb[polars]'"
             ) from exc
         table = self.to_arrow(batch_size, columns)
         if table is None:
             raise ImportError(
                 "to_polars() reads through Arrow, which needs pyarrow and numpy. "
-                "Install with: pip install 'arcadedb[polars]'"
+                "Install with: uv add 'arcadedb[polars]'"
             )
         return pl.from_arrow(table)
 
