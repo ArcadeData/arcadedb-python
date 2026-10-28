@@ -207,6 +207,10 @@ class NativeVectorIndex(_BaseVectorIndex):
         out = []
         for row in rows:
             nested = row.get("record")
+            if nested is None and row.get("@rid") is not None:
+                # From ArcadeDB 26.11.1 (ArcadeData/arcadedb#10898) a vector row lists the record's
+                # properties once, on the row itself, and no longer under "record"
+                nested = {k: v for k, v in row.to_dict().items() if k != "distance"}
             record = (
                 None
                 if nested is None
