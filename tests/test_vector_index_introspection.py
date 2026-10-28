@@ -270,3 +270,57 @@ class TestRebuildThreshold:
         )
 
         assert index.get_stats()["effectiveMutationsThreshold"] == 500
+
+
+class TestWrapperAcrossRebuildAndDrop:
+    """A ``VectorIndex`` held across SQL ``REBUILD INDEX`` keeps serving; across a drop it raises (#116).
+
+    ``REBUILD INDEX`` replaces the engine's index object. The JVM wrapper used to keep the old one, which answered
+    ``find_nearest`` with no rows and ``totalVectors`` 0 without an error.
+    """
+
+    ROWS = [(f"v{i}", [1.0 + i % 7, 1.0 + i // 7, 2.0 + i % 3]) for i in range(40)]
+
+    def _held_index(self, db):
+        _make_type(db)
+        _insert(db, self.ROWS)
+        index = db.create_vector_index("Doc", "embedding", dimensions=3)
+        assert len(index.find_nearest([1.0, 1.0, 2.0], k=5)) == 5
+        assert index.get_stats()["totalVectors"] == len(self.ROWS)
+        return index
+
+    def test_old_wrapper_serves_after_rebuild_index(self, temp_db):
+        index = self._held_index(temp_db)
+        quantization = index.get_quantization()  # create_vector_index defaults to INT8
+
+        temp_db.command("sql", "REBUILD INDEX `Doc[embedding]`")
+
+        assert len(index.find_nearest([1.0, 1.0, 2.0], k=5)) == 5
+        assert index.get_stats()["totalVectors"] == len(self.ROWS)
+        assert index.get_size() == len(self.ROWS)
+        assert index.get_metadata()["index_name"] == "Doc[embedding]"
+        assert index.get_quantization() == quantization
+        index.warm_up()
+
+    def test_old_wrapper_follows_a_second_rebuild(self, temp_db):
+        index = self._held_index(temp_db)
+
+        for _ in range(2):
+            temp_db.command("sql", "REBUILD INDEX `Doc[embedding]`")
+            assert len(index.find_nearest([1.0, 1.0, 2.0], k=5)) == 5
+            assert index.get_stats()["totalVectors"] == len(self.ROWS)
+
+    def test_dropped_index_raises_and_never_answers_empty(self, temp_db):
+        index = self._held_index(temp_db)
+
+        temp_db.command("sql", "DROP INDEX `Doc[embedding]`")
+
+        with pytest.raises(arcadedb.ArcadeDBError) as excinfo:
+            index.find_nearest([1.0, 1.0, 2.0], k=5)
+        if arcadedb.__backend__ == "jvm":
+            # the JVM wrapper names the index itself; the native one passes the engine's own error on
+            assert "Doc[embedding]" in str(excinfo.value)
+            with pytest.raises(arcadedb.ArcadeDBError, match=r"Doc\[embedding\]"):
+                index.get_stats()
+            with pytest.raises(arcadedb.ArcadeDBError, match=r"Doc\[embedding\]"):
+                index.get_size()

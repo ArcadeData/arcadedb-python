@@ -164,6 +164,11 @@ class NativeVectorIndex(_BaseVectorIndex):
     def _resolve_lsm_indexes(self):
         return [self._shim]
 
+    def _check_live(self):
+        # every search and counter names the index in its statement, so a rebuilt index is found by name on each call:
+        # there is no cached engine object to go stale (the JPype wrapper re-resolves one here)
+        return
+
     def _run_search(
         self, *, query_vector, k, allowed_rids, approximate, ef_search=None
     ):
@@ -283,6 +288,8 @@ class NativeVectorIndex(_BaseVectorIndex):
 
     def get_stats(self):
         """The engine's live counters of the primary bucket index, from its ``schema:index:<name>`` row (the row's own columns left out)."""
+        # read afresh: REBUILD INDEX builds new bucket indexes, so the name a memoized read holds can be gone
+        self._shim.__dict__.pop("_engine_info", None)
         bucket = self._shim.engine_info()["bucket"]
         rows = self._database.query(
             "sql",

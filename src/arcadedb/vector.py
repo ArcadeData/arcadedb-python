@@ -286,7 +286,33 @@ class VectorIndex:
         # Resolved once per wrapper: the underlying LSM indexes and the
         # PRODUCT-quantization readiness check are stable for the lifetime of
         # this wrapper, but were previously re-derived on every search (several
-        # JPype crossings per query).
+        # JPype crossings per query). They are reset when _check_live() swaps in
+        # a rebuilt Java index.
+        self._lsm_indexes = None
+        self._pq_ready = False
+
+    def _check_live(self):
+        """Re-resolve the Java index by name when SQL ``REBUILD INDEX`` (or a drop) invalidated it.
+
+        ``REBUILD INDEX`` drops the Java index and builds a new object under the same
+        name. The old object answers searches and counters empty instead of raising,
+        so a wrapper held across a rebuild would return nothing without an error.
+        Costs one JPype crossing, ``isValid()`` on the cached object, per public call;
+        the lookup by name runs only when the object is no longer valid.
+
+        Raises:
+            ArcadeDBError: the index no longer exists in the schema.
+        """
+        if self._java_index.isValid():
+            return
+        name = str(self._java_index.getName())
+        try:
+            fresh = self._database._java_db.getSchema().getIndexByName(name)
+        except Exception as e:
+            raise ArcadeDBError(
+                f"Vector index '{name}' no longer exists: it was dropped"
+            ) from e
+        self._java_index = fresh
         self._lsm_indexes = None
         self._pq_ready = False
 
@@ -614,6 +640,12 @@ class VectorIndex:
             - record: The matching ArcadeDB record (Vertex, Document, or Edge)
             - score: The similarity score/distance
         """
+        self._check_live()
+        return self._find_nearest_live(query_vector, k, ef_search, allowed_rids)
+
+    def _find_nearest_live(self, query_vector, k, ef_search, allowed_rids):
+        # find_nearest after _check_live(): find_nearest_by_key checks once and
+        # comes here, so a call never pays the isValid() crossing twice.
         effective_ef_search = self._normalize_ef_search(ef_search)
 
         try:
@@ -638,6 +670,7 @@ class VectorIndex:
         Returns:
             int: Number of items currently indexed
         """
+        self._check_live()
         try:
             # Both TypeIndex and LSMVectorIndex support countEntries()
             return self._java_index.countEntries()
@@ -654,6 +687,7 @@ class VectorIndex:
             ``rerank_oversample`` and ``fused_pq`` are present when the engine has
             them (ArcadeDB 26.11.1 or later).
         """
+        self._check_live()
         try:
             index = self._get_primary_lsm_index()
             meta = self._get_primary_metadata()
@@ -715,6 +749,7 @@ class VectorIndex:
             >>> stats["vectorCacheHits"], stats["vectorCacheMisses"]
             (10399017, 1840948)
         """
+        self._check_live()
         try:
             raw = self._get_primary_lsm_index().getStats()
         except Exception as e:
@@ -760,13 +795,9 @@ class VectorIndex:
         Returns:
             List of tuples: [(record, score), ...]
         """
+        self._check_live()
         query_vector = self._lookup_query_vector_by_key(key)
-        return self.find_nearest(
-            query_vector,
-            k=k,
-            ef_search=ef_search,
-            allowed_rids=allowed_rids,
-        )
+        return self._find_nearest_live(query_vector, k, ef_search, allowed_rids)
 
     def find_nearest_approximate(
         self,
@@ -790,8 +821,9 @@ class VectorIndex:
         Returns:
             List of tuples: [(record, score), ...]
         """
+        self._check_live()
         try:
-            quantization = self.get_quantization()
+            quantization = self._get_quantization_live()
             if quantization != "PRODUCT":
                 raise ArcadeDBError(
                     "Approximate search requires quantization=PRODUCT (PQ)"
@@ -818,6 +850,10 @@ class VectorIndex:
         Returns:
             str: "NONE", "INT8", "BINARY", or "PRODUCT"
         """
+        self._check_live()
+        return self._get_quantization_live()
+
+    def _get_quantization_live(self):
         try:
             idx_to_check = self._get_primary_lsm_index()
 
@@ -848,6 +884,7 @@ class VectorIndex:
             ArcadeDBError: the index cannot be warmed, including on an engine
                 older than 26.10.1, which has no ``warmUp()``.
         """
+        self._check_live()
         try:
             warmed_any = False
             for index in self._iter_lsm_indexes():
@@ -868,6 +905,7 @@ class VectorIndex:
         Useful after bulk inserts/updates to avoid waiting for a search-triggered lazy
         build. For TypeIndex wrappers, rebuilds all underlying LSMVectorIndex instances.
         """
+        self._check_live()
         try:
             self._ensure_product_quantization_ready()
 
