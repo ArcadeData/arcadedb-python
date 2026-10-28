@@ -394,12 +394,12 @@ jobs:
           MANYLINUX_IMAGE: ${{ matrix.container }}
         run: |
           set -euo pipefail
-          docker run --rm -v "$T/wheel/dist:/wheel:ro" -v "$GITHUB_WORKSPACE/scripts/smoke_wheel.py:/smoke_wheel.py:ro" "$MANYLINUX_IMAGE" bash -euo pipefail -c '
+          # The runner's uv is mounted into the container (a glibc 2.17 build); the image's own Python is used, never downloaded.
+          # --no-index: nothing but the wheel is installed.
+          docker run --rm -e UV_PYTHON_DOWNLOADS=never -v "$(command -v uv):/usr/local/bin/uv:ro" -v "$T/wheel/dist:/wheel:ro" -v "$GITHUB_WORKSPACE/scripts/smoke_wheel.py:/smoke_wheel.py:ro" "$MANYLINUX_IMAGE" bash -euo pipefail -c '
             ldd --version | sed -n 1p
-            /opt/python/cp312-cp312/bin/python -m venv /tmp/venv
-            /tmp/venv/bin/python -m pip install --no-index /wheel/*.whl
             cd /tmp
-            /tmp/venv/bin/python /smoke_wheel.py
+            uv run --no-project --no-index --python /opt/python/cp312-cp312/bin/python --with /wheel/*.whl python /smoke_wheel.py
           '
 
       - name: "Gate: the macOS library links system libraries only"

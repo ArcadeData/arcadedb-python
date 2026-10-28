@@ -191,9 +191,10 @@ RUN apt-get update && apt-get install -y \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Install uv for faster, deterministic installs
+# Install uv (pinned, the same version as the CI workflows)
+ARG UV_VERSION=0.12.0
 ENV PATH="/root/.cargo/bin:/root/.local/bin:${PATH}"
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh && uv --version
+RUN curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" | sh && uv --version
 
 WORKDIR /build
 
@@ -215,9 +216,10 @@ COPY pyproject.toml ./
 COPY README.md ./
 
 
-# Install Python build dependencies
-# No jpype1: setup.py never imports it, and a Python without a JPype wheel (3.15, until JPype > 1.7.1) would compile it
-RUN uv pip install --system build wheel setuptools
+# The wheel is built with `build` run through uvx, in an isolated environment that uv creates from [build-system]
+# (setuptools, wheel). No jpype1: setup.py never imports it, and a Python without a JPype wheel (3.15, until JPype > 1.7.1)
+# would compile it. Nothing is installed into the image's Python, and uv never downloads another one.
+ENV UV_PYTHON_DOWNLOADS=never
 
 # Re-declare build args for this stage (required after FROM)
 ARG PACKAGE_NAME
@@ -268,12 +270,12 @@ RUN if [ -n "${BUILD_VERSION}" ]; then \
         fi; \
         if [ -n "${WHEEL_PLAT}" ]; then \
             echo "🏷️  Building wheel with platform tag: ${WHEEL_PLAT}"; \
-            python3 -m build --wheel --config-setting=--build-option=--plat-name=${WHEEL_PLAT}; \
+            uvx --from "build[uv]==1.6.1" pyproject-build --installer uv --wheel --config-setting=--build-option=--plat-name=${WHEEL_PLAT}; \
         else \
-            python3 -m build --wheel; \
+            uvx --from "build[uv]==1.6.1" pyproject-build --installer uv --wheel; \
         fi; \
     else \
-        python3 -m build --wheel; \
+        uvx --from "build[uv]==1.6.1" pyproject-build --installer uv --wheel; \
     fi && \
     if echo "${TARGET_PLATFORM}" | grep -q '^linux-'; then \
         if [ -n "${WHEEL_PLAT}" ] && ! ls /build/dist/*${WHEEL_PLAT}*.whl 1> /dev/null 2>&1; then \
@@ -304,17 +306,19 @@ RUN apt-get update && apt-get install -y \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Install uv for faster, deterministic installs
+# Install uv (pinned, the same version as the CI workflows)
+ARG UV_VERSION=0.12.0
 ENV PATH="/root/.cargo/bin:/root/.local/bin:${PATH}"
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh && uv --version
+RUN curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" | sh && uv --version
 
 WORKDIR /test
 
 # Copy the wheel from builder
 COPY --from=python-builder /build/dist/*.whl /tmp/
 
-# Install the wheel and test dependencies
-RUN uv pip install --system /tmp/*.whl pytest pytest-cov
+# The wheel and the test dependencies go into a throwaway `uv run` environment (nothing is installed into the image's
+# Python). The RUN below and the CMD use the same --with set, so the environment is in uv's cache when the container starts.
+ENV UV_PYTHON_DOWNLOADS=never
 
 # Copy tests
 COPY --from=python-builder /build/tests ./tests/
@@ -352,6 +356,6 @@ finally:\n\
 ' > /test/test_install.py && chmod +x /test/test_install.py
 
 # Run the installation test
-RUN python3 /test/test_install.py
+RUN uv run --no-project --with "$(ls /tmp/*.whl)" --with pytest --with pytest-cov python /test/test_install.py
 
-CMD ["python3", "/test/test_install.py"]
+CMD ["sh", "-c", "exec uv run --no-project --with \"$(ls /tmp/*.whl)\" --with pytest --with pytest-cov python /test/test_install.py"]

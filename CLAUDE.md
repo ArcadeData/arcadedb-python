@@ -35,16 +35,16 @@ ARCADEDB_TAG=26.11.1-SNAPSHOT ./scripts/build.sh    # pin the arcadedata/arcaded
 Tests run against the **built wheel**, not the source tree. `pyproject.toml` has `[tool.uv] managed = false`, so it is not a uv project.
 
 ```bash
-uv venv                                                                          # once
-uv pip install --reinstall-package arcadedb "$(ls dist/*.whl | head -1)[test]"   # after each build
-uv run pytest                                    # all
-uv run pytest tests/test_core.py -v              # one file
-uv run pytest tests/test_core.py::TestX::test_y  # one test
-uv run pytest -k transaction
-uv run pytest -m server / -m "not server"        # markers: server, server_wire, integration
+W="$(ls dist/*.whl | head -1)"
+uv run --no-project --with "$W[test]" python -m pytest                                    # all
+uv run --no-project --with "$W[test]" python -m pytest tests/test_core.py -v              # one file
+uv run --no-project --with "$W[test]" python -m pytest tests/test_core.py::TestX::test_y  # one test
+uv run --no-project --with "$W[test]" python -m pytest -k transaction
+uv run --no-project --with "$W[test]" python -m pytest -m server                          # markers: server, server_wire, integration
 ```
 
-- `--reinstall-package` is needed because rebuilds keep the same version.
+- `--with` builds a throwaway environment from the wheel file, so there is no venv to keep and nothing to reinstall after a rebuild. If uv's cache still serves an older wheel of the same version (rebuilds keep the version), add `--reinstall-package arcadedb-jvm`.
+- Use `python -m pytest`, not the `pytest` entry point: with `--with`, the entry point does not see the packages of the environment.
 - **No skips policy**: CI fails on any skipped test not listed in `scripts/check_test_skips.py` (the list is empty). Don't add `pytest.skip`/`importorskip` for missing features or deps; tests that can't run on a platform go in `collect_ignore` in `tests/conftest.py`; known engine bugs use strict `xfail`.
 - Never bind or address a hand-picked port (e.g. 2480) in a test: use `server.get_http_port()` or the `_free_ports()` pattern in `test_server_wire_protocols.py`. Parallel runs share the machine and collisions surface as unrelated failures.
 - Never assert on raw wall-clock elapsed time; a JVM pause makes it flaky. Timeouts are hang detectors, not latency bounds.
@@ -55,8 +55,8 @@ uv run pytest -m server / -m "not server"        # markers: server, server_wire,
 Pre-commit: black, isort (`--profile black`), shfmt (`-i 4 -ci -sr`), pretty-format-yaml (not on `.github/`), actionlint. CI also runs Bandit, which must be clean:
 
 ```bash
-python -m bandit -c pyproject.toml -r src tests --severity-level low --confidence-level low
-python -m bandit -c pyproject.toml -r examples --severity-level medium --confidence-level high
+uvx bandit==1.9.4 -c pyproject.toml -r src tests --severity-level low --confidence-level low
+uvx bandit==1.9.4 -c pyproject.toml -r examples --severity-level medium --confidence-level high
 ```
 
 ## Architecture
@@ -71,7 +71,7 @@ python -m bandit -c pyproject.toml -r examples --severity-level medium --confide
 
 Each package has one test and one release workflow: `test-jvm.yml` and `release-jvm.yml` for `arcadedb-jvm`, `test-native.yml` and `release-native.yml` for `arcadedb` (the release workflows call the test workflows with `workflow_call`; the PyPI trusted publishers are keyed on the release file names and the environments `pypi-jvm` and `pypi`, so never rename them without changing PyPI first). `test-python-examples.yml` runs `examples/`. `docs.yml` builds the Antora component in `docs/` as a site of its own (`docs/antora-playbook.yml`, Antora 3.2.1, a warning fails it) and attaches it as the `docs-site` artifact; it is the only check of a docs-only pull request. Link into the main manual with `{arcadedb-docs-url}/<page>`, never an `arcadedb::` xref (the component on its own cannot resolve it).
 
-`.github/workflows/test-jvm.yml` builds ONE wheel per platform (linux/amd64, linux/arm64, darwin/arm64, windows/amd64), tagged `py3-none-<platform>` by `setup.py` (`bdist_wheel.get_tag`; `scripts/verify_wheel_tag.py` checks it), and tests that wheel on Python 3.11–3.14; also runs nightly against `arcadedata/arcadedb:latest`. `requires-python` is `>=3.11,<3.15` because the tag no longer keeps pip off 3.15 and JPype has no 3.15 wheel; drop the cap with it. The org shares a runner cap with upstream, so the unit tests run 10 legs on every event (linux/amd64 on all four Pythons, the other three platforms on 3.11 and 3.14, the shape of test-native.yml), and the examples run all four platforms on 3.14 on a pull request (4 legs, 28 checks in all) and 16 legs on push to main, the nightly run, dispatch and the release (40 checks). `scripts/select_matrix.py` holds both lists (`PULL_REQUEST_LEGS`, keyed `jvm` and `examples`), the first job of each workflow runs it, and `tests/test_select_matrix.py` pins the full matrix; docs page `development/ci.adoc`. Keep the job names `Test arcadedb (<platform>, Python <version>)` unchanged. Both workflows accept an `arcadedb-tag` input to pin the image. `test-python-examples.yml` runs `examples/`. A dependency-floor audit resolves extras with `--resolution lowest-direct` for each Python classifier and runs pip-audit, so raise lower bounds when a floor has an advisory.
+`.github/workflows/test-jvm.yml` builds ONE wheel per platform (linux/amd64, linux/arm64, darwin/arm64, windows/amd64), tagged `py3-none-<platform>` by `setup.py` (`bdist_wheel.get_tag`; `scripts/verify_wheel_tag.py` checks it), and tests that wheel on Python 3.11–3.14; also runs nightly against `arcadedata/arcadedb:latest`. `requires-python` is `>=3.11,<3.15` because the tag no longer keeps pip off 3.15 and JPype has no 3.15 wheel; drop the cap with it. The org shares a runner cap with upstream, so the unit tests run 10 legs on every event (linux/amd64 on all four Pythons, the other three platforms on 3.11 and 3.14, the shape of test-native.yml), and the examples run all four platforms on 3.14 on a pull request (4 legs, 28 checks in all) and 16 legs on push to main, the nightly run, dispatch and the release (40 checks). `scripts/select_matrix.py` holds both lists (`PULL_REQUEST_LEGS`, keyed `jvm` and `examples`), the first job of each workflow runs it, and `tests/test_select_matrix.py` pins the full matrix; docs page `development/ci.adoc`. Keep the job names `Test arcadedb (<platform>, Python <version>)` unchanged. Both workflows accept an `arcadedb-tag` input to pin the image. `test-python-examples.yml` runs `examples/`. A dependency-floor audit locks the dependencies and extras on a throwaway uv project with `--resolution lowest-direct` for each Python classifier and runs `uvx pip-audit` on the export, so raise lower bounds when a floor has an advisory. No tool is installed with pip anywhere in CI or the scripts: one-off tools run through `uvx tool==X`, the wheel is built with `uvx --from "build[uv]==1.6.1" pyproject-build --installer uv`, and the uv install URL is pinned (`0.12.0`).
 
 `.github/workflows/release-jvm.yml` publishes `arcadedb-jvm` on a bare-version tag (`26.11.1.dev0`, `26.11.1`, `26.11.1.post1`; no `v`, never `aN`/`bN`/`rcN`). Its first job runs `scripts/check_version.py` (the devN/postN counting rule, read-only, fails closed); `scripts/after_tag_verify.sh` checks the finished release. The rule is stated once, on the docs page `development/release.adoc`.
 
