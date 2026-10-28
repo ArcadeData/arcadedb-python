@@ -1553,7 +1553,8 @@ class Database:
                 value below the ratio term has no effect: at 100000 vectors the
                 threshold is 20000 whether this is 100 or 800. Raise it above that
                 term to rebuild less often. To rebuild sooner, lower
-                rebuildGraphRatio (a database-scope setting); with the ratio at 0
+                rebuildGraphRatio, a database-scope setting (db.command("sql",
+                "ALTER DATABASE `arcadedb.vectorIndex.rebuildGraphRatio` 0.05")); with the ratio at 0
                 the threshold is exactly this value.
             pq_subspaces: Number of PQ subspaces (M). Requires quantization="PRODUCT".
             pq_clusters: Clusters per subspace (K). Requires quantization="PRODUCT".
