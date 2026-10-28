@@ -65,6 +65,30 @@ _UNSET = object()
 # Element types convert_python_to_java hands to the JVM as one Object[].
 _BULK_SCALAR_TYPES = frozenset((int, float, str, bool, type(None)))
 
+# A list of this many Python floats or more crosses as ONE double[] and is boxed on the Java side (see _boxed_doubles); a shorter one
+# is cheaper through the plain Object[] path (measured: the two cost the same at about 20 numbers on the laptop).
+_FLOAT_LIST_MIN = 32
+_FLOAT_ONLY = frozenset((float,))
+_DOUBLE_ARRAY = None
+
+
+def _boxed_doubles(values, java_python_types):
+    """``values`` (a list of Python floats, or a float64 ndarray) as the ``java.util.ArrayList`` of ``Double`` the element-wise
+    conversion builds, from ONE ``double[]``.
+
+    JPype boxes a Python float with one call to the JVM (about 0.33 us each, 505 us for a 1536-d vector); the buffer crosses
+    once (20 to 45 us) and ``DoubleStream.boxed()`` boxes on the Java side. The result is the same ``ArrayList<Double>``, value for
+    value (NaN, the infinities and -0.0 included), so a statement reads it exactly as it read the boxed list.
+    """
+    global _DOUBLE_ARRAY
+    if _DOUBLE_ARRAY is None:
+        _DOUBLE_ARRAY = jpype.JArray(jpype.JDouble)
+    arrays = java_python_types.arrays
+    return java_python_types.array_list(
+        arrays.stream(_DOUBLE_ARRAY(values)).boxed().toList()
+    )
+
+
 _TYPE_CACHE = {
     "java_core": None,
     "java_collections": None,
@@ -519,6 +543,16 @@ def convert_python_to_java(value: Any) -> Any:
         # (exact values: a float64 array keeps its doubles).
         if value.ndim == 1 and value.dtype == _np.float32:
             return jpype.JArray(jpype.JFloat)(value)
+        if (
+            value.ndim == 1
+            and value.dtype == _np.float64
+            and value.dtype.isnative
+            and value.size >= _FLOAT_LIST_MIN
+        ):
+            # the same ArrayList<Double> value.tolist() becomes, from one double[] instead of one boxed object per number
+            java_python_types = _get_java_python_types()
+            if java_python_types is not None:
+                return _boxed_doubles(_np.ascontiguousarray(value), java_python_types)
         return convert_python_to_java(value.tolist())
 
     java_python_types = _get_java_python_types()
@@ -554,6 +588,10 @@ def convert_python_to_java(value: Any) -> Any:
         # Long, float -> Double, str, bool -> Boolean, None -> null) and
         # raises the same OverflowError past 64 bits; anything else (nested
         # collections, dates, Decimal, numpy scalars) takes the loop below.
+        # A list of Python floats and nothing else (no int, bool, None, str, numpy scalar) crosses as one double[] and is boxed
+        # in Java: 505 us -> 44 us for 1536 numbers. Anything mixed keeps the element-wise path, so an int stays a Long.
+        if len(value) >= _FLOAT_LIST_MIN and set(map(type, value)) == _FLOAT_ONLY:
+            return _boxed_doubles(value, java_python_types)
         if all(type(item) in _BULK_SCALAR_TYPES for item in value):
             return java_python_types.array_list(
                 java_python_types.arrays.asList(jpype.JArray(jpype.JObject)(value))

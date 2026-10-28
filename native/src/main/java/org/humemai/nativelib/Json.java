@@ -408,7 +408,7 @@ final class Json {
     return out;
   }
 
-  /** Python -> Java tagged values: n Decimal, i big int, m map with non-str keys, D date, T datetime (UTC wall clock), s set, b bytes (base64), F float[] (as a list), B float[] (from the side buffer), R RID. */
+  /** Python -> Java tagged values: n Decimal, i big int, m map with non-str keys, D date, T datetime (UTC wall clock), s set, b bytes (base64), F float[] (as a list), B float[] (from the side buffer), BL List<Double> (from the side buffer), R RID. */
   @SuppressWarnings("unchecked")
   private Object decodeTag(final String kind, final List<?> tag) {
     final Object payload = tag.get(1);
@@ -424,6 +424,19 @@ final class Json {
       for (int k = 0; k < count; k++)
         f[k] = fp.read((int) off + k);
       return f;
+    }
+    case "BL": {
+      // the same side buffer read as a java.util.List of Double: a list of Python floats that float32 holds exactly (the Python
+      // side checks double -> float32 -> double is the identity), so the engine reads the List<Double> the JSON text would have been
+      final long off = ((Number) payload).longValue();
+      final int count = ((Number) tag.get(2)).intValue();
+      if (buf == 0 || off < 0 || count < 0 || off + count > bufFloats)
+        throw new IllegalArgumentException("binary parameter outside the side buffer");
+      final List<Object> list = new ArrayList<>(count);
+      final CFloatPointer fp = WordFactory.pointer(buf);
+      for (int k = 0; k < count; k++)
+        list.add((double) fp.read((int) off + k));
+      return list;
     }
     case "n":
       return new BigDecimal((String) payload);

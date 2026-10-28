@@ -14,6 +14,48 @@ except ImportError:  # pragma: no cover
 TAG = "\u0001"
 _EPOCH_NAIVE = datetime(1970, 1, 1)
 
+# A list of this many Python floats or more may cross in the float32 side buffer (see _exact_float_list). A shorter one is cheaper
+# as JSON text, and a short IN list is the common use of a list parameter.
+_FLOAT_LIST_MIN = 64
+
+
+class _ExactFloats:
+    """A list of Python floats that float32 holds exactly: ``f32`` is the side-buffer form, ``values`` the list it stands for."""
+
+    __slots__ = ("f32", "values")
+
+    def __init__(self, f32, values):
+        self.f32 = f32
+        self.values = values
+
+
+def _exact_float_list(value):
+    """``value`` as an :class:`_ExactFloats` when it is a list of at least ``_FLOAT_LIST_MIN`` Python floats (no int, bool, None,
+    numpy scalar) that all survive the round trip double -> float32 -> double unchanged; None otherwise.
+
+    The engine then reads the same ``List<Double>`` it read from the JSON text, value for value: the check is exact, never a
+    tolerance. A list from a float32 model (``ndarray.tolist()``) passes; a list of doubles that float32 would round (0.1), NaN,
+    or an infinity fails the check and stays JSON text, so no result changes. The text costs 340 ns a number
+    (611 us for 1536), the buffer 60 us.
+    """
+    if (
+        _np is None
+        or len(value) < _FLOAT_LIST_MIN
+        or set(map(type, value)) != _FLOAT_ONLY
+    ):
+        return None
+    doubles = _np.array(value, dtype=_np.float64)
+    with _np.errstate(
+        over="ignore"
+    ):  # a double beyond float32 becomes an infinity, which fails the check below
+        f32 = doubles.astype(_np.float32)
+    if (
+        not _np.array_equal(f32.astype(_np.float64), doubles)
+        or not _np.isfinite(f32).all()
+    ):
+        return None  # NaN and the infinities stay text: they are what the engine's JSON reader decides about, not this check
+    return _ExactFloats(f32, value)
+
 
 def _default(value, _bin=None):
     """json.dumps hook: the values JSON cannot carry, as tagged objects (see Json.java).
@@ -23,6 +65,13 @@ def _default(value, _bin=None):
     """
     if isinstance(value, RID):
         return {TAG: ["R", value.text]}
+    if isinstance(value, _ExactFloats):
+        if _bin is None:
+            return value.values
+        off = _bin[1]
+        _bin[0].append(value.f32)
+        _bin[1] = off + value.f32.size
+        return {TAG: ["BL", off, value.f32.size]}
     if isinstance(value, Decimal):
         return {TAG: ["n", str(value)]}
     if isinstance(value, datetime):
@@ -65,23 +114,38 @@ def _default(value, _bin=None):
 
 
 _PLAIN = frozenset((str, int, float, bool, type(None)))
+_FLOAT_ONLY = frozenset((float,))
 _dumps = json.dumps
 _fast = os.environ.get("ARCADEDB_NATIVE_FASTENC", "1") != "0"
 
 
-def _prep(value):
+def _prep(value, binary=False):
     """A value ready for json.dumps: a dict with a key that is not a str becomes a tagged ``[[k, v], ..]`` map (JSON would turn
     the key into text; the JPype path keeps it), and containers are walked for such dicts. Plain scalars pass untouched.
+
+    ``binary``: a long list of floats that float32 holds exactly is returned as an :class:`_ExactFloats` for the side buffer.
     """
     t = type(value)
     if t in _PLAIN:
         return value
     if isinstance(value, Mapping):
         if all(type(k) is str for k in value):
-            return {k: _prep(v) for k, v in value.items()}
-        return {TAG: ["m", [[_prep(k), _prep(v)] for k, v in value.items()]]}
+            return {k: _prep(v, binary) for k, v in value.items()}
+        return {
+            TAG: [
+                "m",
+                [[_prep(k, binary), _prep(v, binary)] for k, v in value.items()],
+            ]
+        }
     if t is list or t is tuple:
-        return [_prep(v) for v in value]
+        if len(value) > 8:
+            if binary and t is list:
+                exact = _exact_float_list(value)
+                if exact is not None:
+                    return exact
+            if set(map(type, value)) <= _PLAIN:
+                return value  # nothing inside to rewrite: skip the per-element walk (69 us for 1536 numbers)
+        return [_prep(v, binary) for v in value]
     return value
 
 
@@ -102,10 +166,10 @@ def encode_params(args, binary=False):
     if len(values) == 1 and isinstance(values[0], Mapping):
         named = values[0]
         if not all(type(v) in plain for v in named.values()):
-            named = {k: _prep(v) for k, v in named.items()}
+            named = {k: _prep(v, binary) for k, v in named.items()}
         return _dump({"named": dict(named)}, binary)
     if not all(type(v) in plain for v in values):
-        values = [_prep(v) for v in values]
+        values = [_prep(v, binary) for v in values]
     return _dump({"pos": list(values)}, binary)
 
 
