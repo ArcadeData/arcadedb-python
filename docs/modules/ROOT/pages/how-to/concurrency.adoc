@@ -1,7 +1,7 @@
 = Concurrency, processes and crashes
 :description: What the embedded bindings do with threads, asyncio, several processes, signals and crashes, as measured, and how to write an update that two writers cannot lose.
 
-This page covers what is specific to the Python bindings: which calls work from several threads, from asyncio or from several processes, what a signal or a crash does to the process and the data, and how to write an update that concurrent writers cannot lose. What the engine guarantees at each isolation level is in the main ArcadeDB docs: see xref:arcadedb::concepts/transactions.adoc#isolation[Isolation].
+This page covers what is specific to the Python bindings: which calls work from several threads, from asyncio or from several processes, what a signal or a crash does to the process and the data, and how to write an update that concurrent writers cannot lose. What the engine guarantees at each isolation level is in the main ArcadeDB docs: see {arcadedb-docs-url}/concepts/transactions#isolation[Isolation].
 
 == How to read the numbers
 
@@ -52,7 +52,7 @@ All 7 runs ended with no error, no bad checksum and the same number of rows befo
 
 == Several writers
 
-Two transactions that change the same record conflict at commit. The one that loses raises `ArcadeDBError`, and the name `ConcurrentModificationException` is in the message or in the `__cause__` chain. The engine treats it as retryable: see xref:arcadedb::concepts/transactions.adoc#isolation[Isolation] for when it is raised. `db.run_in_transaction(fn, retries=...)` runs `fn` in a transaction again after such a conflict.
+Two transactions that change the same record conflict at commit. The one that loses raises `ArcadeDBError`, and the name `ConcurrentModificationException` is in the message or in the `__cause__` chain. The engine treats it as retryable: see {arcadedb-docs-url}/concepts/transactions#isolation[Isolation] for when it is raised. `db.run_in_transaction(fn, retries=...)` runs `fn` in a transaction again after such a conflict.
 
 The probe: 8 threads, one shared `Database`, 4 counter records. Each operation is one transaction that changes one counter, chosen by a fixed pseudo-random sequence, and inserts one row with a unique key into a ledger type. Each thread makes 1,500 operations (500 on Python 3.14t), so 12,000 in total (4,000 on Python 3.14t). The probe counts a lost update as an operation whose transaction committed but whose increment is not in the final counters. Each cell below is the number of lost updates out of the number of operations, from one run.
 
@@ -203,7 +203,7 @@ Based on that:
 
 == Signals and crashes
 
-A write that has returned from `commit()` survived every kill in the probe. The probe cannot say anything about a power loss or an operating system crash, which a process kill does not simulate. For how the engine flushes its write-ahead log, see xref:arcadedb::concepts/transactions.adoc#wal-flush-durability[WAL flush and durability].
+A write that has returned from `commit()` survived every kill in the probe. The probe cannot say anything about a power loss or an operating system crash, which a process kill does not simulate. For how the engine flushes its write-ahead log, see {arcadedb-docs-url}/concepts/transactions#wal-flush-durability[WAL flush and durability].
 
 The kill probe: a child process writes in a loop, in transactions of 5 or 200 rows, and prints the number of rows after every commit that returned. The parent sends `SIGKILL` (kill -9) at a random time between 0.2 and 2.5 s after the first commit, then reopens the same database. The reopen must recover, `CHECK DATABASE` must report nothing, every acknowledged row must be present with a matching checksum, no transaction may be half applied, and the database must accept a write. The same database was used for all runs of a build.
 

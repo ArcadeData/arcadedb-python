@@ -149,6 +149,6 @@ Releases of the new layout start with 26.11.1. The 26.10.x wheels were built in 
 
 None of these contains the engine. They connect to a running ArcadeDB server.
 
-* `{driver-pkg-name}`: the official HTTP client. See xref:arcadedb::how-to/connectivity/drivers/python-http.adoc[Python -- HTTP driver].
-* `{grpc-driver-pkg-name}`: the official gRPC client. See xref:arcadedb::how-to/connectivity/drivers/python-grpc.adoc[Python -- gRPC driver].
+* `{driver-pkg-name}`: the official HTTP client. See {arcadedb-docs-url}/how-to/connectivity/drivers/python-http[Python -- HTTP driver].
+* `{grpc-driver-pkg-name}`: the official gRPC client. See {arcadedb-docs-url}/how-to/connectivity/drivers/python-grpc[Python -- gRPC driver].
 * `{community-driver-pkg-name}`: a community HTTP driver by Steve Reiner and others ({community-repo-url}[stevereiner/arcadedb-python]). It is not related to this repository, whose name is also `arcadedb-python`. Check which one a tutorial installs before you copy its code.

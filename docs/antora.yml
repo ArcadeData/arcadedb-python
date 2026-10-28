@@ -24,3 +24,6 @@ asciidoc:
     native-pypi-url: https://pypi.org/project/arcadedb/
     jvm-pypi-url: https://pypi.org/project/arcadedb-jvm/
     which-package-url: https://github.com/ArcadeData/arcadedb-python/blob/main/docs/modules/ROOT/pages/which-package.adoc
+    # The main ArcadeDB manual. Pages link into it as {arcadedb-docs-url}/<page>, not with an
+    # arcadedb:: xref, so the component also builds on its own (antora-playbook.yml here).
+    arcadedb-docs-url: https://docs.arcadedb.com/arcadedb
