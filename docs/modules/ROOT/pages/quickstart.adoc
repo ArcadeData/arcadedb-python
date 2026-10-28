@@ -10,11 +10,11 @@ This page builds a small database from scratch. You need one of the two packages
 | Package | Install | Pick this if
 
 | `{native-pkg-name}` (native, the default)
-| `pip install {native-pkg-name}`
+| `uv add {native-pkg-name}`
 | Scripts, notebooks, tests, CLIs, serverless functions, agents.
 
 | `{jvm-pkg-name}` (JVM)
-| `pip install {jvm-pkg-name}`
+| `uv add {jvm-pkg-name}`
 | Heavy, long-running loads, or the Java-object APIs.
 |===
 
