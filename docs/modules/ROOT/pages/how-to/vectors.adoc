@@ -193,9 +193,9 @@ graph
 vector
 ----
 
-In SQL, the `filter` option of `vectorNeighbors` does the same with a list of record ids written in the statement. The `where` option tests a condition on each candidate as the search reaches it (a map of property to value, or a condition string); it needs ArcadeDB 26.11.1 or later and the engine refuses it on an older one.
+In SQL, the `filter` option of `vectorNeighbors` does the same with a list of record ids written in the statement. The `where` option tests a condition on each candidate as the search reaches it (a map of property to value, or a condition string).
 
-Filtering the rows afterwards is simpler, and it works on every engine. The search runs first and the filter second, so ask for more neighbours than you need. A filter that drops rows can leave fewer than you asked for.
+Filtering the rows afterwards is the simplest way. The search runs first and the filter second, so ask for more neighbours than you need. A filter that drops rows can leave fewer than you asked for.
 
 [source,python]
 ----
@@ -247,7 +247,7 @@ INT8 True
 
 Two rules hold for the quantization arguments of the method:
 
-* The `pq_*`, `rerank_oversample` and `fused_pq` arguments need `quantization="PRODUCT"`. The call raises `ValueError` otherwise. The same keys are `METADATA` keys in a statement (`pqSubspaces`, `pqClusters`, `pqCenterGlobally`, `pqTrainingLimit`, `rerankOversample`, `fusedPQ`). The docstring of `create_vector_index` marks `PRODUCT` as not recommended.
+* The `pq_*`, `rerank_oversample` and `fused_pq` arguments need `quantization="PRODUCT"`. The call raises `ValueError` otherwise. The same keys are `METADATA` keys in a statement (`pqSubspaces`, `pqClusters`, `pqCenterGlobally`, `pqTrainingLimit`, `rerankOversample`, `fusedPQ`). With `PRODUCT`, every graph rebuild retrains the codebook and re-encodes every vector (https://github.com/ArcadeData/arcadedb/issues/10847[ArcadeData/arcadedb#10847]), so measure recall and rebuild time on your own data before you choose it.
 * `encoding="INT8"` is for a `BINARY` property that already holds INT8 bytes. Set `quantization` to `"NONE"` with it. The call raises `ValueError` when both are `INT8`, because the vector would be quantized twice.
 
 == Rebuild the graph
@@ -276,7 +276,7 @@ True
 
 `build_graph_now()` rebuilds the graph at once. Call it after a bulk load, so that no search waits for a lazy build.
 
-After you open a database, an index loads its saved graph on the first search, and that search pays the load. A service that restarts can call `warm_up()` on the index right after `open_database`, to pay it before the first query. It loads the saved graph and does not rebuild it, and it does nothing when the graph is in memory already. It needs ArcadeDB 26.10.1 or later.
+After you open a database, an index loads its saved graph on the first search, and that search pays the load. A service that restarts can call `warm_up()` on the index right after `open_database`, to pay it before the first query. It loads the saved graph and does not rebuild it, and it does nothing when the graph is in memory already.
 
 [source,python]
 ----
