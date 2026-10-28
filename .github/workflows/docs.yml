@@ -1,6 +1,6 @@
 # Builds the docs/ Antora component as a site of its own (docs/antora-playbook.yml) and attaches it
-# as the docs-site artifact. docs.arcadedb.com does not publish the component yet
-# (ArcadeData/arcadedb-docs#505), so this artifact is the rendered preview, and this job is the
+# as the docs-site artifact: the rendered preview of a pull request (docs.arcadedb.com/arcadedb-python
+# publishes main daily, ArcadeData/arcadedb-docs#505), and this job is the
 # check a docs-only pull request gets: the test workflows ignore docs/** and *.adoc.
 name: Docs
 

@@ -2,7 +2,7 @@
 
 Test suite for the ArcadeDB Python bindings. It runs against the built wheel, so it covers the embedded engine (SQL, OpenCypher, vectors, graphs) and the optional in-process HTTP server with Studio.
 
-The [Testing Guide](https://docs.humem.ai/arcadedb/latest/development/testing/) lists every test file and what it checks, and describes the markers, the zero-skips gate, and how to write a test for this suite.
+[Continuous integration](https://docs.arcadedb.com/arcadedb-python/development/ci) describes which test legs run for a pull request, for `main`, the nightly run and a release. How to run the suite, by marker or by file, and the no-skips rule are below.
 
 ## Running Tests
 
@@ -48,4 +48,4 @@ A test that fails on the native build for any other reason is a failure. Fix the
 ## Need Help?
 
 - **Found a bug?** [Open an issue](https://github.com/ArcadeData/arcadedb-python/issues)
-- **Contributing?** Read the [Contributing Guide](https://docs.humem.ai/arcadedb/latest/development/contributing/)
+- **Contributing?** Read the development pages: [Continuous integration](https://docs.arcadedb.com/arcadedb-python/development/ci) and [Release](https://docs.arcadedb.com/arcadedb-python/development/release)
