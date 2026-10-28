@@ -229,3 +229,31 @@ class TestFindNearestApproximate:
 
         with pytest.raises(arcadedb.ArcadeDBError):
             index.find_nearest_approximate([0.9, 0.1, 0.0], k=1)
+
+
+class TestRebuildThreshold:
+    """``mutations_before_rebuild`` is the FLOOR of the rebuild threshold (#110).
+
+    The engine rebuilds after max(mutations_before_rebuild, min(graph size x rebuildGraphRatio, maxPendingMutations))
+    changes; with the defaults (ratio 0.2, cap 50000) a 1000-vector graph gives 200 for any floor up to 200. The
+    vectors are distinct and nonzero (cosine is the default similarity).
+    """
+
+    ROWS = [
+        (f"v{i}", [1.0 + i % 10, 1.0 + i // 10 % 10, 1.0 + i // 100])
+        for i in range(1000)
+    ]
+
+    @pytest.mark.parametrize("floor, expected", [(10, 200), (100, 200), (5000, 5000)])
+    def test_the_threshold_is_the_larger_of_the_floor_and_the_ratio_term(
+        self, temp_db, floor, expected
+    ):
+        _make_type(temp_db)
+        _insert(temp_db, self.ROWS)
+        index = temp_db.create_vector_index(
+            "Doc", "embedding", dimensions=3, mutations_before_rebuild=floor
+        )
+
+        stats = index.get_stats()
+        assert stats["totalVectors"] == len(self.ROWS)
+        assert stats["effectiveMutationsThreshold"] == expected
