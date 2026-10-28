@@ -11,7 +11,8 @@ site:
 
 content:
   sources:
-  - url: ..
+  # ./ makes the path relative to this file (a bare .. is relative to the working directory).
+  - url: ./..
     branches: HEAD
     start_path: docs
 
