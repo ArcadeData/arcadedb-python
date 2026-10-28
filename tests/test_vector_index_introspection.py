@@ -291,6 +291,7 @@ class TestWrapperAcrossRebuildAndDrop:
 
     def test_old_wrapper_serves_after_rebuild_index(self, temp_db):
         index = self._held_index(temp_db)
+        quantization = index.get_quantization()  # create_vector_index defaults to INT8
 
         temp_db.command("sql", "REBUILD INDEX `Doc[embedding]`")
 
@@ -298,7 +299,7 @@ class TestWrapperAcrossRebuildAndDrop:
         assert index.get_stats()["totalVectors"] == len(self.ROWS)
         assert index.get_size() == len(self.ROWS)
         assert index.get_metadata()["index_name"] == "Doc[embedding]"
-        assert index.get_quantization() == "NONE"
+        assert index.get_quantization() == quantization
         index.warm_up()
 
     def test_old_wrapper_follows_a_second_rebuild(self, temp_db):
