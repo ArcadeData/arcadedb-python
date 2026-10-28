@@ -257,3 +257,16 @@ class TestRebuildThreshold:
         stats = index.get_stats()
         assert stats["totalVectors"] == len(self.ROWS)
         assert stats["effectiveMutationsThreshold"] == expected
+
+    def test_alter_database_sets_the_ratio_the_threshold_reads(self, temp_db):
+        # the route the docs give for a database-scope setting (#112): SQL, no Python wrapper
+        _make_type(temp_db)
+        _insert(temp_db, self.ROWS)
+        index = temp_db.create_vector_index("Doc", "embedding", dimensions=3)
+        assert index.get_stats()["effectiveMutationsThreshold"] == 200
+
+        temp_db.command(
+            "sql", "ALTER DATABASE `arcadedb.vectorIndex.rebuildGraphRatio` 0.5"
+        )
+
+        assert index.get_stats()["effectiveMutationsThreshold"] == 500

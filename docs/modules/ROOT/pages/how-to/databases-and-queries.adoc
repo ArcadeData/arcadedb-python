@@ -263,6 +263,17 @@ The same two calls run openCypher: pass `"opencypher"` as the language. The scri
 
 NOTE: ArcadeDB SQL has no JOINs, so SQLAlchemy and other ORMs, and tools that generate `JOIN` queries, do not work with these two calls. Write the statements yourself, following links as in xref:arcadedb::reference/sql/sql-introduction.adoc#no-joins[No JOINs], or use openCypher for relationships.
 
+== Database settings
+
+An engine setting of scope `DATABASE`, which includes every `arcadedb.vectorIndex.*` setting, is changed on one open database with SQL, which `db.command` runs like any other statement:
+
+[source,python]
+----
+db.command("sql", "ALTER DATABASE `arcadedb.vectorIndex.rebuildGraphRatio` 0.05")
+----
+
+The key is backquoted because it contains dots. The change applies to that database only. A setting of scope `SERVER` is refused there, with a message that names `SET SERVER SETTING`. For the vector settings, the index statistics show the value in force: `index.get_stats()["effectiveMutationsThreshold"]` is the number of changes after which the graph is rebuilt, computed from `mutations_before_rebuild`, `rebuildGraphRatio` and `maxPendingMutations` (see the `create_vector_index` docstring).
+
 == Next steps
 
 * xref:quickstart.adoc[Quickstart]
