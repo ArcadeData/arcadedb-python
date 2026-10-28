@@ -603,7 +603,11 @@ class TestLSMVectorIndex:
             vertex = neighbors[0]
             assert vertex is not None
             assert isinstance(vertex, dict)
-            assert vertex.get("record") is not None
+            # ArcadeDB 26.11.1 (ArcadeData/arcadedb#10898) lists the record's properties on the row
+            # once; earlier engines nested them under "record". Either way the record is there.
+            record = vertex.get("record") or vertex
+            assert record.get("@rid") is not None
+            assert record.get("embedding") == [1.0, 0.0, 0.0]
             assert vertex.get("distance") is not None
 
     def test_lsm_vector_build_graph_now(self, test_db):
