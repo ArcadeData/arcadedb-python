@@ -255,13 +255,13 @@ Page a large type by `@rid` instead of `SKIP`: each page is `WHERE @rid > ? LIMI
 
 === SQLScript
 
-`db.command("sqlscript", script)` runs several statements in one call, and the result set holds the last executed statement, which is why the script above reports the `ALTER TYPE` statement. The script syntax is in the xref:arcadedb::reference/sql/sql-script.adoc[SQLScript reference].
+`db.command("sqlscript", script)` runs several statements in one call, and the result set holds the last executed statement, which is why the script above reports the `ALTER TYPE` statement. The script syntax is in the {arcadedb-docs-url}/reference/sql/sql-script[SQLScript reference].
 
 === openCypher
 
-The same two calls run openCypher: pass `"opencypher"` as the language. The script creates an edge with a `CREATE` pattern and reads it back with `MATCH`. The language is documented in the xref:arcadedb::reference/cypher/chapter.adoc[openCypher reference].
+The same two calls run openCypher: pass `"opencypher"` as the language. The script creates an edge with a `CREATE` pattern and reads it back with `MATCH`. The language is documented in the {arcadedb-docs-url}/reference/cypher/chapter[openCypher reference].
 
-NOTE: ArcadeDB SQL has no JOINs, so SQLAlchemy and other ORMs, and tools that generate `JOIN` queries, do not work with these two calls. Write the statements yourself, following links as in xref:arcadedb::reference/sql/sql-introduction.adoc#no-joins[No JOINs], or use openCypher for relationships.
+NOTE: ArcadeDB SQL has no JOINs, so SQLAlchemy and other ORMs, and tools that generate `JOIN` queries, do not work with these two calls. Write the statements yourself, following links as in {arcadedb-docs-url}/reference/sql/sql-introduction#no-joins[No JOINs], or use openCypher for relationships.
 
 == Database settings
 

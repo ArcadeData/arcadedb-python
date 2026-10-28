@@ -73,9 +73,9 @@ ArcadeDB reaches Python in two ways. Pick by where the engine should run.
 | A running server (the official Docker image `arcadedata/arcadedb`), plus `pip install arcadedb-driver`
 |===
 
-Choose the embedded bindings for a single script, a notebook, or an application with one Python process that owns its data. Choose the xref:arcadedb::how-to/connectivity/drivers/python-http.adoc[HTTP driver] when more than one process, another language, or a remote machine must reach the same database, or when the server must outlive your Python process.
+Choose the embedded bindings for a single script, a notebook, or an application with one Python process that owns its data. Choose the {arcadedb-docs-url}/how-to/connectivity/drivers/python-http[HTTP driver] when more than one process, another language, or a remote machine must reach the same database, or when the server must outlive your Python process.
 
-The two meet in one case. The bindings bundle an optional HTTP server. It is off until you call `create_server()`. The process that owns the database keeps direct access, and other processes connect over HTTP. That server lives and dies with your Python process. For a database that must outlive any one client, or for HA, replication and TLS, run the regular xref:arcadedb::index.adoc[ArcadeDB server] instead.
+The two meet in one case. The bindings bundle an optional HTTP server. It is off until you call `create_server()`. The process that owns the database keeps direct access, and other processes connect over HTTP. That server lives and dies with your Python process. For a database that must outlive any one client, or for HA, replication and TLS, run the regular {arcadedb-docs-url}/[ArcadeDB server] instead.
 
 [[jvm-vs-native]]
 == Native build or JVM build

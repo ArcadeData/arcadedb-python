@@ -177,7 +177,7 @@ export ARCADEDB_NATIVE_ISOLATE_ARGS="-XX:MaximumHeapSizePercent=70"  # another p
 export ARCADEDB_NATIVE_ISOLATE_ARGS="-XX:MaxRAM=4g"                 # a memory size for the percentage; GraalVM's 80% applies to it
 ----
 
-When one of these three is present, the package adds no default. Do not use `-XX:MaxRAMPercentage`. The native image does not accept it, and the isolate then fails to start with `graal_create_isolate failed (rc=22)`. The same variable also takes the engine's `-D` settings: see xref:how-to/logs.adoc[Where the logs go]. For what a native image build supports, see xref:arcadedb::how-to/operations/native-image.adoc[Native image] in the main ArcadeDB docs.
+When one of these three is present, the package adds no default. Do not use `-XX:MaxRAMPercentage`. The native image does not accept it, and the isolate then fails to start with `graal_create_isolate failed (rc=22)`. The same variable also takes the engine's `-D` settings: see xref:how-to/logs.adoc[Where the logs go]. For what a native image build supports, see {arcadedb-docs-url}/how-to/operations/native-image[Native image] in the main ArcadeDB docs.
 
 [[native-limits]]
 === Limits of the native build

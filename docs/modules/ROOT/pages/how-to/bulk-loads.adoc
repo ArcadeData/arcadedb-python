@@ -110,7 +110,7 @@ This section is about a `graph_batch()` load that stops before `close()` returns
 
 * The vertices and edge records that a returned call committed are there. A load that is killed loses the work after the last commit and nothing before it.
 * The edges are not traversable. The engine writes the edge records first and links them to their vertices (the head pointers and the incoming lists) in `close()`. Until `close()` has run, `outE()`, `inE()`, `out()` and `MATCH` find none of them, but `SELECT count(*) FROM E` counts them. In the example: 70,000 edge records, 0 reachable.
-* `CHECK DATABASE` reports each of these edges as an `ORPHAN RECORD` and counts them in `unreachableEdgeRecords`. It also uses the words "was not connected from", "is not referenced back by" and "missing from that vertex's OUT/IN list" for the same state. Read the statement in the xref:arcadedb::reference/sql/sql-database-admin.adoc#sql-check-database[`CHECK DATABASE` reference]; this page does not repeat it.
+* `CHECK DATABASE` reports each of these edges as an `ORPHAN RECORD` and counts them in `unreachableEdgeRecords`. It also uses the words "was not connected from", "is not referenced back by" and "missing from that vertex's OUT/IN list" for the same state. Read the statement in the {arcadedb-docs-url}/reference/sql/sql-database-admin#sql-check-database[`CHECK DATABASE` reference]; this page does not repeat it.
 
 === Recovery that works
 

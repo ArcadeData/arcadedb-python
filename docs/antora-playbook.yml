@@ -1,0 +1,41 @@
+# Builds this component as a site of its own, until docs.arcadedb.com publishes it
+# (ArcadeData/arcadedb-docs#505). The workflow docs.yml runs it on every change under docs/.
+# Local preview, from the repository root:
+#   npx -p @antora/cli@3.2.1 -p @antora/site-generator@3.2.1 antora docs/antora-playbook.yml
+# then open docs/build/site/index.html.
+# The UI bundle and the asciidoc attributes are the ones in the antora-playbook.yml of
+# ArcadeData/arcadedb-docs, so a page renders here as it does on docs.arcadedb.com.
+site:
+  title: ArcadeDB Python
+  start_page: arcadedb-python::index.adoc
+
+content:
+  sources:
+  # ./ makes the path relative to this file (a bare .. is relative to the working directory).
+  - url: ./..
+    branches: HEAD
+    start_path: docs
+
+ui:
+  bundle:
+    url: https://gitlab.com/antora/antora-ui-default/-/jobs/artifacts/HEAD/raw/build/ui-bundle.zip?job=bundle-stable
+    snapshot: true
+
+asciidoc:
+  attributes:
+    page-pagination: ''
+    experimental: ''
+    idprefix: ''
+    idseparator: '-'
+    page-toclevels: 3
+    # Reports a misspelled {attribute} (it renders as written either way); with the
+    # failure level below, it fails the build.
+    attribute-missing: warn
+
+runtime:
+  log:
+    # Stricter than docs.arcadedb.com (error): a warning in these pages fails the build.
+    failure_level: warn
+
+output:
+  dir: ./build/site
