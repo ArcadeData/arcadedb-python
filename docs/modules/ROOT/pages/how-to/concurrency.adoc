@@ -248,6 +248,44 @@ The signal probe: a child opens a transaction and inserts rows without committin
 
 If a process must stop and it does not react to a signal, `SIGKILL` cost no acknowledged commit in 45 runs (20 on the JVM build, 20 on the native build, 5 on Python 3.14t).
 
+[[durability]]
+== Durability: surviving power loss
+
+By default the engine does not flush its write-ahead log at commit: `arcadedb.txWalFlush` is `0`. A commit that returned then survives a crash of the process, as the kill probe above shows, but not a power loss or an operating system crash. Setting `arcadedb.txWalFlush` to `1` flushes the log data to stable storage at every commit, and `2` flushes the file metadata as well. What each level guarantees is in the main ArcadeDB docs: see {arcadedb-docs-url}/concepts/transactions#wal-flush-durability[WAL flush and durability]. The setting is described in {arcadedb-docs-url}/reference/settings[Settings].
+
+The setting belongs to the database. The same SQL turns it on for `arcadedb` (native) and `arcadedb-jvm`, and the value is stored with the database, so it is still in force after a reopen:
+
+[source,python,subs="attributes+"]
+----
+{import-stmt}
+
+
+def wal_flush(db):
+    row = db.query("sql", "SELECT settings FROM schema:database").first()
+    return next(s["value"] for s in row.get("settings") if s["key"] == "arcadedb.txWalFlush")
+
+
+with arcadedb.create_database("./durable") as db:
+    print(wal_flush(db))
+    db.command("sql", "ALTER DATABASE `arcadedb.txWalFlush` 1")
+    print(wal_flush(db))
+    db.command("sql", "CREATE DOCUMENT TYPE Note")
+    with db.transaction():
+        db.command("sql", "INSERT INTO Note SET text = 'durable'")
+----
+
+[source,text]
+----
+0
+1
+----
+
+The snippet ran on one build of each package (26.11.1.dev0, Python 3.12, Linux), and the value read `1` after a reopen on both. A system property sets the same value for every database in the process, as in xref:how-to/logs.adoc[Where the logs go]: `-Darcadedb.txWalFlush=1` in `jvm_kwargs={"jvm_args": [...]}` or in `ARCADEDB_JVM_ARGS` for `arcadedb-jvm`, and in `ARCADEDB_NATIVE_ISOLATE_ARGS` for `arcadedb`. A database created in such a process reported `1` on both packages.
+
+The flush has a cost on every commit. On one Linux laptop, a commit of one row took about 0.07 ms at level `0` and about 5 ms at level `1`. That is one machine and one run, so read it as an order of magnitude. The cost per row falls when a transaction holds many rows: see xref:how-to/bulk-loads.adoc[Bulk loads and commit size].
+
+On Linux, macOS and Windows the JDK asks the operating system for a flush that reaches the device, and the native image uses the same JDK code. How far a device keeps its promise is up to the hardware.
+
 == Free-threaded Python
 
 The native wheel is a `py3-none` wheel, and it installed and ran on free-threaded Python 3.14.5 with the GIL off. The Python 3.14t rows in the tables above are those runs: threads, several writers, asyncio and the signal and kill probes. The probe on several processes was not run there. The runs are shorter than those on Python 3.12, as listed at the top of this page.
