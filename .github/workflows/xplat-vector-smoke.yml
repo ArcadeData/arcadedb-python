@@ -1,0 +1,199 @@
+name: Cross-platform vector smoke (measurement branch only)
+
+# A ROUGH native-vs-JVM vector search ratio on GitHub's runners, using the wheels the CI of main already built
+# (test-native.yml: native-wheel-<key>, test-jvm.yml: wheel-<platform>). Nothing is built here. Shared runners are noisy:
+# the RATIO lines are an indicative factor, only a large gap means anything. One job per platform (the organisation
+# shares a runner cap with ArcadeData/arcadedb). This file lives on the branch bench/xplat-vector-smoke and is not
+# meant for main.
+
+on:
+  workflow_dispatch:
+    inputs:
+      native-run-id:
+        description: "Run id of the Test native workflow whose native-wheel-* artifacts to use (default: latest successful run on main with all four)"
+        required: false
+        default: ""
+      jvm-run-id:
+        description: "Run id of the Test JVM workflow whose wheel-* artifacts to use (default: latest successful run on main with all four)"
+        required: false
+        default: ""
+      rows:
+        description: "Rows per index"
+        required: false
+        default: "20000"
+      queries:
+        description: "Timed queries per run"
+        required: false
+        default: "2000"
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  UV_VERSION: "0.12.0"
+  PYTHONUTF8: "1"
+
+jobs:
+  resolve:
+    name: Resolve wheel runs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      native-run-id: ${{ steps.pick.outputs.native }}
+      jvm-run-id: ${{ steps.pick.outputs.jvm }}
+    steps:
+      - name: Pick the runs
+        id: pick
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IN_NATIVE: ${{ inputs.native-run-id }}
+          IN_JVM: ${{ inputs.jvm-run-id }}
+        run: |
+          set -euo pipefail
+          # the newest successful run on main whose non-expired artifacts include every name given
+          pick() {
+            workflow="$1"
+            shift
+            for id in $(gh run list -R "$GITHUB_REPOSITORY" -w "$workflow" --branch main --status success --limit 30 --json databaseId --jq '.[].databaseId'); do
+              names="$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$id/artifacts?per_page=100" --jq '.artifacts[] | select(.expired == false) | .name')"
+              ok=1
+              for want in "$@"; do
+                printf '%s\n' "$names" | grep -qx "$want" || ok=0
+              done
+              if [ "$ok" = 1 ]; then
+                echo "$id"
+                return 0
+              fi
+            done
+            return 1
+          }
+          native="$IN_NATIVE"
+          jvm="$IN_JVM"
+          if [ -z "$native" ]; then
+            native="$(pick test-native.yml native-wheel-linux-x86_64 native-wheel-linux-aarch64 native-wheel-macos-arm64 native-wheel-windows-x64)"
+          fi
+          if [ -z "$jvm" ]; then
+            jvm="$(pick test-jvm.yml wheel-linux-amd64 wheel-linux-arm64 wheel-darwin-arm64 wheel-windows-amd64)"
+          fi
+          echo "native wheels from run $native, JVM wheels from run $jvm"
+          echo "native=$native" >> "$GITHUB_OUTPUT"
+          echo "jvm=$jvm" >> "$GITHUB_OUTPUT"
+
+  smoke:
+    name: Vector smoke (${{ matrix.platform }})
+    needs: resolve
+    runs-on: ${{ matrix.runs-on }}
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x86_64
+            runs-on: ubuntu-24.04
+            native-artifact: native-wheel-linux-x86_64
+            jvm-artifact: wheel-linux-amd64
+          - platform: linux-aarch64
+            runs-on: ubuntu-24.04-arm
+            native-artifact: native-wheel-linux-aarch64
+            jvm-artifact: wheel-linux-arm64
+          - platform: macos-arm64
+            runs-on: macos-15
+            native-artifact: native-wheel-macos-arm64
+            jvm-artifact: wheel-darwin-arm64
+          - platform: windows-x86_64
+            runs-on: windows-2025
+            native-artifact: native-wheel-windows-x64
+            jvm-artifact: wheel-windows-amd64
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          version: ${{ env.UV_VERSION }}
+
+      - name: Download the native wheel
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ matrix.native-artifact }}
+          path: wheels/native
+          run-id: ${{ needs.resolve.outputs.native-run-id }}
+          repository: ${{ github.repository }}
+          github-token: ${{ github.token }}
+
+      - name: Download the JVM wheel
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ matrix.jvm-artifact }}
+          path: wheels/jvm
+          run-id: ${{ needs.resolve.outputs.jvm-run-id }}
+          repository: ${{ github.repository }}
+          github-token: ${{ github.token }}
+
+      # Three rounds; in each, both dimensions, and for each dimension both backends in a fresh process (the order of the two
+      # swaps every other round, so a drift in the runner does not always fall on the same backend). Each process gets its
+      # own ephemeral uv environment holding only that wheel and numpy.
+      - name: Run the smoke
+        shell: bash
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          ROWS: ${{ inputs.rows }}
+          QUERIES: ${{ inputs.queries }}
+        run: |
+          set -uo pipefail
+          mkdir -p out
+          native_whl="$(ls wheels/native/*.whl)"
+          jvm_whl="$(ls wheels/jvm/*.whl)"
+          echo "native wheel: $native_whl"
+          echo "JVM wheel: $jvm_whl"
+          uv --version
+
+          run_one() {
+            backend="$1"
+            dim="$2"
+            round="$3"
+            if [ "$backend" = native ]; then whl="$native_whl"; else whl="$jvm_whl"; fi
+            log="out/run-$backend-d$dim-r$round.txt"
+            echo "::group::$backend dim=$dim round=$round"
+            if uv run --no-project --python 3.12 --with "$whl" --with numpy python -I scripts/xplat_vector_smoke.py \
+              --dim "$dim" --rows "$ROWS" --queries "$QUERIES" --round "$round" --platform "$PLATFORM" > "$log" 2>&1; then
+              grep -a 'RESULT {' "$log" | sed 's/^.*RESULT {/RESULT {/'
+            else
+              echo "FAILED: $backend dim=$dim round=$round (exit $?)"
+              tail -n 30 "$log"
+            fi
+            echo "::endgroup::"
+          }
+
+          for round in 1 2 3; do
+            for dim in 128 768; do
+              if [ $((round % 2)) -eq 1 ]; then
+                run_one native "$dim" "$round"
+                run_one jvm "$dim" "$round"
+              else
+                run_one jvm "$dim" "$round"
+                run_one native "$dim" "$round"
+              fi
+            done
+          done
+
+          uv run --no-project --python 3.12 python -I scripts/xplat_vector_smoke.py --summarize out/run-*.txt | tee out/summary.txt
+          {
+            echo "### $PLATFORM (rows=$ROWS, queries=$QUERIES, 3 rounds)"
+            echo '```'
+            cat out/summary.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          grep -q '^RATIO ' out/summary.txt
+
+      - name: Upload the run logs
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: xplat-vector-smoke-${{ matrix.platform }}
+          path: out/
+          if-no-files-found: warn
+          retention-days: 14
