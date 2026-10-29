@@ -1467,24 +1467,23 @@ def run_in_docker(args):
         packages.append("duckdb")
     if args.db == "postgresql":
         packages.append("psycopg[binary]")
-    packages_str = " ".join(packages)
 
     inner_cmd_parts = []
     python_cmd = "python"
     if args.db == "postgresql":
         inner_cmd_parts.append(
-            "apt-get update && apt-get install -y postgresql python3 python3-venv && rm -rf /var/lib/apt/lists/*"
+            "apt-get update && apt-get install -y postgresql python3 && rm -rf /var/lib/apt/lists/*"
         )
         python_cmd = "python3"
-    inner_cmd_parts.append(f"{python_cmd} -m venv /tmp/bench-venv")
-    inner_cmd_parts.append(". /tmp/bench-venv/bin/activate")
     inner_cmd_parts.extend(uv_bootstrap_commands(python_cmd))
-    inner_cmd_parts.append(f"uv pip install {packages_str}")
+    uv_run_cmd = "uv run --no-project " + " ".join(
+        f'--with "{package}"' for package in packages
+    )
     if arcadedb_wheel_mount_path is not None:
-        inner_cmd_parts.append(f'uv pip install "{arcadedb_wheel_mount_path}"')
+        uv_run_cmd += f' --with "{arcadedb_wheel_mount_path}"'
     inner_cmd_parts.append("echo 'Starting benchmark...'")
     inner_cmd_parts.append(
-        f"{python_cmd} -u 08_stackoverflow_tables_olap.py {' '.join(filtered_args)}"
+        f"{uv_run_cmd} python -u 08_stackoverflow_tables_olap.py {' '.join(filtered_args)}"
     )
     if args.db == "postgresql":
         db_name = build_benchmark_db_name(

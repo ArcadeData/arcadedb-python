@@ -2167,21 +2167,19 @@ def run_in_docker(args):
     if args.db == "postgresql":
         packages.append("psycopg[binary]")
 
-    packages_str = " ".join(packages)
-
     inner_cmd_parts = []
     python_cmd = "python"
     if args.db == "postgresql":
         inner_cmd_parts.append(
-            "apt-get update && apt-get install -y postgresql python3 python3-venv && rm -rf /var/lib/apt/lists/*"
+            "apt-get update && apt-get install -y postgresql python3 && rm -rf /var/lib/apt/lists/*"
         )
         python_cmd = "python3"
-    inner_cmd_parts.append(f"{python_cmd} -m venv /tmp/bench-venv")
-    inner_cmd_parts.append(". /tmp/bench-venv/bin/activate")
     inner_cmd_parts.extend(uv_bootstrap_commands(python_cmd))
-    inner_cmd_parts.append(f"uv pip install {packages_str}")
+    uv_run_cmd = "uv run --no-project " + " ".join(
+        f'--with "{package}"' for package in packages
+    )
     if arcadedb_wheel_mount_path is not None:
-        inner_cmd_parts.append(f'uv pip install "{arcadedb_wheel_mount_path}"')
+        uv_run_cmd += f' --with "{arcadedb_wheel_mount_path}"'
     inner_cmd_parts.append("echo 'Starting benchmark...'")
     if args.db == "postgresql":
         db_name = build_benchmark_db_name(
@@ -2192,7 +2190,7 @@ def run_in_docker(args):
         )
         inner_cmd_parts.append(
             "status=0; "
-            f"{python_cmd} -u 07_stackoverflow_tables_oltp.py {' '.join(filtered_args)} "
+            f"{uv_run_cmd} python -u 07_stackoverflow_tables_oltp.py {' '.join(filtered_args)} "
             "|| status=$?; "
             "chown -R $HOST_UID:$HOST_GID "
             f"/workspace/examples/my_test_databases/{db_name} || true; "
@@ -2200,7 +2198,7 @@ def run_in_docker(args):
         )
     else:
         inner_cmd_parts.append(
-            f"{python_cmd} -u 07_stackoverflow_tables_oltp.py {' '.join(filtered_args)}"
+            f"{uv_run_cmd} python -u 07_stackoverflow_tables_oltp.py {' '.join(filtered_args)}"
         )
 
     inner_cmd = " && ".join(inner_cmd_parts)
