@@ -18,8 +18,8 @@ description = "ArcadeDB embedded multi-model database, JVM build with a bundled 
 readme = "README.md"
 # The upper bound is JPype: jpype1 1.7.1 has wheels for CPython 3.11 to 3.14 and none for 3.15 (JPype
 # merged 3.15 support in jpype-project/jpype#1501, not released yet). The wheels of this package are
-# py3-none-<platform>, so the wheel tag no longer keeps pip off an interpreter: without this cap pip
-# would install the wheel on 3.15 and then try to build JPype from source.
+# py3-none-<platform>, so the wheel tag no longer keeps an installer off an interpreter: without this cap an installer
+# would put the wheel on 3.15 and then try to build JPype from source.
 # REMOVE THE CAP when jpype1 ships cp315 wheels: then add the 3.15 classifier below, 3.15 to PYTHONS in
 # scripts/select_matrix.py and the cap in tests/test_select_matrix.py.
 requires-python = ">=3.11,<3.15"
@@ -48,9 +48,9 @@ dependencies = [
 [tool.uv]
 # This pyproject is the *package definition* consumed by the wheel build
 # (scripts/build.sh). It is not a uv project: tests run against the built wheel,
-# installed with its `test` extra into a virtual environment (see README,
-# Testing). `managed = false` makes uv skip it during project discovery, so
-# `uv run` uses that environment instead of trying to sync this package.
+# with its `test` extra, in a throwaway `uv run --no-project --with` environment
+# (see README, Testing). `managed = false` makes uv skip it during project
+# discovery, so `uv run` never tries to sync this package.
 managed = false
 
 [project.optional-dependencies]
@@ -123,7 +123,7 @@ pandas = [
 ]
 # Optional: ResultSet.to_polars() and insert_dataframe() with a Polars frame. Both go
 # through Arrow, so pyarrow comes with it. insert_dataframe() with a pandas frame needs
-# `pip install 'arcadedb-jvm[arrow,pandas]'` (the pandas extra alone has no pyarrow,
+# `uv add 'arcadedb-jvm[arrow,pandas]'` (the pandas extra alone has no pyarrow,
 # because to_dataframe() does not need it).
 polars = [
     "polars>=1.0",
