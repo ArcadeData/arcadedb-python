@@ -6539,12 +6539,12 @@ def run_in_docker(args) -> bool:
             "apt-get update",
             "DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends docker-cli",
             "rm -rf /var/lib/apt/lists/*",
-            "python -m venv /tmp/bench-venv",
-            ". /tmp/bench-venv/bin/activate",
             *uv_bootstrap_commands("python"),
-            "uv pip install lxml neo4j",
             "echo 'Starting benchmark...'",
-            f"python -u 10_stackoverflow_graph_olap.py {' '.join(filtered_args)}",
+            (
+                "uv run --no-project --with lxml --with neo4j "
+                f"python -u 10_stackoverflow_graph_olap.py {' '.join(filtered_args)}"
+            ),
         ]
         if host_uid is not None and host_gid is not None:
             inner_cmd_parts.insert(
@@ -6569,19 +6569,17 @@ def run_in_docker(args) -> bool:
         if args.db == "duckdb":
             packages.append("duckdb")
 
-        packages_str = " ".join(packages)
-
         inner_cmd_parts = []
         python_cmd = "python"
-        inner_cmd_parts.append(f"{python_cmd} -m venv /tmp/bench-venv")
-        inner_cmd_parts.append(". /tmp/bench-venv/bin/activate")
         inner_cmd_parts.extend(uv_bootstrap_commands(python_cmd))
-        inner_cmd_parts.append(f"uv pip install {packages_str}")
+        uv_run_cmd = "uv run --no-project " + " ".join(
+            f'--with "{package}"' for package in packages
+        )
         if arcadedb_wheel_mount_path is not None:
-            inner_cmd_parts.append(f'uv pip install "{arcadedb_wheel_mount_path}"')
+            uv_run_cmd += f' --with "{arcadedb_wheel_mount_path}"'
         inner_cmd_parts.append("echo 'Starting benchmark...'")
         inner_cmd_parts.append(
-            f"{python_cmd} -u 10_stackoverflow_graph_olap.py {' '.join(filtered_args)}"
+            f"{uv_run_cmd} python -u 10_stackoverflow_graph_olap.py {' '.join(filtered_args)}"
         )
 
         inner_cmd = " && ".join(inner_cmd_parts)
