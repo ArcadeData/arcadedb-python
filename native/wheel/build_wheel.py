@@ -5,7 +5,7 @@
 
 Steps: copy src/arcadedb to <out>/stage/src/arcadedb (the shared tree is not duplicated in git; only the install hints of the extras are renamed from arcadedb-jvm[...] to arcadedb[...]);
 rewrite `import jpype` to the bundled stub; flip the default backend to native; add the library of the build platform (libarcadedb.so on Linux,
-libarcadedb.dylib on macOS, libarcadedb.dll on Windows; on Linux x86-64 also libjvector-x86_64.so, jvector's Highway library: no other platform ships it);
+libarcadedb.dylib on macOS, libarcadedb.dll on Windows; on Linux also libjvector-<x86_64|aarch64>.so, jvector's Highway library: macOS and Windows have none);
 add LICENSE/NOTICE/GraalVM licence texts; check THIRD_PARTY_NOTICES.md against gen_notices.py (fails on drift); compute the platform tag from the library
 (Linux: manylinux_<glibc floor>_<x86_64|aarch64> from the GLIBC symbol versions, never below --glibc-policy; macOS: macosx_<minos>_arm64 from the load commands; Windows: win_amd64);
 build with `uv build --wheel`. Run it on the platform the library was built on.
@@ -29,7 +29,19 @@ LIB_NAMES = {
     "darwin": "libarcadedb.dylib",
     "win32": "libarcadedb.dll",
 }
-JVECTOR = "libjvector-x86_64.so"  # Highway, taken from the jvector jar by preview-build.sh on Linux x86-64 only
+# Highway, taken from the jvector 4.0.2 jar by build-image.sh on Linux (the jar has no macOS or Windows library)
+JVECTOR_BY_ARCH = {
+    "x86_64": "libjvector-x86_64.so",
+    "aarch64": "libjvector-aarch64.so",
+}
+
+
+def libraries_to_ship(sys_platform: str, arch: str, libname: str) -> list[str]:
+    """The files of --lib-dir the wheel carries next to the engine library: libname, and on Linux the jvector library of the architecture."""
+    ship = [libname]
+    if sys_platform.startswith("linux") and arch in JVECTOR_BY_ARCH:
+        ship.append(JVECTOR_BY_ARCH[arch])
+    return ship
 
 
 def host_arch() -> str:
@@ -94,7 +106,7 @@ def main():
     ap.add_argument(
         "--lib-dir",
         required=True,
-        help="directory with the library of this platform (libarcadedb.so / .dylib / .dll) and, on Linux x86-64, libjvector-x86_64.so",
+        help="directory with the library of this platform (libarcadedb.so / .dylib / .dll) and, on Linux, libjvector-<x86_64|aarch64>.so",
     )
     ap.add_argument(
         "--version",
@@ -245,11 +257,7 @@ def main():
     )
     ip.write_text(t, encoding="utf-8")
 
-    ship = [libname]
-    if sys.platform.startswith("linux") and host_arch() == "x86_64":
-        ship.append(
-            JVECTOR
-        )  # the only platform that ships Highway; lib.py does not need it elsewhere
+    ship = libraries_to_ship(sys.platform, host_arch(), libname)
     for n in ship:
         shutil.copy(
             lib_dir / n, dst / "_native" / n

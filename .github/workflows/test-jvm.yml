@@ -750,7 +750,7 @@ jobs:
             echo "**Package**: arcadedb" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "ℹ️ **Note**: Some platform/Python combinations are excluded from testing:" >> $GITHUB_STEP_SUMMARY
-            echo "- Windows ARM64 (no GitHub-hosted runners available)" >> $GITHUB_STEP_SUMMARY
+            echo "- Windows ARM64 (GitHub-hosted windows-11-arm runners exist, but jpype1 1.7.1 ships no win_arm64 wheel and GraalVM CE 25.4.4.1.1 has no Windows ARM64 build, so neither package can be built there)" >> $GITHUB_STEP_SUMMARY
             echo "- macOS x86_64 (temporarily disabled)" >> $GITHUB_STEP_SUMMARY
           else
             echo "❌ **Some platforms failed testing**" >> $GITHUB_STEP_SUMMARY

@@ -56,8 +56,10 @@ public final class ArcadeNative {
   }
 
   static {
-    // ARCADEDB_VECTOR_PROVIDER = native | panama | default (jvector's VectorizationProvider, forced); unset: jvector chooses
-    // (Highway through the FFM downcalls when the bundled libjvector loads, else the Vector API classes).
+    // ARCADEDB_VECTOR_PROVIDER = native | panama | default (jvector's VectorizationProvider, forced). Unset, the engine's
+    // VectorApiSupport.configureJVectorProvider() (ArcadeData/arcadedb#10077) sets jvector.vectorization_provider=default in every
+    // native image, so the distance kernels are jvector's scalar DefaultVectorizationProvider. Highway (the bundled libjvector
+    // through the FFM downcalls, Linux x86-64 and aarch64) runs only with ARCADEDB_VECTOR_PROVIDER=native.
     final String forced = System.getenv("ARCADEDB_VECTOR_PROVIDER");
     if (forced != null && !forced.isEmpty() && System.getProperty("jvector.vectorization_provider") == null)
       System.setProperty("jvector.vectorization_provider", forced);
