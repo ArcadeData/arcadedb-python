@@ -326,7 +326,15 @@ class Database:
         converted_args = []
         for arg in args:
             if _np is not None and isinstance(arg, _np.ndarray):
-                converted_args.append(to_java_float_array(arg))
+                if arg.dtype.kind == "f":
+                    # a float array is a query vector: one float[]
+                    converted_args.append(to_java_float_array(arg))
+                else:
+                    # an integer or bool array keeps its kind: it binds as the list
+                    # it holds (ints as Long, bools as Boolean), what a Python list
+                    # and the native build bind. Forced through float[] it arrived
+                    # as floats, and an int64 past 2**24 lost digits.
+                    converted_args.append(convert_python_to_java(arg))
             elif isinstance(arg, (Mapping, list, tuple, set, bytes, bytearray)):
                 # A collection AMONG multiple args is a single collection-typed
                 # parameter (e.g. a query vector). Plain Python collections
