@@ -31,13 +31,17 @@ except ImportError:
     sys.exit(1)
 
 
+# The uv release the containers download: the version the repo's CI pins (.github/workflows/test-native.yml UV_VERSION),
+# fetched straight from its release URL instead of asking the GitHub API for "latest" (unpinned, and rate-limited for anonymous use).
+UV_VERSION = "0.12.0"
+
+
 def uv_bootstrap_commands(python_cmd: str) -> List[str]:
     return [
         (
             f'{python_cmd} -c "import json, pathlib, platform, shutil, tarfile, urllib.request; '
             "arch={'x86_64':'x86_64-unknown-linux-gnu','amd64':'x86_64-unknown-linux-gnu','aarch64':'aarch64-unknown-linux-gnu','arm64':'aarch64-unknown-linux-gnu'}[platform.machine().lower()]; "
-            "req=urllib.request.Request('https://api.github.com/repos/astral-sh/uv/releases/latest', headers={'User-Agent':'arcadedb-bench'}); "
-            "version=json.load(urllib.request.urlopen(req, timeout=30))['tag_name'].lstrip('v'); "
+            f"version='{UV_VERSION}'; "
             "archive=pathlib.Path('/tmp/uv.tar.gz'); "
             "archive.write_bytes(urllib.request.urlopen(f'https://github.com/astral-sh/uv/releases/download/{version}/uv-{arch}.tar.gz', timeout=30).read()); "
             "target=pathlib.Path('/tmp/uv-extract'); target.mkdir(parents=True, exist_ok=True); "
