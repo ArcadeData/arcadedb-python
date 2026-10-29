@@ -78,7 +78,7 @@ The API is the same. The runtime is not. These are the differences you can plan 
 
 | Python versions
 | 3.11 to 3.15. On 3.15 the CI runs a subset of the tests.
-| 3.11 to 3.14. JPype has no 3.15 wheel yet, so the package does not install on 3.15: pip refuses it, and uv tries to build JPype and fails.
+| 3.11 to 3.14. JPype has no 3.15 wheel yet, so the package does not install on 3.15: uv tries to build JPype from source and fails.
 
 | Platforms
 | Linux x86_64 and aarch64 (glibc 2.28 or later), macOS arm64, Windows x64. The Windows wheel is the newest: it is built in CI, and its test run is the least proven of the four. Not built: Intel Mac, Alpine (musl), Windows on ARM. See xref:installation.adoc#requirements[Requirements].
