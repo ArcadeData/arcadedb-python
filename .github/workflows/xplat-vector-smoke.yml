@@ -211,6 +211,39 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           grep -q '^RATIO ' out/summary.txt
 
+      # Commit cost per WAL flush level (arcadedb.txWalFlush 0, 1, 2): 500 single-row transactions per level, a fresh process
+      # per backend. A level 2 that is far cheaper on macOS than on Linux and Windows is the fingerprint of an fsync that does
+      # not wait for the device. Runs after the vector smoke whatever its outcome and never fails the job.
+      - name: Commit cost per WAL flush level
+        if: ${{ !cancelled() }}
+        shell: bash
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -uo pipefail
+          mkdir -p out
+          native_whl="$(ls wheels/native/*.whl)"
+          jvm_whl="$(ls wheels/jvm/*.whl)"
+          for backend in native jvm; do
+            if [ "$backend" = native ]; then whl="$native_whl"; else whl="$jvm_whl"; fi
+            log="out/commit-$backend.txt"
+            echo "::group::commit cost $backend"
+            if uv run --no-project --python 3.12 --with "$whl" python -I scripts/xplat_commit_cost.py --n 500 --platform "$PLATFORM" > "$log" 2>&1; then
+              :
+            else
+              echo "FAILED: commit cost $backend (exit $?)"
+              tail -n 30 "$log"
+            fi
+            grep -a '^COMMIT' "$log" || true
+            echo "::endgroup::"
+          done
+          {
+            echo "### $PLATFORM commit cost (500 single-row transactions per level)"
+            echo '```'
+            grep -ah '^COMMIT' out/commit-*.txt || echo "(no COMMIT lines)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Upload the run logs
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
