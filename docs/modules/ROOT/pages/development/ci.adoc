@@ -27,9 +27,9 @@ The package supports four platforms and four Python versions (3.11 to 3.14). Tha
 The wheel of `arcadedb-jvm` is tagged `py3-none-<platform>` (`setup.py`), like the native wheel: it carries a JRE for its platform, but nothing in it is compiled against CPython. So a Python version is a test, not a build. `test-jvm.yml` has two jobs:
 
 * `Build arcadedb-jvm wheel (<platform>)` builds the wheel once for each platform and uploads it as `wheel-<platform>`. `scripts/verify_wheel_tag.py` fails the build when the wheel is not `py3-none-<platform>`.
-* `Test arcadedb (<platform>, Python <version>)` downloads that wheel and installs it into one Python. It builds nothing. The release publishes these same four files.
+* `Test arcadedb (<platform>, Python <version>)` downloads that wheel and runs the tests on one Python in a throwaway `uv run --no-project --with "<wheel>[test]" python -m pytest` environment. It builds nothing. The release publishes these same four files.
 
-The `requires-python` of the package is `>=3.11,<3.15`. The wheel tag no longer keeps pip off Python 3.15, so the cap does it. JPype has no 3.15 wheel yet; remove the cap, and add 3.15 to the matrix, when it has one.
+The `requires-python` of the package is `>=3.11,<3.15`. The wheel tag no longer keeps an installer off Python 3.15, so the cap does it. JPype has no 3.15 wheel yet; remove the cap, and add 3.15 to the matrix, when it has one.
 
 == What runs when
 

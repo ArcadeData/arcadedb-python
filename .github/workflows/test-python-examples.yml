@@ -233,16 +233,11 @@ jobs:
           # Retry transient network failures (a connection reset failed a whole examples job on #8897); the
           # script is downloaded first so a retried transfer is never piped half-written into sh.
           installer="$(mktemp)"
-          curl -LsSf --retry 5 --retry-all-errors --retry-delay 5 -o "$installer" https://astral.sh/uv/install.sh
+          curl -LsSf --retry 5 --retry-all-errors --retry-delay 5 -o "$installer" https://astral.sh/uv/0.12.0/install.sh
           sh "$installer"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           export PATH="$HOME/.local/bin:$PATH"
           uv --version
-
-      - name: Install Python build dependencies
-        shell: bash
-        run: |
-          uv pip install --system build wheel setuptools
 
       - name: Set UTF-8 encoding (Windows only)
         if: matrix.platform == 'windows/amd64' || matrix.platform == 'windows/arm64'
@@ -334,7 +329,7 @@ jobs:
           # Retry transient network failures (a connection reset failed a whole examples job on #8897); the
           # script is downloaded first so a retried transfer is never piped half-written into sh.
           installer="$(mktemp)"
-          curl -LsSf --retry 5 --retry-all-errors --retry-delay 5 -o "$installer" https://astral.sh/uv/install.sh
+          curl -LsSf --retry 5 --retry-all-errors --retry-delay 5 -o "$installer" https://astral.sh/uv/0.12.0/install.sh
           sh "$installer"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           export PATH="$HOME/.local/bin:$PATH"
@@ -349,29 +344,54 @@ jobs:
 
       # Note: Java is NOT required - arcadedb has bundled JRE!
 
-      - name: Install ArcadeDB Python bindings
+      # The wheel and the example dependencies live in a uv project of their own (examples-env/, not the repo's pyproject.toml,
+      # which is a package definition and not a uv project), synced with `uv sync`. Nothing is installed into the runner's Python.
+      # torch comes from the CPU-only PyTorch index (explicit: only torch is looked up there), which saves the CUDA download.
+      # PyTorch is required by sentence-transformers, even on macOS.
+      # numpy is not capped: the old macOS `numpy<2.0` was for Intel Macs, where PyTorch stops at 2.2 (built against
+      # NumPy 1.x). That leg (darwin/amd64) is disabled; re-enabling it needs the cap back for that platform only.
+      # On Apple Silicon the cap breaks pyarrow, which requires NumPy 2 (example 27).
+      - name: Install ArcadeDB Python bindings and example dependencies
         shell: bash
+        env:
+          PYVER: ${{ matrix.python-version }}
         run: |
-          uv pip install --system test-install/arcadedb_jvm-*.whl
+          wheels=(test-install/arcadedb_jvm-*.whl)
+          [ "${#wheels[@]}" -eq 1 ] || { echo "expected one wheel in test-install, found ${#wheels[@]}" >&2; exit 1; }
+          mkdir -p examples-env
+          cat > examples-env/pyproject.toml <<TOML
+          [project]
+          name = "examples-env"
+          version = "0"
+          requires-python = ">=3.11"
+          dependencies = [
+              "arcadedb-jvm",
+              "torch",
+              "numpy",
+              "requests",
+              "sentence-transformers",
+              "pandas",
+              "polars",
+              "pyarrow",
+              "tqdm",
+              "py7zr",
+              "lxml",
+          ]
 
-      - name: Install example dependencies
-        shell: bash
-        run: |
-          # Install dependencies needed by examples
-          # PyTorch is required by sentence-transformers, even on macOS
-          # For Python 3.13+, wheels might only be on PyTorch official index
-          if [[ "$OSTYPE" == "darwin"* ]]; then
-            # macOS: Install CPU-only PyTorch (supports MPS acceleration)
-            uv pip install --system torch --index-url https://download.pytorch.org/whl/cpu
-            # numpy is not capped: the old macOS `numpy<2.0` was for Intel Macs, where PyTorch stops at 2.2 (built against
-            # NumPy 1.x). That leg (darwin/amd64) is disabled; re-enabling it needs the cap back for that platform only.
-            # On Apple Silicon the cap breaks pyarrow, which requires NumPy 2 (example 27).
-            uv pip install --system numpy requests sentence-transformers pandas polars pyarrow
-          else
-            # Linux & Windows: Install CPU-only PyTorch to save space (avoid CUDA)
-            uv pip install --system torch --index-url https://download.pytorch.org/whl/cpu
-            uv pip install --system numpy requests sentence-transformers pandas polars pyarrow
-          fi
+          [tool.uv.sources]
+          arcadedb-jvm = { path = "../${wheels[0]}" }
+          torch = { index = "pytorch-cpu" }
+
+          [[tool.uv.index]]
+          name = "pytorch-cpu"
+          url = "https://download.pytorch.org/whl/cpu"
+          explicit = true
+          TOML
+          uv sync --project examples-env --python "$PYVER"
+          # The examples run with this interpreter directly, so a timeout kills the example itself and not a `uv run` wrapper.
+          ex_py="$(uv run --project examples-env --no-sync python -c 'import sys; print(sys.executable)')"
+          echo "EX_PY=$ex_py" >> "$GITHUB_ENV"
+          "$ex_py" -c "import arcadedb; print('arcadedb', arcadedb.__version__)"
 
       # Restored before the dataset step, which is what triggers the model
       # download. Keyed on the model name so bumping the model invalidates it.
@@ -394,9 +414,8 @@ jobs:
         shell: bash
         continue-on-error: true
         run: |
-          uv pip install --system sentence-transformers >/dev/null 2>&1 || true
           for attempt in 1 2 3; do
-            if python3 -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2'); print('model ready')"; then
+            if "$EX_PY" -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2'); print('model ready')"; then
               echo "✅ model cached on attempt $attempt"
               exit 0
             fi
@@ -408,7 +427,6 @@ jobs:
       - name: Download datasets
         shell: bash
         run: |
-          uv pip install --system tqdm py7zr lxml
           cd examples
 
           # Determine which examples are selected
@@ -438,7 +456,7 @@ jobs:
             # every failure into "exited 0" and would have made this skip
             # everything, including real ones.
             local rc=0
-            if python3 download_data.py "$@"; then
+            if "$EX_PY" download_data.py "$@"; then
               return 0
             else
               rc=$?
@@ -693,13 +711,13 @@ jobs:
 
             # Run the example with appropriate parameters
             if [ -n "$example_jvm_args" ]; then
-              if ARCADEDB_JVM_ARGS="$example_jvm_args" JAVA_TOOL_OPTIONS="" _JAVA_OPTIONS="" $TIMEOUT_CMD $timeout_duration python "$example" $example_args > "$log_file" 2>&1; then
+              if ARCADEDB_JVM_ARGS="$example_jvm_args" JAVA_TOOL_OPTIONS="" _JAVA_OPTIONS="" $TIMEOUT_CMD $timeout_duration "$EX_PY" "$example" $example_args > "$log_file" 2>&1; then
                 exit_code=0
               else
                 exit_code=$?
               fi
             else
-              if ARCADEDB_JVM_ARGS="" JAVA_TOOL_OPTIONS="" _JAVA_OPTIONS="" $TIMEOUT_CMD $timeout_duration python "$example" $example_args > "$log_file" 2>&1; then
+              if ARCADEDB_JVM_ARGS="" JAVA_TOOL_OPTIONS="" _JAVA_OPTIONS="" $TIMEOUT_CMD $timeout_duration "$EX_PY" "$example" $example_args > "$log_file" 2>&1; then
                 exit_code=0
               else
                 exit_code=$?
@@ -713,11 +731,11 @@ jobs:
               ref_args="${example_args/--db arcadedb_cypher/--db python_memory}"
               ref_args="${ref_args/--run-label ci10/--run-label ci10ref}"
               ref_log="${example%.py}-reference.log"
-              if ! $TIMEOUT_CMD $timeout_duration python "$example" $ref_args > "$ref_log" 2>&1; then
+              if ! $TIMEOUT_CMD $timeout_duration "$EX_PY" "$example" $ref_args > "$ref_log" 2>&1; then
                 echo "❌ reference run (python_memory) of $example failed; last 20 lines:"
                 tail -n 20 "$ref_log"
                 exit_code=1
-              elif ! python scripts/compare_query_hashes.py "$log_file" "$ref_log"; then
+              elif ! "$EX_PY" scripts/compare_query_hashes.py "$log_file" "$ref_log"; then
                 echo "❌ $example: answers differ from the python_memory reference (above)"
                 exit_code=1
               fi

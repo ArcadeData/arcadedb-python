@@ -105,14 +105,24 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install Bandit
-        run: python -m pip install "bandit==1.9.4"
+      # Bandit and pip-audit run through uvx (a throwaway environment each), so the jobs install nothing into the runner's Python.
+      - name: Setup UV package manager
+        shell: bash
+        run: |
+          # Retry transient network failures (a connection reset failed a whole examples job on #8897); the
+          # script is downloaded first so a retried transfer is never piped half-written into sh.
+          installer="$(mktemp)"
+          curl -LsSf --retry 5 --retry-all-errors --retry-delay 5 -o "$installer" https://astral.sh/uv/0.12.0/install.sh
+          sh "$installer"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.local/bin:$PATH"
+          uv --version
 
       - name: Run Bandit on src and tests (must be clean)
-        run: python -m bandit -c pyproject.toml -r src tests --severity-level low --confidence-level low
+        run: uvx bandit==1.9.4 -c pyproject.toml -r src tests --severity-level low --confidence-level low
 
       - name: Run Bandit on examples (must be clean at medium+/high-confidence)
-        run: python -m bandit -c pyproject.toml -r examples --severity-level medium --confidence-level high
+        run: uvx bandit==1.9.4 -c pyproject.toml -r examples --severity-level medium --confidence-level high
 
   # Meterian cannot scan this folder: `uv lock` refuses on a project carrying
   # `[tool.uv] managed = false`, so it produces no lockfile to read (see #5616).
@@ -129,9 +139,9 @@ jobs:
         with:
           python-version: "3.12"
 
-      # Pinned rather than tracking latest, unlike the other uv installs in this
-      # repo: this job's own output depends on how uv resolves, so a silent
-      # resolver change would silently change what gets audited.
+      # The uv version is pinned in every install URL of this repo. It matters most here:
+      # this job's own output depends on how uv resolves, so a silent resolver change
+      # would silently change what gets audited.
       - name: Setup UV package manager
         shell: bash
         run: |
@@ -143,9 +153,6 @@ jobs:
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           export PATH="$HOME/.local/bin:$PATH"
           uv --version
-
-      - name: Install pip-audit
-        run: python -m pip install "pip-audit==2.10.1"
 
       # --resolution lowest-direct pins every declared dependency to the oldest
       # release its own constraint admits, which is the version this manifest
@@ -166,30 +173,50 @@ jobs:
       # The list is read from the classifiers rather than repeated here, so adding
       # an interpreter to the package cannot leave it unaudited.
       #
-      # --disable-pip reads the pinned file directly rather than asking pip to
-      # resolve it. Without it, a floor whose version has no wheel for the
-      # running interpreter fails as an sdist build error instead of reporting
-      # the advisory that caused the regression.
+      # `uv pip compile` is not used: the floors are resolved with `uv lock` on a throwaway project, one per
+      # interpreter, that carries the package's dependencies and the audited extras and nothing else (pyproject.toml
+      # itself stays a non-uv project, and `uv lock` would refuse it with `managed = false` and would also resolve
+      # the dev extra). `requires-python = "==3.X.*"` makes the lock resolve for that interpreter only, which is what
+      # `--python-version` did. `uv export` writes the pinned file; --disable-pip makes pip-audit read it directly
+      # rather than asking pip to resolve it. Without it, a floor whose version has no wheel for the running
+      # interpreter fails as an sdist build error instead of reporting the advisory that caused the regression.
       - name: Audit declared dependency floors on every supported interpreter
         run: |
           # The trailing dot in the prefix is load-bearing: the classifiers also
           # carry a bare "Programming Language :: Python :: 3", which without it
-          # yields --python-version 3 and fails.
-          versions=$(python -c 'import tomllib;p="Programming Language :: Python :: 3.";print(" ".join(c.rsplit(" ",1)[1] for c in tomllib.load(open("pyproject.toml","rb"))["project"]["classifiers"] if c.startswith(p)))')
+          # yields version 3 and fails.
+          versions=$(uv run --no-project python -c 'import tomllib;p="Programming Language :: Python :: 3.";print(" ".join(c.rsplit(" ",1)[1] for c in tomllib.load(open("pyproject.toml","rb"))["project"]["classifiers"] if c.startswith(p)))')
           # No classifiers would audit nothing and still pass, which is the kind
           # of silent gap this job exists to close.
           [ -n "$versions" ] || { echo "no Python version classifiers found in pyproject.toml"; exit 1; }
           echo "auditing declared floors for: $versions"
           for v in $versions; do
             echo "::group::Resolve floors for Python $v"
-            uv pip compile pyproject.toml \
-              --extra test --extra vector --extra examples --extra arrow --extra pandas \
-              --resolution lowest-direct \
-              --python-version "$v" \
-              -o "$RUNNER_TEMP/floors-$v.txt"
+            proj="$RUNNER_TEMP/floors-$v"
+            mkdir -p "$proj"
+            uv run --no-project python - "$v" "$proj/pyproject.toml" << 'PY'
+          import sys
+          import tomllib
+
+          version, out = sys.argv[1], sys.argv[2]
+          extras = ["test", "vector", "examples", "arrow", "pandas"]
+          with open("pyproject.toml", "rb") as f:
+              project = tomllib.load(f)["project"]
+          deps = list(project["dependencies"])
+          for extra in extras:
+              deps += project["optional-dependencies"][extra]
+          with open(out, "w") as f:
+              f.write('[project]\nname = "floors"\nversion = "0"\n')
+              f.write('requires-python = "==%s.*"\n' % version)
+              f.write("dependencies = [\n")
+              for d in deps:
+                  f.write("    %r,\n" % d)
+              f.write("]\n")
+          PY
+            (cd "$proj" && uv lock --resolution lowest-direct && uv export --frozen --no-hashes --no-annotate --no-emit-project -o "$RUNNER_TEMP/floors-$v.txt")
             cat "$RUNNER_TEMP/floors-$v.txt"
             echo "::endgroup::"
-            pip-audit --no-deps --disable-pip -r "$RUNNER_TEMP/floors-$v.txt"
+            uvx pip-audit==2.10.1 --no-deps --disable-pip -r "$RUNNER_TEMP/floors-$v.txt"
           done
 
   # First job: Download ArcadeDB JARs (platform-agnostic)
@@ -304,7 +331,7 @@ jobs:
           # Retry transient network failures (a connection reset failed a whole examples job on #8897); the
           # script is downloaded first so a retried transfer is never piped half-written into sh.
           installer="$(mktemp)"
-          curl -LsSf --retry 5 --retry-all-errors --retry-delay 5 -o "$installer" https://astral.sh/uv/install.sh
+          curl -LsSf --retry 5 --retry-all-errors --retry-delay 5 -o "$installer" https://astral.sh/uv/0.12.0/install.sh
           sh "$installer"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           export PATH="$HOME/.local/bin:$PATH"
@@ -327,11 +354,6 @@ jobs:
       - name: Set up Docker Buildx (Linux only)
         if: matrix.platform == 'linux/amd64' || matrix.platform == 'linux/arm64'
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-
-      - name: Install Python build dependencies
-        shell: bash
-        run: |
-          uv pip install --system build wheel setuptools
 
       - name: Set UTF-8 encoding (Windows only)
         if: matrix.platform == 'windows/amd64' || matrix.platform == 'windows/arm64'
@@ -417,7 +439,7 @@ jobs:
           # Retry transient network failures (a connection reset failed a whole examples job on #8897); the
           # script is downloaded first so a retried transfer is never piped half-written into sh.
           installer="$(mktemp)"
-          curl -LsSf --retry 5 --retry-all-errors --retry-delay 5 -o "$installer" https://astral.sh/uv/install.sh
+          curl -LsSf --retry 5 --retry-all-errors --retry-delay 5 -o "$installer" https://astral.sh/uv/0.12.0/install.sh
           sh "$installer"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           export PATH="$HOME/.local/bin:$PATH"
@@ -439,7 +461,7 @@ jobs:
 
       # The tests below run on the runner (glibc 2.39). This step runs the wheel where its tag says it must
       # work: a manylinux_2_28 container (glibc 2.28, AlmaLinux 8, the oldest system the Linux wheels are tagged for).
-      # pip refuses a wheel tagged above 2.28 there, so a JRE that raises the floor again fails here as well as in
+      # uv (like pip) refuses a wheel tagged above 2.28 there, so a JRE that raises the floor again fails here as well as in
       # scripts/verify_wheel_platform_tag.py. The wheel's own JRE does the work: no Java in the container.
       - name: Install and run the wheel in manylinux_2_28 (Linux only)
         if: startsWith(matrix.platform, 'linux/')
@@ -455,15 +477,17 @@ jobs:
           esac
           PYTAG="cp${PYVER//./}-cp${PYVER//./}"
           ls -l test-install/*.whl
-          docker run --rm -i -e PYTAG="$PYTAG" -v "$PWD/test-install:/wheels:ro" \
+          # The runner's uv is mounted into the container (a glibc 2.17 build); the image's own Python is used, never downloaded.
+          docker run --rm -i -e PYTAG="$PYTAG" -e UV_PYTHON_DOWNLOADS=never -v "$PWD/test-install:/wheels:ro" \
+            -v "$(command -v uv):/usr/local/bin/uv:ro" \
             "quay.io/pypa/manylinux_2_28_${ARCH}:latest" bash -es <<'CONTAINER'
           ldd --version | head -n 1
           test -x "/opt/python/$PYTAG/bin/python" || { echo "no $PYTAG in this image" >&2; ls /opt/python >&2; exit 1; }
-          "/opt/python/$PYTAG/bin/python" -m venv /tmp/smoke
-          # --only-binary: a source build of JPype must not hide a missing wheel
-          /tmp/smoke/bin/python -m pip install --quiet --only-binary=:all: /wheels/*.whl
+          with=()
+          for w in /wheels/*.whl; do with+=(--with "$w"); done
           cd /tmp
-          /tmp/smoke/bin/python - <<'PYSMOKE'
+          # --no-build: a source build of JPype must not hide a missing wheel
+          uv run --no-project --no-build --quiet --python "/opt/python/$PYTAG/bin/python" "${with[@]}" python - <<'PYSMOKE'
           import tempfile
           import arcadedb
           with tempfile.TemporaryDirectory() as tmp:
@@ -477,18 +501,6 @@ jobs:
       # Note: Java is NOT required for arcadedb (JRE is bundled)
       # This package works without any external Java installation!
 
-      - name: Install wheel and test dependencies
-        shell: bash
-        run: |
-          # This list is hand-maintained and mirrors the `test` extra. It had
-          # already drifted: pyarrow and pandas were missing, so to_arrow() and
-          # to_dataframe() tests skipped themselves in this job while it
-          # reported green. setuptools is there for tests/test_wheel_packages.py and
-          # tests/test_wheel_tags.py, which run setup.py on a copy of the sources (this job
-          # no longer installs build tools: it builds nothing). The guard step below now fails the build if any
-          # test skips for a missing import, so the next drift is loud.
-          uv pip install --system test-install/*.whl "setuptools>=84.1.0" pytest pytest-cov requests numpy "psycopg[binary]" redis neo4j pyarrow pandas polars "adbc-driver-postgresql>=1.12" "duckdb>=1.4.2" "ladybug>=0.21.2" "networkx>=3.4"
-
       - name: Run pytest on host
         id: pytest
         # A HUNG TEST ENDS THE STEP, NOT THE DAY. On 2026-09-25 the windows/3.13
@@ -497,8 +509,19 @@ jobs:
         # GitHub's 6-hour default. The step takes 108-319 s on every platform.
         timeout-minutes: 30
         shell: bash
+        env:
+          PYVER: ${{ matrix.python-version }}
         run: |
           echo "🧪 Testing arcadedb (with bundled JRE)..."
+
+          # The wheel and its `test` extra go into a throwaway `uv run` environment, so nothing is installed into the
+          # runner's Python. The extra mirrors what this job once listed by hand (it had drifted: pyarrow and pandas were
+          # missing, so to_arrow() and to_dataframe() tests skipped themselves while the job reported green; setuptools is
+          # in it for tests/test_wheel_packages.py and tests/test_wheel_tags.py, which run setup.py on a copy of the
+          # sources). The guard below fails the build if any test skips for a missing import, so a drift is loud.
+          wheels=(test-install/*.whl)
+          [ "${#wheels[@]}" -eq 1 ] || { echo "expected one wheel in test-install, found ${#wheels[@]}" >&2; exit 1; }
+          UVRUN=(uv run --no-project --python "$PYVER" --with "${wheels[0]}[test]")
 
           # Run pytest with JUnit XML output for structured results
           # pytest runs with its default fd capture on every platform. Windows used to run with
@@ -509,7 +532,7 @@ jobs:
           # to the console on Windows by default (ARCADEDB_LOG_CONSOLE, src/arcadedb/_logdir.py),
           # which removes the cause; tests/test_log_redirect.py redirects fd 1 and 2 on purpose.
           set +e  # Don't exit on test failures
-          pytest tests/ -v --tb=short --color=yes --junitxml=test-results.xml
+          "${UVRUN[@]}" python -m pytest tests/ -v --tb=short --color=yes --junitxml=test-results.xml
           PYTEST_EXIT_CODE=$?
           set -e
 
