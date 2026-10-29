@@ -91,3 +91,69 @@ def test_numpy_array_conversion_in_transaction(temp_db):
     stored_emb = result.get("embedding")
     assert len(stored_emb) == 3
     assert abs(stored_emb[0] - 0.4) < 0.0001
+
+
+def _param(db, value):
+    """The one parameter `value` as the engine hands it back."""
+    return db.query("sql", "SELECT ? AS v", [value]).first().get("v")
+
+
+@pytest.mark.parametrize("dtype", [np.int8, np.int16, np.int32, np.int64, np.uint8])
+def test_integer_ndarray_param_binds_as_the_list_does(temp_db, dtype):
+    """A positional integer array keeps its integers; the JVM build once sent every ndarray as a float[]."""
+    values = [1, 2, 3, 100]
+    bound = _param(temp_db, np.array(values, dtype=dtype))
+    assert list(bound) == values
+    assert all(isinstance(x, int) and not isinstance(x, bool) for x in bound)
+    assert list(bound) == list(_param(temp_db, values))
+
+
+def test_int64_ndarray_param_is_exact(temp_db):
+    """2**53 + 1 does not survive a float; as a long it does."""
+    values = [2**53 + 1, -(2**40), 7]
+    bound = _param(temp_db, np.array(values, dtype=np.int64))
+    assert list(bound) == values
+
+
+def test_bool_ndarray_param_stays_boolean(temp_db):
+    bound = _param(temp_db, np.array([True, False, True]))
+    assert list(bound) == [True, False, True]
+    assert all(isinstance(x, bool) for x in bound)
+
+
+def test_int_ndarray_stored_in_array_of_integers_and_longs(temp_db):
+    """int32 and int64 arrays bound as parameters land in ARRAY_OF_INTEGERS / ARRAY_OF_LONGS and read back as ints."""
+    db = temp_db
+    db.command("sql", "CREATE DOCUMENT TYPE IntArrays")
+    db.command("sql", "CREATE PROPERTY IntArrays.small ARRAY_OF_INTEGERS")
+    db.command("sql", "CREATE PROPERTY IntArrays.big ARRAY_OF_LONGS")
+    small = np.array([1, -2, 3], dtype=np.int32)
+    big = np.array([2**53 + 1, -(2**40), 5], dtype=np.int64)
+    with db.transaction():
+        db.command("sql", "INSERT INTO IntArrays SET small = ?, big = ?", small, big)
+    row = db.query("sql", "SELECT small, big FROM IntArrays").first()
+    assert list(row.get("small")) == [1, -2, 3]
+    assert list(row.get("big")) == [2**53 + 1, -(2**40), 5]
+    assert all(isinstance(x, int) for x in row.get("small"))
+    assert all(isinstance(x, int) for x in row.get("big"))
+
+
+def test_int_ndarray_as_named_param_and_document_property(temp_db):
+    """The named-parameter and document-property paths already keep the integers; pin them beside the positional one."""
+    db = temp_db
+    db.command("sql", "CREATE DOCUMENT TYPE IntDoc")
+    db.command("sql", "CREATE PROPERTY IntDoc.small ARRAY_OF_INTEGERS")
+    db.command("sql", "CREATE PROPERTY IntDoc.big ARRAY_OF_LONGS")
+    small = np.array([4, 5, 6], dtype=np.int32)
+    big = np.array([2**53 + 1, 8], dtype=np.int64)
+    with db.transaction():
+        db.command(
+            "sql",
+            "INSERT INTO IntDoc SET small = :s, big = :b",
+            {"s": small, "b": big},
+        )
+        doc = db.new_document("IntDoc")
+        doc.set("small", small).set("big", big).save()
+    for row in db.query("sql", "SELECT small, big FROM IntDoc"):
+        assert list(row.get("small")) == [4, 5, 6]
+        assert list(row.get("big")) == [2**53 + 1, 8]
