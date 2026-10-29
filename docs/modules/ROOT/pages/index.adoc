@@ -6,25 +6,25 @@
 
 These packages run the ArcadeDB engine inside your Python process, with no network hop and no server to start. Two packages exist, and both use the import name `{import-name}`:
 
-[cols="1,3,3,2"]
+[cols="2,3,3,2"]
 |===
 | Package | Engine | Pick it for | Install
 
 | `{native-pkg-name}` (the default)
 | Native: the engine compiled by GraalVM Community Edition, loaded with `ctypes`. No JVM, no JPype.
 | Scripts, notebooks, tests, CLIs, serverless functions and agents.
-| `pip install {native-pkg-name}`
+| `uv add {native-pkg-name}`
 
 | `{jvm-pkg-name}`
 | JVM: the Java engine in your process through https://jpype.readthedocs.io/[JPype], with a bundled Java 25 runtime.
 | Heavy, long-running loads, and the Java-object APIs.
-| `pip install {jvm-pkg-name}`
+| `uv add {jvm-pkg-name}`
 |===
 
 Not sure which one? Take `{native-pkg-name}`, and read xref:which-package.adoc[Which package?] to decide for sure. Install one of them, not both.
 
 // REMOVE WHEN: the old arcadedb-embedded* shims are retired and two releases have shipped with the two-package layout allow-old-name
-NOTE: *Transition note.* The first release of this layout is 26.11.1, and `{native-pkg-name}` may first appear as pre-releases, `26.11.1.devN`. Until a final 26.11.1 is on PyPI, these pre-releases are all there is, and a plain `pip install {native-pkg-name}` or `uv add {native-pkg-name}` installs the newest one. See xref:installation.adoc[Installation].
+NOTE: *Transition note.* The first release of this layout is 26.11.1, and `{native-pkg-name}` may first appear as pre-releases, `26.11.1.devN`. Until a final 26.11.1 is on PyPI, these pre-releases are all there is, and a plain `uv add {native-pkg-name}` installs the newest one. See xref:installation.adoc[Installation].
 
 ArcadeDB is a multi-model database: graph, document, key/value, vector and time series data live in one database, and you query it with SQL or openCypher. The bindings expose the two calls you need for that, `db.command(...)` and `db.query(...)`.
 
@@ -69,8 +69,8 @@ ArcadeDB reaches Python in two ways. Pick by where the engine should run.
 | One per call
 
 | Setup
-| `pip install {native-pkg-name}` or `pip install {jvm-pkg-name}`
-| A running server (the official Docker image `arcadedata/arcadedb`), plus `pip install arcadedb-driver`
+| `uv add {native-pkg-name}` or `uv add {jvm-pkg-name}`
+| A running server (the official Docker image `arcadedata/arcadedb`), plus `uv add arcadedb-driver`
 |===
 
 Choose the embedded bindings for a single script, a notebook, or an application with one Python process that owns its data. Choose the {arcadedb-docs-url}/how-to/connectivity/drivers/python-http[HTTP driver] when more than one process, another language, or a remote machine must reach the same database, or when the server must outlive your Python process.

@@ -13,12 +13,12 @@ Pick one of the two packages. Both import as `{import-name}`. If you are not sur
 | Package | Install | Pick this if
 
 | `{native-pkg-name}` (native, the default)
-| `pip install {native-pkg-name}` +
+| `uv add {native-pkg-name}` +
 `uv add {native-pkg-name}`
 | You write scripts, notebooks, tests, CLIs, serverless functions or agents. You want a fast start and a small footprint, and you need no JVM.
 
 | `{jvm-pkg-name}` (JVM)
-| `pip install {jvm-pkg-name}` +
+| `uv add {jvm-pkg-name}` +
 `uv add {jvm-pkg-name}`
 | Your load is heavy and long-running, so the JIT compiler pays off. Or you need the Java-object APIs, JVM options, `jvm_kwargs` or `start_jvm`.
 |===
@@ -26,7 +26,7 @@ Pick one of the two packages. Both import as `{import-name}`. If you are not sur
 Install one of them, not both. If both are installed, `import arcadedb` raises an `ImportError` that names both packages. See xref:which-package.adoc[Which package?] for the comparison, and for how to switch.
 
 // REMOVE WHEN: the old arcadedb-embedded* shims are retired and two releases have shipped with the two-package layout allow-old-name
-NOTE: *Transition note.* The first release of this layout is 26.11.1. Until `{native-pkg-name}` passes its readiness bar, it may appear only as pre-releases, `26.11.1.devN`. Until a final 26.11.1 exists, PyPI holds only these pre-releases, and a plain `pip install {native-pkg-name}` or `uv add {native-pkg-name}` installs the newest one. After a final release, a plain install takes the final, and a later pre-release needs `pip install --pre {native-pkg-name}` or `uv add --prerelease allow {native-pkg-name}`. The same holds for `{jvm-pkg-name}`.
+NOTE: *Transition note.* The first release of this layout is 26.11.1. Until `{native-pkg-name}` passes its readiness bar, it may appear only as pre-releases, `26.11.1.devN`. Until a final 26.11.1 exists, PyPI holds only these pre-releases, and a plain `uv add {native-pkg-name}` installs the newest one. After a final release, a plain install takes the final, and a later pre-release needs `uv add --prerelease allow {native-pkg-name}` or `uv add --prerelease allow {native-pkg-name}`. The same holds for `{jvm-pkg-name}`.
 
 // REMOVE WHEN: the old arcadedb-embedded* shims are retired and two releases have shipped with the two-package layout allow-old-name
 NOTE: *Old names.* The JVM package was formerly `arcadedb-embedded`. It is now `{jvm-pkg-name}`, the same build. The native package was formerly `arcadedb-embedded-native`. It is now `{native-pkg-name}`, and the old project is archived. A last `arcadedb-embedded` release will install `{native-pkg-name}`, not `{jvm-pkg-name}`. See xref:which-package.adoc#old-names[Old names].
@@ -39,7 +39,7 @@ The JVM package is self-contained. It carries a Java 25 runtime for its platform
 * Python 3.11 to 3.14 for both packages. The native package also supports Python 3.15: it is one `py3-none` wheel that loads its library with `ctypes`, and the CI runs a subset of the tests on 3.15. `{jvm-pkg-name}` does not install on 3.15 yet, because its dependency JPype has no 3.15 wheel: its `requires-python` is `>=3.11,<3.15`, so pip says that no version fits instead of building JPype from source. The cap goes when JPype ships a 3.15 wheel. The CI tests the JVM wheel on all four versions 3.11 to 3.14 on Linux x86_64, and on 3.11 and 3.14 on the other platforms (xref:development/ci.adoc[Continuous integration]).
 * One of the four platforms below. The Windows wheel of the native build is the newest, and its test run is the least proven of the four. It needs the Microsoft Visual C++ runtime (`VCRUNTIME140.dll`), which every CPython for Windows already brings.
 
-Every wheel is platform-specific and built on a native runner of its platform, so pip needs no hint to pick the right one. Each package is one file for each platform, tagged `py3-none-<platform>`, and it serves every Python version it supports. The native wheel does so because it loads its library with `ctypes`. The JVM wheel carries a JRE for its platform, and nothing in it is compiled against CPython: JPype, its dependency, has its own wheel for each Python version.
+Every wheel is platform-specific and built on a native runner of its platform, so the installer needs no hint to pick the right one. Each package is one file for each platform, tagged `py3-none-<platform>`, and it serves every Python version it supports. The native wheel does so because it loads its library with `ctypes`. The JVM wheel carries a JRE for its platform, and nothing in it is compiled against CPython: JPype, its dependency, has its own wheel for each Python version.
 
 [cols="2,3,3"]
 |===
@@ -62,10 +62,10 @@ Every wheel is platform-specific and built on a native runner of its platform, s
 | `win_amd64`
 |===
 
-Each native wheel is about 38 MB. These platforms are not built, and pip finds no wheel for them:
+Each native wheel is about 38 MB. These platforms are not built, and the installer finds no wheel for them:
 
 * *Intel Macs* (macOS x86_64). Apple has sold only Apple Silicon Macs since 2023, and macOS 26 is the last release for Intel Macs. On an Intel Mac, run the Linux wheel in Docker or in a Linux virtual machine.
-* *Alpine Linux and other musl-based distributions.* The Linux wheels are for glibc. pip then says `No matching distribution found` (for a wheel file you downloaded: `is not a supported wheel on this platform`). Use a glibc image, for example `python:3.12-slim`.
+* *Alpine Linux and other musl-based distributions.* The Linux wheels are for glibc, so the installer reports that no wheel matches the platform. Use a glibc image, for example `python:3.12-slim`.
 * *Windows on ARM.*
 * *Linux with an older glibc than the table*, for example Amazon Linux 2 and CentOS 7.
 
