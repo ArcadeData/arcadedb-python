@@ -118,6 +118,7 @@ def run(args):
     result = {
         "platform": args.platform or f"{platform.system()}-{platform.machine()}",
         "backend": arcadedb.__backend__,
+        "arm": args.arm or arcadedb.__backend__,
         "version": arcadedb.__version__,
         "round": args.round,
         "dim": args.dim,
@@ -148,7 +149,9 @@ def summarize(files):
         return 1
     groups = {}
     for r in results:
-        groups.setdefault((r["platform"], r["dim"], r["backend"]), []).append(r)
+        groups.setdefault(
+            (r["platform"], r["dim"], r.get("arm", r["backend"])), []
+        ).append(r)
     print(
         "platform dim backend n build_s(med) p50_ms(med) mean_ms(med) recall(min) provider"
     )
@@ -165,20 +168,22 @@ def summarize(files):
             rs[0].get("provider"),
         )
     for plat, dim in sorted({(k[0], k[1]) for k in groups}):
-        nat = groups.get((plat, dim, "native"))
         jvm = groups.get((plat, dim, "jvm"))
-        if not nat or not jvm:
+        for arm in sorted(
+            a for (p_, d_, a) in groups if (p_, d_) == (plat, dim) and a != "jvm"
+        ):
+            nat = groups[(plat, dim, arm)]
+            if not jvm:
+                print(f"RATIO {plat} dim={dim} {arm}/jvm p50=missing (no jvm runs)")
+                continue
+            n = statistics.median(r["p50_ms"] for r in nat)
+            j = statistics.median(r["p50_ms"] for r in jvm)
+            nb = statistics.median(r["build_s"] for r in nat)
+            jb = statistics.median(r["build_s"] for r in jvm)
+            label = "native/jvm" if arm == "native" else f"{arm}/jvm"
             print(
-                f"RATIO {plat} dim={dim} native/jvm p50=missing (native={bool(nat)} jvm={bool(jvm)})"
+                f"RATIO {plat} dim={dim} {label} p50={n / j:.2f} (build={nb / jb:.2f})"
             )
-            continue
-        n = statistics.median(r["p50_ms"] for r in nat)
-        j = statistics.median(r["p50_ms"] for r in jvm)
-        nb = statistics.median(r["build_s"] for r in nat)
-        jb = statistics.median(r["build_s"] for r in jvm)
-        print(
-            f"RATIO {plat} dim={dim} native/jvm p50={n / j:.2f} (build={nb / jb:.2f})"
-        )
     return 0
 
 
@@ -194,6 +199,9 @@ def main():
     ap.add_argument("--seed", type=int, default=7)
     ap.add_argument("--round", type=int, default=0)
     ap.add_argument("--platform", default="")
+    ap.add_argument(
+        "--arm", default="", help="label of this run (default: the backend)"
+    )
     ap.add_argument("--summarize", nargs="+", metavar="FILE")
     args = ap.parse_args()
     if args.summarize:

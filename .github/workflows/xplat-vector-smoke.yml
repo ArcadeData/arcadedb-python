@@ -99,6 +99,8 @@ jobs:
             runs-on: ubuntu-24.04
             native-artifact: native-wheel-linux-x86_64
             jvm-artifact: wheel-linux-amd64
+            # the native wheel carries libjvector (Highway) only on Linux x86-64: the third arm runs only here
+            provider-arm: "true"
           - platform: linux-aarch64
             runs-on: ubuntu-24.04-arm
             native-artifact: native-wheel-linux-aarch64
@@ -145,6 +147,7 @@ jobs:
         shell: bash
         env:
           PLATFORM: ${{ matrix.platform }}
+          PROVIDER_ARM: ${{ matrix.provider-arm }}
           ROWS: ${{ inputs.rows || '20000' }}
           QUERIES: ${{ inputs.queries || '2000' }}
         run: |
@@ -155,16 +158,26 @@ jobs:
           echo "native wheel: $native_whl"
           echo "JVM wheel: $jvm_whl"
           uv --version
+          # which jvector native library the wheels carry (the third arm needs it)
+          echo "libjvector in the native wheel:"
+          uv run --no-project --python 3.12 python -I -c "import sys, zipfile; n = [m for m in zipfile.ZipFile(sys.argv[1]).namelist() if 'jvector' in m.lower() or 'highway' in m.lower()]; print('\\n'.join(n) if n else '(none)')" "$native_whl"
 
           run_one() {
             backend="$1"
             dim="$2"
             round="$3"
+            arm="$backend"
+            envprov=""
+            if [ "$backend" = native-prov ]; then
+              backend=native
+              arm="native+provider=native"
+              envprov=native
+            fi
             if [ "$backend" = native ]; then whl="$native_whl"; else whl="$jvm_whl"; fi
-            log="out/run-$backend-d$dim-r$round.txt"
+            log="out/run-$arm-d$dim-r$round.txt"
             echo "::group::$backend dim=$dim round=$round"
-            if uv run --no-project --python 3.12 --with "$whl" --with numpy python -I scripts/xplat_vector_smoke.py \
-              --dim "$dim" --rows "$ROWS" --queries "$QUERIES" --round "$round" --platform "$PLATFORM" > "$log" 2>&1; then
+            if env ${envprov:+ARCADEDB_VECTOR_PROVIDER="$envprov"} uv run --no-project --python 3.12 --with "$whl" --with numpy python -I scripts/xplat_vector_smoke.py \
+              --dim "$dim" --rows "$ROWS" --queries "$QUERIES" --round "$round" --platform "$PLATFORM" --arm "$arm" > "$log" 2>&1; then
               grep -a 'RESULT {' "$log" | sed 's/^.*RESULT {/RESULT {/'
             else
               echo "FAILED: $backend dim=$dim round=$round (exit $?)"
@@ -175,13 +188,17 @@ jobs:
 
           for round in 1 2 3; do
             for dim in 128 768; do
-              if [ $((round % 2)) -eq 1 ]; then
-                run_one native "$dim" "$round"
-                run_one jvm "$dim" "$round"
-              else
-                run_one jvm "$dim" "$round"
-                run_one native "$dim" "$round"
+              arms="native jvm"
+              if [ "$PROVIDER_ARM" = true ]; then arms="native native-prov jvm"; fi
+              # the order reverses every other round
+              if [ $((round % 2)) -eq 0 ]; then
+                rev=""
+                for a in $arms; do rev="$a $rev"; done
+                arms="$rev"
               fi
+              for a in $arms; do
+                run_one "$a" "$dim" "$round"
+              done
             done
           done
 
