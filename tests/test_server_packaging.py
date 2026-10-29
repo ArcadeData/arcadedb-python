@@ -107,7 +107,7 @@ def test_no_apexcharts_in_the_package():
     engine 26.11.1 replaced it with Apache ECharts (ArcadeData/arcadedb#10627). This
     package is Apache-2.0, so a Studio jar from an older engine must not be installed.
     scripts/verify_wheel_licences.py guards the wheel at build time; this checks what
-    pip actually installed.
+    the installer actually installed.
     """
     from arcadedb.jvm import get_jar_path
 

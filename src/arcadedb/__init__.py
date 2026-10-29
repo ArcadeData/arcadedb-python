@@ -17,7 +17,7 @@ from ._dist_conflict import check as _check_distributions
 _DISTRIBUTION_BACKEND = _native_backend.distribution_backend()
 __backend__ = "native" if _native_backend.enabled() else "jvm"
 
-# Both distributions install a package named arcadedb into the same directory; pip overwrites one with the other
+# Both distributions install a package named arcadedb into the same directory; the installer overwrites one with the other
 # silently. Refuse to import when the other one is installed too, before anything else runs.
 _check_distributions(_DISTRIBUTION_BACKEND)
 

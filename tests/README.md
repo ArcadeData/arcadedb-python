@@ -7,25 +7,21 @@ Test suite for the ArcadeDB Python bindings. It runs against the built wheel, so
 ## Running Tests
 
 ```bash
-# Once
-uv venv
-
-# After each build: the wheel and its test extra into .venv. --reinstall-package,
-# as a rebuild keeps the version (26.11.1.dev0)
-uv pip install --reinstall-package arcadedb "$(ls dist/*.whl | head -1)[test]"
+# The wheel and its test extra go into a throwaway environment on every run, so there is no
+# environment to create. --reinstall-package, as a rebuild keeps the version (26.11.1.dev0)
 
 # Run all tests
-uv run pytest
+uv run --no-project --reinstall-package arcadedb-jvm --with "$(ls dist/*.whl | head -1)[test]" python -m pytest
 
 # Run specific file
-uv run pytest tests/test_core.py -v
+uv run --no-project --reinstall-package arcadedb-jvm --with "$(ls dist/*.whl | head -1)[test]" python -m pytest tests/test_core.py -v
 
 # Run matching keyword
-uv run pytest -k "transaction" -v
+uv run --no-project --reinstall-package arcadedb-jvm --with "$(ls dist/*.whl | head -1)[test]" python -m pytest -k "transaction" -v
 
 # Only the server tests, or everything except them (they start a real HTTP listener)
-uv run pytest -m server -v
-uv run pytest -m "not server"
+uv run --no-project --reinstall-package arcadedb-jvm --with "$(ls dist/*.whl | head -1)[test]" python -m pytest -m server -v
+uv run --no-project --reinstall-package arcadedb-jvm --with "$(ls dist/*.whl | head -1)[test]" python -m pytest -m "not server"
 ```
 
 ## Tests that send SIGINT to their own process

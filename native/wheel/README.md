@@ -5,12 +5,12 @@ This is `arcadedb`, the native build of the ArcadeDB Python bindings, and the de
 ArcadeDB (SQL, openCypher, document, graph, vector, time series) runs in your Python process **without a JVM and without JPype**. The engine is compiled ahead of time with GraalVM Community Edition into a shared library (`libarcadedb.so`, `.dylib` or `.dll`), and Python loads it with `ctypes`. It starts in milliseconds and has a small memory footprint.
 
 <!-- REMOVE WHEN: the old arcadedb-embedded* shims are retired and two releases have shipped with the two-package layout allow-old-name -->
-> Transition note: the first release of this layout is 26.11.1. Until `arcadedb` passes its readiness bar, it may appear only as pre-releases, `26.11.1.devN`. Install those with `pip install --pre arcadedb`. Report problems at <https://github.com/ArcadeData/arcadedb-python/issues> and say that you use the native build.
+> Transition note: the first release of this layout is 26.11.1. Until `arcadedb` passes its readiness bar, it may appear only as pre-releases, `26.11.1.devN`. Install those with `uv add --prerelease allow arcadedb`. Report problems at <https://github.com/ArcadeData/arcadedb-python/issues> and say that you use the native build.
 
 ## Install
 
 ```bash
-pip install arcadedb       # or: uv add arcadedb
+uv add arcadedb
 ```
 
 Optional extras for the columnar helpers: `[numpy]`, `[arrow]`, `[pandas]`, `[polars]`.
@@ -18,7 +18,7 @@ Optional extras for the columnar helpers: `[numpy]`, `[arrow]`, `[pandas]`, `[po
 <!-- REMOVE WHEN: the old arcadedb-embedded* shims are retired and two releases have shipped with the two-package layout allow-old-name -->
 Old names: this package was formerly `arcadedb-embedded-native`, imported as `arcadedb_native`. The old project is archived on PyPI: it gets no new releases and no shim. A last release of the JVM project `arcadedb-embedded` will install this package.
 
-If `arcadedb-jvm` is installed in the same environment, `import arcadedb` raises an `ImportError` that names both packages. Run `pip uninstall arcadedb arcadedb-jvm`, then install the one you want.
+If `arcadedb-jvm` is installed in the same environment, `import arcadedb` raises an `ImportError` that names both packages. Run `uv remove arcadedb arcadedb-jvm`, then install the one you want.
 
 ## Use
 

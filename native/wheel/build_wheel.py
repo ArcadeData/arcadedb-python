@@ -3,7 +3,7 @@
 
   python native/wheel/build_wheel.py --lib-dir native/target/lib --version 26.11.1.dev0 --engine 26.10.2 --out <dir>
 
-Steps: copy src/arcadedb to <out>/stage/src/arcadedb (the shared tree is not duplicated in git; only the pip hints of the extras are renamed from arcadedb-jvm[...] to arcadedb[...]);
+Steps: copy src/arcadedb to <out>/stage/src/arcadedb (the shared tree is not duplicated in git; only the install hints of the extras are renamed from arcadedb-jvm[...] to arcadedb[...]);
 rewrite `import jpype` to the bundled stub; flip the default backend to native; add the library of the build platform (libarcadedb.so on Linux,
 libarcadedb.dylib on macOS, libarcadedb.dll on Windows; on Linux x86-64 also libjvector-x86_64.so, jvector's Highway library: no other platform ships it);
 add LICENSE/NOTICE/GraalVM licence texts; check THIRD_PARTY_NOTICES.md against gen_notices.py (fails on drift); compute the platform tag from the library
