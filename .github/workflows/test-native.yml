@@ -18,7 +18,7 @@
 #
 # One wheel per platform, py3-none-<platform tag>:
 #   linux-x86_64   manylinux_2_28 container          manylinux_2_28_x86_64   libarcadedb.so + libjvector-x86_64.so
-#   linux-aarch64  manylinux_2_28 aarch64 container  manylinux_2_28_aarch64  libarcadedb.so
+#   linux-aarch64  manylinux_2_28 aarch64 container  manylinux_2_28_aarch64  libarcadedb.so + libjvector-aarch64.so
 #   macos-arm64    native, heap and threads capped   macosx_<minos>_arm64    libarcadedb.dylib
 #   windows-x64    native, MSVC environment loaded   win_amd64               libarcadedb.dll
 # Only free GitHub-hosted standard runners. GraalVM Community Edition only (pinned by sha256 per platform), never Oracle GraalVM.
@@ -425,6 +425,18 @@ jobs:
           set -euo pipefail
           dll="$(ls "$T"/lib/libarcadedb.dll)"
           dumpbin //dependents "$dll" | tee "$T/dumpbin.txt"
+
+      - name: "Gate: a Linux wheel carries jvector's library for its architecture"
+        if: ${{ matrix.kind == 'linux' }}
+        env:
+          PLAT: ${{ matrix.plat_re }}
+        run: |
+          set -euo pipefail
+          w="$(ls "$T"/wheel/dist/*.whl)"
+          arch="${KEY#linux-}"   # linux-x86_64 -> x86_64, linux-aarch64 -> aarch64 (${PLAT##*_} gave "64" for x86_64)
+          unzip -Z1 "$w" | tee "$T/wheel-files.txt" > /dev/null
+          grep -Fx "arcadedb/_native/libarcadedb.so" "$T/wheel-files.txt"
+          grep -Fx "arcadedb/_native/libjvector-${arch}.so" "$T/wheel-files.txt"
 
       - name: "Gate: twine check"
         run: uvx twine check --strict "$T"/wheel/dist/*.whl

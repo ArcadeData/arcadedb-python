@@ -72,7 +72,7 @@ Where a pom lists several licences they are alternatives (JTS: EPL-2.0 or EDL-1.
 
 ## Native code shipped next to the library
 
-`libjvector-x86_64.so` is taken unmodified from `io.github.jbellis:jvector:4.0.2` (Apache-2.0, pom). Its sources are in the jvector repository at tag `4.0.2` (`jvector-native/src/main/native`): jvector's own C++ kernels (Apache-2.0) and the Google Highway library, pinned there as a git submodule at commit `16f5f5c768064d0bb52952888a14236bec75c104`. Highway's `LICENSE` at that commit says: dual-licensed under the Apache License 2.0 or the BSD 3-Clause License, except `hwy/contrib/random/random-inl.h` (CC0 1.0). Applied here: Apache-2.0. The `LICENSE` of Highway and the `NOTICE.txt` of jvector are reproduced verbatim below. The library links `libstdc++.so.6`, `libm.so.6`, `libgcc_s.so.1` and `libc.so.6` dynamically (not shipped).
+`libjvector-x86_64.so` (Linux x86-64) and `libjvector-aarch64.so` (Linux aarch64) are taken unmodified from `io.github.jbellis:jvector:4.0.2` (Apache-2.0, pom). Their sources are in the jvector repository at tag `4.0.2` (`jvector-native/src/main/native`): jvector's own C++ kernels (Apache-2.0) and the Google Highway library, pinned there as a git submodule at commit `16f5f5c768064d0bb52952888a14236bec75c104`. Highway's `LICENSE` at that commit says: dual-licensed under the Apache License 2.0 or the BSD 3-Clause License, except `hwy/contrib/random/random-inl.h` (CC0 1.0). Applied here: Apache-2.0. The `LICENSE` of Highway and the `NOTICE.txt` of jvector are reproduced verbatim below. The libraries link `libstdc++.so.6`, `libm.so.6`, `libgcc_s.so.1` and `libc.so.6` dynamically (not shipped).
 
 ## GraalVM Community Edition runtime and JDK classes in libarcadedb.so
 
@@ -1313,7 +1313,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #### highway-16f5f5c768064d0bb52952888a14236bec75c104.LICENSE.txt [b8b1fae5894c]
 
-Applies to: libjvector-x86_64.so (google/highway)
+Applies to: libjvector-x86_64.so and libjvector-aarch64.so (google/highway)
 
 ```
 This project is primarily dual-licensed under your choice of either the Apache

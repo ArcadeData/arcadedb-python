@@ -4,7 +4,7 @@
 # Maven Central, never a local SNAPSHOT), local symbols deleted (the default: a smaller image than the phase 7/8 profiling builds).
 # MARCH (default compatibility = baseline x86-64, what a manylinux wheel promises, PEP 600; x86-64-v3 is the GraalVM CE 25.4 default and the faster reference).
 # usage: [MARCH=x86-64-v3] [XMX=12g] [NI_EXTRA="-H:NumberOfThreads=2"] build-image.sh [OUTDIR]     A laptop with other jobs runs it through its job gate; the CI calls it directly.
-# Platforms: Linux (libarcadedb.so; on x86-64 also libjvector-x86_64.so, jvector ships the Highway library for x86-64 only here), macOS
+# Platforms: Linux (libarcadedb.so; also jvector's Highway library, libjvector-x86_64.so or libjvector-aarch64.so, both are in the jvector 4.0.2 jar), macOS
 # (libarcadedb.dylib) and Windows in Git Bash with the MSVC environment loaded (libarcadedb.dll). The CI (test-native.yml) caps the
 # builder heap and threads on the 7 GB macOS runner (XMX=5g, NI_EXTRA=-H:NumberOfThreads=2).
 #   e.g. NEED_GB=13 JOB_MEM_GB=14 quiet_build.sh bash native/scripts/build-image.sh
@@ -55,15 +55,24 @@ grep -a -E -q 'PriorityForceInline. \(origin\(s\): .META-INF.native-image.org\.h
 INLINE_LOG="PriorityForceInline picked up from native-image.properties ($(grep -a -c 'PriorityForceInline' "$OUT/build.log") log lines)"
 cp "target/$LIBFILE" "$OUT/"
 LIBS=("$OUT/$LIBFILE")
-# Highway (jvector's native provider), found next to libarcadedb.so by the image (ARCADEDB_NATIVE_LIBDIR); Linux x86-64 only: the other
-# platforms ship no jvector library and the image falls back to the Java providers
-if [ "$EXT" = so ] && [ "$(uname -m)" = x86_64 ]; then
-    J=$(unzip -l "$HOME/.m2/repository/io/github/jbellis/jvector/4.0.2/jvector-4.0.2.jar" | awk '/libjvector-x86_64.so/{print $4}' | head -1)
-    if [ -n "$J" ]; then unzip -p "$HOME/.m2/repository/io/github/jbellis/jvector/4.0.2/jvector-4.0.2.jar" "$J" > "$OUT/libjvector-x86_64.so"; else
-        echo "libjvector-x86_64.so is not in the jvector 4.0.2 jar" >&2
-        exit 1
+# Highway (jvector's native library), found next to libarcadedb.so by the image (ARCADEDB_NATIVE_LIBDIR); Linux only: the jvector 4.0.2 jar
+# carries libjvector-x86_64.so and libjvector-aarch64.so and nothing for macOS or Windows. The image uses it only when
+# ARCADEDB_VECTOR_PROVIDER=native is set (the engine forces jvector's scalar provider in every image otherwise).
+if [ "$EXT" = so ]; then
+    case "$(uname -m)" in
+        x86_64) JARCH=x86_64 ;;
+        aarch64 | arm64) JARCH=aarch64 ;;
+        *) JARCH= ;;
+    esac
+    if [ -n "$JARCH" ]; then
+        JAR="$HOME/.m2/repository/io/github/jbellis/jvector/4.0.2/jvector-4.0.2.jar"
+        J=$(unzip -l "$JAR" | awk -v n="libjvector-$JARCH.so" 'index($4, n) {print $4}' | head -1)
+        if [ -n "$J" ]; then unzip -p "$JAR" "$J" > "$OUT/libjvector-$JARCH.so"; else
+            echo "libjvector-$JARCH.so is not in the jvector 4.0.2 jar" >&2
+            exit 1
+        fi
+        LIBS+=("$OUT/libjvector-$JARCH.so")
     fi
-    LIBS+=("$OUT/libjvector-x86_64.so")
 fi
 sha256 "${LIBS[@]}" > "$OUT/sha256.txt"
 echo "native image done: engine $ENGINE; march $MARCH; $INLINE_LOG; $(grep -a 'Finished generating' "$OUT/build.log")" | tee "$OUT/build.done"
