@@ -433,7 +433,7 @@ jobs:
         run: |
           set -euo pipefail
           w="$(ls "$T"/wheel/dist/*.whl)"
-          arch="${PLAT##*_}"
+          arch="${KEY#linux-}"   # linux-x86_64 -> x86_64, linux-aarch64 -> aarch64 (${PLAT##*_} gave "64" for x86_64)
           unzip -Z1 "$w" | tee "$T/wheel-files.txt" > /dev/null
           grep -Fx "arcadedb/_native/libarcadedb.so" "$T/wheel-files.txt"
           grep -Fx "arcadedb/_native/libjvector-${arch}.so" "$T/wheel-files.txt"
