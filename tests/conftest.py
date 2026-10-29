@@ -5,7 +5,6 @@ Shared pytest fixtures and configuration for ArcadeDB tests.
 import os
 import shutil
 import sys
-import tempfile
 import threading
 
 import pytest
@@ -365,18 +364,24 @@ def free_port():
 
 
 @pytest.fixture
-def temp_server_root():
-    """Create a temporary server root directory."""
-    temp_dir = tempfile.mkdtemp(prefix="arcadedb_test_server_")
+def temp_server_root(tmp_path_factory):
+    """Create a temporary server root directory (under pytest's basetemp)."""
+    temp_dir = str(tmp_path_factory.mktemp("arcadedb_test_server_"))
     yield temp_dir
     if os.path.exists(temp_dir):
         shutil.rmtree(temp_dir)
 
 
 @pytest.fixture
-def temp_db_path():
-    """Create a temporary database path."""
-    temp_dir = tempfile.mkdtemp(prefix="arcadedb_test_db_")
+def temp_db_path(tmp_path_factory):
+    """Create a temporary database path (under pytest's basetemp).
+
+    pytest keeps only its last three basetemp runs, so a killed run (teardown
+    never runs) leaves nothing permanent in the system temp directory. The
+    explicit close and rmtree with the Windows retry stay: pytest's own cleanup
+    is lazy and cannot retry a directory the JVM still holds open.
+    """
+    temp_dir = str(tmp_path_factory.mktemp("arcadedb_test_db_"))
     db_path = os.path.join(temp_dir, "test_db")
     yield db_path
     # Cleanup
@@ -402,11 +407,11 @@ def temp_db_path():
 
 
 @pytest.fixture
-def temp_db():
+def temp_db(tmp_path_factory):
     """Create a temporary database, yield it, and clean up."""
     import arcadedb
 
-    temp_dir = tempfile.mkdtemp(prefix="arcadedb_test_db_")
+    temp_dir = str(tmp_path_factory.mktemp("arcadedb_test_db_"))
     db_path = os.path.join(temp_dir, "test_db")
 
     db = arcadedb.create_database(db_path)
@@ -449,13 +454,13 @@ def temp_db():
 
 
 @pytest.fixture
-def temp_dir_factory():
+def temp_dir_factory(tmp_path_factory):
     """Factory fixture to create multiple temporary directories with cleanup."""
     temp_dirs = []
 
     def _create_temp_dir(prefix="arcadedb_test_"):
         """Create a temporary directory and register it for cleanup."""
-        temp_dir = tempfile.mkdtemp(prefix=prefix)
+        temp_dir = str(tmp_path_factory.mktemp(prefix))
         temp_dirs.append(temp_dir)
         return temp_dir
 

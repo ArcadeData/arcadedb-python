@@ -40,16 +40,14 @@ def _http_query(server, db_name, sql):
 
 
 @pytest.fixture
-def cleanup_test_dirs():
+def cleanup_test_dirs(tmp_path_factory):
     """Fixture to clean up test directories and servers."""
-    import tempfile
-
     dirs = []
     servers = []
 
     def _create_temp_dir(prefix="arcadedb_test_"):
         """Create a temporary directory and register it for cleanup."""
-        temp_dir = tempfile.mkdtemp(prefix=prefix)
+        temp_dir = str(tmp_path_factory.mktemp(prefix))
         dirs.append(temp_dir)
         return temp_dir
 

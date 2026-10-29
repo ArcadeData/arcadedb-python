@@ -1,10 +1,8 @@
 """Tests for AsyncExecutor with SQL/Cypher-first usage."""
 
 import shutil
-import tempfile
 import threading
 import time
-from pathlib import Path
 
 import pytest
 
@@ -15,7 +13,7 @@ import arcadedb
 LOSS_REPRO_ROWS = 9_742
 
 
-def test_async_executor_sql_command_insert_is_exact_at_parallel_one():
+def test_async_executor_sql_command_insert_is_exact_at_parallel_one(tmp_path):
     """Every command submitted at parallel level 1 becomes a row.
 
     This used to run at parallel level 4 and assert `count > 0`, which is the
@@ -23,7 +21,7 @@ def test_async_executor_sql_command_insert_is_exact_at_parallel_one():
     executor stored a quarter of what it was given (before 26.10.1, fixed in
     #7625) and `count > 0` still passed.
     """
-    db_path = Path(tempfile.mkdtemp()) / "test_async_sql_insert"
+    db_path = tmp_path / "test_async_sql_insert"
 
     try:
         db = arcadedb.create_database(str(db_path))
