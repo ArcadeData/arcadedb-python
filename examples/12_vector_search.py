@@ -2050,9 +2050,9 @@ def run_in_docker(args) -> bool:
             inner_cmd = " && ".join(
                 [
                     "apt-get update",
-                    "apt-get install -y --no-install-recommends python3 docker.io docker-cli docker-compose",
+                    "apt-get install -y --no-install-recommends python3 ca-certificates docker.io docker-cli docker-compose",
                     "rm -rf /var/lib/apt/lists/*",
-                    *uv_bootstrap_commands("python"),
+                    *uv_bootstrap_commands("python3"),
                     "echo 'Starting vector search benchmark...'",
                     (
                         "uv run --no-project --with numpy --with pymilvus --with psutil "
@@ -2066,7 +2066,7 @@ def run_in_docker(args) -> bool:
             return False
         user_inner_cmd = " && ".join(
             [
-                *uv_bootstrap_commands("python"),
+                *uv_bootstrap_commands("python3"),
                 "echo 'Starting vector search benchmark...'",
                 (
                     'uv run --no-project --with numpy --with "psycopg[binary]" --with psutil '
@@ -2077,7 +2077,7 @@ def run_in_docker(args) -> bool:
         inner_cmd = " && ".join(
             [
                 "apt-get update",
-                "apt-get install -y --no-install-recommends python3 gosu",
+                "apt-get install -y --no-install-recommends python3 ca-certificates gosu",
                 "rm -rf /var/lib/apt/lists/*",
                 f"getent group {os.getgid()} >/dev/null || echo 'benchgrp:x:{os.getgid()}:' >> /etc/group",
                 f"getent passwd {os.getuid()} >/dev/null || echo 'benchusr:x:{os.getuid()}:{os.getgid()}::/tmp:/bin/sh' >> /etc/passwd",
