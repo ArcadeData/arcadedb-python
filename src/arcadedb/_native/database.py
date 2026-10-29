@@ -904,13 +904,13 @@ class NativeDatabase:
         wins. It is also the number of rows ``create_vertices`` sends, and commits, per call into the image.
 
         Note:
-            ``graph_batch()`` is recommended for bulk loads. When it is called again and
-            again on types that also see deletes (a sliding window, for example), each
-            flush writes its edge records onto new pages and never reuses the space
-            that deletes freed, so the edge bucket grows (ArcadeData/arcadedb#10746).
-            For that workload write the edges with SQL ``CREATE EDGE``, or
-            ``Vertex.new_edge`` inside ``db.transaction()``. See "Known limitation:
-            graph batches next to deletes" in
+            ``graph_batch()`` is recommended for bulk loads. Before ArcadeDB 26.11.1, calling
+            it again and again on types that also see deletes (a sliding window, for
+            example) grew the edge bucket by one page per flush, because each flush wrote
+            its edge records onto new pages (ArcadeData/arcadedb#10746, fixed in #10836).
+            The ``26.11.1.devN`` pre-releases embed engine 26.10.2 and still show it; on
+            those, write the edges with SQL ``CREATE EDGE``, or ``Vertex.new_edge`` inside
+            ``db.transaction()``. See "Graph batches next to deletes" in
             docs/modules/ROOT/pages/how-to/bulk-loads.adoc.
         """
         from .extras import NativeGraphBatch
