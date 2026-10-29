@@ -7,6 +7,11 @@ name: Cross-platform vector smoke (measurement branch only)
 # meant for main.
 
 on:
+  # GitHub cannot dispatch a workflow file that is not on the default branch (HTTP 404), so a push of this measurement
+  # branch runs it once with the defaults below. workflow_dispatch stays for re-runs from the Actions tab once it exists.
+  push:
+    branches: [bench/xplat-vector-smoke]
+    paths: [".github/workflows/xplat-vector-smoke.yml"]
   workflow_dispatch:
     inputs:
       native-run-id:
@@ -140,8 +145,8 @@ jobs:
         shell: bash
         env:
           PLATFORM: ${{ matrix.platform }}
-          ROWS: ${{ inputs.rows }}
-          QUERIES: ${{ inputs.queries }}
+          ROWS: ${{ inputs.rows || '20000' }}
+          QUERIES: ${{ inputs.queries || '2000' }}
         run: |
           set -uo pipefail
           mkdir -p out
