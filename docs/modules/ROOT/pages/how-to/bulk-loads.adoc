@@ -65,13 +65,13 @@ with db.graph_batch(commit_every=5000) as batch:  # also sets the create_vertice
     ...
 ----
 
-== Known limitation: graph batches next to deletes
+== Graph batches next to deletes (fixed in ArcadeDB 26.11.1)
 
-WARNING: *A graph batch does not reuse the space of deleted edges.* The engine writes the edge records of each `graph_batch()` flush onto new pages and never looks at the free space that deletes left on older pages. The edge bucket gains one 64 KiB page per flush and never shrinks, while the live data stays flat. Both packages are affected. The engine issue is https://github.com/ArcadeData/arcadedb/issues/10746[ArcadeData/arcadedb#10746].
+NOTE: *Fixed in ArcadeDB 26.11.1.* Before 26.11.1, a graph batch did not reuse the space of deleted edges (https://github.com/ArcadeData/arcadedb/issues/10746[ArcadeData/arcadedb#10746]). The engine wrote the edge records of each `graph_batch()` flush onto new pages and never looked at the free space that deletes left on older pages, so the edge bucket gained one 64 KiB page per flush while the live data stayed flat. From 26.11.1 (https://github.com/ArcadeData/arcadedb/pull/10836[ArcadeData/arcadedb#10836]) each edge goes where an ordinary insert would put it while an existing page has room, and only the rest of a flush goes onto new pages, so a large import stays as fast as before. The 26.11.1 packages ship this fix. The `26.11.1.devN` pre-releases embed engine 26.10.2 and still show the growth described below.
 
-A one-off bulk load is not affected. The workloads that are affected call `graph_batch()` again and again on a type that also sees deletes, for example a sliding window that adds a small batch and deletes the oldest one.
+On engine 26.10.2, a one-off bulk load is not affected. The workloads that are affected call `graph_batch()` again and again on a type that also sees deletes, for example a sliding window that adds a small batch and deletes the oldest one.
 
-The measurement ran a sliding window of 60 rounds for 240 seconds on each package. Each round wrote 30 vertices and about 90 edges and deleted the oldest round with `DELETE FROM Node`, so the live edge count stayed flat. The delete order does not matter: deleting the edges before the vertices gave the same growth.
+The measurement below ran on engine 26.10.2: a sliding window of 60 rounds for 240 seconds on each package. Each round wrote 30 vertices and about 90 edges and deleted the oldest round with `DELETE FROM Node`, so the live edge count stayed flat. The delete order does not matter: deleting the edges before the vertices gave the same growth.
 
 [cols="3,2,2,2"]
 |===
@@ -100,7 +100,9 @@ The measurement ran a sliding window of 60 rounds for 240 seconds on each packag
 
 An engine-level Java run of the same shape confirms the split: after 2,000 rounds the batch had 2,000 edge pages (125.0 MiB), and `newEdge` in an ordinary transaction had 4 (0.3 MiB). The cost is disk space: in the same runs a scan of the edge type and a two-hop query did not slow down while the bucket grew.
 
-If your workload deletes and inserts again, write the edges with SQL (`CREATE EDGE`) or with `Vertex.new_edge` inside `db.transaction()`. Both stayed flat in the measurement (0.25 MiB in the table). Keep `graph_batch()` for loads that add data and do not delete from the same type.
+The engine-level Java run, repeated on the merge of the fix, kept the batch's edge bucket at 4 pages after 2,000 rounds, the same as `newEdge` in ordinary transactions, against 2,000 pages on its parent (https://github.com/ArcadeData/arcadedb/issues/10746#issuecomment-6462354150[verification on #10746]).
+
+On a `26.11.1.devN` pre-release, if your workload deletes and inserts again, write the edges with SQL (`CREATE EDGE`) or with `Vertex.new_edge` inside `db.transaction()`. Both stayed flat in the measurement (0.25 MiB in the table). From 26.11.1 on, `graph_batch()` is fine for this workload too.
 
 == If a graph batch is interrupted
 
