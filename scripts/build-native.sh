@@ -140,32 +140,17 @@ if ! command -v jlink &> /dev/null; then
     exit 1
 fi
 
-# Check for build module (required for wheel building)
-PYTHON_WITH_BUILD=""
-
-# Look for Python with working build module
-# Test that -m build actually works, not just that import build succeeds
-for py_cmd in python3.13 python3.12 python3.11 python3 python; do
-    if command -v "$py_cmd" &> /dev/null; then
-        PY_PATH="$(command -v "$py_cmd")"
-        # Test both import AND that -m build works
-        if "$PY_PATH" -c "import build" 2> /dev/null && "$PY_PATH" -m build --version &> /dev/null 2>&1; then
-            PYTHON_WITH_BUILD="$PY_PATH"
-            echo -e "${CYAN}✅ Found working build module in: ${YELLOW}${PYTHON_WITH_BUILD}${NC}"
-            break
-        fi
-    fi
-done
-
-if [[ -z "$PYTHON_WITH_BUILD" ]]; then
-    echo -e "${RED}❌ build module not found or broken in any Python installation${NC}"
-    echo -e "${YELLOW}💡 Please ensure build module is properly installed:${NC}"
-    echo -e "${YELLOW}   1. If you have a venv, activate it and run: uv pip install build${NC}"
-    echo -e "${YELLOW}   2. Otherwise, create a venv:${NC}"
-    echo -e "${YELLOW}      python3 -m venv .build-env${NC}"
-    echo -e "${YELLOW}      source .build-env/bin/activate${NC}"
-    echo -e "${YELLOW}      uv pip install build${NC}"
-    echo -e "${YELLOW}      ./scripts/build.sh${NC}"
+# Wheel building runs `build` through uvx (an isolated environment, nothing installed into any Python), so uv is the only requirement
+if ! command -v uv &> /dev/null; then
+    echo -e "${RED}❌ uv not found${NC}"
+    echo -e "${YELLOW}💡 Install uv: https://docs.astral.sh/uv/getting-started/installation/${NC}"
+    exit 1
+fi
+BUILD_CMD=(uvx --from "build[uv]==1.6.1" pyproject-build --installer uv)
+# Any Python 3 on PATH runs the small helper scripts (stdlib only)
+PYTHON_BIN="$(command -v python3 || command -v python || true)"
+if [[ -z "$PYTHON_BIN" ]]; then
+    echo -e "${RED}❌ no python found${NC}"
     exit 1
 fi
 
@@ -294,7 +279,7 @@ fi
 echo -e "${CYAN}📦 Preparing package...${NC}"
 
 # Build and copy JRE
-copy_tree_with_symlinks "$PY_BINDINGS_DIR/temp_jre" "$PY_BINDINGS_DIR/src/arcadedb/jre" "$PYTHON_WITH_BUILD"
+copy_tree_with_symlinks "$PY_BINDINGS_DIR/temp_jre" "$PY_BINDINGS_DIR/src/arcadedb/jre" "$PYTHON_BIN"
 
 JAR_COUNT=$(ls -1 "$JARS_DIR"/*.jar | wc -l)
 echo -e "${GREEN}✅ Package prepared (${JAR_COUNT} JARs + JRE)${NC}"
@@ -370,10 +355,10 @@ fi
 # Build wheel
 mkdir -p "$DIST_DIR"
 rm -f "$DIST_DIR"/*.whl
-"$PYTHON_WITH_BUILD" -m build --wheel --outdir "$DIST_DIR"
+"${BUILD_CMD[@]}" --wheel --outdir "$DIST_DIR"
 
 # Rename wheel to have correct platform tag if needed
-# (python -m build may not set it correctly for cross-platform builds)
+# (the build may not set it correctly for cross-platform builds)
 WHEEL_FILE=$(ls "$DIST_DIR"/*.whl | head -n1)
 if [[ -n "$WHEEL_FILE" ]]; then
     # Extract components from wheel filename

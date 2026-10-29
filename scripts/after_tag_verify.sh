@@ -10,7 +10,7 @@
 # the four platforms, one wheel (py3-none-<platform>) for each platform.
 #
 # Run it under bash (not zsh). Every step prints PASS or FAIL; the exit code is the number of FAILs.
-# Set PIN=4-5 to pin the smoke runs to those cores. It downloads about 0.6 GB (the 4 checked wheels of the run and four from PyPI): TMPDIR or WORK should point at a disk, not a tmpfs. Needs: gh, curl, python3, uv.
+# Set PIN=4-5 to pin the smoke runs to those cores. It downloads about 0.6 GB (the 4 checked wheels of the run and four from PyPI): TMPDIR or WORK should point at a disk, not a tmpfs. Needs: gh, curl, python3, sha256sum, uv.
 set -uo pipefail
 V="${1:?version}"
 PREV="${2:?previous version}"
@@ -98,9 +98,24 @@ sys.exit(1 if bad else 0)
 EOF
 fi
 
-# (d) every platform resolves, and a fresh environment installs and works (3.12 and 3.14)
-for plat in manylinux_2_34_x86_64 manylinux_2_34_aarch64 macosx_11_0_arm64 win_amd64; do
-    if uvx pip download --no-deps --only-binary=:all: --platform "$plat" --python-version 3.12 "$DIST==$V" -d "$W/dl-$plat" > "$W/dl-$plat.log" 2>&1; then pass "pip download $plat (Python 3.12)"; else fail "pip download $plat: $(tail -1 "$W/dl-$plat.log")"; fi
+# (d) every platform has a wheel on PyPI that downloads and matches the sha256 PyPI lists for it, and a fresh environment installs and works (3.12 and 3.14)
+# uv has no `download` command, and `uv pip` is not used here: the wheel of each platform is picked from the PyPI JSON read in (b) and fetched with curl.
+# The install of the release on the host platform is exercised by the uv run smoke below.
+for plat in 'manylinux.*x86_64' 'manylinux.*aarch64' 'macosx.*arm64' 'win_amd64'; do
+    pick=$(
+        python3 - "$W/pypi-new.json" "$plat" << 'EOF'
+import json,re,sys
+hits=[u for u in json.load(open(sys.argv[1]))["urls"] if re.search(r"-py3-none-",u["filename"]) and re.search(sys.argv[2],u["filename"])]
+if len(hits)==1: print(hits[0]["url"], hits[0]["digests"]["sha256"], hits[0]["filename"])
+EOF
+    )
+    read -r url sha name <<< "$pick"
+    if [ -z "${url:-}" ]; then
+        fail "no single wheel for $plat on PyPI"
+        continue
+    fi
+    mkdir -p "$W/dl"
+    if curl -fsSL --retry 3 -o "$W/dl/$name" "$url" > "$W/dl-$name.log" 2>&1 && [ "$(sha256sum "$W/dl/$name" | cut -d' ' -f1)" = "$sha" ]; then pass "download $name ($plat), sha256 matches PyPI"; else fail "download $name ($plat): $(tail -1 "$W/dl-$name.log")"; fi
 done
 for py in 3.12 3.14; do
     [ -n "${SKIP_SMOKE:-}" ] && {
