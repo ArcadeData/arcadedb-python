@@ -33,6 +33,7 @@ _RID_RE = re.compile(r"#?-?\d+:-?\d+")
 _FIRST_BATCH = 256
 _EPOCH_DAY_ORDINAL = date(1970, 1, 1).toordinal()
 _NEXT_BATCH = 2048
+_wrap_record = None
 _KIND = {"v": "v", "e": "e", "d": "d"}
 
 
@@ -101,12 +102,14 @@ class NativeResult:
         return None if rid is None else str(rid)
 
     def _record(self, kinds):
-        from .records import _wrap
-
+        global _wrap_record
+        # records.py imports this module: looked up on first use, then kept (an import statement per call costs about 0.4 us)
+        if _wrap_record is None:
+            from .records import _wrap as _wrap_record
         self._check_open()
         if not self._meta or self._meta[2] not in kinds:
             return None
-        return _wrap(self._database, self)
+        return _wrap_record(self._database, self)
 
     def get_vertex(self):
         return self._record("v")
@@ -360,6 +363,14 @@ class NativeResultSet:
         return n
 
     def first(self) -> Optional[NativeResult]:
+        buf = self._buf
+        database = self._database
+        if buf and not self._closed and (database is None or not database._closed):
+            # the usual point read: the first row is already here and the result is readable (what __next__ checks): take it and close
+            props, meta = buf.popleft()
+            row = NativeResult(props, meta, database)
+            self.close()
+            return row
         try:
             return next(iter(self))
         except StopIteration:
@@ -532,12 +543,11 @@ class NativeDatabase:
                     count,
                 )
             else:
-                raw, floats = lib.call_bin(
-                    "arcadedb_n_exec",
+                raw, floats = lib.exec_query(
                     self._h,
                     flags,
-                    lib.b(language),
-                    lib.b(command),
+                    lib.bc(language),
+                    lib.bc(command),
                     lib.b(text),
                     _FIRST_BATCH,
                 )
