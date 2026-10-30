@@ -15,8 +15,9 @@ no download.
 The pre-filter is the point. Taking the global top-k first and filtering by
 tenant afterwards returns fewer rows than asked, or none, whenever the nearest
 neighbours belong to another tenant (this is what Cypher's
-``db.index.vector.queryNodes(index, k, vector)`` does: it has no filter, so
-``WHERE node.tenant = ...`` runs on its k results; ArcadeData/arcadedb#10685).
+``db.index.vector.queryNodes(index, k, vector)`` does without its fourth
+argument, the ``{where, filter}`` options map of ArcadeDB 26.11.1: a ``WHERE``
+after ``YIELD`` runs on its k results; ArcadeData/arcadedb#10685).
 ``vector.neighbors`` takes the restriction as an option, so the index search
 itself only considers the tenant's vectors:
 
@@ -29,7 +30,9 @@ itself only considers the tenant's vectors:
   has ``where``.
 
 The index types are created with SQL and are always the same: an ``LSM_VECTOR``
-index on ``Fact.embedding`` and a ``FULL_TEXT`` index on ``Fact.text``.
+index on ``Fact.embedding`` and a ``FULL_TEXT`` index on ``Fact.text``, plus
+a ``NOTUNIQUE`` index on ``Fact.tenant``: from 26.11.1 a selective ``where`` on
+an indexed property takes the property index instead of loading candidates.
 ``vector.fuse`` and the ``SEARCH_INDEX`` source are used as documented in the
 ArcadeDB vector-search concept page ("Hybrid Search with vector.fuse").
 
@@ -172,6 +175,7 @@ def build(db) -> dict:
         "CREATE INDEX ON Fact (fid) UNIQUE_HASH",
         "CREATE INDEX ON Entity (eid) UNIQUE_HASH",
         "CREATE INDEX ON Fact (text) FULL_TEXT",
+        "CREATE INDEX ON Fact (tenant) NOTUNIQUE",
         'CREATE INDEX ON Fact (embedding) LSM_VECTOR METADATA {"dimensions": %d, '
         '"similarity": "COSINE"}' % DIM,
     ):

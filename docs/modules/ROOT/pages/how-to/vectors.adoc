@@ -137,7 +137,7 @@ Bind the query vector as a parameter, as the block does, instead of writing the 
 
 === openCypher
 
-The Cypher procedure `db.index.vector.queryNodes(index, k, vector)` yields `node` and `score`. Its arguments are in that order, `k` before the vector. A higher `score` is closer. The procedure has no filter, so a `WHERE` after `YIELD` runs on the `k` rows only.
+The Cypher procedure `db.index.vector.queryNodes(index, k, vector)` yields `node` and `score`. Its arguments are in that order, `k` before the vector. A higher `score` is closer. On ArcadeDB 26.11.1 and later a fourth argument, an options map, restricts the search before the top `k` is taken: `where` (a map of property to value, or a condition string) and `filter` (a list of nodes or record ids), for example `CALL db.index.vector.queryNodes('Doc[embedding]', 2, $vec, {where: {name: 'python'}})`. Without the map, and on an engine before 26.11.1, there is no filter, so a `WHERE` after `YIELD` runs on the `k` rows only.
 
 [source,python]
 ----
@@ -195,6 +195,8 @@ vector
 
 In SQL, the `filter` option of `vectorNeighbors` does the same with a list of record ids written in the statement. The `where` option tests a condition on each candidate as the search reaches it (a map of property to value, or a condition string).
 
+On ArcadeDB 26.11.1 and later, a selective `where` on an indexed property uses the property index, in `vectorNeighbors` and in `db.index.vector.queryNodes` alike: the search starts walking the graph, and when the condition keeps few records it lists them through the index and scores them directly. A broad condition keeps walking. Index the property you filter on, for example `CREATE INDEX ON Doc (name) NOTUNIQUE`. A condition on a property without an index still loads candidates to test them, as before. The plan and its measurements are in https://github.com/ArcadeData/arcadedb/issues/10921[ArcadeData/arcadedb#10921].
+
 Filtering the rows afterwards is the simplest way. The search runs first and the filter second, so ask for more neighbours than you need. A filter that drops rows can leave fewer than you asked for.
 
 [source,python]
@@ -247,7 +249,7 @@ INT8 True
 
 Two rules hold for the quantization arguments of the method:
 
-* The `pq_*`, `rerank_oversample` and `fused_pq` arguments need `quantization="PRODUCT"`. The call raises `ValueError` otherwise. The same keys are `METADATA` keys in a statement (`pqSubspaces`, `pqClusters`, `pqCenterGlobally`, `pqTrainingLimit`, `rerankOversample`, `fusedPQ`). With `PRODUCT`, every graph rebuild retrains the codebook and re-encodes every vector (https://github.com/ArcadeData/arcadedb/issues/10847[ArcadeData/arcadedb#10847]), so measure recall and rebuild time on your own data before you choose it.
+* The `pq_*` and `fused_pq` arguments need `quantization="PRODUCT"`. `rerank_oversample` needs `"PRODUCT"` or, on ArcadeDB 26.11.1 and later, `"BINARY"`: a `BINARY` search scores the one-bit codes and re-ranks `k * rerank_oversample` candidates on the stored vectors (default 10), or the whole `efSearch` beam when that is larger (https://github.com/ArcadeData/arcadedb/issues/10968[ArcadeData/arcadedb#10968]). The call raises `ValueError` otherwise. The same keys are `METADATA` keys in a statement (`pqSubspaces`, `pqClusters`, `pqCenterGlobally`, `pqTrainingLimit`, `rerankOversample`, `fusedPQ`). With `PRODUCT`, every graph rebuild retrains the codebook and re-encodes every vector (https://github.com/ArcadeData/arcadedb/issues/10847[ArcadeData/arcadedb#10847]), so measure recall and rebuild time on your own data before you choose it.
 * `encoding="INT8"` is for a `BINARY` property that already holds INT8 bytes. Set `quantization` to `"NONE"` with it. The call raises `ValueError` when both are `INT8`, because the vector would be quantized twice.
 
 == Rebuild the graph

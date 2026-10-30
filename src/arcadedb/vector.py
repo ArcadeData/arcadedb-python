@@ -624,8 +624,10 @@ class VectorIndex:
         ``vectorNeighbors``: the walk scores on the in-memory PQ codes and the best
         ``k * rerankOversample`` candidates are re-ranked on the stored vectors, so
         the distances returned are exact and the ranking can differ from an exact
-        walk's. Every other quantization takes the exact walk. For the per-query
-        ``rerank`` option, use ``vectorNeighbors`` in SQL.
+        walk's. A ``BINARY`` index (ArcadeDB 26.11.1 and later) scores on its one-bit
+        codes and re-ranks ``k * rerankOversample`` candidates the same way. The
+        other quantizations take the exact walk. For the per-query ``rerank``
+        option, use ``vectorNeighbors`` in SQL.
 
         Args:
             query_vector: Query vector as Python list, NumPy array, or array-like
