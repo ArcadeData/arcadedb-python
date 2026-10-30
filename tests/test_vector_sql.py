@@ -1120,16 +1120,18 @@ class TestConversionFastPaths:
         assert ids1 == ids2 and len(ids1) == 3
 
 
-def _engine_version():
-    import jpype
-
-    raw = str(jpype.JClass("com.arcadedb.Constants").getRawVersion())
-    parts = [int(p) if p.isdigit() else 0 for p in raw.split("-")[0].split(".")[:3]]
+def _engine_version(db):
+    """The engine's x.y.z through SQL `SELECT version()`, so the same check runs on the JVM and the native build."""
+    raw = str(db.query("sql", "SELECT version() AS v").first().get("v"))
+    parts = [
+        int(p) if p.isdigit() else 0
+        for p in raw.split()[0].split("-")[0].split(".")[:3]
+    ]
     return tuple(parts + [0] * (3 - len(parts)))
 
 
-# `where` in the vector.neighbors options is new in ArcadeDB 26.11.1. The JVM only runs
-# once a database fixture has started it, so the version is read inside each test, and
+# `where` in the vector.neighbors options is new in ArcadeDB 26.11.1. The version is read
+# through the test's database inside each test (both builds), and
 # both engines are asserted on (the repository accepts no skips, scripts/check_test_skips.py).
 WHERE_SINCE = (26, 11, 1)
 
@@ -1207,7 +1209,7 @@ class TestVectorSearchOptionsSql:
     def test_where_map_and_condition(self, test_db):
         self._make_docs(test_db)
 
-        if _engine_version() < WHERE_SINCE:
+        if _engine_version(test_db) < WHERE_SINCE:
             with pytest.raises(Exception, match="Unknown option 'where'"):
                 self._search(test_db, "{ where: { lang: 'fr' } }")
             return
@@ -1226,7 +1228,7 @@ class TestVectorSearchOptionsSql:
         allowed = f"['{rids[2]}', '{rids[3]}', '{rids[5]}']"
         options = f"{{ filter: {allowed}, where: {{ lang: 'fr' }} }}"
 
-        if _engine_version() < WHERE_SINCE:
+        if _engine_version(test_db) < WHERE_SINCE:
             with pytest.raises(Exception, match="Unknown option 'where'"):
                 self._search(test_db, options)
             return
@@ -1281,7 +1283,7 @@ class TestVectorSearchOptionsSql:
         """
         self._make_tenants(test_db)
 
-        if _engine_version() < WHERE_SINCE:
+        if _engine_version(test_db) < WHERE_SINCE:
             with pytest.raises(Exception, match="expects 3 arguments but got 4"):
                 self._query_nodes(test_db, "{where: {tenant: 1}}")
             return

@@ -124,8 +124,6 @@ NATIVE_NA_JVM_TESTS = {
     "test_vector_params_verification.py::TestVectorParams::test_jvm_heap_check": "reads java.lang.Runtime through JPype",
     "test_vector_params_verification.py::TestVectorParams::test_wrapper_default_matches_engine_default": "reads the engine default through java.lang.String and GlobalConfiguration",
     "test_vector_params_verification.py::TestVectorParams::test_omitted_max_connections_reaches_the_index": "reads the engine default through java.lang.String and GlobalConfiguration",
-    "test_vector_sql.py::TestVectorSearchOptionsSql::test_where_map_and_condition": "picks the expected behaviour by com.arcadedb.Constants.getRawVersion() through JPype",
-    "test_vector_sql.py::TestVectorSearchOptionsSql::test_where_combines_with_filter": "picks the expected behaviour by com.arcadedb.Constants.getRawVersion() through JPype",
     # Java objects built or read by the test
     "test_conversion_fixes.py::test_java_instants_convert_without_losing_microseconds": JAVA_CLASS,
     "test_type_conversion.py::test_offset_datetime_conversion": JAVA_CLASS,
