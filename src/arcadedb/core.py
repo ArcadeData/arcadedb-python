@@ -1579,8 +1579,10 @@ class Database:
                 walking on the PQ codes scores again on the stored vectors
                 (maps to the index setting "rerankOversample"; the engine default
                 is 10, 0 returns the PQ scores alone, negative is refused).
-                Requires quantization="PRODUCT". A query can override it with the
-                `rerank` option of `vectorNeighbors`.
+                Requires quantization="PRODUCT", or "BINARY" (ArcadeDB 26.11.1 and
+                later: the search scores the one-bit codes and reranks
+                k * rerank_oversample candidates; at least one per neighbour). A
+                query can override it with the `rerank` option of `vectorNeighbors`.
             fused_pq: Whether the graph file stores the PQ codes of every node's
                 neighbours inline (jvector FusedPQ; maps to the index setting
                 "fusedPQ"; off by default). Requires quantization="PRODUCT".
@@ -1623,6 +1625,7 @@ class Database:
         try:
             import jpype
 
+            quantization_kind = quantization.upper() if quantization else ""
             if any(
                 val is not None
                 for val in (
@@ -1630,12 +1633,20 @@ class Database:
                     pq_clusters,
                     pq_center_globally,
                     pq_training_limit,
-                    rerank_oversample,
                     fused_pq,
                 )
             ):
-                if not quantization or quantization.upper() != "PRODUCT":
+                if quantization_kind != "PRODUCT":
                     raise ValueError("PQ parameters require quantization='PRODUCT'")
+            # The engine reranks on the stored vectors for PRODUCT and, from 26.11.1
+            # (ArcadeData/arcadedb#10968), BINARY; every other quantization ignores it.
+            if rerank_oversample is not None and quantization_kind not in (
+                "PRODUCT",
+                "BINARY",
+            ):
+                raise ValueError(
+                    "rerank_oversample requires quantization='PRODUCT' or 'BINARY'"
+                )
 
             java_schema = self.schema._java_schema
 
