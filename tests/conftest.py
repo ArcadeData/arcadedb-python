@@ -52,6 +52,8 @@ if BACKEND != "native":
     collect_ignore.append("test_native_heap.py")
     # the native build's callback table (extras._callbacks), which the async executor releases its ids from
     collect_ignore.append("test_native_async_callbacks.py")
+    # the short call path of a point read (codec.encode_params, lib.exec_query, first()), observed on the native library
+    collect_ignore.append("test_native_point_read.py")
 if not os.path.isfile(
     os.path.join(os.path.dirname(os.path.dirname(__file__)), "docs", "index.md")
 ):
