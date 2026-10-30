@@ -12,6 +12,7 @@ except ImportError:  # pragma: no cover
     _np = None
 
 TAG = "\u0001"
+_TAG_ESCAPED = "\\u0001"  # TAG as it appears in reply text: NativeCodec.quote writes it as a \u escape
 _EPOCH_NAIVE = datetime(1970, 1, 1)
 
 # A list of this many Python floats or more may cross in the float32 side buffer (see _exact_float_list). A shorter one is cheaper
@@ -335,6 +336,11 @@ def _hook(obj):
 
 def loads(text: str, floats=None):
     """Decode a reply, restoring tagged values. ``floats``: the float32 tail of a binary reply (``["B", offset, count]`` values)."""
+    # A tagged value always puts the escaped tag in the text (NativeCodec.quote escapes every character below 0x20). Without it the reply
+    # holds none and the per-object hook, a Python call for every decoded object, is skipped (#151). A string or a key that merely
+    # contains U+0001 takes the hook path as before.
+    if _TAG_ESCAPED not in text:
+        return json.loads(text)
     if floats is None:
         return json.loads(text, object_hook=_hook)
 

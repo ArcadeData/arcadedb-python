@@ -182,22 +182,33 @@ class TestFindNearestApproximate:
     def test_returns_the_nearest_record_and_its_distance(self, temp_db):
         index = self._pq_index(temp_db, PQ_VECTORS)
 
-        results = index.find_nearest_approximate([0.9, 0.1, 0.0], k=1)
+        # k = every row: the walk keeps all four nodes, so the ranking is the PQ scores of the four rows and does
+        # not depend on how a k=1 beam happens to travel the graph (#149)
+        results = index.find_nearest_approximate([0.9, 0.1, 0.0], k=len(PQ_VECTORS))
 
-        assert len(results) == 1
+        assert len(results) == len(PQ_VECTORS)
         record, distance = results[0]
         assert record.get("name") == "x"
         assert isinstance(distance, float)
 
+        # k=1 still returns exactly one result with a float distance
+        ((_, only_distance),) = index.find_nearest_approximate([0.9, 0.1, 0.0], k=1)
+        assert isinstance(only_distance, float)
+
     def test_k_results_come_back_nearest_first(self, temp_db):
         index = self._pq_index(temp_db, PQ_VECTORS)
 
-        results = index.find_nearest_approximate([0.9, 0.1, 0.0], k=3)
+        results = index.find_nearest_approximate([0.9, 0.1, 0.0], k=len(PQ_VECTORS))
 
         assert [r.get("name") for r, _ in results][0] == "x"
-        assert len(results) == 3
+        assert len(results) == len(PQ_VECTORS)
         distances = [d for _, d in results]
         assert distances == sorted(distances)
+
+        # a smaller k returns that many, sorted
+        top3 = index.find_nearest_approximate([0.9, 0.1, 0.0], k=3)
+        assert len(top3) == 3
+        assert [d for _, d in top3] == sorted(d for _, d in top3)
 
     def test_allowed_rids_restrict_the_answer(self, temp_db):
         index = self._pq_index(temp_db, PQ_VECTORS)

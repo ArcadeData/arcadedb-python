@@ -430,8 +430,8 @@ Hybrid retrieval for an agent memory in one SQL statement instead of three store
   the same tenant, both fused by reciprocal rank fusion with `vector.fuse`, then graph hops
   (`MENTIONS`, `RELATES`) to related entities and facts, kept inside the tenant
 - shows why: a global top-k followed by a tenant test returns 0 rows when the nearest
-  neighbours belong to another tenant (the behaviour of Cypher `db.index.vector.queryNodes`,
-  which has no filter)
+  neighbours belong to another tenant (the behaviour of Cypher `db.index.vector.queryNodes`
+  without its `{where, filter}` options map, new in 26.11.1)
 - checks that every result row, and every fact reached by a hop, belongs to the tenant
 - builds a small synthetic memory (fixed-seed numpy embeddings); no data download
 - flags: `--form` (`where`, default, needs 26.11.1; or `filter`) and `--db-path`

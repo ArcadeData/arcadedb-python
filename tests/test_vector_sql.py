@@ -1120,16 +1120,18 @@ class TestConversionFastPaths:
         assert ids1 == ids2 and len(ids1) == 3
 
 
-def _engine_version():
-    import jpype
-
-    raw = str(jpype.JClass("com.arcadedb.Constants").getRawVersion())
-    parts = [int(p) if p.isdigit() else 0 for p in raw.split("-")[0].split(".")[:3]]
+def _engine_version(db):
+    """The engine's x.y.z through SQL `SELECT version()`, so the same check runs on the JVM and the native build."""
+    raw = str(db.query("sql", "SELECT version() AS v").first().get("v"))
+    parts = [
+        int(p) if p.isdigit() else 0
+        for p in raw.split()[0].split("-")[0].split(".")[:3]
+    ]
     return tuple(parts + [0] * (3 - len(parts)))
 
 
-# `where` in the vector.neighbors options is new in ArcadeDB 26.11.1. The JVM only runs
-# once a database fixture has started it, so the version is read inside each test, and
+# `where` in the vector.neighbors options is new in ArcadeDB 26.11.1. The version is read
+# through the test's database inside each test (both builds), and
 # both engines are asserted on (the repository accepts no skips, scripts/check_test_skips.py).
 WHERE_SINCE = (26, 11, 1)
 
@@ -1207,7 +1209,7 @@ class TestVectorSearchOptionsSql:
     def test_where_map_and_condition(self, test_db):
         self._make_docs(test_db)
 
-        if _engine_version() < WHERE_SINCE:
+        if _engine_version(test_db) < WHERE_SINCE:
             with pytest.raises(Exception, match="Unknown option 'where'"):
                 self._search(test_db, "{ where: { lang: 'fr' } }")
             return
@@ -1226,7 +1228,7 @@ class TestVectorSearchOptionsSql:
         allowed = f"['{rids[2]}', '{rids[3]}', '{rids[5]}']"
         options = f"{{ filter: {allowed}, where: {{ lang: 'fr' }} }}"
 
-        if _engine_version() < WHERE_SINCE:
+        if _engine_version(test_db) < WHERE_SINCE:
             with pytest.raises(Exception, match="Unknown option 'where'"):
                 self._search(test_db, options)
             return
@@ -1234,6 +1236,65 @@ class TestVectorSearchOptionsSql:
         rows = self._search(test_db, options)
 
         assert [r["id"] for r in rows] == [3, 5]
+
+    @staticmethod
+    def _make_tenants(db):
+        """200 vertices; `tenant` is indexed (NOTUNIQUE), `lang` is not."""
+        db.command("sql", "CREATE VERTEX TYPE QnDoc")
+        db.command("sql", "CREATE PROPERTY QnDoc.id INTEGER")
+        db.command("sql", "CREATE PROPERTY QnDoc.tenant INTEGER")
+        db.command("sql", "CREATE PROPERTY QnDoc.lang STRING")
+        db.command("sql", "CREATE PROPERTY QnDoc.embedding ARRAY_OF_FLOATS")
+        db.command("sql", "CREATE INDEX ON QnDoc (tenant) NOTUNIQUE")
+        db.command(
+            "sql",
+            "CREATE INDEX ON QnDoc (embedding) LSM_VECTOR METADATA "
+            '{"dimensions": 2, "similarity": "EUCLIDEAN"}',
+        )
+        with db.transaction():
+            for i in range(200):
+                db.command(
+                    "sql",
+                    "INSERT INTO QnDoc SET id = ?, tenant = ?, lang = ?, embedding = ?",
+                    i,
+                    1 if i % 50 == 7 else 0,
+                    "en" if i % 2 == 0 else "fr",
+                    arcadedb.to_java_float_array([float(i), 0.0]),
+                )
+
+    @staticmethod
+    def _query_nodes(db, options, k=10):
+        return [
+            r["id"]
+            for r in db.query(
+                "opencypher",
+                f"CALL db.index.vector.queryNodes('QnDoc[embedding]', {k}, $vec, {options}) "  # nosec B608
+                "YIELD node, score RETURN node.id AS id ORDER BY score DESC",
+                {"vec": [0.0, 0.0]},
+            ).to_list()
+        ]
+
+    def test_query_nodes_takes_the_where_options_map(self, test_db):
+        """`db.index.vector.queryNodes(index, k, vector, {where: ...})`: ArcadeDB 26.11.1.
+
+        A selective `where` on the indexed `tenant` takes the property index
+        (ArcadeData/arcadedb#10957); the answer is the same rows whichever plan
+        runs, so this pins the rows, not the plan. `lang` has no index.
+        """
+        self._make_tenants(test_db)
+
+        if _engine_version(test_db) < WHERE_SINCE:
+            with pytest.raises(Exception, match="expects 3 arguments but got 4"):
+                self._query_nodes(test_db, "{where: {tenant: 1}}")
+            return
+
+        by_map = self._query_nodes(test_db, "{where: {tenant: 1}}")
+        by_condition = self._query_nodes(test_db, "{where: 'tenant = 1'}")
+        unindexed = self._query_nodes(test_db, "{where: {lang: 'fr'}}")
+
+        assert sorted(by_map) == [7, 57, 107, 157]
+        assert sorted(by_condition) == [7, 57, 107, 157]
+        assert unindexed == [1, 3, 5, 7, 9, 11, 13, 15, 17, 19]
 
     def test_unknown_option_lists_the_allowed_ones(self, test_db):
         self._make_docs(test_db)

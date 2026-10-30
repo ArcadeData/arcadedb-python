@@ -374,6 +374,7 @@ def _check_vector_arguments(
     rerank_oversample=None,
     fused_pq=None,
 ):
+    quantization_kind = quantization.upper() if quantization else ""
     if any(
         v is not None
         for v in (
@@ -381,12 +382,17 @@ def _check_vector_arguments(
             pq_clusters,
             pq_center_globally,
             pq_training_limit,
-            rerank_oversample,
             fused_pq,
         )
     ):
-        if not quantization or quantization.upper() != "PRODUCT":
+        if quantization_kind != "PRODUCT":
             raise ValueError("PQ parameters require quantization='PRODUCT'")
+    # PRODUCT and, from 26.11.1 (ArcadeData/arcadedb#10968), BINARY rerank on the stored
+    # vectors; every other quantization ignores the setting.
+    if rerank_oversample is not None and quantization_kind not in ("PRODUCT", "BINARY"):
+        raise ValueError(
+            "rerank_oversample requires quantization='PRODUCT' or 'BINARY'"
+        )
     if (
         encoding
         and encoding.upper() == "INT8"
