@@ -54,6 +54,8 @@ if BACKEND != "native":
     collect_ignore.append("test_native_async_callbacks.py")
     # the short call path of a point read (codec.encode_params, lib.exec_query, first()), observed on the native library
     collect_ignore.append("test_native_point_read.py")
+    # the vector provider the native glue picks by default (ARCADEDB_VECTOR_PROVIDER, #153), observed on the native library
+    collect_ignore.append("test_native_vector_provider.py")
 if not os.path.isfile(
     os.path.join(os.path.dirname(os.path.dirname(__file__)), "docs", "index.md")
 ):
