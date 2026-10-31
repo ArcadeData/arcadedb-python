@@ -2,5 +2,5 @@ version = 1
 
 [[annotations]]
 path = ["**/*.py","**/*.sh","**/*.md","**/*.adoc","**/*.y*ml",".git*","scripts/Dockerfile.build","scripts/jar_exclusions.txt","pyproject.toml","setup.py","src/java/**/*","tests/fixtures/**"]
-SPDX-FileCopyrightText = "Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)"
+SPDX-FileCopyrightText = "Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com) and HumemAI (info@humem.ai)"
 SPDX-License-Identifier = "Apache-2.0"
