@@ -238,7 +238,7 @@ def main():
     (dst / "_build_info.py").write_text(
         f'"""Written by native-wheel/build_wheel.py."""\n'
         f'ENGINE_VERSION = "{a.engine}"  # the ArcadeDB engine release compiled into {libname}\n'
-        f'NATIVE_IMAGE = "GraalVM CE 25.4.4.1.1, -O2, -march={a.march}"\n'
+        f'NATIVE_IMAGE = "GraalVM CE 25.4.4.1.1, -O3, -march={a.march}"\n'
         f'NATIVE_MARCH = "{a.march}"  # lib.py checks the CPU only for an x86-64-v3 image\n'
         f'SOURCE_COMMIT = "{commit}"  # ArcadeData/arcadedb-python commit of the bindings and the Java glue\n',
         encoding="utf-8",

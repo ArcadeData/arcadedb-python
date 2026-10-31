@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the native image (the shared library the `arcadedb` wheel ships): GraalVM CE 25.4.4.1.1, -O2, FFM unbound Highway
+# Build the native image (the shared library the `arcadedb` wheel ships): GraalVM CE 25.4.4.1.1, -O3, FFM unbound Highway
 # handle (fastops.mode 1), -H:-VectorAPISupport (CE crash oracle/graal#14751), engine jars of the pinned RELEASE (arcadedb.version, from
 # Maven Central, never a local SNAPSHOT), local symbols deleted (the default: a smaller image than the phase 7/8 profiling builds).
 # MARCH (default compatibility = baseline x86-64, what a manylinux wheel promises, PEP 600; x86-64-v3 is the GraalVM CE 25.4 default and the faster reference).
@@ -34,7 +34,7 @@ export JAVA_HOME=$G PATH=$G/bin:$PATH
 export NATIVE_IMAGE_OPTIONS="-J-Dfastops.mode=1 -J-Xmx$XMX -H:-VectorAPISupport -march=$MARCH${NI_EXTRA:+ $NI_EXTRA}"
 cd "$WT/native"
 rm -f "target/$LIBFILE" "$OUT/$LIBFILE"
-./mvnw -B --no-transfer-progress -f pom.xml -DskipTests -Darcadedb.version="$ENGINE" -Dgraalvm.version=25.4.4.1.1 -Dnative.opt=-O2 package > "$OUT/build.log" 2>&1
+./mvnw -B --no-transfer-progress -f pom.xml -DskipTests -Darcadedb.version="$ENGINE" -Dgraalvm.version=25.4.4.1.1 -Dnative.opt=-O3 package > "$OUT/build.log" 2>&1
 # Windows: the Maven plugin hands native-image its arguments in an @args file that it deletes at exit, so build.log has no
 # "native-image -cp <classpath> --shared" line, which gen_notices.py reads. Append one: the glue jar plus the runtime classpath that
 # dependency:build-classpath resolves with the same properties (checked on Linux: the same 59 jars as the logged classpath, plus the glue jar).

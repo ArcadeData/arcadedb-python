@@ -14,7 +14,7 @@
     <arcadedb.version>26.10.2</arcadedb.version>
     <!-- Same as native/pom.xml native.graalvm.version: the builder (GraalVM CE 25.0.2) must match. -->
     <graalvm.version>25.0.2</graalvm.version>
-    <!-- phase 5: -Dnative.opt=-O2 (CE: -O2 and -O3 are the same) and -Dgraalvm.version=25.4.4.1.1 for the newest CE; -Os stays the default for the old numbers -->
+    <!-- build-image.sh passes -Dnative.opt=-O3 (#159: on CE 25.4.4.1.1 -O3 is not -O2; timed, warm geomean 0.736 at 1.62x the library size) and -Dgraalvm.version=25.4.4.1.1; -Os stays the default for the old numbers -->
     <native.opt>-Os</native.opt>
     <native-maven-plugin.version>1.1.14</native-maven-plugin.version>
     <maven.compiler.release>25</maven.compiler.release>
