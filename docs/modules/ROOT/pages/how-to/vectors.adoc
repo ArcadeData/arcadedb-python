@@ -292,6 +292,15 @@ print(notes.get_size())
 4
 ----
 
+[[native-provider]]
+== Distance kernels in the native package
+
+The two packages compute vector distances differently. `{jvm-pkg-name}` runs jvector's Panama kernels on the Java Vector API. `{native-pkg-name}` is built without the Vector API, so on Linux x86_64 and aarch64 it uses jvector's Highway kernels, a native library the wheel ships next to the engine, and on macOS and Windows jvector's scalar Java kernels.
+
+To choose, set `ARCADEDB_VECTOR_PROVIDER` before the first database is opened in the process: `native` for Highway (the default where the wheel ships it) or `default` for the scalar kernels. In our laptop measurement (medians, 100,000 vectors, `26.11.1.dev0`) Highway built indexes 2.2 to 2.5 times faster and answered queries 14 to 30 percent faster than the scalar kernels at 768 and 1536 dimensions; at 128 dimensions the build took the same time and queries were 6 percent slower. Both return the same results.
+
+For vector search the JVM package is faster still: see xref:which-package.adoc#vector-search[Which package?].
+
 == Next steps
 
 * xref:how-to/databases-and-queries.adoc[Databases and queries]
