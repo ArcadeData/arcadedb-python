@@ -13,7 +13,7 @@ Two packages give you the ArcadeDB engine inside your Python process. Both use t
 
 | `{jvm-pkg-name}`
 | The JVM build. The Java engine runs in your process through https://jpype.readthedocs.io/[JPype], on a bundled Java 25 runtime.
-| Heavy, long-running loads, where the JIT compiler makes the engine faster over time. Also the Java-object APIs (`get_java_database` and similar), JVM options, `jvm_kwargs` and `start_jvm`.
+| Heavy, long-running loads, where the JIT compiler makes the engine faster over time, and vector search where index build and query speed matter more than memory (see <<vector-search>>). Also the Java-object APIs (`get_java_database` and similar), JVM options, `jvm_kwargs` and `start_jvm`.
 |===
 
 [source,shell,subs="attributes+"]
@@ -71,6 +71,10 @@ The API is the same. The runtime is not. These are the differences you can plan 
 | Speed on your data
 | Measure on your own workload.
 | Measure on your own workload.
+
+| [[vector-search]]Vector search (`LSM_VECTOR`)
+| Slower to build and to query, smaller in memory. Against the JVM build, index builds took 1.28 to 1.62 times as long and median queries 1.22 to 1.87 times as long, and peak memory was 0.51 to 0.67 of the JVM build's (medians, 100,000 vectors of 128, 768 and 1536 dimensions, `26.11.1.dev0`, one laptop, with the Highway kernels that are the default on Linux, see xref:how-to/vectors.adoc#native-provider[Distance kernels in the native package]).
+| Faster to build and to query, larger in memory.
 
 | Wheel size
 | Smaller. It carries no Java runtime.
