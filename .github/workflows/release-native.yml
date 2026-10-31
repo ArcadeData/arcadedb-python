@@ -5,7 +5,7 @@ name: Release native (arcadedb)
 # starts release-jvm.yml, which publishes `arcadedb-jvm`; the two workflows do not wait for each other.
 #
 # The build and the tests are test-native.yml, called with `release: true` (the full matrix: linux-x86_64, linux-aarch64,
-# macos-arm64 and windows-x64, each on Python 3.11 to 3.14). A native image build takes about 1 to 2.5 hours per platform; this workflow adds
+# macos-arm64 and windows-x64, each on Python 3.11 to 3.14). A native image build takes about 5 to 30 minutes per platform; this workflow adds
 # no build of its own. The way the JVM release calls test-jvm.yml is the model.
 #
 # PyPI keys a trusted publisher on this FILENAME and on the job's environment, so do not rename either without changing the publisher
