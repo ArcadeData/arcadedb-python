@@ -2,7 +2,7 @@
 # wheels and runs the parity suite against them; release-native.yml calls it on a version tag and publishes. The JVM build,
 # `arcadedb-jvm`, is test-jvm.yml / release-jvm.yml.
 #
-# A native image build takes about 1 to 2.5 hours per platform and the ArcadeData organisation shares a runner cap with
+# A native image build takes about 5 to 30 minutes per platform and the ArcadeData organisation shares a runner cap with
 # upstream ArcadeDB, so the load is selective (scripts/select_native_matrix.py holds the legs, tests/test_select_native_matrix.py pins them):
 #   pull request   only when a native path changed (the `paths` filter below); linux-x86_64, Python 3.12; not for a draft
 #   push to main   only when a native path changed; all four platforms, Python 3.12 and 3.14

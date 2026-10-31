@@ -96,7 +96,7 @@ Releases from this repository start with 26.11.1. The 26.10.x wheels were built 
 ./scripts/build.sh   # an arcadedb-jvm wheel for your platform in dist/
 ```
 
-The `arcadedb` (native) wheel is built from `native/` with GraalVM Community Edition; [`CLAUDE.md`](https://github.com/ArcadeData/arcadedb-python/blob/main/CLAUDE.md) has the commands. A native image build takes about 1 to 2.5 hours per platform.
+The `arcadedb` (native) wheel is built from `native/` with GraalVM Community Edition; [`CLAUDE.md`](https://github.com/ArcadeData/arcadedb-python/blob/main/CLAUDE.md) has the commands. A native image build takes about 5 to 30 minutes per platform (macOS is the slowest).
 
 The JVM build runs in Docker on Linux. macOS and Windows need a JDK 25 or later. The jars come from the `arcadedata/arcadedb` Docker image: `latest` by default, or the tag in `ARCADEDB_TAG` (for example `ARCADEDB_TAG=26.10.2 ./scripts/build.sh`). The package version is read from the engine jar in that image, so a `26.11.1-SNAPSHOT` image builds `26.11.1.devN`.
 

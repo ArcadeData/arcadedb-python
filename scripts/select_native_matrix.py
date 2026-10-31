@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Choose the legs of the native test workflow (.github/workflows/test-native.yml) for one event.
 
-A native image build takes about 1 to 2.5 hours per platform and the ArcadeData organisation shares a runner cap with
+A native image build takes about 5 to 30 minutes per platform and the ArcadeData organisation shares a runner cap with
 upstream ArcadeDB, so a pull request builds one platform (linux-x86_64) and tests one Python (3.12), and only when
 native paths changed (the workflow's `paths` filter). Push to main, the nightly run and a dispatch build all four
 platforms and test Python 3.12 and 3.14 on each. A release (release-native.yml calls the workflow with `release: true`) tests every
