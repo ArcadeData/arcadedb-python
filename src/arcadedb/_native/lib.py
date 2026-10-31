@@ -90,6 +90,16 @@ HEAP_PERCENT = 50
 _HEAP_ARGS = ("-Xmx", "-XX:MaximumHeapSizePercent=", "-XX:MaxRAM=")
 
 
+def _default_vector_provider(libdir: Path, env) -> None:
+    """Pick jvector's Highway kernels (ARCADEDB_VECTOR_PROVIDER=native) where the wheel ships their library, libjvector-<arch>.so next
+    to the engine library (Linux x86-64 and aarch64). Measured in #153: faster index builds and queries at 768 and 1536 dimensions, the
+    same build and slightly slower queries at 128, the same results. Without the library the engine keeps jvector's scalar provider.
+    A value the user set wins; ARCADEDB_VECTOR_PROVIDER=default forces the scalar provider.
+    """
+    if not env.get("ARCADEDB_VECTOR_PROVIDER") and any(libdir.glob("libjvector-*.so")):
+        env["ARCADEDB_VECTOR_PROVIDER"] = "native"
+
+
 def _heap_isolate_args(user_args) -> list:
     """The isolate argument that limits the heap to ``HEAP_PERCENT`` of the memory; none when the user already sets the heap (theirs wins).
 
@@ -151,6 +161,7 @@ def _load():
         _check_cpu()
         # jvector's Highway library (libjvector-<arch>.so) is looked for next to the engine library
         os.environ.setdefault("ARCADEDB_NATIVE_LIBDIR", str(path.resolve().parent))
+        _default_vector_provider(path.resolve().parent, os.environ)
         lib = ctypes.CDLL(str(path))
         isolate = ctypes.c_void_p()
         thread = ctypes.c_void_p()
