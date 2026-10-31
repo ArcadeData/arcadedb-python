@@ -43,7 +43,11 @@ def test_without_the_library_the_scalar_provider_stays(tmp_path):
 
 
 def _provider(tmp_path, value=None) -> str:
-    """The VectorizationProvider class an isolate of a fresh process runs, with ARCADEDB_VECTOR_PROVIDER unset or set to ``value``."""
+    """The VectorizationProvider class an isolate of a fresh process runs, with ARCADEDB_VECTOR_PROVIDER unset or set to ``value``.
+
+    ``diag()`` is the child's first call, before any database: jvector picks its provider once per process, so this also checks that
+    ``diag()`` leaves the choice to the engine (it picked Panama on macOS and Windows when it asked jvector first).
+    """
     env = {k: v for k, v in os.environ.items() if k != "ARCADEDB_VECTOR_PROVIDER"}
     env["ARCADEDB_LOG_DIR"] = str(tmp_path / "log")
     if value is not None:

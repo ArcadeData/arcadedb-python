@@ -430,7 +430,9 @@ public final class ArcadeNative {
       sb.append(",\"max_heap\":").append(Runtime.getRuntime().maxMemory());
       sb.append(",\"exec_timers_ns\":{\"calls\":").append(T[0]).append(",\"args\":").append(T[1]).append(",\"json\":").append(T[2])
           .append(",\"engine\":").append(T[3]).append(",\"reply\":").append(T[4]).append('}');
-      final io.github.jbellis.jvector.vector.VectorizationProvider vp = io.github.jbellis.jvector.vector.VectorizationProvider.getInstance();
+      // through the engine, never VectorizationProvider.getInstance(): jvector picks its provider once per process, and asked first it
+      // would pick on its own (Panama, the uncompiled Vector API, where no libjvector ships) before the engine sets the scalar default
+      final io.github.jbellis.jvector.vector.VectorizationProvider vp = com.arcadedb.utility.VectorApiSupport.jvectorProvider();
       sb.append(",\"provider\":");
       NativeCodec.quote(sb, vp.getClass().getName());
       sb.append(",\"util_support\":");
