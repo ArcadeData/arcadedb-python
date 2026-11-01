@@ -81,7 +81,9 @@ class _Mixin:
         return self._rid or _UNSAVED
 
     def get_identity(self):
-        return RID(self.get_rid())
+        # a row can already carry @rid as an RID (vector-search rows of some engine builds): wrapping it again made str() fail
+        rid = self.get_rid()
+        return rid if isinstance(rid, RID) else RID(rid)
 
     def get_type_name(self) -> str:
         self._check_open()
