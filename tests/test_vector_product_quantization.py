@@ -423,7 +423,10 @@ class TestProductQuantizationSmallBuckets:
 
         # the premise: every bucket is below pq_clusters (the inserts spread over the buckets)
         in_bucket = [
-            test_db.query("sql", f"SELECT count(*) AS c FROM bucket:T_{b}")
+            test_db.query(
+                "sql",
+                f"SELECT count(*) AS c FROM bucket:T_{b}",  # nosec B608 - b from range()
+            )
             .first()
             .get("c")
             for b in range(SMALL_BUCKETS)
