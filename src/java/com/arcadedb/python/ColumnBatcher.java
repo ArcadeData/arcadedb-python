@@ -244,7 +244,8 @@ public final class ColumnBatcher {
           final Object v = rows.get(r)[c];
           if (v == null)
             nulls[r >> 3] |= (1 << (r & 7));
-          arr.put(v);
+          // NaN and the infinities in a list or a map travel as a tag, not as the null the JSON writers make of them
+          arr.put(RowBatcher.keepNonFinite(v));
         }
         colBuf = arr.toString().getBytes(StandardCharsets.UTF_8);
       } else { // strings and decimals: int32 offsets (count+1) then utf8 bytes

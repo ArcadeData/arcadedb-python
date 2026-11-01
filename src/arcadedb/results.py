@@ -39,6 +39,39 @@ _TYPED_SIMPLE = {
 }
 
 
+# NaN and the infinities: JSON has no literal for them and the engine's writers make null of them, so the
+# bridge (RowBatcher, ColumnBatcher) writes each one as {"\u0001": ["f", "NaN"]} (the text is Double.toString).
+_NONFINITE_KIND = "f"
+_NONFINITE_TEXT = frozenset(("NaN", "Infinity", "-Infinity"))
+
+
+def _nonfinite_hook(obj):
+    """The json object_hook that turns the bridge's non-finite tag back into a float."""
+    tagged = obj.get(_TYPED_TAG)
+    if (
+        isinstance(tagged, list)
+        and len(tagged) == 2
+        and tagged[0] == _NONFINITE_KIND
+        and tagged[1] in _NONFINITE_TEXT
+    ):
+        return float(tagged[1])
+    return obj
+
+
+def _loads_nonfinite(text):
+    """``json.loads`` of bridge JSON (a str or UTF-8 bytes) that may hold the non-finite tag.
+
+    The hook runs only when the tag character appears in the text (the writer
+    escapes it as ``\\u0001``), so a batch with no NaN or infinity parses at
+    the speed of the plain C decoder.
+    """
+    if isinstance(text, (bytes, bytearray, memoryview)):
+        text = bytes(text).decode("utf-8")
+    if "\\u0001" in text or _TYPED_TAG in text:
+        return json.loads(text, object_hook=_nonfinite_hook)
+    return json.loads(text)
+
+
 def _typed_hook(side):
     """The json object_hook that restores the values TypedRows tagged."""
 
@@ -535,6 +568,12 @@ class ResultSet:
         floats. Use ``to_list()`` when you want ``date``, ``datetime`` and
         ``Decimal`` values: it costs about the same.
 
+        NaN, Infinity and -Infinity arrive as Python floats (``float('nan')``,
+        ``float('inf')``), at the top level and inside a list or a map, as on
+        the native build. JSON has no literal for them, so the bridge writes
+        each as a tag that is turned back into a float here: the result is not
+        strict JSON, and ``json.dumps(..., allow_nan=False)`` of it raises.
+
         The encoding is one rule for every row, at the top level and inside a
         list or a map: a DATE is the epoch milliseconds of its UTC midnight (not
         a count of days) whatever the JVM time zone, the same number
@@ -571,8 +610,6 @@ class ResultSet:
         type semantics; bounds memory to one batch. Falls back to chunked
         per-row conversion when the bridge jar is unavailable.
         """
-        import json
-
         if int(batch_size) < 1:
             raise ValueError(f"batch_size must be at least 1, got {batch_size}")
         row_batcher = _bridge_class("RowBatcher")
@@ -595,7 +632,7 @@ class ResultSet:
                 java_batch = row_batcher.nextJsonBatch(self._java_result_set, size)
             except JException as exc:
                 raise _read_error(exc) from exc
-            batch = json.loads(str(java_batch))
+            batch = _loads_nonfinite(str(java_batch))
             if len(batch) < size:
                 # nextJsonBatch stops short only when the result set is drained, so a
                 # short batch is the last one: no second call (a JVM crossing, a
@@ -783,7 +820,7 @@ class ResultSet:
                     dt = "<f4" if ctype == "f4v" else "<f8"
                     values = np.frombuffer(data, dtype=dt).reshape(count, dim)
                 elif ctype == "json":
-                    values = json.loads(bytes(data))
+                    values = _loads_nonfinite(data)
                 elif ctype == "dec":
                     # an object array of Decimal (None for null): a double
                     # would lose digits, and the dtype would follow the data
@@ -942,7 +979,7 @@ class ResultSet:
                     if mask is not None:
                         arr = pa.array(arr.to_pylist(), type=arr.type, mask=mask)
                 elif ctype == "json":
-                    values = json.loads(bytes(data))
+                    values = _loads_nonfinite(data)
                     try:
                         arr = pa.array(values)
                     except pa.ArrowException:
