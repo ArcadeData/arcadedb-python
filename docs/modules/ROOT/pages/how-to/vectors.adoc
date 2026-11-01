@@ -279,6 +279,8 @@ True
 
 `build_graph_now()` rebuilds the graph at once. Call it after a bulk load, so that no search waits for a lazy build.
 
+The reads of a `VectorIndex` you hold (`get_size()`, `get_metadata()`, `get_quantization()`, `get_stats()`) ask the engine each time. After `DROP INDEX` they raise an error that names the index, and after the index is created again they report its new configuration.
+
 After you open a database, an index loads its saved graph on the first search, and that search pays the load. A service that restarts can call `warm_up()` on the index right after `open_database`, to pay it before the first query. It loads the saved graph and does not rebuild it, and it does nothing when the graph is in memory already.
 
 [source,python]
