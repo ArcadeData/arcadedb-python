@@ -143,3 +143,20 @@ def test_ordinary_rows_stay_on_the_bulk_path(temp_db_path):
 )
 def test_json_bulk_scalar_ok(value, ok):
     assert type_conversion.json_bulk_scalar_ok(value) is ok
+
+
+def test_text_that_only_looks_like_an_exponent_skips_the_subnormal_walk(monkeypatch):
+    # "e-3" is common in ordinary text (hex ids, UUIDs, "name-3"): only an exponent a subnormal can have may send a chunk
+    # through the per-row Python walk, so a load of such text keeps the fast check
+    calls = []
+    real = type_conversion._has_subnormal
+    monkeypatch.setattr(
+        type_conversion, "_has_subnormal", lambda row: calls.append(row) or real(row)
+    )
+    rows = [{"id": f"4fe-3a{i}", "tag": "name-3", "x": 1e-30} for i in range(3)]
+    assert type_conversion.json_bulk_dumps(rows) == json.dumps(rows)
+    assert calls == []
+    with pytest.raises(ValueError):
+        type_conversion.json_bulk_dumps([{"x": 5e-324}])
+    with pytest.raises(ValueError):
+        type_conversion.json_bulk_dumps([{"x": 2.2250738585072009e-308}])

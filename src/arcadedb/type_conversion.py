@@ -7,6 +7,7 @@ developer experience and integration with Python ecosystem (pandas, numpy, etc.)
 
 import json
 import math
+import re
 import sys
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
@@ -746,6 +747,10 @@ def _has_subnormal(value: Any) -> bool:
     return False
 
 
+# the exponent json.dumps writes for a subnormal double (5e-324 up to 2.2250738585072009e-308): e-308 to e-329 after a digit
+_SUBNORMAL_EXPONENT = re.compile(r"[0-9]e-3(?:0[89]|[12][0-9])")
+
+
 def _dumps_checked(rows: Any, **kwargs: Any) -> str:
     """json.dumps for the bulk paths, refusing a subnormal double.
 
@@ -753,11 +758,13 @@ def _dumps_checked(rows: Any, **kwargs: Any) -> str:
     BigDecimal, so it was stored as a DECIMAL and read back as ``Decimal``
     where every other write path stores a double. ValueError sends the row down
     the per-row path, which stores the double. Every subnormal is written with
-    an exponent of -308 or below, so the text is searched first (C speed) and
-    only a hit pays for the walk over the rows.
+    an exponent of -308 or below, so the text is searched first (C speed) for
+    such an exponent after a digit, and only a hit pays for the walk over the
+    rows. A bare "e-3" would also hit ordinary text (hex ids, UUIDs, "name-3")
+    and send every such load through the walk.
     """
     text = json.dumps(rows, allow_nan=False, **kwargs)
-    if "e-3" in text and any(_has_subnormal(row) for row in rows):
+    if _SUBNORMAL_EXPONENT.search(text) and any(_has_subnormal(row) for row in rows):
         raise ValueError("a subnormal double cannot go through the JSON bulk path")
     return text
 
