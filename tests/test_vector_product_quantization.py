@@ -19,6 +19,8 @@ is built from it, delete `has_pq_rerank` and the old-answer branches. The new-an
 only on a build from source (`engine-from-source: true`).
 """
 
+import math
+
 import numpy as np
 import pytest
 
@@ -366,6 +368,91 @@ class TestProductQuantizationHelpers:
                 quantization=quantization,
                 rerank_oversample=5,
             )
+
+
+SMALL_BUCKETS = 4
+SMALL_PQ_CLUSTERS = 16
+
+
+def _cosine_ranking(vectors, query):
+    """Ids sorted by cosine similarity to the query, best first, in plain Python."""
+
+    def cosine(vec):
+        dot = sum(a * b for a, b in zip(vec, query))
+        return dot / (
+            math.sqrt(sum(a * a for a in vec)) * math.sqrt(sum(b * b for b in query))
+        )
+
+    return sorted(range(len(vectors)), key=lambda i: cosine(vectors[i]), reverse=True)
+
+
+class TestProductQuantizationSmallBuckets:
+    """A bucket with fewer vectors than `pq_clusters` cannot train a PQ codebook.
+
+    The engine skips PQ for such a bucket and searches it exactly (ArcadeData/arcadedb#5417). The
+    Python layer used to refuse the build on the JVM build before the engine was asked, with a
+    message that said PRODUCT needs `pq_clusters` vectors per bucket; the native build, which
+    checked the whole type, let a spread type through. Both builds now answer as the engine does.
+    """
+
+    @pytest.mark.parametrize("per_bucket", [5, 15])
+    def test_buckets_below_pq_clusters_build_and_search_exactly(
+        self, test_db, per_bucket
+    ):
+        dims = 8
+        rng = np.random.default_rng(100 + per_bucket)
+        count = per_bucket * SMALL_BUCKETS
+        vectors = [[float(x) for x in rng.standard_normal(dims)] for _ in range(count)]
+        queries = [[float(x) for x in rng.standard_normal(dims)] for _ in range(10)]
+
+        test_db.command("sql", f"CREATE VERTEX TYPE T BUCKETS {SMALL_BUCKETS}")
+        test_db.command("sql", "CREATE PROPERTY T.id INTEGER")
+        test_db.command("sql", "CREATE PROPERTY T.v ARRAY_OF_FLOATS")
+        index = test_db.create_vector_index(
+            "T",
+            "v",
+            dimensions=dims,
+            quantization="PRODUCT",
+            pq_subspaces=4,
+            pq_clusters=SMALL_PQ_CLUSTERS,
+            build_graph_now=False,
+        )
+        with test_db.transaction():
+            for i, vec in enumerate(vectors):
+                test_db.command("sql", "INSERT INTO T SET id = ?, v = ?", i, vec)
+
+        # the premise: every bucket is below pq_clusters (the inserts spread over the buckets)
+        in_bucket = [
+            test_db.query(
+                "sql",
+                f"SELECT count(*) AS c FROM bucket:T_{b}",  # nosec B608 - b from range()
+            )
+            .first()
+            .get("c")
+            for b in range(SMALL_BUCKETS)
+        ]
+        assert sum(in_bucket) == count
+        assert max(in_bucket) < SMALL_PQ_CLUSTERS, in_bucket
+
+        index.build_graph_now()
+
+        for query in queries:
+            ranking = _cosine_ranking(vectors, query)
+            approximate = index.find_nearest_approximate(query, k=5)
+            exact = index.find_nearest(query, k=5)
+            approximate_ids = [int(r.get("id")) for r, _ in approximate]
+            exact_ids = [int(r.get("id")) for r, _ in exact]
+
+            assert approximate_ids[0] == ranking[0]
+            assert exact_ids[0] == ranking[0]
+            assert approximate_ids == ranking[:5]
+            assert exact_ids == ranking[:5]
+            # no PQ estimate is in force: the approximate scores are the exact scores
+            exact_score = {int(r.get("id")): s for r, s in exact}
+            for record, score in approximate:
+                assert score == pytest.approx(
+                    exact_score[int(record.get("id"))], abs=1e-5
+                )
 
 
 class TestBinaryRerankOversample:

@@ -493,28 +493,6 @@ class TestLSMVectorIndex:
         with pytest.raises(arcadedb.ArcadeDBError):
             index.find_nearest_approximate([0.9, 0.1, 0.0], k=1)
 
-    def test_lsm_vector_search_approximate_product_requires_enough_vectors(
-        self, test_db
-    ):
-        """PRODUCT quantization should fail early on tiny corpora."""
-        test_db.command("sql", "CREATE VERTEX TYPE Doc")
-        test_db.command("sql", "CREATE PROPERTY Doc.embedding ARRAY_OF_FLOATS")
-
-        index = test_db.create_vector_index(
-            "Doc", "embedding", dimensions=3, quantization="PRODUCT"
-        )
-
-        with test_db.transaction():
-            for vec in ([1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]):
-                test_db.command(
-                    "sql",
-                    "INSERT INTO Doc SET embedding = ?",
-                    arcadedb.to_java_float_array(vec),
-                )
-
-        with pytest.raises(arcadedb.ArcadeDBError, match="pq_clusters"):
-            index.build_graph_now()
-
     def test_lsm_vector_search_approximate_returns_k(self, test_db):
         """Approximate search should return exactly k results."""
         test_db.command("sql", "CREATE VERTEX TYPE Doc")

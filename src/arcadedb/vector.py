@@ -283,13 +283,11 @@ class VectorIndex:
         """
         self._java_index = java_index
         self._database = database
-        # Resolved once per wrapper: the underlying LSM indexes and the
-        # PRODUCT-quantization readiness check are stable for the lifetime of
-        # this wrapper, but were previously re-derived on every search (several
-        # JPype crossings per query). They are reset when _check_live() swaps in
-        # a rebuilt Java index.
+        # Resolved once per wrapper: the underlying LSM indexes are stable for
+        # the lifetime of this wrapper, but were previously re-derived on every
+        # search (several JPype crossings per query). Reset when _check_live()
+        # swaps in a rebuilt Java index.
         self._lsm_indexes = None
-        self._pq_ready = False
 
     def _check_live(self):
         """Re-resolve the Java index by name when SQL ``REBUILD INDEX`` (or a drop) invalidated it.
@@ -314,7 +312,6 @@ class VectorIndex:
             ) from e
         self._java_index = fresh
         self._lsm_indexes = None
-        self._pq_ready = False
 
     def _iter_lsm_indexes(self):
         if self._lsm_indexes is None:
@@ -338,35 +335,6 @@ class VectorIndex:
         for index in self._iter_lsm_indexes():
             return index
         return None
-
-    def _ensure_product_quantization_ready(self):
-        # Once the check confirms enough vectors it stays valid (indexed vectors
-        # only accumulate), so don't repeat the metadata/countEntries crossings
-        # on every search. An empty PRODUCT bucket is inconclusive (data may
-        # arrive later), so it does not memoize.
-        if self._pq_ready:
-            return
-        all_confirmed = True
-        for index in self._iter_lsm_indexes():
-            meta = index.getMetadata()
-            if str(meta.quantizationType) != "PRODUCT":
-                continue
-
-            vector_count = int(index.countEntries())
-            pq_clusters = int(meta.pqClusters)
-
-            if 0 < vector_count < pq_clusters:
-                raise ArcadeDBError(
-                    "PRODUCT quantization in this ArcadeDB version requires at least "
-                    "pq_clusters indexed vectors per bucket before graph build. "
-                    f"Current bucket has {vector_count} vector(s) but "
-                    f"pq_clusters={pq_clusters}. "
-                    "Use a smaller pq_clusters value, insert more vectors, "
-                    "or use INT8/BINARY/NONE."
-                )
-            if vector_count == 0:
-                all_confirmed = False
-        self._pq_ready = all_confirmed
 
     def _normalize_ef_search(self, ef_search):
         if ef_search is None:
@@ -651,7 +619,6 @@ class VectorIndex:
         effective_ef_search = self._normalize_ef_search(ef_search)
 
         try:
-            self._ensure_product_quantization_ready()
             return self._run_search(
                 query_vector=query_vector,
                 k=k,
@@ -831,8 +798,6 @@ class VectorIndex:
                     "Approximate search requires quantization=PRODUCT (PQ)"
                 )
 
-            self._ensure_product_quantization_ready()
-
             return self._run_search(
                 query_vector=query_vector,
                 k=k,
@@ -909,8 +874,6 @@ class VectorIndex:
         """
         self._check_live()
         try:
-            self._ensure_product_quantization_ready()
-
             built_any = False
             for index in self._iter_lsm_indexes():
                 index.buildVectorGraphNow()

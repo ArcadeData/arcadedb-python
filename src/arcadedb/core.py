@@ -1530,9 +1530,9 @@ class Database:
                 Options: "INT8", "BINARY", "PRODUCT" (PQ).
                 Reduces memory usage and speeds up search at the cost of some precision.
                 "PRODUCT" enables PQ data for approximate search (zero-disk-I/O path).
-                In current ArcadeDB engine builds, PRODUCT also requires enough indexed
-                vectors per bucket for PQ training; for tiny corpora, set `pq_clusters`
-                explicitly to a small value or prefer INT8/BINARY/NONE.
+                A bucket with fewer vectors than `pq_clusters` has too few points to
+                train a codebook: the engine skips PQ for that bucket and searches it
+                exactly, so approximate search returns exact neighbours there.
                 With PRODUCT, every graph rebuild retrains the codebook and re-encodes
                 every vector (ArcadeDB #10847); measure recall and rebuild time on
                 your data before choosing it.
@@ -1568,8 +1568,7 @@ class Database:
                 the threshold is exactly this value.
             pq_subspaces: Number of PQ subspaces (M). Requires quantization="PRODUCT".
             pq_clusters: Clusters per subspace (K). Requires quantization="PRODUCT".
-                In current ArcadeDB engine builds, this should not exceed the
-                number of indexed vectors available for PQ training in a bucket.
+                A bucket with fewer vectors than this is searched exactly, without PQ.
             pq_center_globally: Whether to globally center vectors before PQ.
                 Requires quantization="PRODUCT".
             pq_training_limit: Max vectors to use for PQ training. Requires

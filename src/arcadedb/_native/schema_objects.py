@@ -118,7 +118,7 @@ class _IndexShim:
         return info
 
     def getMetadata(self):
-        """Just what the PRODUCT-readiness check reads: the index's quantization and pq_clusters."""
+        """The index's quantization and pq_clusters, shaped like the Java metadata object."""
         from types import SimpleNamespace
 
         info = self.engine_info()
@@ -272,7 +272,6 @@ class NativeVectorIndex(_BaseVectorIndex):
         """PQ approximate search over PRODUCT quantization, the engine's own (``findNeighborsFromVectorApproximate``)."""
         if self.get_quantization() != "PRODUCT":
             raise ArcadeDBError("Approximate search requires quantization=PRODUCT (PQ)")
-        self._ensure_product_quantization_ready()
         try:
             return self._run_search(
                 query_vector=query_vector,
