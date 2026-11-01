@@ -32,11 +32,101 @@ package com.arcadedb.python;
 
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 
 public final class RowBatcher {
 
+  /** The key of a tagged value; Python reads the same character (the tag TypedRows uses). */
+  static final String TAG = "\u0001";
+
   private RowBatcher() {
+  }
+
+  /**
+   * JSON has no NaN or infinity, and the engine's writers turn them into null. This returns {@code value} with every
+   * NaN, Infinity and -Infinity (a Double or Float, or an element of a float[], a double[], a Collection or a Map, at any
+   * depth) replaced by the tag {@code {"\u0001": ["f", "NaN"]}} (the text is {@code Double.toString}), which Python turns
+   * back into a float. A value with nothing non-finite is returned as it is, with no copy, so the common row costs one
+   * type test per value.
+   */
+  static Object keepNonFinite(final Object value) {
+    if (value instanceof Double || value instanceof Float) {
+      final double d = ((Number) value).doubleValue();
+      return Double.isFinite(d) ? value : tag(d);
+    }
+    if (value instanceof float[] floats) {
+      for (final float f : floats)
+        if (!Float.isFinite(f)) {
+          final List<Object> out = new ArrayList<>(floats.length);
+          for (final float x : floats)
+            out.add(Float.isFinite(x) ? (Object) x : tag(x));
+          return out;
+        }
+      return value;
+    }
+    if (value instanceof double[] doubles) {
+      for (final double d : doubles)
+        if (!Double.isFinite(d)) {
+          final List<Object> out = new ArrayList<>(doubles.length);
+          for (final double x : doubles)
+            out.add(Double.isFinite(x) ? (Object) x : tag(x));
+          return out;
+        }
+      return value;
+    }
+    if (value instanceof Collection<?> collection) {
+      List<Object> out = null;
+      int i = 0;
+      for (final Object element : collection) {
+        final Object kept = keepNonFinite(element);
+        if (kept != element && out == null) {
+          out = new ArrayList<>(collection.size());
+          int j = 0;
+          for (final Object before : collection) {
+            if (j++ == i)
+              break;
+            out.add(before);
+          }
+        }
+        if (out != null)
+          out.add(kept);
+        i++;
+      }
+      return out != null ? out : value;
+    }
+    if (value instanceof Map<?, ?> map) {
+      Map<Object, Object> out = null;
+      int i = 0;
+      for (final Map.Entry<?, ?> entry : map.entrySet()) {
+        final Object element = entry.getValue();
+        final Object kept = keepNonFinite(element);
+        if (kept != element && out == null) {
+          out = new LinkedHashMap<>(map.size() * 2);
+          int j = 0;
+          for (final Map.Entry<?, ?> before : map.entrySet()) {
+            if (j++ == i)
+              break;
+            out.put(before.getKey(), before.getValue());
+          }
+        }
+        if (out != null)
+          out.put(entry.getKey(), kept);
+        i++;
+      }
+      return out != null ? out : value;
+    }
+    return value;
+  }
+
+  private static JSONObject tag(final double nonFinite) {
+    return new JSONObject().put(TAG, new JSONArray(List.of("f", Double.toString(nonFinite))));
   }
 
   /**
@@ -86,7 +176,8 @@ public final class RowBatcher {
       // java.util.Calendar as its epoch milliseconds like a Date (#9630), and writes a date past the range of a long of
       // milliseconds as its ISO text (#10483), where the encoder this replaced threw and failed the whole batch. The members
       // of a list or a map go the same way
-      final Object value = row.getProperty(property);
+      // The one exception: NaN and the infinities, which the writers would turn into null, travel as a tag
+      final Object value = keepNonFinite(row.getProperty(property));
       obj.put(property, value);
     }
     sb.append(obj);
