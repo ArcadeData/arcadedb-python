@@ -201,6 +201,31 @@ class TestTypeDeletion:
         schema.drop_type("TempType")
         assert not schema.exists_type("TempType")
 
+    @pytest.mark.parametrize("kind", ["vertex", "edge"])
+    def test_drop_type_drops_a_populated_graph_type(self, test_db, kind):
+        """``drop_type`` drops a type and all its data, records included, on both builds.
+
+        The native build ran SQL ``DROP TYPE``, which refuses a vertex or edge type that holds records unless
+        ``UNSAFE`` is given; the JVM build calls the engine's ``dropType``, which does not check for records.
+        """
+        schema = test_db.schema
+        schema.create_vertex_type("Person")
+        schema.create_edge_type("Knows")
+        with test_db.transaction():
+            test_db.command("sql", "CREATE VERTEX Person SET name = 'a'")
+            test_db.command("sql", "CREATE VERTEX Person SET name = 'b'")
+            test_db.command(
+                "sql",
+                "CREATE EDGE Knows FROM (SELECT FROM Person WHERE name = 'a') "
+                "TO (SELECT FROM Person WHERE name = 'b')",
+            )
+        name = "Person" if kind == "vertex" else "Knows"
+        assert test_db.count_type(name) > 0
+
+        schema.drop_type(name)
+
+        assert not schema.exists_type(name)
+
     def test_drop_non_existent_type_fails(self, test_db):
         """Test dropping non-existent type raises error."""
         schema = test_db.schema

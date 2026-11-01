@@ -369,7 +369,28 @@ class TestWrapperAcrossRebuildAndDrop:
         if arcadedb.__backend__ == "jvm":
             # the JVM wrapper names the index itself; the native one passes the engine's own error on
             assert "Doc[embedding]" in str(excinfo.value)
+        # every read raises on both builds: the native wrapper answered get_size() with the row count and
+        # get_metadata()/get_quantization() from a memoized read of the dropped index
+        for read in (
+            index.get_stats,
+            index.get_size,
+            index.get_metadata,
+            index.get_quantization,
+        ):
             with pytest.raises(arcadedb.ArcadeDBError, match=r"Doc\[embedding\]"):
-                index.get_stats()
-            with pytest.raises(arcadedb.ArcadeDBError, match=r"Doc\[embedding\]"):
-                index.get_size()
+                read()
+
+    def test_a_recreated_index_reports_its_own_configuration(self, temp_db):
+        index = self._held_index(temp_db)
+        assert (
+            index.get_quantization() != "NONE"
+        )  # create_vector_index defaults to INT8
+
+        temp_db.command("sql", "DROP INDEX `Doc[embedding]`")
+        temp_db.create_vector_index(
+            "Doc", "embedding", dimensions=3, quantization="NONE"
+        )
+
+        assert index.get_quantization() == "NONE"
+        assert index.get_metadata()["quantization"] == "NONE"
+        assert index.get_size() == len(self.ROWS)

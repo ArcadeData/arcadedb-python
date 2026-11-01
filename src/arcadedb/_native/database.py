@@ -1319,7 +1319,9 @@ class NativeSchema:
         return bool(rows)
 
     def drop_type(self, name):
-        self._run(f"DROP TYPE `{name}`")
+        # UNSAFE: the engine's dropType, which the JPype build calls, drops a type with its records; plain DROP TYPE refuses
+        # a vertex or edge type that still holds records
+        self._run(f"DROP TYPE `{name}` UNSAFE")
 
     def create_property(self, type_name, property_name, property_type, of_type=None):
         t = getattr(property_type, "value", property_type)
