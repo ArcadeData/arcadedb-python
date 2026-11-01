@@ -157,3 +157,66 @@ def test_int_ndarray_as_named_param_and_document_property(temp_db):
     for row in db.query("sql", "SELECT small, big FROM IntDoc"):
         assert list(row.get("small")) == [4, 5, 6]
         assert list(row.get("big")) == [2**53 + 1, 8]
+
+
+# A float64 array is a value, not a query vector, on every path but a positional ``?``: it keeps its doubles. The native build sent
+# it through the float32 side buffer on the named, CONTENT and record paths, so 0.1 was stored as 0.10000000149011612.
+
+
+def _write_named(db, t, arr):
+    with db.transaction():
+        sql = f"INSERT INTO {t} SET v = :v"  # nosec B608 - test-owned
+        db.command("sql", sql, {"v": arr})
+
+
+def _write_content_named(db, t, arr):
+    with db.transaction():
+        sql = f"INSERT INTO {t} CONTENT :row"  # nosec B608 - test-owned
+        db.command("sql", sql, {"row": {"v": arr}})
+
+
+def _write_record(db, t, arr):
+    with db.transaction():
+        db.new_document(t).set("v", arr).save()
+
+
+def _stored(db, t):
+    """The one stored value of ``v`` read two ways: the result row and a lookup of the record by its rid."""
+    sql = f"SELECT @rid AS rid, v FROM {t}"  # nosec B608 - test-owned
+    row = db.query("sql", sql).first()
+    by_rid = db.lookup_by_rid(str(row.get("rid"))).get("v")
+    return list(row.get("v")), list(by_rid)
+
+
+@pytest.mark.parametrize("write", [_write_named, _write_content_named, _write_record])
+def test_float64_array_keeps_its_doubles(temp_db, write):
+    temp_db.command("sql", "CREATE DOCUMENT TYPE F64")
+    write(temp_db, "F64", np.array([0.1, 0.2, 0.3], dtype=np.float64))
+    from_row, from_rid = _stored(temp_db, "F64")
+    assert from_row == [0.1, 0.2, 0.3]
+    assert from_rid == [0.1, 0.2, 0.3]
+
+
+@pytest.mark.parametrize("write", [_write_named, _write_content_named, _write_record])
+def test_float32_array_reads_back_as_its_float32_values(temp_db, write):
+    temp_db.command("sql", "CREATE DOCUMENT TYPE F32")
+    arr = np.array([0.1, 0.2, 0.3], dtype=np.float32)
+    write(temp_db, "F32", arr)
+    expected = arr.astype(
+        np.float64
+    ).tolist()  # float32 widened: 0.10000000149011612, ...
+    from_row, from_rid = _stored(temp_db, "F32")
+    assert from_row == expected
+    assert from_rid == expected
+
+
+def test_float64_array_as_a_lone_positional_parameter_is_a_query_vector(temp_db):
+    """The documented rule (databases-and-queries, "A query vector"): a float array among the positional parameters is sent as
+    float32 on both builds. Pinned beside the named case so a change of either side is a decision.
+    """
+    temp_db.command("sql", "CREATE DOCUMENT TYPE F64Pos")
+    arr = np.array([0.1, 0.2, 0.3], dtype=np.float64)
+    with temp_db.transaction():
+        temp_db.command("sql", "INSERT INTO F64Pos SET v = ?", arr)
+    from_row, _ = _stored(temp_db, "F64Pos")
+    assert from_row == arr.astype(np.float32).astype(np.float64).tolist()
