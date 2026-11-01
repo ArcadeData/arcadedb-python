@@ -288,12 +288,13 @@ class TestBuildGraphNow:
 
     The native build ran one search, which builds a graph only when there is none: on a built index the call returned at
     once and the new vectors stayed in the delta. The automatic triggers are off (a high floor, no inactivity timer), so
-    only the call can move the counters.
+    only the call can move the counters. The graph starts at 1000 vectors because the engine rebuilds a smaller one
+    synchronously on the next search (ASYNC_REBUILD_MIN_GRAPH_SIZE), which hid the defect.
     """
 
     ROWS = [
         (f"v{i}", [1.0 + i % 10, 1.0 + i // 10 % 10, 1.0 + i // 100])
-        for i in range(300)
+        for i in range(1100)
     ]
 
     def test_rebuilds_an_existing_graph(self, temp_db):
@@ -302,15 +303,15 @@ class TestBuildGraphNow:
             "sql",
             "ALTER DATABASE `arcadedb.vectorIndex.inactivityRebuildTimeoutMs` 0",
         )
-        _insert(temp_db, self.ROWS[:200])
+        _insert(temp_db, self.ROWS[:1000])
         index = temp_db.create_vector_index(
             "Doc", "embedding", dimensions=3, mutations_before_rebuild=1_000_000
         )
         before = index.get_stats()
-        assert before["graphNodeCount"] == 200
+        assert before["graphNodeCount"] == 1000
 
-        _insert(temp_db, self.ROWS[200:])
-        assert index.get_stats()["graphNodeCount"] == 200
+        _insert(temp_db, self.ROWS[1000:])
+        assert index.get_stats()["graphNodeCount"] == 1000
 
         index.build_graph_now()
 
