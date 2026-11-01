@@ -247,10 +247,11 @@ print(meta["quantization"], meta["add_hierarchy"])
 INT8 True
 ----
 
-Two rules hold for the quantization arguments of the method:
+These rules hold for the quantization arguments of the method:
 
 * The `pq_*` and `fused_pq` arguments need `quantization="PRODUCT"`. `rerank_oversample` needs `"PRODUCT"` or, on ArcadeDB 26.11.1 and later, `"BINARY"`: a `BINARY` search scores the one-bit codes and re-ranks `k * rerank_oversample` candidates on the stored vectors (default 10), or the whole `efSearch` beam when that is larger (https://github.com/ArcadeData/arcadedb/issues/10968[ArcadeData/arcadedb#10968]). The call raises `ValueError` otherwise. The same keys are `METADATA` keys in a statement (`pqSubspaces`, `pqClusters`, `pqCenterGlobally`, `pqTrainingLimit`, `rerankOversample`, `fusedPQ`). With `PRODUCT`, every graph rebuild retrains the codebook and re-encodes every vector (https://github.com/ArcadeData/arcadedb/issues/10847[ArcadeData/arcadedb#10847]), so measure recall and rebuild time on your own data before you choose it.
 * `encoding="INT8"` is for a `BINARY` property that already holds INT8 bytes. Set `quantization` to `"NONE"` with it. The call raises `ValueError` when both are `INT8`, because the vector would be quantized twice.
+* A bucket that holds fewer vectors than `pq_clusters` is too small to train a codebook. The index still builds: the engine skips PQ for that bucket and searches it exactly, so `find_nearest_approximate` returns the exact neighbours with exact scores from it. A bucket with `pq_clusters` vectors or more is trained and answers approximately.
 
 == Rebuild the graph
 
