@@ -14,6 +14,7 @@ except ImportError:  # pragma: no cover
 TAG = "\u0001"
 _TAG_ESCAPED = "\\u0001"  # TAG as it appears in reply text: NativeCodec.quote writes it as a \u escape
 _EPOCH_NAIVE = datetime(1970, 1, 1)
+_EPOCH_AWARE = datetime(1970, 1, 1, tzinfo=timezone.utc)
 
 # A list of this many Python floats or more may cross in the float32 side buffer (see _exact_float_list). A shorter one is cheaper
 # as JSON text, and a short IN list is the common use of a list parameter.
@@ -93,6 +94,11 @@ def _default(value, _bin=None):
     if _np is not None:
         if isinstance(value, _np.ndarray):
             if value.dtype.kind == "f":
+                if value.dtype != _np.float32:
+                    # a float64 (or float16, longdouble) array keeps its doubles, as on the JVM build and in row_default. The
+                    # float32 side buffer and the "F" tag (a float[] in Java) would both round it to float32 (0.1 -> 0.10000000149011612).
+                    # Only a lone positional ``?`` is a query vector sent as float32: encode_params narrows that one before it gets here.
+                    return value.tolist()
                 if _bin is not None:
                     arr = _np.ascontiguousarray(value.ravel(), dtype=_np.float32)
                     off = _bin[1]
@@ -152,6 +158,22 @@ def _prep(value, binary=False):
     return value
 
 
+def _query_vector(value):
+    """A float ndarray among the positional parameters (``?``) is a query vector: the engine stores vectors as float32, so it is
+    sent as float32 (the fast side buffer), as ``Database._convert_args`` does on the JVM build and as documented in "A query
+    vector". A named parameter, ``CONTENT :row`` and a record's properties are values, not query vectors: a float64 array there
+    keeps its doubles (see :func:`_default`).
+    """
+    if (
+        _np is not None
+        and isinstance(value, _np.ndarray)
+        and value.dtype.kind == "f"
+        and value.dtype != _np.float32
+    ):
+        return value.astype(_np.float32)
+    return value
+
+
 def encode_params(args, binary=False):
     """The ``params`` text for ``arcadedb_n_exec``: '' for none, else ``{"named":{..}}`` or ``{"pos":[..]}``.
 
@@ -183,7 +205,7 @@ def encode_params(args, binary=False):
             named = {k: _prep(v, binary) for k, v in named.items()}
         return _dump({"named": dict(named)}, binary)
     if not all(type(v) in plain for v in values):
-        values = [_prep(v, binary) for v in values]
+        values = [_prep(_query_vector(v), binary) for v in values]
     return _dump({"pos": list(values)}, binary)
 
 
@@ -364,19 +386,23 @@ def loads(text: str, floats=None):
 # --- JSON-native form of a row (ResultSet.to_json_list): DATE/DATETIME as epoch millis, DECIMAL as float.
 
 
+def _epoch_millis(delta):
+    """Whole milliseconds of a timedelta since the epoch, in integer arithmetic and floored toward negative infinity: the
+    ``Instant.toEpochMilli`` of the JVM build. ``days`` floors and ``seconds`` and ``microseconds`` are never negative, so a
+    time before 1970 with microseconds (``.999999``) is not rounded toward zero, and no float product can fall just under an
+    integer (``total_seconds() * 1000`` did both).
+    """
+    return (delta.days * 86400 + delta.seconds) * 1000 + delta.microseconds // 1000
+
+
 def json_native(value):
     if isinstance(value, datetime):
-        return (
-            int((value.replace(tzinfo=None) - _EPOCH_NAIVE).total_seconds() * 1000)
-            if value.tzinfo is None
-            else int(value.timestamp() * 1000)
+        return _epoch_millis(
+            value - _EPOCH_AWARE if value.tzinfo is not None else value - _EPOCH_NAIVE
         )
     if isinstance(value, date):
-        return int(
-            (
-                datetime.combine(value, datetime.min.time()) - _EPOCH_NAIVE
-            ).total_seconds()
-            * 1000
+        return _epoch_millis(
+            datetime.combine(value, datetime.min.time()) - _EPOCH_NAIVE
         )
     if isinstance(value, Decimal):
         return float(value)
