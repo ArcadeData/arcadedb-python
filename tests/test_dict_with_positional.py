@@ -1,8 +1,8 @@
 """A lone dict is the named-parameter map, so a statement with only ``?`` placeholders is refused, not bound to null.
 
 ``command("sql", "INSERT INTO T SET v = ?", {"a": 1})`` (and ``[{"a": 1}]``, ``({"a": 1},)``) hands the engine a named map. The
-engine binds a positional ``?`` that has no key in the map to null and nothing fails (ArcadeData/arcadedb#11098), so the record is
-stored without the value. The bindings refuse that call with a TypeError on both builds before it runs. A dict that has a
+engine binds a positional ``?`` that has no key in the map to null and nothing fails before 26.11.1 (ArcadeData/arcadedb#11098, fixed in
+26.11.1, where the engine refuses it), so the record is stored without the value. The bindings refuse that call with a TypeError on both builds before it runs. A dict that has a
 ``:name`` placeholder to bind, or a digit-string key (``{"0": v}`` binds positional slot 0 by key), keeps working.
 """
 
