@@ -68,12 +68,14 @@ def test_the_refusal_is_a_wrong_call_not_a_failed_statement(db):
 
 
 def test_a_dict_binds_a_named_placeholder(db):
-    db.command("sql", "INSERT INTO T SET k = 9, v = :v", {"v": 5})
+    with db.transaction():
+        db.command("sql", "INSERT INTO T SET k = 9, v = :v", {"v": 5})
     assert [row["v"] for row in _stored(db, 9)] == [5]
 
 
 def test_a_list_binds_a_positional_placeholder(db):
-    db.command("sql", "INSERT INTO T SET k = 9, v = ?", [5])
+    with db.transaction():
+        db.command("sql", "INSERT INTO T SET k = 9, v = ?", [5])
     assert [row["v"] for row in _stored(db, 9)] == [5]
 
 
@@ -87,7 +89,8 @@ def test_a_dict_with_a_question_mark_in_a_string_literal_binds_by_name(db):
 
 
 def test_a_dict_with_a_digit_string_key_binds_the_positional_slot(db):
-    db.command("sql", "INSERT INTO T SET k = 9, v = ?", {"0": 7})
+    with db.transaction():
+        db.command("sql", "INSERT INTO T SET k = 9, v = ?", {"0": 7})
     assert [row["v"] for row in _stored(db, 9)] == [7]
 
 
