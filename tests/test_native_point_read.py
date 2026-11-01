@@ -324,3 +324,14 @@ def test_exec_query_replies_as_call_bin_does(temp_db):
         assert (short[1] is None) == (long[1] is None)
         if flags == 4:
             assert short[1] is not None and np.array_equal(short[1], long[1])
+
+
+def test_identity_of_a_record_whose_rid_came_as_an_rid_object():
+    # the vector-search rows of engine e353330c5c carry @rid as an RID, not text: get_identity() wrapped it twice and
+    # str(record.get_identity()) raised "__str__ returned non-string"
+    from arcadedb._native.records import Document as NativeDocument
+
+    for rid in (codec.RID("#3:7"), "#3:7"):
+        identity = NativeDocument(None, "T", rid, {}).get_identity()
+        assert str(identity) == "#3:7"
+        assert identity == codec.RID("#3:7")
