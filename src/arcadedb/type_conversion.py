@@ -7,6 +7,7 @@ developer experience and integration with Python ecosystem (pandas, numpy, etc.)
 
 import json
 import math
+import sys
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from typing import Any, NamedTuple
@@ -651,6 +652,7 @@ def convert_python_to_java(value: Any) -> Any:
 # surrogate becomes "?". A value the JSON text cannot carry unchanged keeps the
 # call off the bulk path: the per-value path stores it exactly or raises.
 
+_FLOAT_NORMAL_MIN = sys.float_info.min  # below it (and above 0) a double is subnormal
 _INT64_MIN = -(2**63)
 _INT64_MAX = 2**63 - 1
 
@@ -731,6 +733,35 @@ def _json_bulk_check(value: Any) -> None:
         )
 
 
+def _has_subnormal(value: Any) -> bool:
+    """Whether a float anywhere in `value` (a row value, a list or a map) is a subnormal double."""
+    if isinstance(value, dict):
+        return any(_has_subnormal(item) for item in value.values())
+    if isinstance(value, (list, tuple)):
+        return any(_has_subnormal(item) for item in value)
+    if isinstance(value, float) or (
+        _np is not None and isinstance(value, _np.floating)
+    ):
+        return 0.0 < abs(float(value)) < _FLOAT_NORMAL_MIN
+    return False
+
+
+def _dumps_checked(rows: Any, **kwargs: Any) -> str:
+    """json.dumps for the bulk paths, refusing a subnormal double.
+
+    The engine's JSON parser reads the text of a subnormal (``5e-324``) as a
+    BigDecimal, so it was stored as a DECIMAL and read back as ``Decimal``
+    where every other write path stores a double. ValueError sends the row down
+    the per-row path, which stores the double. Every subnormal is written with
+    an exponent of -308 or below, so the text is searched first (C speed) and
+    only a hit pays for the walk over the rows.
+    """
+    text = json.dumps(rows, allow_nan=False, **kwargs)
+    if "e-3" in text and any(_has_subnormal(row) for row in rows):
+        raise ValueError("a subnormal double cannot go through the JSON bulk path")
+    return text
+
+
 def json_bulk_dumps(rows: Any) -> str:
     """json.dumps for the bulk paths: raises ValueError (or TypeError) when
     any value in `rows` would change on the way to the engine.
@@ -763,7 +794,7 @@ def json_bulk_dumps(rows: Any) -> str:
                 _json_bulk_check(
                     value
                 )  # nested lists and dicts, and subclasses of the types above
-    return json.dumps(rows, allow_nan=False)
+    return _dumps_checked(rows)
 
 
 # ---------------------------------------------------------------------------
@@ -896,7 +927,7 @@ def json_bulk_dumps_tagged(rows: Any) -> str:
                 _json_bulk_check(
                     value
                 )  # nested lists and dicts, and subclasses of the types above
-    return json.dumps(rows, allow_nan=False, default=bulk_tag_default)
+    return _dumps_checked(rows, default=bulk_tag_default)
 
 
 def bulk_row_ok(row: Any, skip=()) -> bool:
