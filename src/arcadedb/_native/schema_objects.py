@@ -136,16 +136,26 @@ class _IndexShim:
         return int(row.get("c"))
 
     def warmUp(self):
-        # the engine loads a persisted graph on the first search: run that search now
-        self.buildVectorGraphNow()
-
-    def buildVectorGraphNow(self):
-        # the engine builds the graph on the first search: one search now, on a vector of the index's dimension
+        # the engine loads a persisted graph on the first search: one search now, on a vector of the index's dimension
         dims = self.engine_info()["dimensions"]
         if dims:
             self._db.query(
                 "sql", "SELECT vectorNeighbors(?, ?, 1)", self._name, [1.0] * dims
             ).close()
+
+    def buildVectorGraphNow(self):
+        # the engine's own rebuild of every bucket index (LSMVectorIndex.buildVectorGraphNow), as the JPype wrapper calls it:
+        # a search builds a graph only when there is none, so it left the vectors written since in the delta (#162)
+        from . import lib
+        from .extras import _call, _enc
+
+        _call(
+            "Failed to rebuild vector graph",
+            "arcadedb_n_vindex",
+            self._db._h,
+            lib.b("build"),
+            lib.b(_enc({"type": self._type, "prop": self._prop})),
+        )
 
 
 def _rid_text(value) -> str:

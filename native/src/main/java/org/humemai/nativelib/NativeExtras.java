@@ -315,8 +315,9 @@ public final class NativeExtras {
   }
 
   /**
-   * ops: metadata {type, prop} | approximate {type, prop, vector, k, allowed}. The index is the one the type has on the property; its bucket
-   * indexes are searched in turn (the caller merges). metadata describes the first bucket index, as the JPype wrapper does.
+   * ops: metadata {type, prop} | approximate {type, prop, vector, k, allowed} | build {type, prop}. The index is the one the type has on the
+   * property; its bucket indexes are searched in turn (the caller merges). metadata describes the first bucket index, as the JPype wrapper does.
+   * build rebuilds the graph of every bucket index now (buildVectorGraphNow), as the JPype wrapper's build_graph_now() does (#162).
    */
   @CEntryPoint(name = "arcadedb_n_vindex")
   @SuppressWarnings("unchecked")
@@ -382,6 +383,10 @@ public final class NativeExtras {
           }
         }
         sb.append(']');
+      }
+      case "build" -> {
+        for (final LSMVectorIndex lsm : parts)
+          lsm.buildVectorGraphNow();
       }
       default -> throw new IllegalArgumentException("unknown vector index op " + ArcadeNative.str(op));
       }
