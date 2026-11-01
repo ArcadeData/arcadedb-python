@@ -10,8 +10,10 @@ Like test_bridge_fixes.py, they need the bridge jar built from this tree.
 """
 
 import math
+from datetime import date, datetime
 from decimal import Decimal
 
+import numpy as np
 import pytest
 
 import arcadedb
@@ -302,3 +304,176 @@ def test_pinned_columns_are_read_as_given(events_db, batch_size):
     assert table.column_names == ["n", "missing"]
     assert table.column("n").to_pylist() == [1, 2, 3]
     assert table.column("missing").to_pylist() == [None, None, None]
+
+
+# ---------------------------------------------------------------------------
+# The columnar readers return the values the row readers do (native-parity
+# triage 2026-11-01: C2, B3, B2, A4). The expected value is always what
+# to_list() returns for the stored row, the same on both builds.
+
+STAMP = datetime(2026, 10, 3, 12, 34, 56, 123456)
+DAY = date(2026, 10, 3)
+
+
+@pytest.fixture
+def stamp_db(temp_db_path):
+    """One row with a datetime that has microseconds and a date, and one row with neither."""
+    with arcadedb.create_database(temp_db_path) as db:
+        db.command("sql", "CREATE DOCUMENT TYPE Stamp")
+        db.insert_many(
+            "Stamp",
+            [{"n": 0, "t": STAMP, "d": DAY}, {"n": 1, "t": None, "d": None}],
+        )
+        yield db
+
+
+STAMP_QUERY = "SELECT n, t, d FROM Stamp ORDER BY n"
+
+
+def test_to_dataframe_keeps_microseconds_and_dates(stamp_db):
+    """C2: to_dataframe went through to_columns' datetime64[ms]: the microseconds were
+    dropped and a date became a Timestamp. It returns the values to_list() does."""
+    row = stamp_db.query("sql", STAMP_QUERY).to_list()[0]
+    assert row["t"] == STAMP and row["d"] == DAY  # what is stored
+
+    frame = stamp_db.query("sql", STAMP_QUERY).to_dataframe()
+    assert frame["t"].dtype.kind == "M"
+    assert frame["t"].iloc[0].to_pydatetime() == STAMP
+    assert pd.isna(frame["t"].iloc[1])
+    assert type(frame["d"].iloc[0]) is date
+    assert frame["d"].iloc[0] == DAY
+    assert pd.isna(frame["d"].iloc[1])
+
+
+def test_to_columns_and_to_arrow_keep_the_documented_milliseconds(stamp_db):
+    """to_columns() is documented as datetime64[ms], and to_arrow() as timestamp[ms]: a
+    DATE is its midnight. C2 changes to_dataframe only."""
+    columns = stamp_db.query("sql", STAMP_QUERY).to_columns()
+    assert columns["t"].dtype == np.dtype("datetime64[ms]")
+    assert columns["t"][0] == np.datetime64("2026-10-03T12:34:56.123", "ms")
+    assert np.isnat(columns["t"][1])
+    assert columns["d"].dtype == np.dtype("datetime64[ms]")
+    assert columns["d"][0] == np.datetime64("2026-10-03", "ms")
+
+    table = stamp_db.query("sql", STAMP_QUERY).to_arrow()
+    assert table.schema.field("t").type == pa.timestamp("ms")
+    assert table.column("t").to_pylist() == [
+        datetime(2026, 10, 3, 12, 34, 56, 123000),
+        None,
+    ]
+    assert table.schema.field("d").type == pa.timestamp("ms")
+
+
+NESTED_CASES = {
+    "list of datetimes": [STAMP],
+    "list of dates": [DAY],
+    "list of decimals": [Decimal("1.10")],
+    "list of mixed temporals and a decimal": [STAMP, DAY, Decimal("1.10")],
+    "map with a date": {"k": DAY},
+    "map with a datetime": {"k": STAMP},
+    "map with a decimal": {"k": Decimal("1.10")},
+    "map with int keys": {1: "a", 2: "b"},
+}
+# a list that holds one kind of value is an Arrow list of it; the others have no one Arrow type
+NESTED_IN_ARROW = [
+    "list of datetimes",
+    "list of dates",
+    "list of decimals",
+    "map with a date",
+    "map with a datetime",
+    "map with a decimal",
+]
+
+
+@pytest.fixture
+def nested_db(temp_db_path):
+    with arcadedb.create_database(temp_db_path) as db:
+        db.command("sql", "CREATE DOCUMENT TYPE Nested")
+        yield db
+
+
+def _store_nested(db, value):
+    with db.transaction():
+        db.command("sql", "DELETE FROM Nested")
+    with db.transaction():
+        db.command("sql", "INSERT INTO Nested SET n = 0, v = :v", {"v": value})
+    return db.query("sql", "SELECT n, v FROM Nested").to_list()[0]["v"]
+
+
+@pytest.mark.parametrize("batch_size", [25_000, 1])
+@pytest.mark.parametrize("case", list(NESTED_CASES))
+def test_nested_values_are_read_as_the_row_reader_reads_them(
+    nested_db, case, batch_size
+):
+    """B3: a date, datetime or Decimal inside a list or map, and an int map key, came
+    back from the columnar readers as epoch milliseconds, a float and a str."""
+    stored = _store_nested(nested_db, NESTED_CASES[case])
+    assert stored == NESTED_CASES[case]  # the row reader returns it whole
+    q = "SELECT n, v FROM Nested"
+
+    column = nested_db.query("sql", q).to_columns(batch_size=batch_size)["v"]
+    # repr: the type of every element and the scale of a Decimal count, not only ==
+    assert repr(list(column)) == repr([stored])
+
+    frame = nested_db.query("sql", q).to_dataframe()
+    assert repr(frame["v"].iloc[0]) == repr(stored)
+
+
+@pytest.mark.parametrize("batch_size", [25_000, 1])
+@pytest.mark.parametrize("case", NESTED_IN_ARROW)
+def test_nested_values_in_arrow_keep_their_types(nested_db, case, batch_size):
+    stored = _store_nested(nested_db, NESTED_CASES[case])
+    table = nested_db.query("sql", "SELECT n, v FROM Nested").to_arrow(
+        batch_size=batch_size
+    )
+    assert table.column("v").to_pylist() == [stored]
+
+
+@pytest.fixture
+def vector_db(temp_db_path):
+    with arcadedb.create_database(temp_db_path) as db:
+        db.command("sql", "CREATE DOCUMENT TYPE Vec")
+        with db.transaction():
+            db.command(
+                "sql",
+                "INSERT INTO Vec SET n = ?, v = ?",
+                0,
+                np.array([], dtype=np.float32),
+            )
+        yield db
+
+
+@pytest.mark.parametrize("batch_size", [25_000, 1])
+def test_an_empty_float32_vector_reads_as_empty(vector_db, batch_size):
+    """B2: an empty float32 vector made to_columns, to_dataframe and to_arrow raise
+    KeyError: 'dim' on the JVM build; native returns []."""
+    q = "SELECT n, v FROM Vec"
+    assert list(vector_db.query("sql", q).to_list()[0]["v"]) == []
+
+    columns = vector_db.query("sql", q).to_columns(batch_size=batch_size)
+    assert [list(x) for x in columns["v"]] == [[]]
+    frame = vector_db.query("sql", q).to_dataframe()
+    assert [list(x) for x in frame["v"]] == [[]]
+    table = vector_db.query("sql", q).to_arrow(batch_size=batch_size)
+    assert table.column("v").to_pylist() == [[]]
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param(5e-324, id="smallest-subnormal"),
+        pytest.param(2.5e-320, id="subnormal"),
+        pytest.param(2.2250738585072014e-308, id="smallest-normal"),
+        pytest.param([1.0, 5e-324], id="in-a-list"),
+    ],
+)
+def test_insert_many_keeps_a_tiny_double_a_float(temp_db_path, value):
+    """A4: 5e-324 sent through insert_many was stored as a DECIMAL and read back as
+    Decimal('5E-324'); every other write path stores a double."""
+    with arcadedb.create_database(temp_db_path) as db:
+        db.command("sql", "CREATE DOCUMENT TYPE Tiny")
+        db.insert_many("Tiny", [{"n": 0, "x": value}])
+        x = db.query("sql", "SELECT x FROM Tiny").to_list()[0]["x"]
+        assert x == value
+        for element in x if isinstance(x, list) else [x]:
+            assert type(element) is float
