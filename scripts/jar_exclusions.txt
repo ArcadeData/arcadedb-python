@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+# SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com) and HumemAI (info@humem.ai)
 # SPDX-License-Identifier: Apache-2.0
 #
 # JAR Exclusion List for ArcadeDB Python Package
