@@ -9,6 +9,13 @@
  * fit those encodings are serialized as one JSON array ("json" type). Python decodes with numpy.frombuffer
  * (ResultSet.to_columns / the fast to_dataframe path). Measured ~1.2x of
  * Java-native iteration on 100k-row scans (vs 3.4x for the JSON row path).
+ *
+ * A "json" column is written with the tagged encoding of TypedRows, not the engine's JSON writer: a date, datetime,
+ * DECIMAL or non-String map key inside a list or a map reaches Python as the type ResultSet.to_list() gives it, and the
+ * values JSON cannot carry (NaN, RIDs, ...) are the engine objects of the side array that is returned with the buffer.
+ * With {@code micros} a datetime column is written as epoch MICROseconds ("dtu", what ResultSet.to_dataframe reads) and
+ * any column holding a DATE or a time-zone-aware temporal is a "json" column, so Python gets date and datetime objects as
+ * the row readers return them.
  */
 package com.arcadedb.python;
 
@@ -64,7 +71,33 @@ public final class ColumnBatcher {
     throw new IllegalArgumentException("not a temporal: " + v.getClass());
   }
 
-  public static byte[] nextColumnBatch(final ResultSet rs, final int max, final String joinedColumns) {
+  /** Epoch microseconds of a naive datetime: what {@link #toEpochMillis} is in milliseconds, without the cut. */
+  private static long toEpochMicros(final Object v) {
+    if (v instanceof LocalDateTime ldt)
+      return Math.addExact(Math.multiplyExact(ldt.toEpochSecond(ZoneOffset.UTC), 1_000_000L), ldt.getNano() / 1000);
+    if (v instanceof Date d)
+      return Math.multiplyExact(d.getTime(), 1000L);
+    if (v instanceof Calendar c)
+      return Math.multiplyExact(c.getTimeInMillis(), 1000L);
+    throw new IllegalArgumentException("not a naive datetime: " + v.getClass());
+  }
+
+  /** Python's datetime covers years 1 to 9999; a datetime outside it stays an engine object (TypedRows does the same). */
+  private static boolean yearFits(final LocalDateTime ldt) {
+    return ldt.getYear() >= 1 && ldt.getYear() <= 9999;
+  }
+
+  /** The columns of up to {@code max} rows, temporals in milliseconds: {@code {byte[] buffer, Object[] side}}. */
+  public static Object[] nextColumnBatch(final ResultSet rs, final int max, final String joinedColumns) {
+    return nextColumnBatch(rs, max, joinedColumns, false);
+  }
+
+  /**
+   * The columns of up to {@code max} rows as {@code {byte[] buffer, Object[] side}}: {@code side} holds the engine objects
+   * that the tagged JSON of a "json" column refers to by index. With {@code micros} see the class comment.
+   */
+  public static Object[] nextColumnBatch(final ResultSet rs, final int max, final String joinedColumns,
+      final boolean micros) {
     // empty column spec: the column set is the union of every row's property names, in order of first appearance.
     // A document is schemaless, so the first row says nothing about the others: taking its names alone dropped every
     // property it lacked (humemai/arcadedb-embedded-python#113). Each batch reports its own set in its header.
@@ -110,6 +143,7 @@ public final class ColumnBatcher {
     // emit invalid JSON and break the decode of the WHOLE batch on the Python side. RowBatcher already does it
     // this way; the cost is n objects per batch, not per row.
     final JSONArray headerColumns = new JSONArray();
+    final List<Object> side = new ArrayList<>();
     final ByteArrayOutputStream body = new ByteArrayOutputStream(count * n * 8);
 
     for (int c = 0; c < n; c++) {
@@ -130,8 +164,16 @@ public final class ColumnBatcher {
           t = "b1";
         else if (v instanceof Date || v instanceof Calendar || v instanceof LocalDateTime
             || v instanceof LocalDate || v instanceof Instant
-            || v instanceof ZonedDateTime || v instanceof OffsetDateTime)
-          t = "dt";
+            || v instanceof ZonedDateTime || v instanceof OffsetDateTime) {
+          if (!micros)
+            t = "dt";
+          else if (v instanceof LocalDateTime ldt ? yearFits(ldt) : v instanceof Date || v instanceof Calendar)
+            // a naive datetime is epoch microseconds; a DATE, a time-zone-aware temporal or a year Python cannot hold
+            // is read through the tagged JSON, as the row readers return it
+            t = "dtu";
+          else
+            t = "json";
+        }
         else if (v instanceof String || v instanceof Character)
           t = "str";
         else if (v instanceof java.math.BigDecimal)
@@ -175,7 +217,7 @@ public final class ColumnBatcher {
       }
 
       byte[] colBuf;
-      if (type.equals("i8") || type.equals("dt")) {
+      if (type.equals("i8") || type.equals("dt") || type.equals("dtu")) {
         final ByteBuffer bb = ByteBuffer.allocate(count * 8).order(ByteOrder.LITTLE_ENDIAN);
         for (int r = 0; r < count; r++) {
           final Object v = rows.get(r)[c];
@@ -184,6 +226,8 @@ public final class ColumnBatcher {
             bb.putLong(0);
           } else if (type.equals("dt"))
             bb.putLong(toEpochMillis(v));
+          else if (type.equals("dtu"))
+            bb.putLong(toEpochMicros(v));
           else
             bb.putLong(((Number) v).longValue());
         }
@@ -237,16 +281,20 @@ public final class ColumnBatcher {
         }
         colBuf = bb.array();
       } else if (type.equals("json")) {
-        // one JSON array for the whole column (JSONObject/JSONArray handle
-        // primitive arrays natively since engine 26.7.2, #4967)
-        final com.arcadedb.serializer.json.JSONArray arr = new com.arcadedb.serializer.json.JSONArray();
+        // one JSON array for the whole column, in the tagged encoding of TypedRows: what the engine's JSON writer turns
+        // into epoch milliseconds, a double or a text key (a date or Decimal in a list, an int map key) stays what the
+        // row readers return, and what JSON cannot carry goes to the side array
+        final StringBuilder arr = new StringBuilder();
+        arr.append('[');
         for (int r = 0; r < count; r++) {
           final Object v = rows.get(r)[c];
+          if (r > 0)
+            arr.append(',');
           if (v == null)
             nulls[r >> 3] |= (1 << (r & 7));
-          // NaN and the infinities in a list or a map travel as a tag, not as the null the JSON writers make of them
-          arr.put(RowBatcher.keepNonFinite(v));
+          TypedRows.append(arr, v, side);
         }
+        arr.append(']');
         colBuf = arr.toString().getBytes(StandardCharsets.UTF_8);
       } else { // strings and decimals: int32 offsets (count+1) then utf8 bytes
         final ByteArrayOutputStream chars = new ByteArrayOutputStream(count * 16);
@@ -296,7 +344,7 @@ public final class ColumnBatcher {
     out.putInt(headerBytes.length);
     out.put(headerBytes);
     out.put(bodyBytes);
-    return out.array();
+    return new Object[] { out.array(), side.toArray() };
   }
 
   /**

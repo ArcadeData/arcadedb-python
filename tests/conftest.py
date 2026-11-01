@@ -126,8 +126,6 @@ NATIVE_NA_JVM_TESTS = {
     "test_server_wire_protocols.py::test_a_protocol_host_overrides_the_server_host_for_that_protocol_only": "reads the server's GlobalConfiguration through the JVM",
     "test_sql_constraints_and_maintenance.py::test_backup_check_and_rebuild_index_statements": "sets GlobalConfiguration.SERVER_BACKUP_DIRECTORY through the JVM",
     "test_vector_params_verification.py::TestVectorParams::test_jvm_heap_check": "reads java.lang.Runtime through JPype",
-    "test_vector_params_verification.py::TestVectorParams::test_wrapper_default_matches_engine_default": "reads the engine default through java.lang.String and GlobalConfiguration",
-    "test_vector_params_verification.py::TestVectorParams::test_omitted_max_connections_reaches_the_index": "reads the engine default through java.lang.String and GlobalConfiguration",
     # Java objects built or read by the test
     "test_conversion_fixes.py::test_java_instants_convert_without_losing_microseconds": JAVA_CLASS,
     "test_type_conversion.py::test_offset_datetime_conversion": JAVA_CLASS,
@@ -197,24 +195,8 @@ NATIVE_NA_JVM_TESTS = {
     "test_resultset.py::TestSmallResultsCostOneBridgeCall::test_the_bridge_closes_what_it_drains_and_only_that": BRIDGE_COUNT,
     "test_vector.py::TestLSMVectorIndex::test_lsm_vector_search_looks_up_all_hits_in_one_bridge_call": BRIDGE_COUNT,
     "test_vector.py::TestLSMVectorIndex::test_lsm_vector_search_uses_database_rid_conversion": "intercepts Database.to_java_rid, the JPype path's RID conversion",
-    # the Java index behind the wrapper
-    "test_vector.py::TestLSMVectorIndex::test_create_vector_index_with_pq_params": JAVA_INDEX,
-    "test_vector.py::TestLSMVectorIndex::test_create_vector_index_with_custom_id_property": JAVA_INDEX,
-    "test_vector.py::TestLSMVectorIndex::test_lsm_vector_search_approximate_product": JAVA_INDEX,
-    "test_vector.py::TestLSMVectorIndex::test_lsm_vector_search_approximate_typeindex": JAVA_INDEX,
-    **{
-        f"test_vector_params_verification.py::TestVectorParams::{name}": JAVA_INDEX
-        for name in (
-            "test_quantization_param",
-            "test_store_vectors_in_graph_param",
-            "test_encoding_param",
-            "test_add_hierarchy_param",
-            "test_per_index_cache_params",
-            "test_quantization_none",
-            "test_quantization_binary",
-            "test_quantization_product",
-        )
-    },
+    # the Java index behind the wrapper: encoding is a setting get_metadata() does not return and the native library does not expose
+    "test_vector_params_verification.py::TestVectorParams::test_encoding_param": JAVA_INDEX,
 }
 
 

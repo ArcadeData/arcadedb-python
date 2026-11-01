@@ -1319,7 +1319,9 @@ class NativeSchema:
         return bool(rows)
 
     def drop_type(self, name):
-        self._run(f"DROP TYPE `{name}`")
+        # UNSAFE: the engine's dropType, which the JPype build calls, drops a type with its records; plain DROP TYPE refuses
+        # a vertex or edge type that still holds records
+        self._run(f"DROP TYPE `{name}` UNSAFE")
 
     def create_property(self, type_name, property_name, property_type, of_type=None):
         t = getattr(property_type, "value", property_type)
@@ -1347,10 +1349,20 @@ class NativeSchema:
         ("HASH", False): "NOTUNIQUE_HASH",
     }
 
+    # Index types whose engine factory refuses a unique index (LSMTreeFullTextIndex, LSMSparseVectorIndex,
+    # LSMTreeGeoIndex: "... cannot be unique"). LSM_TREE and HASH take it; LSM_VECTOR does not check it.
+    _NEVER_UNIQUE = frozenset({"FULL_TEXT", "LSM_SPARSE_VECTOR", "GEOSPATIAL"})
+
     def create_index(
         self, type_name, property_names, unique=False, index_type="LSM_TREE"
     ):
         kind = getattr(index_type, "value", index_type)
+        if unique and str(kind).upper() in self._NEVER_UNIQUE:
+            # Refuse before any statement runs, as the engine does, and worded like the JPype path
+            raise ArcadeDBError(
+                f"Failed to create index on '{type_name}[{','.join(property_names)}]': "
+                f"{str(kind).upper()} index cannot be unique"
+            )
         kind = self._INDEX_KIND.get((kind, bool(unique)), kind)
         cols = ", ".join(f"`{p}`" for p in property_names)
         self._run(f"CREATE INDEX ON `{type_name}` ({cols}) {kind}")
@@ -1364,7 +1376,8 @@ class NativeSchema:
         )
 
     def drop_index(self, index_name, force=False):
-        self._run(f"DROP INDEX `{index_name}`")
+        # force skips the existence check, as on the JVM build (a missing index is then a no-op)
+        self._run(f"DROP INDEX `{index_name}`{' IF EXISTS' if force else ''}")
 
     # -- reads, as small objects with the engine's accessors (schema_objects.py)
 

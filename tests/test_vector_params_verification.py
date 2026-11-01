@@ -36,20 +36,8 @@ class TestVectorParams:
         # Verify via wrapper convenience method
         assert index.get_quantization() == "INT8"
 
-        # Verify by inspecting Java object directly
-        # Accessing the underlying Java object's metadata
-        java_index = index._java_index
-
-        # Depending on if it's a TypeIndex or LSMVectorIndex directly
-        idx_to_check = java_index
-        if "TypeIndex" in java_index.getClass().getName():
-            idx_to_check = java_index.getSubIndexes().get(0)
-
-        # In Java: index.getMetadata().quantizationType
-        # JPype allows attribute access for getters or fields
-        # Note: the exact field name depends on the Java class implementation of metadata
-        # Given src/arcadedb/vector.py uses .quantizationType:
-        assert str(idx_to_check.getMetadata().quantizationType) == "INT8"
+        # Verify through the engine's own metadata of the index
+        assert index.get_metadata()["quantization"] == "INT8"
 
     def test_store_vectors_in_graph_param(self, test_db):
         """Test sending store_vectors_in_graph parameter."""
@@ -61,43 +49,13 @@ class TestVectorParams:
             "StoreDoc", "embedding", dimensions=3, store_vectors_in_graph=True
         )
 
-        # Accessing the underlying Java object's metadata
-        java_index = index._java_index
-        idx_to_check = java_index
-        if "TypeIndex" in java_index.getClass().getName():
-            idx_to_check = java_index.getSubIndexes().get(0)
+        assert index.get_metadata()["store_vectors_in_graph"] is True
 
-        metadata = idx_to_check.getMetadata()
-
-        # We need to find where "storeVectorsInGraph" is stored.
-        # It might be a field, or it might be in map-like structure if it was passed via JSON.
-        # Let's inspect what we can.
-
-        print(f"\nMetadata Class: {metadata.getClass().getName()}")
-        print(f"Metadata String: {metadata.toString()}")
-
-        # Attempt to check property directly if it's exposed as a field matching the JSON key
-        # Or check via getter if available
-
-        val = None
-        try:
-            # Try field access
-            val = metadata.storeVectorsInGraph
-        except Exception:
-            try:
-                # Try getter
-                val = metadata.isStoreVectorsInGraph()
-            except Exception:
-                val = None  # neither accessor: the string fallback below decides
-
-        if val is None:
-            # Try inspecting the string representation as a fallback for verification
-            assert (
-                "storeVectorsInGraph" in metadata.toString()
-                or "storeVectorsInGraph=true" in metadata.toString()
-            )
-        else:
-            assert val is True
+        # and the default stays off
+        test_db.command("sql", "CREATE VERTEX TYPE NoStoreDoc")
+        test_db.command("sql", "CREATE PROPERTY NoStoreDoc.embedding ARRAY_OF_FLOATS")
+        plain = test_db.create_vector_index("NoStoreDoc", "embedding", dimensions=3)
+        assert plain.get_metadata()["store_vectors_in_graph"] is False
 
     def test_encoding_param(self, test_db):
         """Test sending encoding parameter for native INT8 storage."""
@@ -141,20 +99,14 @@ class TestVectorParams:
             "HierDoc", "embedding", dimensions=3, add_hierarchy=True
         )
 
-        java_index = index._java_index
-        idx_to_check = java_index
-        if "TypeIndex" in java_index.getClass().getName():
-            idx_to_check = java_index.getSubIndexes().get(0)
+        assert index.get_metadata()["add_hierarchy"] is True
 
-        metadata = idx_to_check.getMetadata()
-
-        try:
-            assert metadata.addHierarchy is True
-        except AttributeError:
-            assert (
-                "addHierarchy" in metadata.toString()
-                or "addHierarchy=true" in metadata.toString()
-            )
+        test_db.command("sql", "CREATE VERTEX TYPE FlatDoc")
+        test_db.command("sql", "CREATE PROPERTY FlatDoc.embedding ARRAY_OF_FLOATS")
+        flat = test_db.create_vector_index(
+            "FlatDoc", "embedding", dimensions=3, add_hierarchy=False
+        )
+        assert flat.get_metadata()["add_hierarchy"] is False
 
     def test_params_persistence(self, tmp_path):
         """Verify parameters persist after reload."""
@@ -210,27 +162,9 @@ class TestVectorParams:
             mutations_before_rebuild=789,
         )
 
-        java_index = index._java_index
-        idx_to_check = java_index
-        if "TypeIndex" in java_index.getClass().getName():
-            idx_to_check = java_index.getSubIndexes().get(0)
-
-        metadata = idx_to_check.getMetadata()
-
-        # Direct field access is available on LSMVectorIndexMetadata; fall back to string inspection if not.
-        try:
-            assert metadata.graphBuildCacheSize == 456
-            assert metadata.mutationsBeforeRebuild == 789
-        except AttributeError:
-            meta_str = metadata.toString()
-            assert (
-                "graphBuildCacheSize=456" in meta_str
-                or "graphBuildCacheSize: 456" in meta_str
-            )
-            assert (
-                "mutationsBeforeRebuild=789" in meta_str
-                or "mutationsBeforeRebuild: 789" in meta_str
-            )
+        metadata = index.get_metadata()
+        assert metadata["graph_build_cache_size"] == 456
+        assert metadata["mutations_before_rebuild"] == 789
 
     def test_quantization_none(self, test_db):
         """Test sending quantization parameter NONE."""
@@ -243,12 +177,7 @@ class TestVectorParams:
 
         assert index.get_quantization() == "NONE"
 
-        java_index = index._java_index
-        idx_to_check = java_index
-        if "TypeIndex" in java_index.getClass().getName():
-            idx_to_check = java_index.getSubIndexes().get(0)
-
-        assert str(idx_to_check.getMetadata().quantizationType) == "NONE"
+        assert index.get_metadata()["quantization"] == "NONE"
 
     def test_quantization_binary(self, test_db):
         """Test sending quantization parameter BINARY."""
@@ -263,12 +192,7 @@ class TestVectorParams:
 
         assert index.get_quantization() == "BINARY"
 
-        java_index = index._java_index
-        idx_to_check = java_index
-        if "TypeIndex" in java_index.getClass().getName():
-            idx_to_check = java_index.getSubIndexes().get(0)
-
-        assert str(idx_to_check.getMetadata().quantizationType) == "BINARY"
+        assert index.get_metadata()["quantization"] == "BINARY"
 
     def test_quantization_product(self, test_db):
         """Test sending quantization parameter PRODUCT (PQ)."""
@@ -283,28 +207,26 @@ class TestVectorParams:
 
         assert index.get_quantization() == "PRODUCT"
 
-        java_index = index._java_index
-        idx_to_check = java_index
-        if "TypeIndex" in java_index.getClass().getName():
-            idx_to_check = java_index.getSubIndexes().get(0)
-
-        assert str(idx_to_check.getMetadata().quantizationType) == "PRODUCT"
+        assert index.get_metadata()["quantization"] == "PRODUCT"
 
     @staticmethod
-    def _engine_default_max_connections() -> int:
-        """Read maxConnections off a freshly constructed engine metadata object.
+    def _engine_default_max_connections(db) -> int:
+        """Read maxConnections off an index the engine configured by itself.
 
-        The field initializer is the engine default, so the value tracks the
-        bundled jars rather than a number copied into the Python layer.
+        create_vector_index always sets maxConnections, so the engine default
+        shows only on an index SQL creates without it. The value tracks the
+        engine the wheel carries rather than a number copied into the Python
+        layer, and it reads the same on both builds.
         """
-        import jpype
-
-        java_string = jpype.JClass("java.lang.String")
-        property_names = jpype.JArray(java_string)(["embedding"])
-        metadata = jpype.JPackage("com").arcadedb.schema.LSMVectorIndexMetadata(
-            "DefaultProbe", property_names, 0
+        db.command("sql", "CREATE VERTEX TYPE DefaultProbe")
+        db.command("sql", "CREATE PROPERTY DefaultProbe.embedding ARRAY_OF_FLOATS")
+        db.command(
+            "sql",
+            "CREATE INDEX ON DefaultProbe (embedding) LSM_VECTOR METADATA "
+            '{"dimensions": 4, "similarity": "EUCLIDEAN"}',
         )
-        return int(metadata.maxConnections)
+        probe = db.schema.get_vector_index("DefaultProbe", "embedding")
+        return int(probe.get_metadata()["max_connections"])
 
     def test_wrapper_default_matches_engine_default(self, test_db):
         """The Python default must equal the engine default, not a copy of it.
@@ -317,11 +239,11 @@ class TestVectorParams:
         signature = inspect.signature(type(test_db).create_vector_index)
         wrapper_default = signature.parameters["max_connections"].default
 
-        assert wrapper_default == self._engine_default_max_connections()
+        assert wrapper_default == self._engine_default_max_connections(test_db)
 
     def test_omitted_max_connections_reaches_the_index(self, test_db):
         """Omitting the argument must land the engine default on the index."""
-        engine_default = self._engine_default_max_connections()
+        engine_default = self._engine_default_max_connections(test_db)
 
         test_db.command("sql", "CREATE VERTEX TYPE DefaultDegreeDoc")
         test_db.command(
@@ -332,8 +254,7 @@ class TestVectorParams:
             "DefaultDegreeDoc", "embedding", dimensions=4
         )
 
-        metadata = self._get_primary_metadata(index)
-        assert int(metadata.maxConnections) == engine_default
+        assert index.get_metadata()["max_connections"] == engine_default
 
     def test_jvm_heap_check(self):
         """Verify JVM memory settings from Java level."""

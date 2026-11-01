@@ -201,6 +201,31 @@ class TestTypeDeletion:
         schema.drop_type("TempType")
         assert not schema.exists_type("TempType")
 
+    @pytest.mark.parametrize("kind", ["vertex", "edge"])
+    def test_drop_type_drops_a_populated_graph_type(self, test_db, kind):
+        """``drop_type`` drops a type and all its data, records included, on both builds.
+
+        The native build ran SQL ``DROP TYPE``, which refuses a vertex or edge type that holds records unless
+        ``UNSAFE`` is given; the JVM build calls the engine's ``dropType``, which does not check for records.
+        """
+        schema = test_db.schema
+        schema.create_vertex_type("Person")
+        schema.create_edge_type("Knows")
+        with test_db.transaction():
+            test_db.command("sql", "CREATE VERTEX Person SET name = 'a'")
+            test_db.command("sql", "CREATE VERTEX Person SET name = 'b'")
+            test_db.command(
+                "sql",
+                "CREATE EDGE Knows FROM (SELECT FROM Person WHERE name = 'a') "
+                "TO (SELECT FROM Person WHERE name = 'b')",
+            )
+        name = "Person" if kind == "vertex" else "Knows"
+        assert test_db.count_type(name) > 0
+
+        schema.drop_type(name)
+
+        assert not schema.exists_type(name)
+
     def test_drop_non_existent_type_fails(self, test_db):
         """Test dropping non-existent type raises error."""
         schema = test_db.schema
@@ -341,6 +366,17 @@ class TestIndexCreation:
         )
         assert idx is not None
 
+    def test_create_unique_full_text_index_is_refused(self, test_db):
+        """The engine refuses a unique full-text index; no index is left behind."""
+        schema = test_db.schema
+        schema.create_document_type("T")
+        schema.create_property("T", "p", PropertyType.STRING)
+
+        with pytest.raises(ArcadeDBError):
+            schema.create_index("T", ["p"], unique=True, index_type=IndexType.FULL_TEXT)
+
+        assert [i for i in schema.get_indexes() if i.getTypeName() == "T"] == []
+
     def test_create_lsm_tree_index(self, test_db):
         """Test creating an LSM tree index explicitly."""
         schema = test_db.schema
@@ -434,6 +470,34 @@ class TestIndexDeletion:
 
         schema.drop_index(index_name)
         assert schema.exists_index(index_name) is False
+
+    def test_drop_missing_index_force_is_a_no_op(self, test_db):
+        """force=True skips the existence check: a missing index is not an error."""
+        schema = test_db.schema
+        schema.create_vertex_type("User")
+        schema.create_property("User", "temp", PropertyType.STRING)
+        schema.create_index("User", ["temp"])
+        before = sorted(i.getName() for i in schema.get_indexes())
+
+        schema.drop_index("Nope", force=True)
+
+        assert sorted(i.getName() for i in schema.get_indexes()) == before
+        with pytest.raises(ArcadeDBError):
+            schema.drop_index("Nope", force=False)
+
+    def test_drop_existing_index_force(self, test_db):
+        """force=True still drops an index that exists."""
+        schema = test_db.schema
+        schema.create_vertex_type("User")
+        schema.create_property("User", "temp", PropertyType.STRING)
+        schema.create_index("User", ["temp"])
+        name = next(
+            i.getName() for i in schema.get_indexes() if i.getTypeName() == "User"
+        )
+
+        schema.drop_index(name, force=True)
+
+        assert schema.exists_index(name) is False
 
     def test_drop_non_existent_index_fails(self, test_db):
         """Test dropping non-existent index raises error."""

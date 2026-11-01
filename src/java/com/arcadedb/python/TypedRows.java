@@ -117,7 +117,8 @@ public final class TypedRows {
     sb.append('}');
   }
 
-  private static void append(final StringBuilder sb, final Object value, final List<Object> side) {
+  /** One value as tagged JSON (also the "json" columns of {@link ColumnBatcher}); what JSON cannot carry goes to {@code side}. */
+  static void append(final StringBuilder sb, final Object value, final List<Object> side) {
     if (value == null) {
       sb.append("null");
     } else if (value instanceof String s) {

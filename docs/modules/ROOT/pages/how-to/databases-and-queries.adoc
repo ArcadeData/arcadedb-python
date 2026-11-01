@@ -226,7 +226,7 @@ A query vector for `vectorNeighbors` can be a numpy array or a list. The convers
 
 * A `float32` array crosses as one buffer on both builds: about 5 to 15 us. This is the fast path. `np.asarray(v, dtype=np.float32)` makes it from a list or from another array.
 * A list that holds only Python floats (no `int`, `bool`, `None`, `str` or numpy scalar) also crosses as one buffer, and so does a `float64` array on the JVM build. The statement reads the same list of doubles it always read: no value changes, and an `int` in a list stays an `int`. A list shorter than 32 numbers (JVM build) or 64 numbers (native build) is not worth a buffer and goes number by number. On the native build the list crosses as a buffer only when `float32` holds every number exactly, which is true of a list from a float32 model (`array.tolist()`); a list of other doubles, `NaN` or an infinity is sent as text, because a buffer would round it.
-* A `float64` array is a `float32` array to the engine on the native build and when it is the one positional parameter on the JVM build, so its numbers are rounded to `float32` (a vector index stores `float32`). As a named parameter on the JVM build it keeps its doubles.
+* A `float64` array among the positional parameters (`?`) is a `float32` array to the engine on both builds, so its numbers are rounded to `float32` (a vector index stores `float32`). As a named parameter, inside `CONTENT :row` or as a property of a record you save, it keeps its doubles on both builds: `0.1` is stored as `0.1`. Such a value goes as text, so give a `float32` array when you want the buffer.
 
 === Results
 

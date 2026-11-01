@@ -198,7 +198,7 @@ def _missing_column_part(count: int, template):
         if template.dtype.kind in "iuf":
             return np.full(count, np.nan)
         if template.dtype.kind == "M":
-            return np.full(count, np.datetime64("NaT", "ms"))
+            return np.full(count, np.datetime64("NaT"), dtype=template.dtype)
         if template.dtype.kind == "O":
             return np.full(count, None, dtype=object)
     return [None] * count
@@ -650,6 +650,11 @@ class ResultSet:
 
         Requires pandas to be installed.
 
+        Values are the ones ``to_list()`` returns: a DATETIME keeps its
+        microseconds (a ``datetime64[us]`` column, where ``to_columns()`` and
+        ``to_arrow()`` carry milliseconds), a DATE is a ``datetime.date`` in an
+        object column, and a ``Decimal`` stays one.
+
         Args:
             convert_types: Convert Java types to Python (default: True)
 
@@ -675,7 +680,10 @@ class ResultSet:
             # fast path: columnar binary transport straight into typed
             # columns (numpy dtypes, real datetime64) — measured ~2x the JSON
             # row path and ~6x the per-row path on 100k-row scans
-            columns = self.to_columns()
+            # Datetimes cross with their microseconds (datetime64[us]) and dates as
+            # date objects, the values to_list() returns; to_columns() and
+            # to_arrow() keep the documented milliseconds.
+            columns = self._read_columns(25_000, None, micros=True)
             if columns is not None:
                 # pandas rejects 2-D ndarrays as column values; vector
                 # columns (f4v/f8v) become object columns of row slices
@@ -750,9 +758,22 @@ class ResultSet:
         those, as a projection would, and skip it. A row lacking one of them
         reads null, and properties not listed are left out.
 
+        List and map values (and a column of mixed types) are decoded as
+        ``to_list()`` decodes them: a ``date``, ``datetime`` or ``Decimal``
+        inside a list or map stays one, and a map keeps its non-str keys. The
+        ``datetime64[ms]`` rule above is for a column whose values are all
+        datetimes.
+
         Returns None when numpy or the bridge jar is unavailable (callers
         fall back to row-based paths).
         """
+        return self._read_columns(batch_size, columns, micros=False)
+
+    def _read_columns(self, batch_size, columns, micros):
+        """``to_columns()``; with ``micros`` a column of datetimes is a
+        ``datetime64[us]`` array and a column holding DATE values is an object
+        column of ``date`` objects, which is what ``to_dataframe()`` needs to
+        return the values ``to_list()`` does."""
         try:
             import numpy as np
         except ImportError:
@@ -770,7 +791,7 @@ class ResultSet:
         names: List[str] = []
         batches: List[Tuple[int, Dict[str, Any]]] = []
 
-        def decode_batch(buf):
+        def decode_batch(buf, side):
             hlen = int.from_bytes(buf[:4], "little")
             header = json.loads(bytes(buf[4 : 4 + hlen]))
             count = header["count"]
@@ -805,6 +826,11 @@ class ResultSet:
                     if has_nulls:
                         arr[mask] = np.datetime64("NaT", "ms")
                     values = arr
+                elif ctype == "dtu":
+                    arr = np.frombuffer(data, dtype="<i8").astype("datetime64[us]")
+                    if has_nulls:
+                        arr[mask] = np.datetime64("NaT", "us")
+                    values = arr
                 elif ctype == "b1":
                     arr = np.frombuffer(data, dtype=np.uint8).astype(bool)
                     if has_nulls:
@@ -816,11 +842,16 @@ class ResultSet:
                 elif ctype in ("f4v", "f8v"):
                     # fixed-dimension vector column -> 2-D array (count, dim);
                     # Java already writes NaN rows into null slots
-                    dim = col["dim"]
+                    # an empty vector has no "dim" in the header
+                    dim = col.get("dim", 0)
                     dt = "<f4" if ctype == "f4v" else "<f8"
-                    values = np.frombuffer(data, dtype=dt).reshape(count, dim)
+                    if dim == 0:
+                        values = np.empty((count, 0), dtype=dt)
+                    else:
+                        values = np.frombuffer(data, dtype=dt).reshape(count, dim)
                 elif ctype == "json":
-                    values = _loads_nonfinite(data)
+                    # tagged JSON (TypedRows): the values to_list() returns
+                    values = json.loads(bytes(data), object_hook=_typed_hook(side))
                 elif ctype == "dec":
                     # an object array of Decimal (None for null): a double
                     # would lose digits, and the dtype would follow the data
@@ -846,13 +877,13 @@ class ResultSet:
         total = 0
         while True:
             try:
-                java_buf = column_batcher.nextColumnBatch(
-                    self._java_result_set, int(batch_size), spec
+                java_batch = column_batcher.nextColumnBatch(
+                    self._java_result_set, int(batch_size), spec, micros
                 )
             except JException as exc:
                 raise _read_error(exc) from exc
-            buf = memoryview(bytes(java_buf))
-            count = decode_batch(buf)
+            buf = memoryview(bytes(java_batch[0]))
+            count = decode_batch(buf, java_batch[1])
             if count == 0:
                 self._finish()
                 break
@@ -935,7 +966,7 @@ class ResultSet:
                 return None
             return pa.py_buffer(bytes(np.invert(null_bits).tobytes()))
 
-        def decode_batch(buf):
+        def decode_batch(buf, side):
             hlen = int.from_bytes(buf[:4], "little")
             header = json.loads(bytes(buf[4 : 4 + hlen]))
             count = header["count"]
@@ -971,15 +1002,29 @@ class ResultSet:
                     vals = np.frombuffer(data, dtype=np.uint8).astype(bool)
                     arr = pa.array(vals, mask=mask)
                 elif ctype in ("f4v", "f8v"):
-                    dim = col["dim"]
+                    # an empty vector has no "dim" in the header
+                    dim = col.get("dim", 0)
                     dt = "<f4" if ctype == "f4v" else "<f8"
-                    flat = np.frombuffer(data, dtype=dt)
-                    child = pa.array(flat)
-                    arr = pa.FixedSizeListArray.from_arrays(child, dim)
-                    if mask is not None:
-                        arr = pa.array(arr.to_pylist(), type=arr.type, mask=mask)
+                    if dim == 0:
+                        # no fixed-size list of size 0: empty lists, as the row readers give
+                        arr = pa.array(
+                            [
+                                None if mask is not None and mask[i] else []
+                                for i in range(count)
+                            ],
+                            type=pa.list_(
+                                pa.float32() if ctype == "f4v" else pa.float64()
+                            ),
+                        )
+                    else:
+                        flat = np.frombuffer(data, dtype=dt)
+                        child = pa.array(flat)
+                        arr = pa.FixedSizeListArray.from_arrays(child, dim)
+                        if mask is not None:
+                            arr = pa.array(arr.to_pylist(), type=arr.type, mask=mask)
                 elif ctype == "json":
-                    values = _loads_nonfinite(data)
+                    # tagged JSON (TypedRows): the values to_list() returns
+                    values = json.loads(bytes(data), object_hook=_typed_hook(side))
                     try:
                         arr = pa.array(values)
                     except pa.ArrowException:
@@ -1021,13 +1066,13 @@ class ResultSet:
         total = 0
         while True:
             try:
-                java_buf = column_batcher.nextColumnBatch(
-                    self._java_result_set, int(batch_size), spec
+                java_batch = column_batcher.nextColumnBatch(
+                    self._java_result_set, int(batch_size), spec, False
                 )
             except JException as exc:
                 raise _read_error(exc) from exc
-            buf = memoryview(bytes(java_buf))
-            count = decode_batch(buf)
+            buf = memoryview(bytes(java_batch[0]))
+            count = decode_batch(buf, java_batch[1])
             if count == 0:
                 self._finish()
                 break

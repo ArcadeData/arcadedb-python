@@ -300,11 +300,20 @@ class NativeVectorIndex(_BaseVectorIndex):
             )
         return row.get("query_vector")
 
+    def _live_info(self):
+        # read afresh, the native side of the JPype wrapper's _check_live: a dropped index raises here (the glue names it),
+        # REBUILD INDEX builds new bucket indexes, and a re-created index has its own configuration; a memoized read
+        # answered all three from the old index
+        self._shim.__dict__.pop("_engine_info", None)
+        return self._shim.engine_info()
+
+    def get_size(self):
+        self._live_info()
+        return super().get_size()
+
     def get_stats(self):
         """The engine's live counters of the primary bucket index, from its ``schema:index:<name>`` row (the row's own columns left out)."""
-        # read afresh: REBUILD INDEX builds new bucket indexes, so the name a memoized read holds can be gone
-        self._shim.__dict__.pop("_engine_info", None)
-        bucket = self._shim.engine_info()["bucket"]
+        bucket = self._live_info()["bucket"]
         rows = self._database.query(
             "sql",
             f"SELECT FROM schema:index:`{bucket}`",  # nosec B608 - a backtick-quoted index name the engine reported
@@ -317,7 +326,7 @@ class NativeVectorIndex(_BaseVectorIndex):
 
     def get_metadata(self):
         """The engine's configuration of the index: what this session created and what an index opened from disk carries, defaults included."""
-        info = self._shim.engine_info()
+        info = self._live_info()
         return {
             "index_name": self._shim._name,
             "bucket_index_name": info["bucket"],
@@ -329,7 +338,7 @@ class NativeVectorIndex(_BaseVectorIndex):
         }
 
     def get_quantization(self):
-        return str(self._shim.engine_info()["quantization"] or "NONE")
+        return str(self._live_info()["quantization"] or "NONE")
 
 
 # the descriptive columns of a schema:index row; every other column is a counter of IndexInternal.getStats()
