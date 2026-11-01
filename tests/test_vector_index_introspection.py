@@ -283,6 +283,43 @@ class TestRebuildThreshold:
         assert index.get_stats()["effectiveMutationsThreshold"] == 500
 
 
+class TestBuildGraphNow:
+    """``build_graph_now()`` rebuilds a graph that already exists, so the vectors written since it was built join it (#162).
+
+    The native build ran one search, which builds a graph only when there is none: on a built index the call returned at
+    once and the new vectors stayed in the delta. The automatic triggers are off (a high floor, no inactivity timer), so
+    only the call can move the counters.
+    """
+
+    ROWS = [
+        (f"v{i}", [1.0 + i % 10, 1.0 + i // 10 % 10, 1.0 + i // 100])
+        for i in range(300)
+    ]
+
+    def test_rebuilds_an_existing_graph(self, temp_db):
+        _make_type(temp_db)
+        temp_db.command(
+            "sql",
+            "ALTER DATABASE `arcadedb.vectorIndex.inactivityRebuildTimeoutMs` 0",
+        )
+        _insert(temp_db, self.ROWS[:200])
+        index = temp_db.create_vector_index(
+            "Doc", "embedding", dimensions=3, mutations_before_rebuild=1_000_000
+        )
+        before = index.get_stats()
+        assert before["graphNodeCount"] == 200
+
+        _insert(temp_db, self.ROWS[200:])
+        assert index.get_stats()["graphNodeCount"] == 200
+
+        index.build_graph_now()
+
+        after = index.get_stats()
+        assert after["totalVectors"] == len(self.ROWS)
+        assert after["graphNodeCount"] == len(self.ROWS)
+        assert after["graphRebuildCount"] > before["graphRebuildCount"]
+
+
 class TestWrapperAcrossRebuildAndDrop:
     """A ``VectorIndex`` held across SQL ``REBUILD INDEX`` keeps serving; across a drop it raises (#116).
 
