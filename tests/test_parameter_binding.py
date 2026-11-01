@@ -151,10 +151,9 @@ def test_each_parameter_shape_reaches_one_java_overload(temp_db):
             return {str(key): item for key, item in value.items()}
         return value
 
-    def received(method, *args):
-        getattr(db, method)(
-            "sql", "SELECT ?, ?", *args
-        )  # two ?: the check refuses surplus values
+    def received(method, *args, sql="SELECT ?, ?"):
+        # two ?: the check refuses surplus values; a lone dict takes named placeholders (#184)
+        getattr(db, method)("sql", sql, *args)
         (arg,) = seen.pop()
         if isinstance(arg, java_map):
             return ("Map", as_python(arg))
@@ -167,8 +166,11 @@ def test_each_parameter_shape_reaches_one_java_overload(temp_db):
         assert received(method, (None,)) == ("Object[]", [None])
         assert received(method, None, 1) == ("Object[]", [None, 1])
         assert received(method, []) == ("Object[]", [])
-        assert received(method, {"v": None, "w": 2}) == ("Map", {"v": None, "w": 2})
-        assert received(method, [{"p": 1}]) == ("Map", {"p": 1})
+        assert received(method, {"v": None, "w": 2}, sql="SELECT :v, :w") == (
+            "Map",
+            {"v": None, "w": 2},
+        )
+        assert received(method, [{"p": 1}], sql="SELECT :p") == ("Map", {"p": 1})
         assert received(method, {"p": 1}, 2) == ("Object[]", [{"p": 1}, 2])
     assert seen == []
     db.close()
