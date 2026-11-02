@@ -1,0 +1,12 @@
+# Examples that the native package (`arcadedb`) cannot run, one per line: "<file>.py | <reason>".
+# Read by scripts/run_examples.sh (EXAMPLES_SKIP_FILE) in the job "Examples on the installed wheel" of test-native.yml, which prints this
+# list with the reasons and counts each example as skipped.
+# Add an example only when CI shows it fails on native because it needs the JVM package (a Java-object API), or because it uses a
+# feature of an engine newer than the release the CI native image links (remove that line when the release is out); never because of a bug:
+# a bug is fixed, or filed, not listed. Remove the line when the example works on native.
+02_social_network_graph.py | uses jpype directly (Java objects in its bulk insert); runs on the arcadedb-jvm package
+03_vector_search.py | imports jpype.types (Java arrays for the vector API); runs on the arcadedb-jvm package
+14_lifecycle_timing.py | starts the JVM itself (start_jvm) to time the JVM lifecycle; arcadedb-jvm only
+15_import_database_vs_transactional_table_ingest.py | reads Java Schema objects (getProperty), NotOnNativeYet on the native package
+25_sparse_quantization_and_compact.py | imports jpype.types (Java arrays); runs on the arcadedb-jvm package
+29_hybrid_memory_retrieval.py | needs the vectorNeighbors where option of engine 26.11.1; the CI native image links release 26.10.2 (remove when 26.11.1 is out)
