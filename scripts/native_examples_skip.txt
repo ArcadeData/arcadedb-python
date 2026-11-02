@@ -1,0 +1,5 @@
+# Examples that the native package (`arcadedb`) cannot run, one per line: "<file>.py | <reason>".
+# Read by scripts/run_examples.sh (EXAMPLES_SKIP_FILE) in the job "Examples on the installed wheel" of test-native.yml, which prints this
+# list with the reasons and counts each example as skipped.
+# Add an example only when CI shows it fails on native because it needs the JVM package (a Java-object API), never because of a bug:
+# a bug is fixed, or filed, not listed. Remove the line when the example works on native.

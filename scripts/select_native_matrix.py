@@ -9,7 +9,7 @@ supported Python (3.11 to 3.14) on all four.
 
 usage: select_native_matrix.py EVENT     EVENT: pull_request | push | schedule | workflow_dispatch | release
 
-Prints `build=<json>`, `test=<json>` and `pyver=<json>` lines (GITHUB_OUTPUT format). Publishing is not decided here:
+Prints `build=<json>`, `test=<json>`, `pyver=<json>` and `examples=<json>` lines (GITHUB_OUTPUT format). Publishing is not decided here:
 release-native.yml does it. `pyver` is the cheap Python-version job (see PYVER_NOTE): a subset of the tests against the built
 linux-x86_64 wheel on the Pythons the full parity run of the event does not cover, and always on the free-threaded 3.14t. It never
 gates a release. The GraalVM CE archives are pinned by sha256 per platform (GraalVM Community Edition only, never Oracle GraalVM).
@@ -105,6 +105,9 @@ PYVER_NOTE = "informational: release-native.yml does not read it"
 PULL_REQUEST_PLATFORMS = ["linux-x86_64"]
 PULL_REQUEST_PYTHONS = ["3.12"]
 MAIN_PYTHONS = ["3.12", "3.14"]
+# The Pythons of the `examples` job (the examples of examples/ against the installed wheel): the parity Pythons of a push, the nightly run and a
+# dispatch. A release runs the parity suite on every supported Python, but the examples only on these two.
+EXAMPLES_PYTHONS = ["3.12", "3.14"]
 
 
 def pyver_legs(covered: list[str]) -> list[dict]:
@@ -141,7 +144,13 @@ def select(event: str) -> dict:
         for k in platforms
         for py in pythons
     ]
-    return {"build": build, "test": test, "pyver": pyver_legs(pythons)}
+    examples = [leg for leg in test if leg["python"] in EXAMPLES_PYTHONS]
+    return {
+        "build": build,
+        "test": test,
+        "pyver": pyver_legs(pythons),
+        "examples": examples,
+    }
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -155,6 +164,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"build={json.dumps(chosen['build'], separators=(',', ':'))}")
     print(f"test={json.dumps(chosen['test'], separators=(',', ':'))}")
     print(f"pyver={json.dumps(chosen['pyver'], separators=(',', ':'))}")
+    print(f"examples={json.dumps(chosen['examples'], separators=(',', ':'))}")
     return 0
 
 
