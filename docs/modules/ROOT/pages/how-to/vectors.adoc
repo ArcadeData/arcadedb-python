@@ -279,7 +279,7 @@ print(notes.get_stats()["searchOperations"] > before)
 True
 ----
 
-`build_graph_now()` rebuilds the graph at once and returns when the graph is built. Call it after a bulk load, so that no search waits for a lazy build. While it runs, searches on that index wait until it returns, and inserts carry on. Ctrl-C takes effect only when it returns, and a process killed during the build leaves a consistent database whose next build covers every vector.
+`build_graph_now()` rebuilds the graph at once and returns when the graph is built. Call it after a bulk load, so that no search waits for a lazy build. From ArcadeDB 26.11.1, the engine these bindings ship, searches keep answering while it runs, from the graph in memory plus the vectors written since, and switch to the new graph when it is ready, as during the automatic background rebuild. Engines before 26.11.1 made every search on that index wait until the build returned. An index with no graph in memory yet, for example one not searched since the database was opened, still makes searches wait, because there is nothing else to answer from; `warm_up()` below loads it first. Inserts carry on. Ctrl-C takes effect only when it returns, and a process killed during the build leaves a consistent database whose next build covers every vector.
 
 The reads of a `VectorIndex` you hold (`get_size()`, `get_metadata()`, `get_quantization()`, `get_stats()`) ask the engine each time. After `DROP INDEX` they raise an error that names the index, and after the index is created again they report its new configuration.
 
@@ -301,7 +301,7 @@ print(notes.get_size())
 
 An agent that writes one record per turn and searches right after needs no setting: the rebuild runs in the background and the searches keep running while it does.
 
-If the tail of the search latency matters more than the agent's total time, you can move the rebuild to a moment of your choosing: raise `mutations_before_rebuild` far above the number of writes, set the database setting `arcadedb.vectorIndex.maxDeltaScanRatio` to 0, and call `build_graph_now()` right before a step in which the agent does not search, such as its call to the language model. Do not call it while other threads search the same index, because they wait for it.
+If the tail of the search latency matters more than the agent's total time, you can move the rebuild to a moment of your choosing: raise `mutations_before_rebuild` far above the number of writes, set the database setting `arcadedb.vectorIndex.maxDeltaScanRatio` to 0, and call `build_graph_now()` right before a step in which the agent does not search, such as its call to the language model.
 
 The table compares the two on {jvm-pkg-name} and {native-pkg-name} 26.11.1.dev0: 768-dimensional COSINE vectors, 10,000 records at the start, one insert and four k = 10 searches per turn at efSearch 100, `build_graph_now()` every 1,000 turns, two efficiency cores of a laptop, the first 3,000 turns. Each ratio is the median over paired runs of the same package; the two packages ran separately and are not compared with each other.
 
