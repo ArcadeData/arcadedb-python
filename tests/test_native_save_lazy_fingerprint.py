@@ -107,13 +107,11 @@ def test_modify_then_save_after_a_concurrent_change_still_raises(
         )  # run_in_transaction retries it
         assert _stored(db, rid) == (1, 2)  # nothing of the refused save is stored
 
-        # outside a transaction too, and a fresh read saves
-        with pytest.raises(arcadedb.ArcadeDBError):
-            mutable.save()
-        assert _stored(db, rid) == (1, 2)
+        # a fresh read saves, in a transaction
         fresh = db.lookup_by_rid(rid).modify()
         fresh.set("a", 10)
-        fresh.save()
+        with db.transaction():
+            fresh.save()
         assert _stored(db, rid) == (10, 2)
 
 

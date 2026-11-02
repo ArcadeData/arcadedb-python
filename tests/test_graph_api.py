@@ -607,6 +607,25 @@ def test_save_refuses_a_stale_record_from_a_query_result(temp_db_path):
         assert _stored_ab(db) == (10, 2)
 
 
+def test_save_of_an_existing_record_outside_a_transaction_is_refused(temp_db_path):
+    """Both builds: save() is a write, so it needs an active transaction (auto-transaction is off by default) and opens none of its own."""
+    with arcadedb.create_database(temp_db_path) as db:
+        rid = _create_doc_ab(db)
+
+        mutable = db.lookup_by_rid(rid).modify()
+        mutable.set("a", 10)
+        with pytest.raises(arcadedb.ArcadeDBError) as excinfo:
+            mutable.save()
+        assert "Transaction not begun" in str(excinfo.value)
+        assert not db.is_transaction_active()  # save() left no transaction behind
+        assert _stored_ab(db) == (1, 1)  # and wrote nothing
+
+        # the same object saves inside a transaction
+        with db.transaction():
+            mutable.save()
+        assert _stored_ab(db) == (10, 1)
+
+
 def test_two_saves_in_a_row_by_one_record_object_both_succeed(temp_db_path):
     """The object's own earlier save is not another transaction's change: the second save, in the same and in a later transaction, goes through."""
     with arcadedb.create_database(temp_db_path) as db:

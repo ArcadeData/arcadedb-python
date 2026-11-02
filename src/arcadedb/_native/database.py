@@ -418,6 +418,7 @@ class NativeDatabase:
         self._vector_meta: dict = {}
         self._vector_dimensions: dict = {}
         self._vector_id_properties: dict = {}
+        self._auto_transaction = False  # the engine default; set_auto_transaction() is the only way it changes
 
     # -- lifecycle
 
@@ -1231,6 +1232,7 @@ class NativeDatabase:
         from .extras import db_set
 
         db_set(self, "auto_transaction", "true" if enabled else "false")
+        self._auto_transaction = bool(enabled)
 
 
 def _column_values(name, values):

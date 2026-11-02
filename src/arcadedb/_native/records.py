@@ -186,33 +186,32 @@ class _Mixin:
         """UPDATE .. MERGE of a saved record, refused when the stored record is no longer the one this object was read from.
 
         The engine keeps no record version. The values this object held as read are fingerprinted (once, at modify() or here) and compared
-        with the values stored now, in the transaction of the update (one is opened when none is active); a stored record that differs
-        raises ConcurrentModificationException and nothing is written. The fingerprint then moves to the stored values after this save,
-        so the object's own save is not another transaction's change."""
+        with the values stored now, in the caller's transaction; a stored record that differs raises ConcurrentModificationException and
+        nothing is written. The fingerprint then moves to the stored values after this save, so the object's own save is not another
+        transaction's change.
+
+        Like every write (and like the JVM build), it needs an active transaction while auto-transaction is off, the engine default:
+        outside one it raises ArcadeDBError ("Transaction not begun") before it reads or writes anything. This method opens no
+        transaction of its own."""
+        if not db.is_transaction_active() and not db._auto_transaction:
+            raise ArcadeDBError(
+                "Failed to save record: com.arcadedb.exception.TransactionException: Transaction not begun "
+                "(wrap the write in `with db.transaction():` or call begin() first)"
+            )
         token = self._token
         if token is None:
             token = self._token = _fingerprint(self._props)
-        own = not db.is_transaction_active()
-        if own:
-            db.begin()
-        try:
-            select_sql = (
-                f"SELECT FROM {self._rid}"  # nosec B608 - _rid is the record's own id
-            )
-            stored = db.query("sql", select_sql).first()
-            if stored is not None and _fingerprint(stored._props) != token:
-                raise _concurrent_modification(self._rid, self._type)
-            after = db.command(
-                "sql",
-                f"UPDATE {self._rid} MERGE :row RETURN AFTER",
-                {"row": self._props},
-            ).first()
-            if own:
-                db.commit()
-        except BaseException:
-            if own and db.is_transaction_active():
-                db.rollback()
-            raise
+        select_sql = (
+            f"SELECT FROM {self._rid}"  # nosec B608 - _rid is the record's own id
+        )
+        stored = db.query("sql", select_sql).first()
+        if stored is not None and _fingerprint(stored._props) != token:
+            raise _concurrent_modification(self._rid, self._type)
+        after = db.command(
+            "sql",
+            f"UPDATE {self._rid} MERGE :row RETURN AFTER",
+            {"row": self._props},
+        ).first()
         self._token = _fingerprint(after._props) if after is not None else None
 
     def _adopt(self, row) -> None:
