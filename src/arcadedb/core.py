@@ -2465,8 +2465,10 @@ class DatabaseFactory:
             read_only: Open in ``ComponentFile.MODE.READ_ONLY``. Reads, queries
                 and scans work; every write and schema change raises
                 ``ArcadeDBError``. ``begin()`` does not raise: the first write
-                does, and so does the commit. Use it to inspect a database that
-                must not change, such as a backup restored for audit.
+                does. From ArcadeDB 26.11.1 a read-only transaction commits or
+                rolls back without error; engines before that raise the
+                read-only error on ``commit()``. Use it to inspect a database
+                that must not change, such as a backup restored for audit.
         """
         try:
             if read_only:
@@ -2516,8 +2518,10 @@ def open_database(
         path: Database path
         jvm_kwargs: Optional JVM args passed to start_jvm()
             Example: {"heap_size": "8g"}
-        read_only: Open the database read-only. Writes, schema changes and
-            transactions raise ``ArcadeDBError``.
+        read_only: Open the database read-only. Writes and schema changes raise
+            ``ArcadeDBError``. ``begin()`` does not raise, and from ArcadeDB
+            26.11.1 a read-only transaction commits or rolls back without
+            error (writes inside it still raise).
 
     Example:
         >>> db = arcadedb.open_database("./mydb", read_only=True)
