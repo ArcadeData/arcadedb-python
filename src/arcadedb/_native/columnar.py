@@ -15,7 +15,9 @@ undeclared property an ``int32`` column crosses as ``q`` (a Long) and a ``float3
 them.
 """
 
-import re
+from .schema_objects import (  # the schema-entry reader shared with NativeType (#195)
+    _name_type,
+)
 
 try:
     import numpy as _np
@@ -25,7 +27,6 @@ except ImportError:  # pragma: no cover
 _INT64_MAX = 2**63 - 1
 _INT32_MAX = 2**31 - 1
 _NoneType = type(None)
-_PROPERTY = re.compile(r"name: (.+?), type: ([A-Z_]+)")
 
 
 class Packed:
@@ -75,10 +76,10 @@ def _declared_types(db, type_name):
         if current in seen or current not in rows:
             continue
         seen.add(current)
-        for text in rows[current].get("properties") or []:
-            m = _PROPERTY.search(text)
-            if m:
-                out.setdefault(m.group(1), m.group(2))
+        for entry in rows[current].get("properties") or []:
+            name, kind = _name_type(entry)  # a dict since #195, the text form before
+            if name and kind:
+                out.setdefault(name, str(kind))
         queue.extend(rows[current].get("parentTypes") or [])
     return out
 

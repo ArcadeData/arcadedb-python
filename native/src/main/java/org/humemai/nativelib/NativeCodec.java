@@ -36,6 +36,7 @@ import java.time.ZonedDateTime;
 import java.util.Calendar;
 import java.util.Collection;
 import java.util.Date;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -185,6 +186,18 @@ final class NativeCodec {
       appendDocument(sb, doc);
     } else if (value instanceof Identifiable id) {
       tagged(sb, "R").append('"').append(id.getIdentity().toString()).append("\"]}");
+    } else if (value instanceof Result r) {
+      // A query row nested in a value, for example an entry of schema:types.properties (#195): its element when it has one, as a
+      // Document value is written, else its properties as a map. Before, it fell through to String.valueOf and reached Python as a str.
+      final Optional<Document> element = r.isElement() ? r.getElement() : Optional.empty();
+      if (element.isPresent())
+        appendDocument(sb, element.get());
+      else {
+        final Map<String, Object> properties = new LinkedHashMap<>();
+        for (final String name : r.getPropertyNames())
+          properties.put(name, r.getProperty(name));
+        append(sb, properties);
+      }
     } else if (value instanceof Map<?, ?> map) {
       boolean stringKeys = true;
       for (final Object key : map.keySet())
