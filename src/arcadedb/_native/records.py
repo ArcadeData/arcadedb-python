@@ -6,7 +6,13 @@ dict, and every write is one DSL statement (``CREATE VERTEX .. CONTENT``, ``INSE
 """
 
 import hashlib
+import struct
+import sys
+from array import array
 from collections.abc import Mapping
+from datetime import date, datetime
+from decimal import Decimal
+from operator import itemgetter
 from typing import Any, Dict, List
 
 from ..exceptions import ArcadeDBError
@@ -29,35 +35,164 @@ def _java_object():
 
 _UNSAVED = "#-1:-1"
 
-_SCALARS = frozenset((str, int, float, bool, type(None)))
+_pack_d = struct.Struct("<d").pack
+_pack_q = struct.Struct("<q").pack
+_pack_n = struct.Struct("<Q").pack
+_NAN = _pack_d(float("nan"))  # every NaN hashes alike, as every NaN printed alike
+_first = itemgetter(0)
+_BIG_ENDIAN = sys.byteorder == "big"
 
 
-def _canon(value):
-    """``value`` as plain nested lists, tuples and scalars that compare and print the same for two equal values, whatever order a
-    dict or a set was built in."""
-    if type(value) in _SCALARS:
-        return value
-    if isinstance(value, Mapping):
-        return (
-            "m",
-            sorted(((_canon(k), _canon(v)) for k, v in value.items()), key=repr),
-        )
-    if isinstance(value, (list, tuple)):
-        return [_canon(v) for v in value]
-    if isinstance(value, (set, frozenset)):
-        return ("s", sorted((_canon(v) for v in value), key=repr))
-    tolist = getattr(value, "tolist", None)  # a numpy array
+def _text(tag: bytes, text: str, out: bytearray) -> None:
+    data = text.encode("utf-8", "surrogatepass")
+    out += tag
+    out += _pack_n(len(data))
+    out += data
+
+
+def _array(code: str, tag: bytes, values, out: bytearray) -> None:
+    packed = array(code, values)
+    if _BIG_ENDIAN:
+        packed.byteswap()
+    out += tag
+    out += _pack_n(len(packed))
+    out += packed.tobytes()
+
+
+def _enc_seq(value, out: bytearray) -> None:
+    """A list or tuple. A list of only floats (a vector) or only ints that fit 64 bits is packed in one call; any other list is its elements
+    one by one. Which form a list takes depends only on its values."""
+    kinds = set(map(type, value))
+    if kinds == {float}:
+        # every NaN is the same bits only when the elements came from one decoder: a vector read twice decodes alike
+        _array("d", b"V", value, out)
+        return
+    if kinds == {int}:
+        try:
+            _array("q", b"J", value, out)
+            return
+        except OverflowError:
+            pass
+    out += b"l"
+    out += _pack_n(len(value))
+    for item in value:
+        _enc(item, out)
+
+
+def _enc(value, out: bytearray) -> None:
+    """Append a canonical byte form of ``value`` to ``out``: a type tag, then the value (a length first for anything of variable size).
+
+    Equal values give equal bytes whatever order a dict or a set was built in; a tuple is a list; int, float and bool differ from each
+    other (``1``, ``1.0`` and ``True`` are three values); a float ndarray is the list of its doubles, so a vector read back as a
+    numpy float32 array equals the same vector read as a list of Python floats (float32 widens to the same double); a NumPy scalar
+    is the Python scalar. A type with no form here (a ``datetime`` subclass, say) is its type name and ``repr``.
+    """
+    t = type(value)
+    if t is str:
+        _text(b"s", value, out)
+    elif t is float:
+        out += b"d"
+        out += _NAN if value != value else _pack_d(value)
+    elif t is int:
+        if -9223372036854775808 <= value <= 9223372036854775807:
+            out += b"i"
+            out += _pack_q(value)
+        else:
+            data = value.to_bytes((value.bit_length() + 8) // 8, "little", signed=True)
+            out += b"I"
+            out += _pack_n(len(data))
+            out += data
+    elif t is bool:
+        out += b"t" if value else b"f"
+    elif value is None:
+        out += b"N"
+    elif t is list or t is tuple:
+        _enc_seq(value, out)
+    elif t is dict:
+        _enc_map(value, out)
+    elif t is datetime:
+        _text(b"z", value.isoformat(), out)
+    elif t is date:
+        _text(b"D", value.isoformat(), out)
+    elif t is Decimal:
+        _text(b"n", str(value), out)
+    elif t is RID:
+        _text(b"R", value.text, out)
+    elif t is bytes:
+        out += b"b"
+        out += _pack_n(len(value))
+        out += value
+    elif isinstance(value, Mapping):
+        _enc_map(value, out)
+    elif isinstance(value, (list, tuple)):
+        _enc_seq(value, out)
+    elif isinstance(value, (set, frozenset)):
+        parts = []
+        for item in value:
+            buf = bytearray()
+            _enc(item, buf)
+            parts.append(bytes(buf))
+        parts.sort()
+        out += b"e"
+        out += _pack_n(len(parts))
+        for part in parts:
+            out += part
+    else:
+        _enc_other(value, t, out)
+
+
+def _enc_map(value, out: bytearray) -> None:
+    out += b"m"
+    out += _pack_n(len(value))
+    if all(type(k) is str for k in value):
+        for k, v in sorted(value.items(), key=_first):
+            _text(b"s", k, out)
+            _enc(v, out)
+        return
+    parts = []
+    for k, v in value.items():
+        buf = bytearray()
+        _enc(k, buf)
+        _enc(v, buf)
+        parts.append(bytes(buf))
+    parts.sort()
+    for part in parts:
+        out += part
+
+
+def _enc_other(value, t, out: bytearray) -> None:
+    tolist = getattr(value, "tolist", None)  # a numpy array or scalar
     if tolist is not None:
-        return ("a", str(getattr(value, "dtype", "")), _canon(tolist()))
-    return value  # datetime, date, Decimal, RID and bytes print by value
+        dtype = getattr(value, "dtype", None)
+        if (
+            getattr(dtype, "kind", "") == "f"
+            and getattr(value, "ndim", 0) == 1
+            and value.size
+        ):
+            # a float vector: its doubles in one call (float32 widens to the double tolist() gives)
+            doubles = value.astype("<f8", copy=False)
+            out += b"V"
+            out += _pack_n(len(doubles))
+            out += doubles.tobytes()
+            return
+        listed = tolist()
+        if type(listed) is not t:
+            _enc(listed, out)
+            return
+    _text(b"x", f"{t.__module__}.{t.__qualname__}:{value!r}", out)
 
 
 def _fingerprint(props: Dict[str, Any]) -> bytes:
     """A fingerprint of the values a record holds. Called only when a record is about to be changed (``modify()``, the first ``set()`` of a
     saved record, ``save()``), never when one is read: the read path keeps the values the record already holds, and this runs on them
     later. Two reads of one stored record decode to equal values, so equal fingerprints mean an unchanged record.
+
+    The values are encoded straight to bytes (see ``_enc``) and hashed once. Building a canonical copy of the values and printing it cost
+    about 500 us for a record with a 768-float vector, three times per ``save()``; the packed form costs a few tens of microseconds.
     """
-    return hashlib.blake2b(repr(_canon(props)).encode(), digest_size=16).digest()
+    out = bytearray()
+    _enc(props, out)
+    return hashlib.blake2b(out, digest_size=16).digest()
 
 
 def _concurrent_modification(rid: str, type_name: str) -> ArcadeDBError:
