@@ -13,6 +13,16 @@ from . import needs_jvm
 _PROPERTY = re.compile(r"name: (.+?), type: ([A-Z_]+)")
 
 
+def _name_type(entry):
+    """(name, type) of an entry of a ``schema:types`` row's ``properties``: a dict since #195 (the codec writes a nested row
+    as a map), the engine's text form of the row before it; (None, None) when neither.
+    """
+    if isinstance(entry, dict):
+        return entry.get("name"), entry.get("type")
+    m = _PROPERTY.search(entry) if isinstance(entry, str) else None
+    return (m.group(1), m.group(2)) if m else (None, None)
+
+
 class NativeType:
     """A type as a ``schema:types`` row."""
 
@@ -26,11 +36,7 @@ class NativeType:
         return self._row.get("type")
 
     def getPropertyNames(self):
-        return [
-            m.group(1)
-            for m in map(_PROPERTY.search, self._row.get("properties") or [])
-            if m
-        ]
+        return [n for n, _ in map(_name_type, self._row.get("properties") or []) if n]
 
     def existsProperty(self, name: str) -> bool:
         return name in self.getPropertyNames()
