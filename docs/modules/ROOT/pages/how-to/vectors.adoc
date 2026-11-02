@@ -257,6 +257,8 @@ These rules hold for the quantization arguments of the method:
 
 Inserts, updates and deletes collect as pending changes. When enough of them have collected, the engine rebuilds the graph in the background, and searches keep running. How many is enough comes from the database setting `arcadedb.vectorIndex.rebuildGraphRatio` and from `mutations_before_rebuild`; see xref:how-to/databases-and-queries.adoc#_database_settings[Database settings] for how to change the ratio.
 
+The background rebuild starts on the first search after the threshold is reached, so an index that only takes writes rebuilds when it is next searched.
+
 `mutations_before_rebuild` is a floor, not an override. The threshold is the larger of the floor and the ratio term (the graph size times the ratio, capped by `arcadedb.vectorIndex.maxPendingMutations`). A value below the ratio term changes nothing. Raise it above that term to rebuild less often. To rebuild sooner, lower the ratio.
 
 To see the value in force, and the other live counters, call `get_stats()`. It returns a dict of counter names to numbers (cache hits and misses, where vectors were read from, graph state). The keys follow the engine and can change between releases. `get_metadata()` is the stable configuration of the index instead.
@@ -277,7 +279,7 @@ print(notes.get_stats()["searchOperations"] > before)
 True
 ----
 
-`build_graph_now()` rebuilds the graph at once. Call it after a bulk load, so that no search waits for a lazy build.
+`build_graph_now()` rebuilds the graph at once and returns when the graph is built. Call it after a bulk load, so that no search waits for a lazy build. While it runs, searches on that index wait until it returns, and inserts carry on. Ctrl-C takes effect only when it returns, and a process killed during the build leaves a consistent database whose next build covers every vector.
 
 The reads of a `VectorIndex` you hold (`get_size()`, `get_metadata()`, `get_quantization()`, `get_stats()`) ask the engine each time. After `DROP INDEX` they raise an error that names the index, and after the index is created again they report its new configuration.
 
@@ -294,6 +296,32 @@ print(notes.get_size())
 ----
 4
 ----
+
+=== Agents that write as they go
+
+An agent that writes one record per turn and searches right after needs no setting: the rebuild runs in the background and the searches keep running while it does.
+
+If the tail of the search latency matters more than the agent's total time, you can move the rebuild to a moment of your choosing: raise `mutations_before_rebuild` far above the number of writes, set the database setting `arcadedb.vectorIndex.maxDeltaScanRatio` to 0, and call `build_graph_now()` right before a step in which the agent does not search, such as its call to the language model. Do not call it while other threads search the same index, because they wait for it.
+
+The table compares the two on {jvm-pkg-name} and {native-pkg-name} 26.11.1.dev0: 768-dimensional COSINE vectors, 10,000 records at the start, one insert and four k = 10 searches per turn at efSearch 100, `build_graph_now()` every 1,000 turns, two efficiency cores of a laptop, the first 3,000 turns. Each ratio is the median over paired runs of the same package; the two packages ran separately and are not compared with each other.
+
+.Default background rebuild against `build_graph_now()` before the model call
+[cols="1,2,2,2,1",options="header"]
+|===
+| Package | Search p99, default | Search p99, `build_graph_now()` | Loop seconds, default to `build_graph_now()` | Insert p99, ratio
+| `{jvm-pkg-name}`
+| 5.10 ms (5.50 ms during the rebuild)
+| 1.82 ms (ratio 0.361, 95% CI 0.339 to 0.394)
+| 22 to 37 (1.633 times)
+| 0.408 times
+| `{native-pkg-name}`
+| 2.41 ms (2.53 ms during the rebuild)
+| 1.54 ms (ratio 0.643, 95% CI 0.639 to 0.646)
+| 24 to 43 (1.782 times)
+| 2.998 times
+|===
+
+The agent waits for each `build_graph_now()` call, so the loop takes longer, and on {native-pkg-name} the insert p99 rose while on {jvm-pkg-name} it fell. Reads stayed complete and recall@10 did not move in either arm. Giving the background rebuild more threads (`arcadedb.vectorIndex.graphBuildParallelism` set to the number of cores) raised the search p99 instead, with a ratio of 1.12 on {jvm-pkg-name} and 2.205 on {native-pkg-name}.
 
 [[native-provider]]
 == Distance kernels in the native package
