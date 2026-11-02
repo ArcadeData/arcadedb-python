@@ -56,6 +56,8 @@ if BACKEND != "native":
     collect_ignore.append("test_native_point_read.py")
     # the vector provider the native glue picks by default (ARCADEDB_VECTOR_PROVIDER, #153), observed on the native library
     collect_ignore.append("test_native_vector_provider.py")
+    # crossing counts of the transaction entry points (lib.call is the native library's ctypes door)
+    collect_ignore.append("test_native_tx_crossings.py")
 if not os.path.isfile(
     os.path.join(os.path.dirname(os.path.dirname(__file__)), "docs", "index.md")
 ):
