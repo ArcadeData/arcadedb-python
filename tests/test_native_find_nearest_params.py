@@ -10,9 +10,10 @@ The answers are pinned for both backends in ``test_find_nearest_query_forms.py``
 conftest.py does not collect it on the JVM backend.
 """
 
-import arcadedb
 import numpy as np
 import pytest
+
+import arcadedb
 from arcadedb._native import codec
 from arcadedb._native import database as native_database
 

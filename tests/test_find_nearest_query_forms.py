@@ -5,9 +5,10 @@ The native backend hands the library a float32 array for a numeric query (``test
 travels); these tests are the contract that change must keep, and they pass unchanged on the code before it.
 """
 
-import arcadedb
 import numpy as np
 import pytest
+
+import arcadedb
 from arcadedb import ArcadeDBError
 
 DIM = 768
