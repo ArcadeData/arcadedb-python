@@ -38,6 +38,8 @@ if sys.platform == "win32":
 if BACKEND != "native":
     # Java -> Python upcalls (Python functions in SQL) exist on the native build only
     collect_ignore.append("test_native_udf.py")
+    # how find_nearest hands the query vector to the native library (the codec's side buffer)
+    collect_ignore.append("test_native_find_nearest_params.py")
     # the columnar insert's stored records are compared between the JSON and the columnar entry points of the native library
     collect_ignore.append("test_native_columnar_insert.py")
     # the native build's ingest defaults (insert_many and graph_batch commit size), observed on the native library
