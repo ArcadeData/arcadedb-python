@@ -196,7 +196,10 @@ class _Mixin:
         if own:
             db.begin()
         try:
-            stored = db.query("sql", f"SELECT FROM {self._rid}").first()
+            select_sql = (
+                f"SELECT FROM {self._rid}"  # nosec B608 - _rid is the record's own id
+            )
+            stored = db.query("sql", select_sql).first()
             if stored is not None and _fingerprint(stored._props) != token:
                 raise _concurrent_modification(self._rid, self._type)
             after = db.command(

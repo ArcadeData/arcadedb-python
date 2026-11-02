@@ -40,8 +40,16 @@ def _create(db):
         return str(a.get_identity())
 
 
+def _bump_b_sql(rid):
+    """The statement that changes b of the record at ``rid`` (a RID the test read)."""
+    return f"UPDATE {rid} SET b = 2"  # nosec B608 - rid is a record id the test read
+
+
 def _stored(db, rid):
-    row = list(db.query("sql", f"SELECT a, b FROM {rid}"))[0]
+    select_sql = (
+        f"SELECT a, b FROM {rid}"  # nosec B608 - rid is a record id the test read
+    )
+    row = list(db.query("sql", select_sql))[0]
     return row.get("a"), row.get("b")
 
 
@@ -88,7 +96,7 @@ def test_modify_then_save_after_a_concurrent_change_still_raises(
         with (
             db.transaction()
         ):  # another transaction changes the stored record after the read
-            db.command("sql", f"UPDATE {rid} SET b = 2")
+            db.command("sql", _bump_b_sql(rid))
         mutable.set("a", 10)
         with pytest.raises(arcadedb.ArcadeDBError) as excinfo:
             with db.transaction():
@@ -118,7 +126,7 @@ def test_a_change_between_the_read_and_modify_is_not_lost_when_modify_comes_late
 
         read = db.lookup_by_rid(rid)
         with db.transaction():
-            db.command("sql", f"UPDATE {rid} SET b = 2")
+            db.command("sql", _bump_b_sql(rid))
         mutable = (
             read.modify()
         )  # late: the stored record is already newer than the values held
@@ -145,7 +153,7 @@ def test_a_record_created_here_then_changed_elsewhere_is_refused(
         )  # creating and saving a new record fingerprints nothing
         rid = str(created.get_identity())
         with db.transaction():
-            db.command("sql", f"UPDATE {rid} SET b = 2")
+            db.command("sql", _bump_b_sql(rid))
         created.set("a", 9)
         with pytest.raises(arcadedb.ArcadeDBError):
             with db.transaction():

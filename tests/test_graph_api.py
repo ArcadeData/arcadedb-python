@@ -553,6 +553,11 @@ def _create_doc_ab(db):
         return str(doc.get_identity())
 
 
+def _bump_b_sql(rid):
+    """The statement that changes b of the record at ``rid`` (a RID the test read)."""
+    return f"UPDATE {rid} SET b = 2"  # nosec B608 - rid is a record id the test read
+
+
 def _stored_ab(db):
     row = list(db.query("sql", "SELECT a, b FROM D"))[0]
     return row.get("a"), row.get("b")
@@ -565,7 +570,7 @@ def test_save_refuses_to_overwrite_a_record_changed_after_it_was_read(temp_db_pa
 
         mutable = db.lookup_by_rid(rid).modify()
         with db.transaction():  # the stored record changes after the read
-            db.command("sql", f"UPDATE {rid} SET b = 2")
+            db.command("sql", _bump_b_sql(rid))
 
         mutable.set("a", 10)
         with pytest.raises(arcadedb.ArcadeDBError) as excinfo:
@@ -586,7 +591,7 @@ def test_save_refuses_a_stale_record_from_a_query_result(temp_db_path):
         row = list(db.query("sql", "SELECT FROM D"))[0]
         mutable = row.get_element().modify()
         with db.transaction():
-            db.command("sql", f"UPDATE {rid} SET b = 2")
+            db.command("sql", _bump_b_sql(rid))
 
         mutable.set("a", 10)
         with pytest.raises(arcadedb.ArcadeDBError):
