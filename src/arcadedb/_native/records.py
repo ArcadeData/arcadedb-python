@@ -5,7 +5,9 @@ dict, and every write is one DSL statement (``CREATE VERTEX .. CONTENT``, ``INSE
 ``DELETE``, ``CREATE EDGE``). They subclass the JPype wrapper classes so ``isinstance`` checks keep their meaning.
 """
 
-from typing import Any, Dict, List, Optional
+import hashlib
+from collections.abc import Mapping
+from typing import Any, Dict, List
 
 from ..exceptions import ArcadeDBError
 from ..graph import Document as _BaseDocument
@@ -27,6 +29,59 @@ def _java_object():
 
 _UNSAVED = "#-1:-1"
 
+_SCALARS = frozenset((str, int, float, bool, type(None)))
+
+
+def _canon(value):
+    """``value`` as plain nested lists, tuples and scalars that compare and print the same for two equal values, whatever order a
+    dict or a set was built in."""
+    if type(value) in _SCALARS:
+        return value
+    if isinstance(value, Mapping):
+        return (
+            "m",
+            sorted(((_canon(k), _canon(v)) for k, v in value.items()), key=repr),
+        )
+    if isinstance(value, (list, tuple)):
+        return [_canon(v) for v in value]
+    if isinstance(value, (set, frozenset)):
+        return ("s", sorted((_canon(v) for v in value), key=repr))
+    tolist = getattr(value, "tolist", None)  # a numpy array
+    if tolist is not None:
+        return ("a", str(getattr(value, "dtype", "")), _canon(tolist()))
+    return value  # datetime, date, Decimal, RID and bytes print by value
+
+
+def _fingerprint(props: Dict[str, Any]) -> bytes:
+    """A fingerprint of the values a record holds. Called only when a record is about to be changed (``modify()``, the first ``set()`` of a
+    saved record, ``save()``), never when one is read: the read path keeps the values the record already holds, and this runs on them
+    later. Two reads of one stored record decode to equal values, so equal fingerprints mean an unchanged record.
+    """
+    return hashlib.blake2b(repr(_canon(props)).encode(), digest_size=16).digest()
+
+
+def _concurrent_modification(rid: str, type_name: str) -> ArcadeDBError:
+    """The error the engine raises when a record changed after it was read, in the form of a failed native reply (so that
+    ``run_in_transaction`` retries it, as it retries the JVM build's)."""
+    from .database import _error
+
+    cls = "com.arcadedb.exception.ConcurrentModificationException"
+    message = (
+        f"Record {rid} was modified by a concurrent transaction after it was read. "
+        "Please retry the operation"
+    )
+    return _error(
+        f"Failed to save a {type_name} record",
+        {
+            "ok": False,
+            "error": message,
+            "cls": cls,
+            "chain": [[cls, message]],
+            "retry": "need_retry",
+            "retry_ms": 0,
+        },
+    )
+
 
 def _q(name: str) -> str:
     return "`" + name.replace("`", "``") + "`"
@@ -38,7 +93,9 @@ class _Mixin:
     _CREATE = "INSERT INTO {t} CONTENT :row"
     _DELETE = "DELETE FROM {rid}"
 
-    def __init__(self, database, type_name, rid=None, props=None, mutable=False):
+    def __init__(
+        self, database, type_name, rid=None, props=None, mutable=False, token=None
+    ):
         self._java_document = _java_object()
         self._database = database
         self._db = database
@@ -46,6 +103,9 @@ class _Mixin:
         self._rid = rid or None
         self._props: Dict[str, Any] = dict(props or {})
         self._mutable = mutable or not rid
+        # fingerprint of the values this record held as read (None: not taken yet). A read does not take it: modify(), the first set() of a
+        # saved record or save() does, from the values then held, which are the read-time snapshot. save() refuses to overwrite a changed record
+        self._token = token
         self._property_names_cache = None
 
     # -- reading
@@ -99,6 +159,10 @@ class _Mixin:
             raise AttributeError(
                 f"{type(self).__name__} is immutable. Call .modify() first to get a mutable version."
             )
+        if self._token is None and self._rid:
+            self._token = _fingerprint(
+                self._props
+            )  # a saved record's snapshot, before the first change to it
         self._props[name] = value
         return self
 
@@ -115,10 +179,38 @@ class _Mixin:
                 return self  # a before_create callback vetoed it: nothing is written, no error (as on the JPype backend)
             self._adopt(row)
         else:
-            db.command(
-                "sql", f"UPDATE {self._rid} MERGE :row", {"row": self._props}
-            ).close()
+            self._save_update(db)
         return self
+
+    def _save_update(self, db) -> None:
+        """UPDATE .. MERGE of a saved record, refused when the stored record is no longer the one this object was read from.
+
+        The engine keeps no record version. The values this object held as read are fingerprinted (once, at modify() or here) and compared
+        with the values stored now, in the transaction of the update (one is opened when none is active); a stored record that differs
+        raises ConcurrentModificationException and nothing is written. The fingerprint then moves to the stored values after this save,
+        so the object's own save is not another transaction's change."""
+        token = self._token
+        if token is None:
+            token = self._token = _fingerprint(self._props)
+        own = not db.is_transaction_active()
+        if own:
+            db.begin()
+        try:
+            stored = db.query("sql", f"SELECT FROM {self._rid}").first()
+            if stored is not None and _fingerprint(stored._props) != token:
+                raise _concurrent_modification(self._rid, self._type)
+            after = db.command(
+                "sql",
+                f"UPDATE {self._rid} MERGE :row RETURN AFTER",
+                {"row": self._props},
+            ).first()
+            if own:
+                db.commit()
+        except BaseException:
+            if own and db.is_transaction_active():
+                db.rollback()
+            raise
+        self._token = _fingerprint(after._props) if after is not None else None
 
     def _adopt(self, row) -> None:
         if row is None or not row.get_rid():
@@ -127,6 +219,7 @@ class _Mixin:
             )
         self._rid = row.get_rid()
         self._props = row.to_dict()
+        self._token = None  # the stored values are the ones now held: fingerprinted when the first change or the next save needs it
 
     def delete(self):
         if self._rid is None:
@@ -135,7 +228,18 @@ class _Mixin:
 
     def modify(self):
         self._check_open()
-        return type(self)(self._db, self._type, self._rid, self._props, mutable=True)
+        if self._rid and self._token is None:
+            self._token = _fingerprint(
+                self._props
+            )  # the values held now are the ones read: cached here, used by save()
+        return type(self)(
+            self._db,
+            self._type,
+            self._rid,
+            self._props,
+            mutable=True,
+            token=self._token,
+        )
 
     def __repr__(self) -> str:
         return f"<{type(self).__name__} rid={self.get_rid()} type={self._type}>"
