@@ -6,6 +6,8 @@ is the one part of #383 the bindings wrap: every other item there is a SQL
 statement (see `test_sql_constraints_and_maintenance.py`).
 """
 
+import re
+
 import pytest
 
 import arcadedb
@@ -43,19 +45,50 @@ def test_read_only_open_reads_and_refuses_writes(populated_path):
         assert not db.schema.exists_type("Other")
 
 
-def test_read_only_begin_is_not_refused_the_write_and_the_commit_are(populated_path):
-    """begin() returns on a read-only database; the first write raises, and so does the commit
-    (the engine starts the transaction then). A write through Document.save() is an
-    ArcadeDBError like the rest of the API. Reads need no transaction."""
+def _end_read_only_transaction(db, end):
+    """Call `end` (db.commit or db.rollback) on a read-only transaction.
+
+    From 26.11.1 (ArcadeDB PR #11124, issue #11057) it returns and no transaction is
+    active afterwards. Engines before that refuse with the read-only error ("Cannot begin
+    a transaction on a read only database") and leave the transaction active, and a
+    rollback after the refused commit is refused the same way, so there is nothing to
+    clean up and no state to assert beyond the unchanged data. The 26.11.1-SNAPSHOT line
+    spans both behaviours, so a version check cannot tell them apart: accept either.
+    """
+    try:
+        end()
+    except ArcadeDBError as e:
+        assert re.search(r"(?i)read.?only", str(e)), str(e)
+        return False
+    assert not db.is_transaction_active()
+    return True
+
+
+def test_read_only_begin_reads_and_the_write_is_refused_the_commit_is_either(
+    populated_path,
+):
+    """begin() returns on a read-only database; a write through Document.save() raises an
+    ArcadeDBError like the rest of the API, and reads need no transaction. commit() of
+    that read-only transaction returns on engines from 26.11.1 and raises the read-only
+    error before (see `_end_read_only_transaction`)."""
     with arcadedb.open_database(populated_path, read_only=True) as db:
         db.begin()  # not refused
         assert db.count_type("Note") == 2
         with pytest.raises(ArcadeDBError, match="(?i)read.?only"):
             db.new_document("Note").set("n", 3).save()
-        with pytest.raises(ArcadeDBError, match="(?i)read.?only"):
-            db.commit()
+        _end_read_only_transaction(db, db.commit)
         assert db.count_type("Note") == 2
         assert db.query("sql", "SELECT n FROM Note").to_list()
+
+
+def test_read_only_rollback_of_a_read_transaction(populated_path):
+    """rollback() of a read-only transaction returns on engines from 26.11.1 and raises
+    the read-only error before; the data is unchanged either way."""
+    with arcadedb.open_database(populated_path, read_only=True) as db:
+        db.begin()
+        assert db.count_type("Note") == 2
+        _end_read_only_transaction(db, db.rollback)
+        assert db.count_type("Note") == 2
 
 
 def test_factory_open_read_only_and_default_is_writable(populated_path):
