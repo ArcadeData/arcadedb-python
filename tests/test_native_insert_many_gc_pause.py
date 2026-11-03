@@ -252,18 +252,20 @@ def test_a_generator_given_by_keyword_is_not_paused(
     assert gc.isenabled()
 
 
-def test_the_wrapper_keeps_the_signature_and_the_docstring(temp_db):
-    signature = inspect.signature(temp_db.insert_many)
+def test_insert_many_is_not_wrapped_and_keeps_its_defaults():
+    """The pause is in insert_many's own body: its defaults are its own (a test fixture patches ``__defaults__``), and nothing wraps it."""
+    func = NativeDatabase.insert_many
 
-    assert list(signature.parameters) == [
+    assert func.__defaults__ == (1000, False)
+    assert not hasattr(func, "__wrapped__")
+    assert list(inspect.signature(func).parameters) == [
+        "self",
         "type_name",
         "rows",
         "commit_every",
         "parallel",
     ]
-    assert signature.parameters["commit_every"].default == 1000
-    assert temp_db.insert_many.__name__ == "insert_many"
-    assert temp_db.insert_many.__doc__.startswith("Bulk insert.")
+    assert func.__doc__.startswith("Bulk insert.")
 
 
 def test_a_call_without_rows_raises_and_leaves_the_collector_as_it_was(
