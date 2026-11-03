@@ -764,13 +764,17 @@ class NativeDatabase:
         self._check_not_closed()
         if isinstance(rows, (list, tuple)) and gc.isenabled():
             # A sized input: no user code runs between the chunks, so Python's cyclic collector is paused for the call and put back in
-            # finally (enabled again only because this call disabled it). The call re-enters once with the collector off and runs the body
-            # below; a lazy input, or a collector the caller already disabled, goes straight to the body.
+            # finally (enabled again only because this call disabled it). A lazy input, or a collector the caller already disabled,
+            # runs the body as it is.
             gc.disable()
             try:
-                return self.insert_many(type_name, rows, commit_every, parallel)
+                return self._insert_many_nogc(type_name, rows, commit_every, parallel)
             finally:
                 gc.enable()
+        return self._insert_many_nogc(type_name, rows, commit_every, parallel)
+
+    def _insert_many_nogc(self, type_name, rows, commit_every, parallel) -> int:
+        """The body of ``insert_many``, without the pause of the cyclic collector."""
         if parallel:
             return self._insert_many_parallel(type_name, rows)
         sql = f"INSERT INTO `{type_name}` CONTENT :row"

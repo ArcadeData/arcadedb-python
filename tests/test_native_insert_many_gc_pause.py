@@ -277,3 +277,24 @@ def test_a_call_without_rows_raises_and_leaves_the_collector_as_it_was(
         temp_db.insert_many(doc_type)
 
     assert gc.isenabled()
+
+
+def test_an_instance_level_spy_on_insert_many_sees_one_call_for_a_list(
+    temp_db, doc_type, monkeypatch, collector_state
+):
+    """The pause does not call the public ``insert_many`` again: a spy or a subclass override of it runs once per call."""
+    gc.enable()
+    real = temp_db.insert_many
+    calls = []
+
+    def spy(*args, **kwargs):
+        calls.append(args)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(temp_db, "insert_many", spy)
+
+    written = temp_db.insert_many(doc_type, _rows())
+
+    assert written == ROWS
+    assert len(calls) == 1
+    assert gc.isenabled()
