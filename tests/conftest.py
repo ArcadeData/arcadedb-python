@@ -32,6 +32,9 @@ WINDOWS_NOT_APPLICABLE = {
     # runs scripts/stage_jars.sh under bash with a fake docker; the bash a Windows
     # subprocess finds may be WSL's rather than Git Bash
     "test_stage_jars.py": "bash with a fake docker",
+    # the release preflight is a maintainer tool for a POSIX shell: its check (f) runs the workflows' bash step code,
+    # and on Windows it reports a SKIP, which its own tests cover on Linux and macOS (ArcadeData/arcadedb-python#208)
+    "test_release_preflight.py": "runs the workflows' bash step code",
 }
 if sys.platform == "win32":
     collect_ignore.extend(WINDOWS_NOT_APPLICABLE)

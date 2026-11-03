@@ -10,7 +10,6 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
-import shutil
 import sys
 import types
 from pathlib import Path
@@ -33,11 +32,8 @@ def _load():
 rp = _load()
 REAL_RUN = rp.run
 V = "99.1.1"
-# Check (f) runs the bash code of the workflow steps; on Windows the preflight reports a SKIP instead (see the last two tests).
-needs_bash = pytest.mark.skipif(
-    sys.platform == "win32" or shutil.which("bash") is None,
-    reason="runs the bash step code of the workflows: needs a POSIX shell (Linux, macOS)",
-)
+# Check (f) runs the bash code of the workflow steps. This file is not collected on Windows (tests/conftest.py,
+# WINDOWS_NOT_APPLICABLE); on Windows the preflight reports a SKIP for (f), which the last two tests cover here.
 JOBS_OK = {
     "jobs": [
         {"name": "build", "conclusion": "success"},
@@ -345,7 +341,6 @@ def test_e_gh_error_fails_closed(net):
 
 # (f)
 @pytest.mark.parametrize("version", [V, V + ".post1", V + ".dev0"])
-@needs_bash
 def test_f_real_workflows_derive_the_tag(net, version):
     results = [r for r in _checks(version) if r.check.startswith("(f)")]
     assert len(results) == 3 and all(r.status == "PASS" for r in results), results
@@ -363,7 +358,6 @@ def test_f_extract_step_run_finds_the_real_steps():
     assert rp.extract_step_run(text, "No such step") is None
 
 
-@needs_bash
 def test_f_missing_step_fails(net, tmp_path):
     for rel in (
         ".github/workflows/release-jvm.yml",
@@ -383,7 +377,6 @@ def test_f_missing_step_fails(net, tmp_path):
     assert "has no step" in results[0].evidence
 
 
-@needs_bash
 def test_f_wrong_derivation_fails(net, monkeypatch):
     def lying_run(cmd, env=None, cwd=None):
         if cmd[0] == "bash":
@@ -402,7 +395,6 @@ def test_f_wrong_derivation_fails(net, monkeypatch):
     assert "engine '99.0.0', expected '99.1.1'" in results[2].evidence
 
 
-@needs_bash
 def test_f_step_that_exits_nonzero_fails(net, monkeypatch):
     monkeypatch.setattr(
         rp,
