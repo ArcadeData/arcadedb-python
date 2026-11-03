@@ -339,21 +339,27 @@ class _Mixin:
         if stored is not None and not _same(stored._props, base):
             raise _concurrent_modification(self._rid, self._type)
         sent = dict(base)
+        # the values the statement must carry: the ones that are not what was read, as the caller holds them
+        changed = {}
         exact = True
-        for name, value in self._props.items():
+        for name, held in self._props.items():
             old = base.get(name, _MISSING)
-            if old is not _MISSING and _same(value, old):
+            if old is not _MISSING and _same(held, old):
                 continue  # as read: the copy of it stays
-            value = _snap(value)
+            value = _snap(held)
             if old is not _MISSING and _same(value, old):
                 continue  # a tuple or an array of what was read
             sent[name] = value
+            changed[name] = held
             if exact and (old is _MISSING or not _stored_as_sent(value, old)):
                 exact = False
         from .extras import veto_count
 
         vetoes = veto_count()
-        params = {"rid": RID(self._rid), "row": self._props}
+        # MERGE of the changed values only: the stored row equals the copy (checked above), so a value that is as read is already stored, and
+        # sending it again (a 768-float vector, say) costs encoding, a crossing payload and an engine merge for nothing. A save that changes
+        # nothing still runs its UPDATE, with every value, so the engine's update events fire as they did.
+        params = {"rid": RID(self._rid), "row": changed or self._props}
         if exact:
             row = db.command("sql", self._UPDATE_SENT, params).first()
             if row is not None and row.get("count") and veto_count() == vetoes:

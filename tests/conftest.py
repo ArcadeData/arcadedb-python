@@ -58,6 +58,8 @@ if BACKEND != "native":
     collect_ignore.append("test_native_vector_provider.py")
     # the copy of a record's values as read that save() compares with the stored row (arcadedb._native.records), counted through its seams
     collect_ignore.append("test_native_save_baseline.py")
+    # the parameters of the UPDATE of save(): only the changed values are merged (arcadedb._native.records), read at the statement seam
+    collect_ignore.append("test_native_save_merge.py")
     # crossing counts of the transaction entry points (lib.call is the native library's ctypes door)
     collect_ignore.append("test_native_tx_crossings.py")
     # counts the statement texts the native backend hands to the engine (the JPype backend has no such layer)
