@@ -105,26 +105,124 @@ def test_float64_arrays_are_not_vector_columns():
     assert columnar.pack({"v": [row for row in m]}, NO_TYPES) is None
 
 
-def test_a_list_of_float_lists_is_a_vector_only_for_an_array_of_floats_property():
+def test_a_list_of_equal_float_lists_is_a_vector_matrix_for_an_array_of_floats_property():
     lists = [[0.5, 1.5], [2.5, 3.5]]
-    assert (
-        columnar.pack({"v": lists}, NO_TYPES) is None
-    )  # undeclared: the JSON path keeps the doubles
     _, cols = _pack({"v": lists}, {"v": "ARRAY_OF_FLOATS"})
-    assert (cols["v"].kind, cols["v"].dim) == ("f", 2)
+    assert (cols["v"].kind, cols["v"].dim) == ("f", 2)  # a matrix, not a ragged list
+    _, cols = _pack({"v": lists})  # undeclared: the JSON path keeps the doubles
+    assert (cols["v"].kind, cols["v"].dim) == ("D", 0)
+
+
+def _lists(col):
+    """(offsets, elements, present) of a ragged list column as read back from the addresses."""
+    offsets = np.frombuffer(_bytes(col.data), dtype=np.int32)
+    dtype = {"I": np.int32, "Q": np.int64, "E": np.float32, "D": np.float64}[col.kind]
+    elements = np.frombuffer(_bytes(col.aux), dtype=dtype)
+    return (
+        offsets.tolist(),
+        elements.tolist(),
+        _present(col) if col.nulls[1] else None,
+    )
+
+
+def test_ragged_int_and_float_lists_are_offsets_plus_elements():
+    tokens = [[5, 7, 9], [1], [], [2, 4]]
+    weights = [[0.5, 1.25, 2.0], [3.5], [], [0.1, 0.2]]
+    rows, cols = _pack(
+        {"t": tokens, "w": weights, "t2": tokens, "w2": weights},
+        {"t": "ARRAY_OF_INTEGERS", "w": "ARRAY_OF_FLOATS", "t2": "LIST", "w2": "LIST"},
+    )
+    assert rows == 4
+    assert [cols[k].kind for k in ("t", "w", "t2", "w2")] == ["I", "E", "Q", "D"]
+    assert all(cols[k].n == 4 and cols[k].dim == 0 for k in cols)
+    assert _lists(cols["t"]) == ([0, 3, 4, 4, 6], [5, 7, 9, 1, 2, 4], None)
+    assert _lists(cols["t2"]) == ([0, 3, 4, 4, 6], [5, 7, 9, 1, 2, 4], None)
+    assert _lists(cols["w"])[0] == [0, 3, 4, 4, 6]
+    assert _lists(cols["w"])[1] == np.array(sum(weights, []), dtype=np.float32).tolist()
+    assert _lists(cols["w2"])[1] == sum(
+        weights, []
+    )  # float64: exactly the Python floats
+
+
+def test_undeclared_lists_cross_as_the_64_bit_kinds_the_json_text_parses_to():
+    _, cols = _pack({"t": [[1, 2], [3]], "w": [[0.5], [1.5, 2.5]]})
+    assert (cols["t"].kind, cols["w"].kind) == ("Q", "D")
+    big = [[-(2**63), 2**63 - 1], [2**31, -(2**31) - 1]]
+    _, cols = _pack({"t": big})
+    assert _lists(cols["t"])[1] == [-(2**63), 2**63 - 1, 2**31, -(2**31) - 1]
+
+
+def test_a_declared_float_array_narrows_to_float32_and_a_huge_double_becomes_infinity():
+    _, cols = _pack({"w": [[1e300, 0.1], [-1e300]]}, {"w": "ARRAY_OF_FLOATS"})
+    got = _lists(cols["w"])[1]
+    assert got[0] == float("inf") and got[2] == float("-inf")
+    assert got[1] == float(np.float32(0.1))
+
+
+def test_null_and_empty_rows_of_a_list_column():
+    _, cols = _pack({"t": [[1, 2], None, [], [3]], "w": [None, None, [0.5], None]})
+    assert _lists(cols["t"]) == ([0, 2, 2, 2, 3], [1, 2, 3], [True, False, True, True])
+    assert _lists(cols["w"]) == ([0, 0, 0, 1, 1], [0.5], [False, False, True, False])
+    _, cols = _pack({"t": [[], []]}, {"t": "ARRAY_OF_INTEGERS"})
+    assert (cols["t"].kind, cols["t"].n, cols["t"].aux) == ("I", 2, (0, 0))
+    assert _lists(cols["t"])[0] == [0, 0, 0]
+    for declared, kind in (
+        ({}, "Q"),
+        ({"t": "LIST"}, "Q"),
+        ({"t": "ARRAY_OF_FLOATS"}, "E"),
+    ):
+        _, cols = _pack({"t": [[], []]}, declared)
+        assert cols["t"].kind == kind
+    _, cols = _pack({"t": [None, [1.5]]}, {"t": "ARRAY_OF_FLOATS"})
+    assert cols["t"].kind == "E"  # a null row keeps a float list off the fixed matrix
+    assert _lists(cols["t"]) == ([0, 0, 1], [1.5], [False, True])
+
+
+def test_the_offsets_of_a_long_ragged_list_column_index_its_elements():
+    lists = [list(range(k % 7)) for k in range(25_000)]
+    rows, cols = _pack({"t": lists})
+    offsets, elements, _ = _lists(cols["t"])
+    assert rows == 25_000 and offsets[-1] == len(elements) == sum(map(len, lists))
+    assert elements[offsets[1234] : offsets[1235]] == lists[1234]
+
+
+@pytest.mark.parametrize(
+    "column, declared",
+    [
+        ([[1, 2.5]], {}),  # mixed int and float elements
+        ([[True, False]], {}),  # bool is not an int here
+        ([[1], [2.5]], {}),  # an int row and a float row
+        ([["a"]], {}),
+        ([[[1]], [[2]]], {}),  # nested
+        ([[1], (2, 3)], {}),  # a tuple row
+        ([(1, 2), (3,)], {}),
+        ([[np.int64(1)]], {}),
+        ([[1, 2**63]], {}),  # past 64 bits
+        ([[float("nan")]], {}),
+        ([[1.0], [2.0, float("inf")]], {"t": "ARRAY_OF_FLOATS"}),  # ragged: no matrix
+        ([[2**31]], {"t": "ARRAY_OF_INTEGERS"}),  # the engine refuses it: JSON path
+        ([[-(2**31) - 1]], {"t": "ARRAY_OF_INTEGERS"}),
+        ([[1.5]], {"t": "ARRAY_OF_INTEGERS"}),
+        ([[1]], {"t": "ARRAY_OF_LONGS"}),  # a declared type the kinds do not cover
+        ([[1.0]], {"t": "ARRAY_OF_DOUBLES"}),
+        ([[1]], {"t": "STRING"}),
+    ],
+)
+def test_list_columns_the_buffers_cannot_carry_unchanged_are_refused(column, declared):
+    named = {"t": column}
+    assert columnar.pack(named, columnar.Declared(known=declared)) is None
+
+
+def test_a_library_without_the_list_decoder_keeps_lists_on_the_json_path():
+    off = columnar.Declared(
+        known={"t": "ARRAY_OF_INTEGERS", "w": "ARRAY_OF_FLOATS"}, lists=False
+    )
+    assert columnar.pack({"t": [[1], [2, 3]]}, off) is None
+    assert columnar.pack({"w": [[1.0], [2.0, 3.0]]}, off) is None
     assert (
-        columnar.pack(
-            {"v": [[1.0], [1.0, 2.0]]},
-            columnar.Declared(known={"v": "ARRAY_OF_FLOATS"}),
-        )
-        is None
-    )  # ragged
-    assert (
-        columnar.pack(
-            {"v": [[], []]}, columnar.Declared(known={"v": "ARRAY_OF_FLOATS"})
-        )
-        is None
-    )  # no dimension
+        columnar.pack({"id": [1, 2], "w": [[1.0, 2.0], [3.0, 4.0]]}, off) is not None
+    )  # a float matrix needs no decoder
+    assert columnar.pack({"s": ["a", "b"]}, off) is not None
 
 
 def test_strings_are_arrow_offsets_plus_utf8_bytes():
@@ -189,7 +287,6 @@ def test_a_bitmap_longer_than_a_byte():
         [True, 1],  # bool is not an int here
         [1, 2**63],  # past 64 bits
         [{"a": 1}, {"a": 2}],  # nested
-        [[1], [2]],  # a list without a declared ARRAY_OF_FLOATS
         [b"ab", b"cd"],
         [np.int64(1), np.int64(2)],  # numpy scalars in a list are not Python numbers
     ],

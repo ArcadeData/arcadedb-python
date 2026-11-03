@@ -4,7 +4,9 @@
  * Phase 7: columnar bulk insert through one crossing. The documents are built here from whole columns that Python lays out
  * in native-endian buffers (int64, float64, bool bytes, int32, float32, float32 vector matrix, UTF-8 strings as Arrow offsets plus
  * bytes, optional Arrow null bitmaps), as DocumentBatcher.insertColumns does on the JPype path from long[], double[], boolean[] and
- * Object[] columns. Values are read straight from the caller's buffers; no JSON text, no parser, no intermediate arrays.
+ * Object[] columns. Values are read straight from the caller's buffers; no JSON text, no parser, no intermediate arrays. Ragged lists of
+ * numbers (the sparse-vector token and weight columns) cross as int32 element offsets plus one buffer of their elements, see
+ * {@link #insertColumns(Database, String, Map, long[])}.
  */
 package org.humemai.nativelib;
 
@@ -18,6 +20,7 @@ import org.graalvm.word.WordFactory;
 
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -67,7 +70,12 @@ final class BulkOps {
   /**
    * header: {"n":rows,"commit":every,"cols":[[name,kind,dim],..]}. Kinds: q (int64), d (float64), b (bool byte), i (int32), e (float32),
    * f (float32 matrix, dim floats per row), s (UTF-8 string: int32 offsets[n+1] in the data slot, the bytes they index in the aux slot, as
-   * an Arrow string array; offsets[0] need not be 0). spec: per column six longs, [data address, data bytes, aux address, aux bytes, null
+   * an Arrow string array; offsets[0] need not be 0), and the ragged list kinds I Q E D: the data slot holds int32 offsets[n+1] counted in
+   * ELEMENTS (offsets[0] need not be 0, a null or empty row has offsets[i] == offsets[i+1]) and the aux slot the elements they index,
+   * native-endian: I = int32 elements, stored as int[] (a property declared ARRAY_OF_INTEGERS); Q = int64 elements, stored as a
+   * List of Long (what the JSON text of a list of integers parses to); E = float32 elements, stored as float[] (ARRAY_OF_FLOATS); D =
+   * float64 elements, stored as a List of Double. The Python side chooses the kind from the declared property type so that the engine
+   * stores what the JSON path stores. spec: per column six longs, [data address, data bytes, aux address, aux bytes, null
    * bitmap address, null bitmap bytes]; the bitmap is Arrow's (bit i of byte i/8, least significant first; 1 = present), an address of 0
    * means no nulls. The memory belongs to the caller for the duration of the call; nothing is kept. Every length is checked here before
    * the first document is built, so a wrong table is an exception and nothing is written. Same transaction contract as
@@ -90,6 +98,7 @@ final class BulkOps {
     final long[] data = new long[k]; // addresses: a Word value cannot live in an array or be compared with null
     final long[] nulls = new long[k]; // 0 = no nulls
     final ByteBuffer[] blobs = new ByteBuffer[k];
+    final long[] elems = new long[k]; // aux address of a ragged list column
     int longest = 0;
     for (int c = 0; c < k; c++) {
       final List<Object> col = (List<Object>) cols.get(c);
@@ -108,7 +117,7 @@ final class BulkOps {
             throw new IllegalArgumentException("column '" + names[c] + "': a vector column needs a dimension above 0");
           yield 4L * n * dims[c];
         }
-        case 's' -> 4L * (n + 1L);
+        case 's', 'I', 'Q', 'E', 'D' -> 4L * (n + 1L);
         default -> throw new IllegalArgumentException("unknown column kind " + kinds[c]);
       };
       if (dataBytes < need || (need > 0 && dataAddr == 0))
@@ -118,6 +127,22 @@ final class BulkOps {
         if (nullBytes < (n + 7L) / 8)
           throw new IllegalArgumentException("column '" + names[c] + "' has a null bitmap of " + nullBytes + " bytes, " + (n + 7L) / 8 + " needed");
         nulls[c] = nullAddr;
+      }
+      if (isList(kinds[c])) {
+        final long width = kinds[c] == 'Q' || kinds[c] == 'D' ? 8L : 4L;
+        final Pointer offsets = WordFactory.pointer(data[c]);
+        int prev = offsets.readInt(WordFactory.signed(0));
+        if (prev < 0)
+          throw new IllegalArgumentException("column '" + names[c] + "': negative list offset");
+        for (int i = 1; i <= n; i++) {
+          final int off = offsets.readInt(WordFactory.signed(4L * i));
+          if (off < prev || width * off > auxBytes)
+            throw new IllegalArgumentException("column '" + names[c] + "': list offsets are not increasing within the " + auxBytes + " bytes of elements (row " + (i - 1) + ")");
+          prev = off;
+        }
+        if (auxBytes > 0 && auxAddr == 0)
+          throw new IllegalArgumentException("column '" + names[c] + "': the list elements are missing");
+        elems[c] = auxAddr;
       }
       if (kinds[c] == 's') {
         if (auxBytes < 0 || auxBytes > Integer.MAX_VALUE || (auxBytes > 0 && auxAddr == 0))
@@ -166,6 +191,7 @@ final class BulkOps {
                 doc.set(names[c], new String(scratch, 0, len, StandardCharsets.UTF_8));
               }
             }
+            case 'I', 'Q', 'E', 'D' -> doc.set(names[c], listValue(kinds[c], base, WordFactory.pointer(elems[c]), i));
             default -> {
               final int dim = dims[c];
               final float[] v = new float[dim];
@@ -195,6 +221,42 @@ final class BulkOps {
       throw e;
     }
     return n;
+  }
+
+  private static boolean isList(final char kind) {
+    return kind == 'I' || kind == 'Q' || kind == 'E' || kind == 'D';
+  }
+
+  /** Row i of a ragged list column: offsets (int32, in elements) at {@code offsets}, the elements at {@code elems}. */
+  private static Object listValue(final char kind, final Pointer offsets, final Pointer elems, final int i) {
+    final int from = offsets.readInt(WordFactory.signed(4L * i));
+    final int len = offsets.readInt(WordFactory.signed(4L * (i + 1L))) - from;
+    switch (kind) {
+    case 'I': {
+      final int[] v = new int[len];
+      for (int j = 0; j < len; j++)
+        v[j] = elems.readInt(WordFactory.signed(4L * (from + (long) j)));
+      return v;
+    }
+    case 'E': {
+      final float[] v = new float[len];
+      for (int j = 0; j < len; j++)
+        v[j] = elems.readFloat(WordFactory.signed(4L * (from + (long) j)));
+      return v;
+    }
+    case 'Q': {
+      final List<Object> v = new ArrayList<>(len);
+      for (int j = 0; j < len; j++)
+        v.add(elems.readLong(WordFactory.signed(8L * (from + (long) j))));
+      return v;
+    }
+    default: {
+      final List<Object> v = new ArrayList<>(len);
+      for (int j = 0; j < len; j++)
+        v.add(elems.readDouble(WordFactory.signed(8L * (from + (long) j))));
+      return v;
+    }
+    }
   }
 
   /**

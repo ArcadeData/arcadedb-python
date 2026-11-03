@@ -560,7 +560,8 @@ public final class ArcadeNative {
   /**
    * Columnar insert by pointer: no copy of the columns into one buffer. spec points at 6 longs per column (data address and bytes, aux
    * address and bytes, null-bitmap address and bytes, see BulkOps.insertColumns) and nspec is their count. Kinds q d b f as
-   * arcadedb_n_insert_cols, plus i (int32), e (float32) and s (Arrow UTF-8 string: int32 offsets and the bytes they index), and null bitmaps.
+   * arcadedb_n_insert_cols, plus i (int32), e (float32) and s (Arrow UTF-8 string: int32 offsets and the bytes they index), the ragged
+   * list kinds I Q E D (int32 element offsets and the elements they index, see BulkOps.insertColumns), and null bitmaps.
    * The caller keeps every buffer alive and unchanged until the call returns. Returns {"ok":true,"n":rows}.
    */
   @CEntryPoint(name = "arcadedb_n_insert_colp")
@@ -576,6 +577,15 @@ public final class ArcadeNative {
     } catch (final Throwable t) {
       return err(t);
     }
+  }
+
+  /**
+   * Probe: a library that has this entry decodes the ragged list kinds I Q E D of arcadedb_n_insert_colp (the Python side asks for
+   * the symbol, it does not call it). An older library lacks the symbol and the Python side keeps such columns on the JSON path.
+   */
+  @CEntryPoint(name = "arcadedb_n_colp_lists")
+  public static CCharPointer colpLists(final IsolateThread thread) {
+    return out("{\"ok\":true,\"kinds\":\"IQED\"}");
   }
 
   // ---- phase 8: fewer crossings and no reply text for a command whose rows are read late or never; batches of statements and rows per crossing

@@ -2,7 +2,8 @@
 ints, floats and bools, lists of one value type (None is a null), strings (UTF-8 bytes plus offsets, as Arrow lays them out), float32
 vector columns and Arrow arrays are laid out by :mod:`.columnar`; anything else (nested values, mixed-type columns, date-times,
 decimals, integers past 64 bits) returns None and the caller uses the per-row JSON path. The documents are built image-side as
-``DocumentBatcher.insertColumns`` builds them on JPype. ``ARCADEDB_NATIVE_BULK=0`` turns the columnar path off.
+``DocumentBatcher.insertColumns`` builds them on JPype. Lists of ints and floats (ragged or not, None allowed) cross as int32 offsets plus a buffer of their elements when the library has
+the decoder (``lib.COLP_LISTS``). ``ARCADEDB_NATIVE_BULK=0`` turns the columnar path off.
 """
 
 import os
@@ -19,6 +20,10 @@ def _usable():
         and lib._lib is not None
         and hasattr(lib._lib, "arcadedb_n_insert_colp")
     )
+
+
+def _declared(db, type_name, known=None):
+    return columnar.Declared(db, type_name, known, lists=lib.COLP_LISTS)
 
 
 def _send(db, type_name, packed, rows, commit_every, prefix):
@@ -47,7 +52,7 @@ def insert_columns_fast(
     """
     if not _usable():
         return None
-    packed = columnar.pack(columns, columnar.Declared(db, type_name, declared))
+    packed = columnar.pack(columns, _declared(db, type_name, declared))
     if packed is None:
         return None
     rows, cols = packed
@@ -63,7 +68,7 @@ def insert_rows_columnar(db, type_name, chunk):
     columns = columnar.rows_to_columns(chunk)
     if columns is None:
         return False
-    packed = columnar.pack(columns, columnar.Declared(db, type_name))
+    packed = columnar.pack(columns, _declared(db, type_name))
     if packed is None:
         return False
     rows, cols = packed

@@ -31,6 +31,8 @@ INSERT_ROWS = os.environ.get("ARCADEDB_NATIVE_INSERT_ROWS", "1") != "0"
 EXEC_MANY = os.environ.get("ARCADEDB_NATIVE_EXEC_MANY", "1") != "0"
 # ARCADEDB_NATIVE_NEXT_BIN: the batches after the first read through arcadedb_n_next_bin, float arrays of 8 or more elements in a float32 tail (as flag 4 of arcadedb_n_exec does for the first batch), not as number text
 NEXT_BIN = os.environ.get("ARCADEDB_NATIVE_NEXT_BIN", "1") != "0"
+# ARCADEDB_NATIVE_COLP_LISTS: ragged lists of ints and floats (the sparse-vector token and weight columns) cross in arcadedb_n_insert_colp as int32 offsets plus one buffer of elements (kinds I Q E D), not inside the JSON text of the chunk; 0 keeps them on the JSON path, as does a library without arcadedb_n_colp_lists
+COLP_LISTS = os.environ.get("ARCADEDB_NATIVE_COLP_LISTS", "1") != "0"
 
 # the directory the engine log, logging.properties and the crash files go to (None until the library is loaded)
 LOG_DIR_USED = None
@@ -225,6 +227,7 @@ def _load():
             "arcadedb_n_exec_bin": [P, L, I, S, S, S, I, S, L],
             "arcadedb_n_insert_cols": [P, L, S, S, S, L],
             "arcadedb_n_insert_colp": [P, L, S, S, P, I],
+            "arcadedb_n_colp_lists": [P],
             "arcadedb_n_next": [P, L, I],
             "arcadedb_n_next_bin": [P, L, I],
             "arcadedb_n_rs_close": [P, L],
@@ -266,7 +269,7 @@ def _load():
                 )
                 else ctypes.c_longlong if name == "arcadedb_n_cmd" else ctypes.c_void_p
             )
-        global BINARY_PARAMS, CMD_PATH, CLOSE_BATCH, INSERT_ROWS, EXEC_MANY, NEXT_BIN
+        global BINARY_PARAMS, CMD_PATH, CLOSE_BATCH, INSERT_ROWS, EXEC_MANY, NEXT_BIN, COLP_LISTS
         if not hasattr(
             lib, "arcadedb_n_exec_bin"
         ):  # a library built before the binary path
@@ -283,6 +286,10 @@ def _load():
             lib, "arcadedb_n_next_bin"
         ):  # a library built before the binary tail of later batches
             NEXT_BIN = False
+        if not hasattr(
+            lib, "arcadedb_n_colp_lists"
+        ):  # a library built before the ragged list kinds of arcadedb_n_insert_colp
+            COLP_LISTS = False
         _isolate = isolate
         _creator = threading.get_ident()
         _local.thread = _Thread(thread, owned=False)

@@ -502,3 +502,225 @@ def test_an_unknown_kind_and_a_wrong_table_size_are_errors(temp_db):
     )
     assert not reply["ok"]  # 5 entries are not a multiple of 6
     assert _count(temp_db) == 0
+
+
+# ---- ragged lists of ints and floats (the sparse-vector token and weight columns): offsets plus one buffer of elements
+
+SPARSE_DIMS = 400
+
+
+def _sparse_types(
+    db, *names, tokens="ARRAY_OF_INTEGERS", weights="ARRAY_OF_FLOATS", index=False
+):
+    for name in names:
+        db.command("sql", f"CREATE DOCUMENT TYPE {name}")
+        db.command("sql", f"CREATE PROPERTY {name}.id INTEGER")
+        if tokens:
+            db.command("sql", f"CREATE PROPERTY {name}.tokens {tokens}")
+        if weights:
+            db.command("sql", f"CREATE PROPERTY {name}.weights {weights}")
+        if index:
+            db.command(
+                "sql",
+                f"CREATE INDEX ON {name} (tokens, weights) LSM_SPARSE_VECTOR "
+                f'METADATA {{"dimensions": {SPARSE_DIMS}}}',
+            )
+
+
+def _sparse_rows(n, ragged, seed=11):
+    """Rows of the lanes' shape: an id, the token ids of a sparse vector and their weights (30 nonzeros, or 1 to 40 when ragged)."""
+    import random
+
+    rng = random.Random(seed)
+    rows = []
+    for i in range(n):
+        nnz = rng.randint(1, 40) if ragged else 30
+        tokens = rng.sample(range(SPARSE_DIMS), nnz)
+        rows.append(
+            {"id": i, "tokens": tokens, "weights": [0.1 + rng.random() for _ in tokens]}
+        )
+    return rows
+
+
+def _tagged(value):
+    if isinstance(value, list):
+        return ("list", [(type(e).__name__, e) for e in value])
+    return (type(value).__name__, value)
+
+
+def _stored_deep(db, name):
+    """Every record of a type, a list property as its elements with their Python types."""
+    sql = f"SELECT FROM {name} ORDER BY id"  # nosec B608 - test-owned type name, no user input
+    return [
+        {k: _tagged(v) for k, v in row.items() if not k.startswith("@")}
+        for row in db.query("sql", sql).to_list()
+    ]
+
+
+def _stored_kinds(db, name, props):
+    """What the engine says each stored property value is (its type() per record), to compare between the two paths."""
+    select = ", ".join(f"{p}.type() AS {p}" for p in props)
+    sql = f"SELECT id, {select} FROM {name} ORDER BY id"  # nosec B608 - test-owned names, no user input
+    return db.query("sql", sql).to_list()
+
+
+def _neighbours(db, name, tokens, weights, k=10):
+    sql = (
+        "SELECT id, score FROM "  # nosec B608 - test-owned type name
+        f"(SELECT expand(`vector.sparseNeighbors`('{name}[tokens,weights]', ?, ?, ?))) ORDER BY score DESC, id"
+    )
+    rows = db.query(
+        "sql",
+        sql,
+        np.asarray(tokens, dtype=np.int32),
+        np.asarray(weights, dtype=np.float32),
+        k,
+    ).to_list()
+    return [(int(r["id"]), r["score"]) for r in rows]
+
+
+@pytest.mark.parametrize("ragged", [False, True])
+def test_sparse_rows_cross_as_columns_and_the_sparse_index_accepts_them(
+    temp_db, spy, monkeypatch, ragged
+):
+    _sparse_types(temp_db, "Ref", "Col", index=True)
+    rows = _sparse_rows(300, ragged)
+    _json_reference(temp_db, "Ref", rows, monkeypatch)
+    assert spy.count(COLP) == 0 and spy.count(ROWS) == 1
+
+    spy.calls.clear()
+    assert temp_db.insert_many("Col", rows) == 300
+    assert spy.count(COLP) == 1, spy.calls  # the columnar entry ...
+    assert (
+        spy.count(ROWS) == 0 and spy.count(MANY) == 0
+    ), spy.calls  # ... and no JSON text
+
+    expected = _stored_deep(temp_db, "Ref")
+    assert len(expected) == 300
+    assert (
+        expected[3]["tokens"][0] == "list" and expected[3]["tokens"][1][0][0] == "int"
+    )
+    assert expected[3]["weights"][1][0][0] == "float"
+    assert _stored_deep(temp_db, "Col") == expected
+    assert _stored_kinds(temp_db, "Col", ("tokens", "weights")) == _stored_kinds(
+        temp_db, "Ref", ("tokens", "weights")
+    )
+    for row in rows[
+        :5
+    ]:  # the LSM_SPARSE_VECTOR index of each type finds the rows it was loaded with
+        found = _neighbours(temp_db, "Col", row["tokens"], row["weights"])
+        assert found == _neighbours(temp_db, "Ref", row["tokens"], row["weights"])
+        assert found
+
+
+def test_every_list_shape_stores_what_the_json_path_stores(temp_db, spy, monkeypatch):
+    for name in ("Ref", "Col"):
+        temp_db.command("sql", f"CREATE DOCUMENT TYPE {name}")
+        temp_db.command("sql", f"CREATE PROPERTY {name}.id INTEGER")
+        temp_db.command("sql", f"CREATE PROPERTY {name}.ai ARRAY_OF_INTEGERS")  # int[]
+        temp_db.command("sql", f"CREATE PROPERTY {name}.af ARRAY_OF_FLOATS")  # float[]
+        temp_db.command("sql", f"CREATE PROPERTY {name}.li LIST")  # a list of Long
+        temp_db.command("sql", f"CREATE PROPERTY {name}.lf LIST")  # a list of Double
+    n = 60
+    rows = []
+    for i in range(n):
+        rows.append(
+            {
+                "id": i,
+                "ai": None if i % 7 == 0 else [j * 1000 - 5 for j in range(i % 5)],
+                "af": None if i % 6 == 0 else [j / 8.0 + 0.1 for j in range(i % 4)],
+                "li": None if i % 5 == 0 else [j - 2**40 for j in range(i % 6)],
+                "lf": None if i % 4 == 0 else [j * 0.1 for j in range(i % 3)],
+                "ui": [-(2**63), 2**63 - 1, 0] if i % 2 else [],  # undeclared
+                "uf": [1e300, 1e-300, -0.0] if i % 3 else [],  # undeclared
+            }
+        )
+    rows[1]["ai"] = [-(2**31), 2**31 - 1]
+    rows[2]["af"] = [3.4e38, 1e-45]  # float32 edges
+    props = ("ai", "af", "li", "lf", "ui", "uf")
+    _json_reference(temp_db, "Ref", rows, monkeypatch)
+    spy.calls.clear()
+    temp_db.insert_many("Col", rows)
+    assert spy.count(COLP) == 1 and spy.count(ROWS) == 0 and spy.count(MANY) == 0
+    expected = _stored_deep(temp_db, "Ref")
+    assert expected[3]["ai"] == ("list", [("int", -5), ("int", 995), ("int", 1995)])
+    assert expected[1]["ai"][1] == [("int", -(2**31)), ("int", 2**31 - 1)]
+    assert expected[0]["ai"] == ("NoneType", None)
+    assert expected[4]["li"] == ("list", [("int", j - 2**40) for j in range(4)])
+    assert _stored_deep(temp_db, "Col") == expected
+    assert _stored_kinds(temp_db, "Col", props) == _stored_kinds(temp_db, "Ref", props)
+
+    empty = [{"id": 1000 + k, "ai": [], "af": []} for k in range(2)]  # only empty rows
+    _json_reference(temp_db, "Ref", empty, monkeypatch)
+    temp_db.insert_many("Col", empty)
+    assert spy.count(COLP) == 2 and spy.count(ROWS) == 0
+    assert _stored_deep(temp_db, "Col") == _stored_deep(temp_db, "Ref")
+    assert _stored_deep(temp_db, "Col")[-1]["ai"] == ("list", [])
+
+
+def test_lists_in_a_library_without_the_decoder_go_as_json(temp_db, spy, monkeypatch):
+    _sparse_types(temp_db, "Ref", "Col")
+    rows = _sparse_rows(80, ragged=True)
+    _json_reference(temp_db, "Ref", rows, monkeypatch)
+    spy.calls.clear()
+    monkeypatch.setattr(lib, "COLP_LISTS", False)
+    temp_db.insert_many("Col", rows)
+    assert spy.count(COLP) == 0 and spy.count(ROWS) == 1, spy.calls
+    assert _stored_deep(temp_db, "Col") == _stored_deep(temp_db, "Ref")
+
+
+def test_lists_json_cannot_carry_unchanged_still_go_the_json_way(
+    temp_db, spy, monkeypatch
+):
+    _sparse_types(temp_db, "Ref", "Col", tokens=None, weights=None)
+    rows = [{"id": i, "w": [1.0, math.inf] if i % 2 else [2.5]} for i in range(20)]
+    _json_reference(temp_db, "Ref", rows, monkeypatch)
+    spy.calls.clear()
+    temp_db.insert_many("Col", rows)
+    assert spy.count(COLP) == 0 and spy.count(MANY) == 1, spy.calls
+    assert _stored_deep(temp_db, "Col") == _stored_deep(temp_db, "Ref")
+
+
+def test_more_ragged_rows_than_one_chunk(temp_db, spy, monkeypatch):
+    _sparse_types(temp_db, "Ref", "Col")
+    rows = [
+        {"id": i, "tokens": list(range(i % 9)), "weights": [0.5] * (i % 9)}
+        for i in range(12_000)
+    ]
+    _json_reference(temp_db, "Ref", rows, monkeypatch)
+    spy.calls.clear()
+    temp_db.insert_many("Col", rows)
+    assert spy.count(COLP) == 2 and spy.count(ROWS) == 0, spy.calls  # 10,000 + 2,000
+    assert _stored_deep(temp_db, "Col") == _stored_deep(temp_db, "Ref")
+
+
+def test_a_list_table_that_does_not_fit_its_buffers_is_an_error_and_writes_nothing(
+    temp_db,
+):
+    _types(temp_db, "Col")
+    for elements, kind in (
+        ([[1, 2], [3], [], [4, 5, 6], [7]], "Q"),
+        ([[0.5], [1.5, 2.5], [], [3.5], [4.5]], "D"),
+    ):
+        columns = {"id": np.arange(5), "t": elements}
+
+        def decreasing(spec, packed):
+            offsets = (ctypes.c_int32 * 6).from_address(spec[6])
+            offsets[2], offsets[3] = 9, 4  # not increasing
+
+        reply, packed = _send(temp_db, columns, decreasing)
+        assert packed[1].kind == kind
+        assert not reply["ok"] and "offsets" in reply["error"], reply
+
+        reply, _ = _send(
+            temp_db, columns, lambda spec, p: spec.__setitem__(9, 3)
+        )  # three bytes of elements for seven or more
+        assert not reply["ok"] and "offsets" in reply["error"], reply
+
+        def negative(spec, packed):
+            (ctypes.c_int32 * 1).from_address(spec[6])[0] = -1
+
+        reply, _ = _send(temp_db, columns, negative)
+        assert not reply["ok"] and "offset" in reply["error"], reply
+        assert _count(temp_db) == 0
+    assert temp_db.insert_columns("Col", columns) == 5 and _count(temp_db) == 5

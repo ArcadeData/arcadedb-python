@@ -752,7 +752,7 @@ class NativeDatabase:
         parallel: bool = False,
     ) -> int:
         """Bulk insert. Rows go in chunks of at most 10,000 (a chunk never crosses a commit), one crossing per chunk. A chunk of rows with the same keys whose columns each hold one
-        value type (ints, floats, bools, strings, equal-length float lists for an ``ARRAY_OF_FLOATS`` property; None is a null) goes as
+        value type (ints, floats, bools, strings, lists of ints or of floats, ragged or not; None is a null) goes as
         columns by address (``arcadedb_n_insert_colp``, no JSON text); any other chunk goes as one JSON text (``arcadedb_n_insert_rows``:
         a newDocument/set/save loop inside the image, as ``DocumentBatcher.insertManyJson`` on the JPype path); a chunk with a value the
         JSON text cannot carry unchanged goes through ``INSERT INTO t CONTENT :row`` for each row, in one crossing. Inside the caller's

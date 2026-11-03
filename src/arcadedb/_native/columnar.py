@@ -9,11 +9,19 @@ Kinds (the image's, ``BulkOps.insertColumns``): ``q`` int64, ``d`` float64, ``b`
 matrix (``dim`` per row), ``s`` UTF-8 string (``int32 offsets[n+1]`` and the bytes they index: Arrow's string layout). A column may
 carry a null bitmap (Arrow's: bit ``i`` of byte ``i // 8``, least significant first, 1 = present).
 
+Ragged lists of numbers (``I`` int32, ``Q`` int64, ``E`` float32, ``D`` float64 elements) lay out like a string column: ``int32
+offsets[n+1]`` counted in elements as the data buffer and the elements they index as the aux buffer; a null or empty row has equal
+neighbouring offsets. The image stores ``I`` as ``int[]`` (a property declared ``ARRAY_OF_INTEGERS``), ``E`` as ``float[]`` (declared
+``ARRAY_OF_FLOATS``), ``Q`` and ``D`` as a list of Long or Double (undeclared or declared ``LIST``): what the JSON path stores for the same
+rows. A library without the decoder (``Declared(lists=False)``) gets none of them.
+
 ``i`` and ``e`` and the float matrix from a list of lists are chosen only for a property declared ``INTEGER``, ``FLOAT`` and
 ``ARRAY_OF_FLOATS``: the engine would convert to those types anyway, so the stored value is the one the JSON path stores. For an
 undeclared property an ``int32`` column crosses as ``q`` (a Long) and a ``float32`` column as ``d`` (a Double), as the JSON path stores
 them.
 """
+
+import itertools
 
 from .schema_objects import (  # the schema-entry reader shared with NativeType (#195)
     _name_type,
@@ -26,7 +34,14 @@ except ImportError:  # pragma: no cover
 
 _INT64_MAX = 2**63 - 1
 _INT32_MAX = 2**31 - 1
+_INT32_MIN = -(2**31)
 _NoneType = type(None)
+_OFFSET_KINDS = frozenset(
+    "sIQED"
+)  # the kinds whose data buffer is int32 offsets[n + 1]
+_EMPTY = (
+    []
+)  # stands in for a null row of a list column (the null bitmap says it is absent)
 
 
 class Packed:
@@ -39,8 +54,8 @@ class Packed:
         self.kind = kind
         self.dim = dim
         self.n = int(array.shape[0]) - (
-            1 if kind == "s" else 0
-        )  # a string column's array is its n + 1 offsets
+            1 if kind in _OFFSET_KINDS else 0
+        )  # a string or list column's array is its n + 1 offsets
         self.data = (array.ctypes.data, array.nbytes)
         self.aux = aux or (0, 0)
         self.nulls = (nulls.ctypes.data, nulls.nbytes) if nulls is not None else (0, 0)
@@ -50,11 +65,13 @@ class Packed:
 class Declared:
     """The declared property types of a type, read once and only when a column needs them (``INTEGER``, ``FLOAT``, ``ARRAY_OF_FLOATS``).
 
-    ``known`` (a dict) is used as it is; otherwise ``db`` is asked for ``schema:types`` the first time :meth:`get` is called.
+    ``known`` (a dict) is used as it is; otherwise ``db`` is asked for ``schema:types`` the first time :meth:`get` is called. ``lists``:
+    whether the library decodes the ragged list kinds (``lib.COLP_LISTS``); False keeps list columns on the JSON path.
     """
 
-    def __init__(self, db=None, type_name=None, known=None):
+    def __init__(self, db=None, type_name=None, known=None, lists=True):
         self._db, self._type, self._known = db, type_name, known
+        self.lists = lists
 
     def get(self, name):
         if self._known is None:
@@ -207,10 +224,11 @@ def _list_column(name, values, declared):
         try:
             arr = _np.array(values, dtype=_np.float32)
         except (ValueError, TypeError):
-            return None  # ragged, or not numbers
-        if arr.ndim != 2 or arr.shape[1] == 0:
-            return None
-        return Packed(name, "f", int(arr.shape[1]), arr)
+            arr = None  # ragged, or not numbers
+        if arr is not None and arr.ndim == 2 and arr.shape[1] > 0:
+            return Packed(name, "f", int(arr.shape[1]), arr)
+    if only is list:
+        return _ragged_column(name, values, declared, present, nulls)
     if (
         only is _np.ndarray
         and present is None
@@ -227,6 +245,80 @@ def _list_column(name, values, declared):
             _np.ascontiguousarray(_np.stack(values), dtype=_np.float32),
         )
     return None
+
+
+def _ragged_column(name, values, declared, present, nulls):
+    """A list of lists of ints or of floats (ragged, empty rows and None rows allowed) as an offsets-plus-elements column, or None.
+
+    The kind follows the declared property type so that the engine stores what the JSON text stores: ``ARRAY_OF_INTEGERS`` takes ints
+    in int32 range as ``I``, ``ARRAY_OF_FLOATS`` takes Python floats as ``E`` (float32, as the engine converts a list of doubles), an
+    undeclared or ``LIST`` property takes ``Q`` (ints) or ``D`` (floats), which the image stores as a list of Long or Double. Anything
+    else (another declared type, bools, strings, nested lists, mixed ints and floats, an int past 64 bits, NaN or an infinity, more than
+    2**31 - 1 elements) returns None and the chunk goes the JSON way.
+    """
+    if not declared.lists:
+        return None
+    rows = (
+        values if present is None else [v if v is not None else _EMPTY for v in values]
+    )
+    n = len(rows)
+    decl = declared.get(name)
+    if decl not in (None, "LIST", "ARRAY_OF_INTEGERS", "ARRAY_OF_FLOATS"):
+        return None
+    counts = _np.fromiter(map(len, rows), dtype=_np.int64, count=n)
+    total = int(counts.sum())
+    if total > _INT32_MAX:
+        return None
+    flat = list(itertools.chain.from_iterable(rows))
+    if (
+        total == 0
+    ):  # only empty rows: the engine stores an empty list or array whatever the element type
+        kind, elements = {"ARRAY_OF_INTEGERS": "I", "ARRAY_OF_FLOATS": "E"}.get(
+            decl, "Q"
+        ), None
+    else:
+        element_types = set(map(type, flat))
+        if len(element_types) != 1:
+            return None
+        (element,) = element_types
+        if element is int and decl in (None, "LIST", "ARRAY_OF_INTEGERS"):
+            try:
+                elements = _np.array(flat, dtype=_np.int64)
+            except OverflowError:
+                return None  # an integer beyond 64 bits
+            if decl == "ARRAY_OF_INTEGERS":
+                if int(elements.min()) < _INT32_MIN or int(elements.max()) > _INT32_MAX:
+                    return None  # the engine refuses such a value for the property: leave the error to the JSON path
+                kind, elements = "I", elements.astype(_np.int32)
+            else:
+                kind = "Q"
+        elif element is float and decl in (None, "LIST", "ARRAY_OF_FLOATS"):
+            elements = _np.array(flat, dtype=_np.float64)
+            if not _np.isfinite(elements).all():
+                return None
+            if decl == "ARRAY_OF_FLOATS":
+                with _np.errstate(
+                    all="ignore"
+                ):  # a double beyond float32 becomes Infinity, as in the engine
+                    kind, elements = "E", elements.astype(_np.float32)
+            else:
+                kind = "D"
+        else:
+            return None
+    offsets = _np.zeros(n + 1, dtype=_np.int32)
+    _np.cumsum(counts, out=offsets[1:], dtype=_np.int32)
+    if elements is None or not elements.size:
+        return Packed(name, kind, 0, offsets, nulls=nulls)
+    elements = _np.ascontiguousarray(elements)
+    return Packed(
+        name,
+        kind,
+        0,
+        offsets,
+        aux=(elements.ctypes.data, elements.nbytes),
+        nulls=nulls,
+        keep=(elements,),
+    )
 
 
 def _arrow_column(name, arr, declared):
