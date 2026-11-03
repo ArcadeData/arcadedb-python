@@ -78,9 +78,9 @@ Where a pom lists several licences they are alternatives (JTS: EPL-2.0 or EDL-1.
 
 `libarcadedb.so` contains the Substrate VM runtime and the parts of the OpenJDK class library the engine reaches, built with GraalVM CE 25.4.4.1.1 (Java 25.0.4.1.1, implementor GraalVM Community). Licence: GNU General Public License version 2 with the Classpath Exception (verbatim below, from `LICENSE.txt` of the GraalVM CE home; also in `licenses/`). The exception permits linking and distributing these parts with code under other licences. `graal-sdk`, `polyglot`, `collections` (25.0.2, Maven Central) and `word` (25.4.4.1.1) are UPL-1.0. Oracle GraalVM (GFTC) is not used. Sources: https://github.com/oracle/graal (tag vm-25.4.4.1.1; the release file of the GraalVM CE home names commit 95ce1499c8c96ab7d5a6697c5b4bf42160f3b68b of substratevm); https://github.com/graalvm/labs-openjdk (the labsjdk that GraalVM CE 25.4.4.1.1 is built on, JAVA_RUNTIME_VERSION 25.0.4.1.1+1-jvmci-25.4-b23; the release file names commit 391a5a739cb6; the OpenJDK update it is based on: https://github.com/openjdk/jdk25u tag jdk-25.0.4-ga).
 
-Third-party data inside the JDK classes that the image contains (texts from `legal/java.base` of the GraalVM home, verbatim below): ICU normalisation data (`jdk/internal/icu/impl/data/icudt76b/nfc.nrm`, registered resource), Unicode data files, CLDR locale data. Other `legal/java.base` notices (aes.md, c-libutl.md, gcc.md, siphash.md, public_suffix.md) concern files or HotSpot code that are not linked into the image (checked: the library contains no public-suffix data); `jdk.incubator.vector` (sleef.md) is added to the module path but its vector intrinsics are disabled in the build (`-H:-VectorAPISupport`).
+Third-party code and data inside the JDK classes that the image contains (texts from `legal/<module>` of the GraalVM home, verbatim below): ICU normalisation data (`jdk/internal/icu/impl/data/icudt76b/nfc.nrm`, registered resource), Unicode data files, and CLDR locale data (`java.base`); the Apache Xerces classes of `java.xml` (`com.sun.org.apache.xerces.internal.*`, compiled into the image), the W3C DOM interfaces (`org.w3c.dom`), and the W3C XML Schema, XHTML 1.0, XHTML 1.1, XML specification and `xml.xsd` DTD and schema files (`jdk/xml/internal/jdkcatalog/`, registered resources). Notices that cover code or data the image does not contain are not reproduced: in `java.base` aes.md, c-libutl.md, gcc.md and siphash.md (HotSpot and C code) and public_suffix.md (checked: the library contains no public-suffix data); in `java.xml` bcel.md, xalan.md and jcup.md (no class of `com.sun.org.apache.bcel`, `com.sun.org.apache.xalan`, `com.sun.org.apache.xpath`, `com.sun.org.apache.xml.internal` or `com.sun.java_cup` is compiled, and the Xalan resources are not registered); in `java.desktop` the notices of the C libraries behind AWT, Java 2D and ImageIO (giflib, libpng, jpeg, lcms, harfbuzz, mesa3d, pipewire, xwd, colorimaging: the image reaches only `java.beans.Introspector`, has no AWT or imaging JNI entry point and links none of those libraries); in `jdk.localedata` thaidict.md (only the two locale provider classes are compiled, the Thai dictionary is not a registered resource; its cldr.md is identical to the `java.base` one); in `jdk.incubator.vector` sleef.md (the SLEEF C library is not linked; the module is on the module path but its vector intrinsics are disabled in the build, `-H:-VectorAPISupport`). `gen_notices.py` fails the build when the image reaches code that one of the `java.xml`, `java.desktop` or `jdk.localedata` decisions above rests on.
 
-The JDK modules in the image are not typed here but measured on every build: `build-image.sh` builds with `-H:+PrintAnalysisCallTree` (GraalVM CE has no `--emit build-report`), which makes native-image write `used_classes_*.txt`, the classes whose methods the image compiles; `gen_notices.py` maps each class to its JDK module with `jimage list` of the GraalVM home. The run fails when a module has no `legal/<module>` directory in the home (GraalVM's own `org.graalvm.*` modules are covered by `LICENSE.txt`), when its GPLv2 + Classpath Exception files differ from the `java.base` ones reproduced below, or when its `legal` directory has a further notice file that no one has reviewed. The measured list is kept in the build record of each platform (`jdk-modules.txt`).
+The JDK modules in the image are not typed here but measured on every build: `build-image.sh` builds with `-H:+PrintAnalysisCallTree` (GraalVM CE has no `--emit build-report`), which makes native-image write `used_classes_*.txt`, the classes whose methods the image compiles; `gen_notices.py` maps each class to its JDK module with `jimage list` of the GraalVM home. The run fails when a module has no `legal/<module>` directory in the home (GraalVM's own `org.graalvm.*` modules are covered by `LICENSE.txt`), when its GPLv2 + Classpath Exception files differ from the `java.base` ones reproduced below, or when its `legal` directory has a further notice file that no one has reviewed (or that is not-linked by decision while the image reaches its code). The measured list is kept in the build record of each platform (`jdk-modules.txt`).
 
 System libraries linked dynamically and not shipped: `libz.so.1`, `libc.so.6`, `ld-linux-x86-64.so.2` (checked with `ldd`).
 
@@ -804,6 +804,109 @@ that new GPL2 code may still be combined with Designated Exception Modules
 if the new code is made subject to this exception by its copyright holder.
 ```
 
+### OpenJDK java.base legal notice: cldr.md
+
+````
+## Unicode Common Local Data Repository (CLDR) v47
+
+### CLDR License
+
+```
+
+UNICODE LICENSE V3
+
+COPYRIGHT AND PERMISSION NOTICE
+
+Copyright © 1991-2025 Unicode, Inc.
+
+NOTICE TO USER: Carefully read the following legal agreement. BY
+DOWNLOADING, INSTALLING, COPYING OR OTHERWISE USING DATA FILES, AND/OR
+SOFTWARE, YOU UNEQUIVOCALLY ACCEPT, AND AGREE TO BE BOUND BY, ALL OF THE
+TERMS AND CONDITIONS OF THIS AGREEMENT. IF YOU DO NOT AGREE, DO NOT
+DOWNLOAD, INSTALL, COPY, DISTRIBUTE OR USE THE DATA FILES OR SOFTWARE.
+
+Permission is hereby granted, free of charge, to any person obtaining a
+copy of data files and any associated documentation (the "Data Files") or
+software and any associated documentation (the "Software") to deal in the
+Data Files or Software without restriction, including without limitation
+the rights to use, copy, modify, merge, publish, distribute, and/or sell
+copies of the Data Files or Software, and to permit persons to whom the
+Data Files or Software are furnished to do so, provided that either (a)
+this copyright and permission notice appear with all copies of the Data
+Files or Software, or (b) this copyright and permission notice appear in
+associated Documentation.
+
+THE DATA FILES AND SOFTWARE ARE PROVIDED "AS IS", WITHOUT WARRANTY OF ANY
+KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT OF
+THIRD PARTY RIGHTS.
+
+IN NO EVENT SHALL THE COPYRIGHT HOLDER OR HOLDERS INCLUDED IN THIS NOTICE
+BE LIABLE FOR ANY CLAIM, OR ANY SPECIAL INDIRECT OR CONSEQUENTIAL DAMAGES,
+OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS,
+WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION,
+ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THE DATA
+FILES OR SOFTWARE.
+
+Except as contained in this notice, the name of a copyright holder shall
+not be used in advertising or otherwise to promote the sale, use or other
+dealings in these Data Files or Software without prior written
+authorization of the copyright holder.
+
+SPDX-License-Identifier: Unicode-3.0
+
+————————————
+
+Unicode® Copyright and Terms of Use
+For the general privacy policy governing access to this site, see the  Unicode Privacy Policy.
+
+Unicode Copyright
+Copyright © 1991-2025 Unicode, Inc. All rights reserved.
+Definitions
+Unicode Data Files ("DATA FILES") include all data files under the directories:
+https://www.unicode.org/Public/
+https://www.unicode.org/reports/
+https://www.unicode.org/ivd/data/
+
+Unicode Data Files do not include PDF online code charts under the directory:
+https://www.unicode.org/Public/
+
+Unicode Software ("SOFTWARE") includes any source code published in the Unicode Standard
+or any source code or compiled code under the directories:
+https://www.unicode.org/Public/PROGRAMS/
+https://www.unicode.org/Public/cldr/
+http://site.icu-project.org/download/
+Terms of Use
+Certain documents and files on this website contain a legend indicating that "Modification is permitted." Any person is hereby authorized, without fee, to modify such documents and files to create derivative works conforming to the Unicode® Standard, subject to Terms and Conditions herein.
+Any person is hereby authorized, without fee, to view, use, reproduce, and distribute all documents and files, subject to the Terms and Conditions herein.
+Further specifications of rights and restrictions pertaining to the use of the Unicode DATA FILES and SOFTWARE can be found in the Unicode Data Files and Software License.
+Each version of the Unicode Standard has further specifications of rights and restrictions of use. For the book editions (Unicode 5.0 and earlier), these are found on the back of the title page.
+The Unicode PDF online code charts carry specific restrictions. Those restrictions are incorporated as the first page of each PDF code chart.
+All other files, including online documentation of the core specification for Unicode 6.0 and later, are covered under these general Terms of Use.
+No license is granted to "mirror" the Unicode website where a fee is charged for access to the "mirror" site.
+Modification is not permitted with respect to this document. All copies of this document must be verbatim.
+Restricted Rights Legend
+Any technical data or software which is licensed to the United States of America, its agencies and/or instrumentalities under this Agreement is commercial technical data or commercial computer software developed exclusively at private expense as defined in FAR 2.101, or DFARS 252.227-7014 (June 1995), as applicable. For technical data, use, duplication, or disclosure by the Government is subject to restrictions as set forth in DFARS 202.227-7015 Technical Data, Commercial and Items (Nov 1995) and this Agreement. For Software, in accordance with FAR 12-212 or DFARS 227-7202, as applicable, use, duplication or disclosure by the Government is subject to the restrictions set forth in this Agreement.
+Warranties and Disclaimers
+This publication and/or website may include technical or typographical errors or other inaccuracies. Changes are periodically added to the information herein; these changes will be incorporated in new editions of the publication and/or website. Unicode, Inc. may make improvements and/or changes in the product(s) and/or program(s) described in this publication and/or website at any time.
+If this file has been purchased on magnetic or optical media from Unicode, Inc. the sole and exclusive remedy for any claim will be exchange of the defective media within ninety (90) days of original purchase.
+EXCEPT AS PROVIDED IN SECTION E.2, THIS PUBLICATION AND/OR SOFTWARE IS PROVIDED "AS IS" WITHOUT WARRANTY OF ANY KIND EITHER EXPRESS, IMPLIED, OR STATUTORY, INCLUDING, BUT NOT LIMITED TO, ANY WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, OR NON-INFRINGEMENT. UNICODE, INC. AND ITS LICENSORS ASSUME NO RESPONSIBILITY FOR ERRORS OR OMISSIONS IN THIS PUBLICATION AND/OR SOFTWARE OR OTHER DOCUMENTS WHICH ARE REFERENCED BY OR LINKED TO THIS PUBLICATION OR THE UNICODE WEBSITE.
+Waiver of Damages
+In no event shall Unicode, Inc. or its licensors be liable for any special, incidental, indirect or consequential damages of any kind, or any damages whatsoever, whether or not Unicode, Inc. was advised of the possibility of the damage, including, without limitation, those resulting from the following: loss of use, data or profits, in connection with the use, modification or distribution of this information or its derivatives.
+Trademarks & Logos
+The Unicode Word Mark and the Unicode Logo are trademarks of Unicode, Inc. “The Unicode Consortium” and “Unicode, Inc.” are trade names of Unicode, Inc. Use of the information and materials found on this website indicates your acknowledgement of Unicode, Inc.’s exclusive worldwide rights in the Unicode Word Mark, the Unicode Logo, and the Unicode trade names.
+The Unicode Consortium Name and Trademark Usage Policy (“Trademark Policy”) are incorporated herein by reference and you agree to abide by the provisions of the Trademark Policy, which may be changed from time to time in the sole discretion of Unicode, Inc.
+All third party trademarks referenced herein are the property of their respective owners.
+Miscellaneous
+Jurisdiction and Venue. This website is operated from a location in the State of California, United States of America. Unicode, Inc. makes no representation that the materials are appropriate for use in other locations. If you access this website from other locations, you are responsible for compliance with local laws. This Agreement, all use of this website and any claims and damages resulting from use of this website are governed solely by the laws of the State of California without regard to any principles which would apply the laws of a different jurisdiction. The user agrees that any disputes regarding this website shall be resolved solely in the courts located in Santa Clara County, California. The user agrees said courts have personal jurisdiction and agree to waive any right to transfer the dispute to any other forum.
+Modification by Unicode, Inc. Unicode, Inc. shall have the right to modify this Agreement at any time by posting it to this website. The user may not assign any part of this Agreement without Unicode, Inc.’s prior written consent.
+Taxes. The user agrees to pay any taxes arising from access to this website or use of the information herein, except for those based on Unicode’s net income.
+Severability.  If any provision of this Agreement is declared invalid or unenforceable, the remaining provisions of this Agreement shall remain in effect.
+Entire Agreement. This Agreement constitutes the entire agreement between the parties.
+
+```
+````
+
 ### OpenJDK java.base legal notice: icu.md
 
 ````
@@ -1173,108 +1276,902 @@ Products, and to these Terms of Use at any time in its sole d iscretion.
         Use shall remain in effect.
 ````
 
-### OpenJDK java.base legal notice: cldr.md
-
-````
-## Unicode Common Local Data Repository (CLDR) v47
-
-### CLDR License
+### OpenJDK java.xml legal notice: dom.md
 
 ```
+## DOM Level 3 Core Specification v1.0
 
-UNICODE LICENSE V3
+### W3C Software Notice
+<pre>
+Copyright © 2004 World Wide Web Consortium, (Massachusetts Institute of Technology,
+European Research Consortium for Informatics and Mathematics, Keio University).
+All Rights Reserved.
 
-COPYRIGHT AND PERMISSION NOTICE
+The DOM bindings are published under the W3C Software Copyright Notice and License.
+The software license requires "Notice of any changes or modifications to the W3C
+files, including the date changes were made." Consequently, modified versions of
+the DOM bindings must document that they do not conform to the W3C standard; in the
+case of the IDL definitions, the pragma prefix can no longer be 'w3c.org'; in the
+case of the Java language binding, the package names can no longer be in the
+'org.w3c' package.
+</pre>
 
-Copyright © 1991-2025 Unicode, Inc.
+### W3C License
+<pre>
 
-NOTICE TO USER: Carefully read the following legal agreement. BY
-DOWNLOADING, INSTALLING, COPYING OR OTHERWISE USING DATA FILES, AND/OR
-SOFTWARE, YOU UNEQUIVOCALLY ACCEPT, AND AGREE TO BE BOUND BY, ALL OF THE
-TERMS AND CONDITIONS OF THIS AGREEMENT. IF YOU DO NOT AGREE, DO NOT
-DOWNLOAD, INSTALL, COPY, DISTRIBUTE OR USE THE DATA FILES OR SOFTWARE.
+W3C SOFTWARE NOTICE AND LICENSE
 
-Permission is hereby granted, free of charge, to any person obtaining a
-copy of data files and any associated documentation (the "Data Files") or
-software and any associated documentation (the "Software") to deal in the
-Data Files or Software without restriction, including without limitation
-the rights to use, copy, modify, merge, publish, distribute, and/or sell
-copies of the Data Files or Software, and to permit persons to whom the
-Data Files or Software are furnished to do so, provided that either (a)
-this copyright and permission notice appear with all copies of the Data
-Files or Software, or (b) this copyright and permission notice appear in
-associated Documentation.
+http://www.w3.org/Consortium/Legal/2002/copyright-software-20021231
 
-THE DATA FILES AND SOFTWARE ARE PROVIDED "AS IS", WITHOUT WARRANTY OF ANY
-KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT OF
-THIRD PARTY RIGHTS.
+This work (and included software, documentation such as READMEs, or other
+related items) is being provided by the copyright holders under the following
+license. By obtaining, using and/or copying this work, you (the licensee)
+agree that you have read, understood, and will comply with the following terms
+and conditions.
 
-IN NO EVENT SHALL THE COPYRIGHT HOLDER OR HOLDERS INCLUDED IN THIS NOTICE
-BE LIABLE FOR ANY CLAIM, OR ANY SPECIAL INDIRECT OR CONSEQUENTIAL DAMAGES,
-OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS,
-WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION,
-ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THE DATA
-FILES OR SOFTWARE.
+Permission to copy, modify, and distribute this software and its
+documentation, with or without modification, for any purpose and without fee
+or royalty is hereby granted, provided that you include the following on ALL
+copies of the software and documentation or portions thereof, including
+modifications:
 
-Except as contained in this notice, the name of a copyright holder shall
-not be used in advertising or otherwise to promote the sale, use or other
-dealings in these Data Files or Software without prior written
-authorization of the copyright holder.
+   1.The full text of this NOTICE in a location viewable to users of the
+   redistributed or derivative work.
 
-SPDX-License-Identifier: Unicode-3.0
+   2.Any pre-existing intellectual property disclaimers, notices, or terms and
+   conditions. If none exist, the W3C Software Short Notice should be included
+   (hypertext is preferred, text is permitted) within the body of any
+   redistributed or derivative code.
 
-————————————
+   3.Notice of any changes or modifications to the files, including the date
+   changes were made. (We recommend you provide URIs to the location from
+   which the code is derived.)
 
-Unicode® Copyright and Terms of Use
-For the general privacy policy governing access to this site, see the  Unicode Privacy Policy.
+THIS SOFTWARE AND DOCUMENTATION IS PROVIDED "AS IS," AND COPYRIGHT HOLDERS
+MAKE NO REPRESENTATIONS OR WARRANTIES, EXPRESS OR IMPLIED, INCLUDING BUT NOT
+LIMITED TO, WARRANTIES OF MERCHANTABILITY OR FITNESS FOR ANY PARTICULAR
+PURPOSE OR THAT THE USE OF THE SOFTWARE OR DOCUMENTATION WILL NOT INFRINGE ANY
+THIRD PARTY PATENTS,COPYRIGHTS, TRADEMARKS OR OTHER RIGHTS.
 
-Unicode Copyright
-Copyright © 1991-2025 Unicode, Inc. All rights reserved.
-Definitions
-Unicode Data Files ("DATA FILES") include all data files under the directories:
-https://www.unicode.org/Public/
-https://www.unicode.org/reports/
-https://www.unicode.org/ivd/data/
+COPYRIGHT HOLDERS WILL NOT BE LIABLE FOR ANY DIRECT, INDIRECT, SPECIAL
+OR CONSEQUENTIAL DAMAGES ARISING OUT OF ANY USE OF THE SOFTWARE OR
+DOCUMENTATION.  The name and trademarks of copyright holders may NOT be used
+in advertising or publicity pertaining to the software without specific,
+written prior permission. Title to copyright in this software and any
+associated documentation will at all times remain with copyright holders.
 
-Unicode Data Files do not include PDF online code charts under the directory:
-https://www.unicode.org/Public/
+____________________________________
 
-Unicode Software ("SOFTWARE") includes any source code published in the Unicode Standard
-or any source code or compiled code under the directories:
-https://www.unicode.org/Public/PROGRAMS/
-https://www.unicode.org/Public/cldr/
-http://site.icu-project.org/download/
-Terms of Use
-Certain documents and files on this website contain a legend indicating that "Modification is permitted." Any person is hereby authorized, without fee, to modify such documents and files to create derivative works conforming to the Unicode® Standard, subject to Terms and Conditions herein.
-Any person is hereby authorized, without fee, to view, use, reproduce, and distribute all documents and files, subject to the Terms and Conditions herein.
-Further specifications of rights and restrictions pertaining to the use of the Unicode DATA FILES and SOFTWARE can be found in the Unicode Data Files and Software License.
-Each version of the Unicode Standard has further specifications of rights and restrictions of use. For the book editions (Unicode 5.0 and earlier), these are found on the back of the title page.
-The Unicode PDF online code charts carry specific restrictions. Those restrictions are incorporated as the first page of each PDF code chart.
-All other files, including online documentation of the core specification for Unicode 6.0 and later, are covered under these general Terms of Use.
-No license is granted to "mirror" the Unicode website where a fee is charged for access to the "mirror" site.
-Modification is not permitted with respect to this document. All copies of this document must be verbatim.
-Restricted Rights Legend
-Any technical data or software which is licensed to the United States of America, its agencies and/or instrumentalities under this Agreement is commercial technical data or commercial computer software developed exclusively at private expense as defined in FAR 2.101, or DFARS 252.227-7014 (June 1995), as applicable. For technical data, use, duplication, or disclosure by the Government is subject to restrictions as set forth in DFARS 202.227-7015 Technical Data, Commercial and Items (Nov 1995) and this Agreement. For Software, in accordance with FAR 12-212 or DFARS 227-7202, as applicable, use, duplication or disclosure by the Government is subject to the restrictions set forth in this Agreement.
-Warranties and Disclaimers
-This publication and/or website may include technical or typographical errors or other inaccuracies. Changes are periodically added to the information herein; these changes will be incorporated in new editions of the publication and/or website. Unicode, Inc. may make improvements and/or changes in the product(s) and/or program(s) described in this publication and/or website at any time.
-If this file has been purchased on magnetic or optical media from Unicode, Inc. the sole and exclusive remedy for any claim will be exchange of the defective media within ninety (90) days of original purchase.
-EXCEPT AS PROVIDED IN SECTION E.2, THIS PUBLICATION AND/OR SOFTWARE IS PROVIDED "AS IS" WITHOUT WARRANTY OF ANY KIND EITHER EXPRESS, IMPLIED, OR STATUTORY, INCLUDING, BUT NOT LIMITED TO, ANY WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, OR NON-INFRINGEMENT. UNICODE, INC. AND ITS LICENSORS ASSUME NO RESPONSIBILITY FOR ERRORS OR OMISSIONS IN THIS PUBLICATION AND/OR SOFTWARE OR OTHER DOCUMENTS WHICH ARE REFERENCED BY OR LINKED TO THIS PUBLICATION OR THE UNICODE WEBSITE.
-Waiver of Damages
-In no event shall Unicode, Inc. or its licensors be liable for any special, incidental, indirect or consequential damages of any kind, or any damages whatsoever, whether or not Unicode, Inc. was advised of the possibility of the damage, including, without limitation, those resulting from the following: loss of use, data or profits, in connection with the use, modification or distribution of this information or its derivatives.
-Trademarks & Logos
-The Unicode Word Mark and the Unicode Logo are trademarks of Unicode, Inc. “The Unicode Consortium” and “Unicode, Inc.” are trade names of Unicode, Inc. Use of the information and materials found on this website indicates your acknowledgement of Unicode, Inc.’s exclusive worldwide rights in the Unicode Word Mark, the Unicode Logo, and the Unicode trade names.
-The Unicode Consortium Name and Trademark Usage Policy (“Trademark Policy”) are incorporated herein by reference and you agree to abide by the provisions of the Trademark Policy, which may be changed from time to time in the sole discretion of Unicode, Inc.
-All third party trademarks referenced herein are the property of their respective owners.
-Miscellaneous
-Jurisdiction and Venue. This website is operated from a location in the State of California, United States of America. Unicode, Inc. makes no representation that the materials are appropriate for use in other locations. If you access this website from other locations, you are responsible for compliance with local laws. This Agreement, all use of this website and any claims and damages resulting from use of this website are governed solely by the laws of the State of California without regard to any principles which would apply the laws of a different jurisdiction. The user agrees that any disputes regarding this website shall be resolved solely in the courts located in Santa Clara County, California. The user agrees said courts have personal jurisdiction and agree to waive any right to transfer the dispute to any other forum.
-Modification by Unicode, Inc. Unicode, Inc. shall have the right to modify this Agreement at any time by posting it to this website. The user may not assign any part of this Agreement without Unicode, Inc.’s prior written consent.
-Taxes. The user agrees to pay any taxes arising from access to this website or use of the information herein, except for those based on Unicode’s net income.
-Severability.  If any provision of this Agreement is declared invalid or unenforceable, the remaining provisions of this Agreement shall remain in effect.
-Entire Agreement. This Agreement constitutes the entire agreement between the parties.
+This formulation of W3C's notice and license became active on December 31
+2002. This version removes the copyright ownership notice such that this
+license can be used with materials other than those owned by the W3C, reflects
+that ERCIM is now a host of the W3C, includes references to this specific
+dated version of the license, and removes the ambiguous grant of "use".
+Otherwise, this version is the same as the previous version and is written so
+as to preserve the Free Software Foundation's assessment of GPL compatibility
+and OSI's certification under the Open Source Definition. Please see our
+Copyright FAQ for common questions about using materials from our site,
+including specific terms and conditions for packages like libwww, Amaya, and
+Jigsaw. Other questions about this notice can be directed to
+site-policy@w3.org.
+
+</pre>
+```
+
+### OpenJDK java.xml legal notice: schema10part1.md
 
 ```
-````
+## XML Schema Part 1: Structures Second Edition
+
+### W3C Software and Document license
+<pre>
+Software and Document license - 2023 version
+
+Copied from:  https://www.w3.org/copyright/software-license-2023
+
+License
+
+By obtaining and/or copying this work, you (the licensee) agree that you have
+read, understood, and will comply with the following terms and conditions.
+
+Permission to copy, modify, and distribute this work, with or without modification,
+for any purpose and without fee or royalty is hereby granted, provided that you
+include the following on ALL copies of the work or portions thereof, including
+modifications:
+
+    The full text of this NOTICE in a location viewable to users of the
+    redistributed or derivative work.
+    Any pre-existing intellectual property disclaimers, notices, or terms and
+    conditions. If none exist, the W3C software and document short notice should
+    be included.
+    Notice of any changes or modifications, through a copyright statement on the
+    new code or document such as "This software or document includes material
+    copied from or derived from [title and URI of the W3C document]. Copyright ©
+    [$year-of-document] World Wide Web Consortium.
+    https://www.w3.org/copyright/software-license-2023/"
+
+Disclaimers
+
+THIS WORK IS PROVIDED "AS IS," AND COPYRIGHT HOLDERS MAKE NO REPRESENTATIONS OR
+WARRANTIES, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO, WARRANTIES OF
+MERCHANTABILITY OR FITNESS FOR ANY PARTICULAR PURPOSE OR THAT THE USE OF THE
+SOFTWARE OR DOCUMENT WILL NOT INFRINGE ANY THIRD PARTY PATENTS, COPYRIGHTS,
+TRADEMARKS OR OTHER RIGHTS.
+
+COPYRIGHT HOLDERS WILL NOT BE LIABLE FOR ANY DIRECT, INDIRECT, SPECIAL OR
+CONSEQUENTIAL DAMAGES ARISING OUT OF ANY USE OF THE SOFTWARE OR DOCUMENT.
+
+The name and trademarks of copyright holders may NOT be used in advertising or
+publicity pertaining to the work without specific, written prior permission.
+Title to copyright in this work will at all times remain with copyright holders.
+
+------
+
+Copyright © 2004 W3C® (MIT, ERCIM, Keio), All Rights Reserved. W3C liability,
+trademark and document use rules apply.
+
+</pre>
+```
+
+### OpenJDK java.xml legal notice: schema10part2.md
+
+```
+## XML Schema Part 2: Datatypes Second Edition
+
+### W3C Software and Document license
+<pre>
+Software and Document license - 2023 version
+
+Copied from:  https://www.w3.org/copyright/software-license-2023
+
+License
+
+By obtaining and/or copying this work, you (the licensee) agree that you have
+read, understood, and will comply with the following terms and conditions.
+
+Permission to copy, modify, and distribute this work, with or without modification,
+for any purpose and without fee or royalty is hereby granted, provided that you
+include the following on ALL copies of the work or portions thereof, including
+modifications:
+
+    The full text of this NOTICE in a location viewable to users of the
+    redistributed or derivative work.
+    Any pre-existing intellectual property disclaimers, notices, or terms and
+    conditions. If none exist, the W3C software and document short notice should
+    be included.
+    Notice of any changes or modifications, through a copyright statement on the
+    new code or document such as "This software or document includes material
+    copied from or derived from [title and URI of the W3C document]. Copyright ©
+    [$year-of-document] World Wide Web Consortium.
+    https://www.w3.org/copyright/software-license-2023/"
+
+Disclaimers
+
+THIS WORK IS PROVIDED "AS IS," AND COPYRIGHT HOLDERS MAKE NO REPRESENTATIONS OR
+WARRANTIES, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO, WARRANTIES OF
+MERCHANTABILITY OR FITNESS FOR ANY PARTICULAR PURPOSE OR THAT THE USE OF THE
+SOFTWARE OR DOCUMENT WILL NOT INFRINGE ANY THIRD PARTY PATENTS, COPYRIGHTS,
+TRADEMARKS OR OTHER RIGHTS.
+
+COPYRIGHT HOLDERS WILL NOT BE LIABLE FOR ANY DIRECT, INDIRECT, SPECIAL OR
+CONSEQUENTIAL DAMAGES ARISING OUT OF ANY USE OF THE SOFTWARE OR DOCUMENT.
+
+The name and trademarks of copyright holders may NOT be used in advertising or
+publicity pertaining to the work without specific, written prior permission.
+Title to copyright in this work will at all times remain with copyright holders.
+
+------
+
+Copyright © 2004 W3C® (MIT, ERCIM, Keio), All Rights Reserved. W3C liability,
+trademark and document use rules apply.
+
+</pre>
+```
+
+### OpenJDK java.xml legal notice: xerces.md
+
+```
+## Apache Xerces v2.12.2
+
+### Apache Xerces Notice
+<pre>
+    =========================================================================
+    == NOTICE file corresponding to section 4(d) of the Apache License,    ==
+    == Version 2.0, in this case for the Apache Xerces Java distribution.  ==
+    =========================================================================
+
+    Apache Xerces Java
+    Copyright 1999-2022 The Apache Software Foundation
+
+    This product includes software developed at
+    The Apache Software Foundation (http://www.apache.org/).
+
+    Portions of this software were originally based on the following:
+    - software copyright (c) 1999, IBM Corporation., http://www.ibm.com.
+    - software copyright (c) 1999, Sun Microsystems., http://www.sun.com.
+    - voluntary contributions made by Paul Eng on behalf of the
+    Apache Software Foundation that were originally developed at iClick, Inc.,
+    software copyright (c) 1999.
+</pre>
+
+### Apache 2.0 License
+<pre>
+
+                              Apache License
+                        Version 2.0, January 2004
+                     http://www.apache.org/licenses/
+
+TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
+
+1. Definitions.
+
+   "License" shall mean the terms and conditions for use, reproduction,
+   and distribution as defined by Sections 1 through 9 of this document.
+
+   "Licensor" shall mean the copyright owner or entity authorized by
+   the copyright owner that is granting the License.
+
+   "Legal Entity" shall mean the union of the acting entity and all
+   other entities that control, are controlled by, or are under common
+   control with that entity. For the purposes of this definition,
+   "control" means (i) the power, direct or indirect, to cause the
+   direction or management of such entity, whether by contract or
+   otherwise, or (ii) ownership of fifty percent (50%) or more of the
+   outstanding shares, or (iii) beneficial ownership of such entity.
+
+   "You" (or "Your") shall mean an individual or Legal Entity
+   exercising permissions granted by this License.
+
+   "Source" form shall mean the preferred form for making modifications,
+   including but not limited to software source code, documentation
+   source, and configuration files.
+
+   "Object" form shall mean any form resulting from mechanical
+   transformation or translation of a Source form, including but
+   not limited to compiled object code, generated documentation,
+   and conversions to other media types.
+
+   "Work" shall mean the work of authorship, whether in Source or
+   Object form, made available under the License, as indicated by a
+   copyright notice that is included in or attached to the work
+   (an example is provided in the Appendix below).
+
+   "Derivative Works" shall mean any work, whether in Source or Object
+   form, that is based on (or derived from) the Work and for which the
+   editorial revisions, annotations, elaborations, or other modifications
+   represent, as a whole, an original work of authorship. For the purposes
+   of this License, Derivative Works shall not include works that remain
+   separable from, or merely link (or bind by name) to the interfaces of,
+   the Work and Derivative Works thereof.
+
+   "Contribution" shall mean any work of authorship, including
+   the original version of the Work and any modifications or additions
+   to that Work or Derivative Works thereof, that is intentionally
+   submitted to Licensor for inclusion in the Work by the copyright owner
+   or by an individual or Legal Entity authorized to submit on behalf of
+   the copyright owner. For the purposes of this definition, "submitted"
+   means any form of electronic, verbal, or written communication sent
+   to the Licensor or its representatives, including but not limited to
+   communication on electronic mailing lists, source code control systems,
+   and issue tracking systems that are managed by, or on behalf of, the
+   Licensor for the purpose of discussing and improving the Work, but
+   excluding communication that is conspicuously marked or otherwise
+   designated in writing by the copyright owner as "Not a Contribution."
+
+   "Contributor" shall mean Licensor and any individual or Legal Entity
+   on behalf of whom a Contribution has been received by Licensor and
+   subsequently incorporated within the Work.
+
+2. Grant of Copyright License. Subject to the terms and conditions of
+   this License, each Contributor hereby grants to You a perpetual,
+   worldwide, non-exclusive, no-charge, royalty-free, irrevocable
+   copyright license to reproduce, prepare Derivative Works of,
+   publicly display, publicly perform, sublicense, and distribute the
+   Work and such Derivative Works in Source or Object form.
+
+3. Grant of Patent License. Subject to the terms and conditions of
+   this License, each Contributor hereby grants to You a perpetual,
+   worldwide, non-exclusive, no-charge, royalty-free, irrevocable
+   (except as stated in this section) patent license to make, have made,
+   use, offer to sell, sell, import, and otherwise transfer the Work,
+   where such license applies only to those patent claims licensable
+   by such Contributor that are necessarily infringed by their
+   Contribution(s) alone or by combination of their Contribution(s)
+   with the Work to which such Contribution(s) was submitted. If You
+   institute patent litigation against any entity (including a
+   cross-claim or counterclaim in a lawsuit) alleging that the Work
+   or a Contribution incorporated within the Work constitutes direct
+   or contributory patent infringement, then any patent licenses
+   granted to You under this License for that Work shall terminate
+   as of the date such litigation is filed.
+
+4. Redistribution. You may reproduce and distribute copies of the
+   Work or Derivative Works thereof in any medium, with or without
+   modifications, and in Source or Object form, provided that You
+   meet the following conditions:
+
+   (a) You must give any other recipients of the Work or
+       Derivative Works a copy of this License; and
+
+   (b) You must cause any modified files to carry prominent notices
+       stating that You changed the files; and
+
+   (c) You must retain, in the Source form of any Derivative Works
+       that You distribute, all copyright, patent, trademark, and
+       attribution notices from the Source form of the Work,
+       excluding those notices that do not pertain to any part of
+       the Derivative Works; and
+
+   (d) If the Work includes a "NOTICE" text file as part of its
+       distribution, then any Derivative Works that You distribute must
+       include a readable copy of the attribution notices contained
+       within such NOTICE file, excluding those notices that do not
+       pertain to any part of the Derivative Works, in at least one
+       of the following places: within a NOTICE text file distributed
+       as part of the Derivative Works; within the Source form or
+       documentation, if provided along with the Derivative Works; or,
+       within a display generated by the Derivative Works, if and
+       wherever such third-party notices normally appear. The contents
+       of the NOTICE file are for informational purposes only and
+       do not modify the License. You may add Your own attribution
+       notices within Derivative Works that You distribute, alongside
+       or as an addendum to the NOTICE text from the Work, provided
+       that such additional attribution notices cannot be construed
+       as modifying the License.
+
+   You may add Your own copyright statement to Your modifications and
+   may provide additional or different license terms and conditions
+   for use, reproduction, or distribution of Your modifications, or
+   for any such Derivative Works as a whole, provided Your use,
+   reproduction, and distribution of the Work otherwise complies with
+   the conditions stated in this License.
+
+5. Submission of Contributions. Unless You explicitly state otherwise,
+   any Contribution intentionally submitted for inclusion in the Work
+   by You to the Licensor shall be under the terms and conditions of
+   this License, without any additional terms or conditions.
+   Notwithstanding the above, nothing herein shall supersede or modify
+   the terms of any separate license agreement you may have executed
+   with Licensor regarding such Contributions.
+
+6. Trademarks. This License does not grant permission to use the trade
+   names, trademarks, service marks, or product names of the Licensor,
+   except as required for reasonable and customary use in describing the
+   origin of the Work and reproducing the content of the NOTICE file.
+
+7. Disclaimer of Warranty. Unless required by applicable law or
+   agreed to in writing, Licensor provides the Work (and each
+   Contributor provides its Contributions) on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+   implied, including, without limitation, any warranties or conditions
+   of TITLE, NON-INFRINGEMENT, MERCHANTABILITY, or FITNESS FOR A
+   PARTICULAR PURPOSE. You are solely responsible for determining the
+   appropriateness of using or redistributing the Work and assume any
+   risks associated with Your exercise of permissions under this License.
+
+8. Limitation of Liability. In no event and under no legal theory,
+   whether in tort (including negligence), contract, or otherwise,
+   unless required by applicable law (such as deliberate and grossly
+   negligent acts) or agreed to in writing, shall any Contributor be
+   liable to You for damages, including any direct, indirect, special,
+   incidental, or consequential damages of any character arising as a
+   result of this License or out of the use or inability to use the
+   Work (including but not limited to damages for loss of goodwill,
+   work stoppage, computer failure or malfunction, or any and all
+   other commercial damages or losses), even if such Contributor
+   has been advised of the possibility of such damages.
+
+9. Accepting Warranty or Additional Liability. While redistributing
+   the Work or Derivative Works thereof, You may choose to offer,
+   and charge a fee for, acceptance of support, warranty, indemnity,
+   or other liability obligations and/or rights consistent with this
+   License. However, in accepting such obligations, You may act only
+   on Your own behalf and on Your sole responsibility, not on behalf
+   of any other Contributor, and only if You agree to indemnify,
+   defend, and hold each Contributor harmless for any liability
+   incurred by, or claims asserted against, such Contributor by reason
+   of your accepting any such warranty or additional liability.
+
+END OF TERMS AND CONDITIONS
+
+APPENDIX: How to apply the Apache License to your work.
+
+   To apply the Apache License to your work, attach the following
+   boilerplate notice, with the fields enclosed by brackets "[]"
+   replaced with your own identifying information. (Don't include
+   the brackets!)  The text should be enclosed in the appropriate
+   comment syntax for the file format. We also recommend that a
+   file or class name and description of purpose be included on the
+   same "printed page" as the copyright notice for easier
+   identification within third-party archives.
+
+Copyright [yyyy] [name of copyright owner]
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+
+</pre>
+```
+
+### OpenJDK java.xml legal notice: xhtml10.md
+
+```
+## XHTML™ 1.0 The Extensible HyperText Markup Language
+
+### W3C Software Notice and License
+<pre>
+W3C(R) SOFTWARE NOTICE AND LICENSE
+
+Copyright (c) 1994-2002 World Wide Web Consortium, (Massachusetts
+Institute of Technology, Institut National de Recherche en
+Informatique et en Automatique, Keio University). All Rights
+Reserved. http://www.w3.org/Consortium/Legal/
+
+This W3C work (including software, documents, or other related items)
+is being provided by the copyright holders under the following
+license. By obtaining, using and/or copying this work, you (the
+licensee) agree that you have read, understood, and will comply with
+the following terms and conditions:
+
+Permission to use, copy, modify, and distribute this software and its
+documentation, with or without modification, for any purpose and
+without fee or royalty is hereby granted, provided that you include
+the following on ALL copies of the software and documentation or
+portions thereof, including modifications, that you make:
+
+    The full text of this NOTICE in a location viewable to users of
+    the redistributed or derivative work.
+
+    Any pre-existing intellectual property disclaimers, notices, or
+    terms and conditions. If none exist, a short notice of the following
+    form (hypertext is preferred, text is permitted) should be used within
+    the body of any redistributed or derivative code: "Copyright (C)
+    [$date-of-software] World Wide Web Consortium, (Massachusetts
+    Institute of Technology, Institut National de Recherche en
+    Informatique et en Automatique, Keio University). All Rights
+    Reserved. http://www.w3.org/Consortium/Legal/"
+
+    Notice of any changes or modifications to the W3C files, including
+    the date changes were made. (We recommend you provide URIs to the
+    location from which the code is derived.)
+
+THIS SOFTWARE AND DOCUMENTATION IS PROVIDED "AS IS," AND COPYRIGHT
+HOLDERS MAKE NO REPRESENTATIONS OR WARRANTIES, EXPRESS OR IMPLIED,
+INCLUDING BUT NOT LIMITED TO, WARRANTIES OF MERCHANTABILITY OR FITNESS
+FOR ANY PARTICULAR PURPOSE OR THAT THE USE OF THE SOFTWARE OR
+DOCUMENTATION WILL NOT INFRINGE ANY THIRD PARTY PATENTS, COPYRIGHTS,
+TRADEMARKS OR OTHER RIGHTS.
+
+COPYRIGHT HOLDERS WILL NOT BE LIABLE FOR ANY DIRECT, INDIRECT, SPECIAL
+OR CONSEQUENTIAL DAMAGES ARISING OUT OF ANY USE OF THE SOFTWARE OR
+DOCUMENTATION.
+
+The name and trademarks of copyright holders may NOT be used in
+advertising or publicity pertaining to the software without specific,
+written prior permission. Title to copyright in this software and any
+associated documentation will at all times remain with copyright
+holders.
+
+</pre>
+```
+
+### OpenJDK java.xml legal notice: xhtml10schema.md
+
+```
+## XHTML™ 1.0 in XML Schema
+
+### W3C® Intellectual Rights Notice and Legal Disclaimers
+<pre>
+Copyright © 1994-2002 W3C ® (Massachusetts Institute of Technology,
+Institut National de Recherche en Informatique et en Automatique, Keio University),
+All Rights Reserved.
+
+World Wide Web Consortium (W3C®) web site pages may contain other proprietary
+notices and copyright information, the terms of which must be observed and
+followed. Specific notices do exist for W3C documents and software. Also, there
+are specific usage policies associated with some of the W3C Icons. Please see
+our Intellectual Rights FAQ for common questions about using materials from our site.
+
+Notice and Disclaimers
+
+1. Unless otherwise noted, all materials contained in this Site are copyrighted
+and may not be used except as provided in these terms and conditions or in the
+copyright notice (documents and software) or other proprietary notice provided
+with the relevant materials.
+
+2. The materials contained in the Site may be downloaded or copied provided that
+ALL copies retain the copyright and any other proprietary notices contained on
+the materials. No material may be modified, edited or taken out of context such
+that its use creates a false or misleading statement or impression as to the
+positions, statements or actions of W3C.
+
+3. The name and trademarks of copyright holders may NOT be used in advertising
+or publicity pertaining to the Web site, its content, specifications, or
+software without specific, written prior permission. Title to copyright in
+Web site documents will at all times remain with copyright holders. Use of W3C
+trademarks and service marks is covered by the W3C Trademark and Servicemark
+License.
+
+4. Caches of W3C materials should comply with the "maximum time to live"
+information provided with the materials. After such materials have expired
+they should not be served from caches without first validating the contents
+of the W3C Site. Organizations that want to mirror W3C content must abide by
+the W3C Mirroring Policy.
+
+W3C®Trademarks and Generic Terms
+Trademarks owned by W3C host institutions on behalf of W3C and generic terms
+used by the W3C
+
+5. The trademarks, logos, and service marks (collectively the "Trademarks")
+displayed on the Site are registered and unregistered Trademarks of the
+Massachusetts Institute of Technology (MIT), Institut National de Recherche
+en Informatique et en Automatique (INRIA), or Keio University (Keio). All use
+of the W3C Trademarks is governed by the W3C Trademark and Servicemark License.
+No additional rights are granted by implication, estoppel, or otherwise. Terms
+which claimed as generic are not governed by any W3C license and are used as
+common descriptors by the W3C.
+
+The following is a list of W3C terms claimed as a trademark or generic term
+by MIT, INRIA, and/or Keio on behalf of the W3C:
+
+    W3C®, World Wide Web Consortium  (registered in numerous countries)
+    Amaya™, a Web Browser
+    CSS™, Cascading Style Sheets Specification
+    DOM™, Document Object Model
+    HTML (generic), HyperText Markup Language
+    HTTP (generic), Hypertext Transfer Protocol
+    MathML™, Mathematical Markup Language
+    Metadata (generic)
+    P3P™, Platform for Privacy Preferences Project
+    PICS™, Platform for Internet Content Selection
+    RDF (generic), Resource Description Framework
+    SMIL™, Synchronized Multimedia Integration Language
+    SVG™, Scalable Vector Graphics
+    WAI™, Web Accessibility Initiative
+    XENC (generic), XML Encryption
+    XHTML™, The Extensible HyperText Markup Language
+    XML (generic), Extensible Markup Language
+    XSL™,  Extensible Stylesheet Language
+
+    ACSS™, Aural Cascading Style Sheets
+    DSig™, Digital Signature Initiative
+    JEPI™, Joint Electronic Payment Initiative
+    Jigsaw™
+    PICSRules™
+    WebFonts™
+
+The absence of a product or service name or logo from this list does not
+constitute a waiver of MIT's, INRIA's, or Keio's trademark or other intellectual
+rights concerning that name or logo.
+
+Any questions concerning the use, status, or standing of W3C trademarks should
+be directed to: site-policy@w3.org or to W3C (c/o Joseph Reagle), Laboratory
+for Computer Science NE43-358, Massachusetts Institute of Technology, 200
+Technology Square, Cambridge, MA 02139.
+
+Non-W3C Trademarks; Member Trademarks
+
+The trademarks, logos, and service marks not owned on behalf of the W3C and
+that are displayed on the Site are the registered and unregistered marks of
+their respective owners. No rights are granted by the W3C to use such marks,
+whether by implication, estoppel, or otherwise.
+
+"METADATA" is a trademark of the Metadata Company. W3C uses the term "metadata"
+in a descriptive sense, meaning "data about data". W3C is not in any way
+affiliated with the Metadata Company.
+Legal Disclaimers
+
+6. W3C has not reviewed any or all of the web sites linked to this Site and is
+not responsible for the content of any off-site pages or any other web sites
+linked to this Site. Please understand that any non-W3C web site is independent
+from W3C, and W3C has no control over the content on that web site.
+In addition, a link to a non-W3C web site does not mean that W3C endorses or
+accepts any responsibility for the content, or the use, of such site. It is
+the user's responsibility to take precautions to ensure that whatever is
+selected is free of such items as viruses, worms, Trojan horses and other
+items of a destructive nature.
+
+7. Information W3C publishes on its Site may contain references or cross
+references to W3C specifications, projects, programs and services that are
+not announced or available in your country. Such references do not imply that
+W3C intends to announce such specifications, projects, programs or services
+in your country.
+
+8. Information on this Site may contain technical inaccuracies or typographical
+errors. Information may be changed or updated without notice. W3C may make
+improvements and/or changes in the materials contained in or described on this
+site at any time without notice. W3C may also make changes in these Terms and
+Conditions without notice. User is bound by such revisions and should therefore
+periodically visit this page to review the then current Terms and Conditions.
+
+9. Limitation on Warranties.
+
+ALL MATERIALS ON THE W3C SITE ARE PROVIDED "AS IS." W3C, MIT, INRIA, AND KEIO
+MAKE NO REPRESENTATIONS OR WARRANTIES, EXPRESS OR IMPLIED, INCLUDING, BUT NOT
+LIMITED TO, WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE,
+TITLE OR NON-INFRINGEMENT. AS TO DOCUMENTS AND GRAPHICS PUBLISHED ON THIS SITE,
+W3C, MIT, INRIA, AND KEIO MAKE NO REPRESENTATION OR WARRANTY THAT THE CONTENTS
+OF SUCH DOCUMENT OR GRAPHICS ARE FREE FROM ERROR OR SUITABLE FOR ANY PURPOSE;
+NOR THAT IMPLEMENTATION OF SUCH CONTENTS WILL NOT INFRINGE ANY THIRD PARTY
+PATENTS, COPYRIGHTS, TRADEMARKS OR OTHER RIGHTS.
+
+Please note that some jurisdictions may not allow the exclusion of implied
+ warranties, so some of the above exclusions may not apply to you.
+
+10. Limitation on Liability.
+
+IN NO EVENT WILL W3C, MIT, INRIA, AND KEIO BE LIABLE TO ANY PARTY FOR ANY
+DIRECT, INDIRECT, SPECIAL OR CONSEQUENTIAL DAMAGES FOR ANY USE OF THIS SITE,
+OR ON ANY OTHER HYPERLINKED WEB SITE, INCLUDING, WITHOUT LIMITATION, ANY LOST
+PROFITS, BUSINESS INTERRUPTION, LOSS OF PROGRAMS OR OTHER DATA ON YOUR
+INFORMATION HANDLING SYSTEM OR OTHERWISE, EVEN IF W3C, MIT, INRIA, OR KEIO
+IS EXPRESSLY ADVISED OF THE POSSIBILITY OF SUCH DAMAGES.
+
+</pre>
+```
+
+### OpenJDK java.xml legal notice: xhtml11.md
+
+```
+## XHTML™ 1.1 - Module-based XHTML - Second Edition
+
+### W3C Document license
+<pre>
+From: https://www.w3.org/copyright/document-license-2023
+
+Copied 10/15/2024
+
+License
+
+By using and/or copying this document, or the W3C document from which this
+statement is linked, you (the licensee) agree that you have read, understood,
+and will comply with the following terms and conditions:
+
+Permission to copy, and distribute the contents of this document, or the W3C
+document from which this statement is linked, in any medium for any purpose
+and without fee or royalty is hereby granted, provided that you include the
+following on ALL copies of the document, or portions thereof, that you use:
+
+    A link or URL to the original W3C document.
+    The pre-existing copyright notice of the original author, or if it doesn't
+    exist, a notice (hypertext is preferred, but a textual representation is
+    permitted) of the form: "Copyright © [$date-of-document] World Wide Web
+    Consortium. https://www.w3.org/copyright/document-license-2023/"
+    If it exists, the STATUS of the W3C document.
+
+When space permits, inclusion of the full text of this NOTICE should be provided.
+We request that authorship attribution be provided in any software, documents,
+or other items or products that you create pursuant to the implementation of the
+contents of this document, or any portion thereof.
+
+No right to create modifications or derivatives of W3C documents is granted
+pursuant to this license, except as follows: To facilitate implementation of
+the technical specifications set forth in this document, anyone may prepare
+and distribute derivative works and portions of this document in software,
+in supporting materials accompanying software, and in documentation of software,
+PROVIDED that all such works include the notice below. HOWEVER, the publication
+of derivative works of this document for use as a technical specification is
+expressly prohibited.
+
+In addition, "Code Components" —Web IDL in sections clearly marked as Web IDL;
+and W3C-defined markup (HTML, CSS, etc.) and computer programming language code
+clearly marked as code examples— are licensed under the W3C Software License.
+
+The notice is:
+
+"Copyright © 2023 W3C®. This software or document includes material copied from
+or derived from [title and URI of the W3C document]."
+
+Disclaimers
+
+THIS DOCUMENT IS PROVIDED "AS IS," AND COPYRIGHT HOLDERS MAKE NO REPRESENTATIONS
+OR WARRANTIES, EXPRESS OR IMPLIED, INCLUDING, BUT NOT LIMITED TO, WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, NON-INFRINGEMENT, OR TITLE;
+THAT THE CONTENTS OF THE DOCUMENT ARE SUITABLE FOR ANY PURPOSE; NOR THAT THE
+IMPLEMENTATION OF SUCH CONTENTS WILL NOT INFRINGE ANY THIRD PARTY PATENTS,
+COPYRIGHTS, TRADEMARKS OR OTHER RIGHTS.
+
+COPYRIGHT HOLDERS WILL NOT BE LIABLE FOR ANY DIRECT, INDIRECT, SPECIAL OR
+CONSEQUENTIAL DAMAGES ARISING OUT OF ANY USE OF THE DOCUMENT OR THE PERFORMANCE
+OR IMPLEMENTATION OF THE CONTENTS THEREOF.
+
+The name and trademarks of copyright holders may NOT be used in advertising or
+publicity pertaining to this document or its contents without specific, written
+prior permission. Title to copyright in this document will at all times remain
+with copyright holders.
+
+</pre>
+```
+
+### OpenJDK java.xml legal notice: xhtml11schema.md
+
+```
+## XHTML 1.1 XML Schema Definition
+
+### W3C® SOFTWARE NOTICE AND LICENSE
+<pre>
+http://www.w3.org/Consortium/Legal/copyright-software-19980720
+
+W3C® SOFTWARE NOTICE AND LICENSE
+
+Copyright © 1994-2002 World Wide Web Consortium, (Massachusetts Institute of
+Technology, Institut National de Recherche en Informatique et en Automatique,
+Keio University). All Rights Reserved. http://www.w3.org/Consortium/Legal/
+
+This W3C work (including software, documents, or other related items) is
+being provided by the copyright holders under the following license. By
+obtaining, using and/or copying this work, you (the licensee) agree that you
+have read, understood, and will comply with the following terms and conditions:
+Permission to use, copy, modify, and distribute this software and its
+documentation, with or without modification,  for any purpose and without fee
+or royalty is hereby granted, provided that you include the following on ALL
+copies of the software and documentation or portions thereof, including
+modifications, that you make:
+
+1.      The full text of this NOTICE in a location viewable to users of the
+redistributed or derivative work.
+
+2.      Any pre-existing intellectual property disclaimers, notices, or terms
+and conditions. If none exist, a short notice of the following form (hypertext
+is preferred, text is permitted) should be used within the body of any
+redistributed or derivative code: "Copyright © [$date-of-software] World Wide
+Web Consortium, (Massachusetts Institute of Technology, Institut National de
+Recherche en Informatique et en Automatique, Keio University). All Rights
+Reserved. http://www.w3.org/Consortium/Legal/"
+
+3.      Notice of any changes or modifications to the W3C files, including the
+date changes were made. (We recommend you provide URIs to the location from
+which the code is derived.)
+
+THIS SOFTWARE AND DOCUMENTATION IS PROVIDED "AS IS," AND COPYRIGHT HOLDERS MAKE
+NO REPRESENTATIONS OR WARRANTIES, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO, WARRANTIES OF MERCHANTABILITY OR FITNESS FOR ANY PARTICULAR PURPOSE OR THAT
+THE USE OF THE SOFTWARE OR DOCUMENTATION WILL NOT INFRINGE ANY THIRD PARTY
+PATENTS, COPYRIGHTS, TRADEMARKS OR OTHER RIGHTS.
+COPYRIGHT HOLDERS WILL NOT BE LIABLE FOR ANY DIRECT, INDIRECT, SPECIAL OR
+CONSEQUENTIAL DAMAGES ARISING OUT OF ANY USE OF THE SOFTWARE OR DOCUMENTATION.
+
+The name and trademarks of copyright holders may NOT be used in advertising or
+publicity pertaining to the software without specific, written prior permission.
+Title to copyright in this software and any associated documentation will at all
+times remain with copyright holders.
+
+The formulation of W3C's notice and license became active on August 14 1998 so
+as to improve compatibility with GPL. This version ensures that W3C software
+licensing terms are no more restrictive than GPL and consequently W3C software
+may be distributed in GPL packages. See the older formulation for the policy
+prior to this date. Please see our Copyright FAQ for common questions about
+using materials from our site, including specific terms and conditions for
+packages like libwww, Amaya, and Jigsaw. Other questions about this notice can
+be directed to site-policy@w3.org.
+
+</pre>
+```
+
+### OpenJDK java.xml legal notice: xmlspec.md
+
+```
+## XML DTD for W3C specifications
+
+### W3C Software Notice and License
+<pre>
+W3C(R) SOFTWARE NOTICE AND LICENSE
+
+Copyright (c) 1994-2002 World Wide Web Consortium, (Massachusetts
+Institute of Technology, Institut National de Recherche en
+Informatique et en Automatique, Keio University). All Rights
+Reserved. http://www.w3.org/Consortium/Legal/
+
+This W3C work (including software, documents, or other related items)
+is being provided by the copyright holders under the following
+license. By obtaining, using and/or copying this work, you (the
+licensee) agree that you have read, understood, and will comply with
+the following terms and conditions:
+
+Permission to use, copy, modify, and distribute this software and its
+documentation, with or without modification, for any purpose and
+without fee or royalty is hereby granted, provided that you include
+the following on ALL copies of the software and documentation or
+portions thereof, including modifications, that you make:
+
+    The full text of this NOTICE in a location viewable to users of
+    the redistributed or derivative work.
+
+    Any pre-existing intellectual property disclaimers, notices, or
+    terms and conditions. If none exist, a short notice of the following
+    form (hypertext is preferred, text is permitted) should be used within
+    the body of any redistributed or derivative code: "Copyright (C)
+    [$date-of-software] World Wide Web Consortium, (Massachusetts
+    Institute of Technology, Institut National de Recherche en
+    Informatique et en Automatique, Keio University). All Rights
+    Reserved. http://www.w3.org/Consortium/Legal/"
+
+    Notice of any changes or modifications to the W3C files, including
+    the date changes were made. (We recommend you provide URIs to the
+    location from which the code is derived.)
+
+THIS SOFTWARE AND DOCUMENTATION IS PROVIDED "AS IS," AND COPYRIGHT
+HOLDERS MAKE NO REPRESENTATIONS OR WARRANTIES, EXPRESS OR IMPLIED,
+INCLUDING BUT NOT LIMITED TO, WARRANTIES OF MERCHANTABILITY OR FITNESS
+FOR ANY PARTICULAR PURPOSE OR THAT THE USE OF THE SOFTWARE OR
+DOCUMENTATION WILL NOT INFRINGE ANY THIRD PARTY PATENTS, COPYRIGHTS,
+TRADEMARKS OR OTHER RIGHTS.
+
+COPYRIGHT HOLDERS WILL NOT BE LIABLE FOR ANY DIRECT, INDIRECT, SPECIAL
+OR CONSEQUENTIAL DAMAGES ARISING OUT OF ANY USE OF THE SOFTWARE OR
+DOCUMENTATION.
+
+The name and trademarks of copyright holders may NOT be used in
+advertising or publicity pertaining to the software without specific,
+written prior permission. Title to copyright in this software and any
+associated documentation will at all times remain with copyright
+holders.
+
+----------
+
+COPYRIGHT:
+
+  Copyright (C) 2000, 2001, 2002, 2003 Sun Microsystems, Inc. All Rights Reserved.
+
+</pre>
+```
+
+### OpenJDK java.xml legal notice: xmlxsd.md
+
+```
+## The "xml:" Namespace
+
+### W3C Software and Document license
+<pre>
+From: https://www.w3.org/copyright/software-license-2023/
+Copied on 2024/10/15
+
+License
+
+By obtaining and/or copying this work, you (the licensee) agree that you have
+read, understood, and will comply with the following terms and conditions.
+
+Permission to copy, modify, and distribute this work, with or without modification,
+for any purpose and without fee or royalty is hereby granted, provided that you
+include the following on ALL copies of the work or portions thereof, including
+modifications:
+
+    The full text of this NOTICE in a location viewable to users of the
+    redistributed or derivative work.
+    Any pre-existing intellectual property disclaimers, notices, or terms and
+    conditions. If none exist, the W3C software and document short notice should
+    be included.
+    Notice of any changes or modifications, through a copyright statement on the
+    new code or document such as "This software or document includes material
+    copied from or derived from [title and URI of the W3C document]. Copyright ©
+    [$year-of-document] World Wide Web Consortium.
+    https://www.w3.org/copyright/software-license-2023/"
+
+Disclaimers
+
+THIS WORK IS PROVIDED "AS IS," AND COPYRIGHT HOLDERS MAKE NO REPRESENTATIONS OR
+WARRANTIES, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO, WARRANTIES OF
+MERCHANTABILITY OR FITNESS FOR ANY PARTICULAR PURPOSE OR THAT THE USE OF THE
+SOFTWARE OR DOCUMENT WILL NOT INFRINGE ANY THIRD PARTY PATENTS, COPYRIGHTS,
+TRADEMARKS OR OTHER RIGHTS.
+
+COPYRIGHT HOLDERS WILL NOT BE LIABLE FOR ANY DIRECT, INDIRECT, SPECIAL OR
+CONSEQUENTIAL DAMAGES ARISING OUT OF ANY USE OF THE SOFTWARE OR DOCUMENT.
+
+The name and trademarks of copyright holders may NOT be used in advertising or
+publicity pertaining to the work without specific, written prior permission.
+Title to copyright in this work will at all times remain with copyright holders.
+</pre>
+```
 
 ### Texts found inside the jars (de-duplicated by content; bracket = sha256 prefix)
 

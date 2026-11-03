@@ -202,9 +202,29 @@ GPL_CPE_FILES = (
     "ASSEMBLY_EXCEPTION",
     "LICENSE",
 )  # in every legal/<module>; byte-identical to java.base's
-# Further notice files in legal/<module>, each with the review decision. "reproduced" = verbatim in the notices below; "not linked" =
-# covers code or data that the image does not contain (the reason is in the prose of the notices). A file that is not listed here
-# fails the run: someone must read it and decide.
+# Further notice files in legal/<module>, each with the review decision. "reproduced" = verbatim in the notices below (always, on every
+# platform: the committed notices must not depend on which build measured what); "not linked" = covers code or data that the image does
+# not contain. A file that is not listed here fails the run (unless it is byte-identical to a reproduced one): someone must read it and
+# decide. Evidence for the decisions of 2026-11-03 (the used_classes report of the x86-64, aarch64 and Windows builds of the image, and
+# strings of the shipped libarcadedb.so, positive controls included):
+#   java.xml: 444 classes of com.sun.org.apache.xerces.internal.*, com.sun.xml.internal.stream, javax.xml.catalog are compiled, so
+#     xerces.md is reproduced; org.w3c.dom.{Node,Element,Document,Attr,TypeInfo,...} are types in the image (dom.md); the whole
+#     jdk/xml/internal/jdkcatalog resource tree (93 DTD, XSD, ENT, MOD files: XMLSchema, datatypes, xhtml1.0, xhtml1.1, xmlspec, xml.xsd)
+#     is registered (listed as /java.xml/jdk/xml/internal/jdkcatalog/... in the library), so the eight W3C data notices are reproduced.
+#     No class of com.sun.org.apache.bcel, com.sun.org.apache.xalan, com.sun.org.apache.xpath, com.sun.org.apache.xml.internal or
+#     com.sun.java_cup is in the report or named in the library, and no Xalan resource (HTMLEntities.properties) is registered: GUARDS
+#     below fails the run if that changes.
+#   java.desktop: the report has one class, java.beans.Introspector$1 (JDK code, no third-party notice), and no java.awt, javax.imageio,
+#     javax.swing, sun.awt, sun.java2d or sun.font class; the library has no Java_sun_awt/Java_java_awt/Java_sun_java2d/Java_sun_font/
+#     Java_javax_imageio JNI name and does not link libawt, liblcms, libfontmanager, libjavajpeg or libsplashscreen (NEEDED: libz, libdl,
+#     libpthread, libm, librt, libc). Its nine notices cover the C code of those libraries and their headers. GUARDS fails the run when
+#     another java.desktop package is reached.
+#   jdk.localedata: cldr.md is byte-identical to java.base's (covered by hash); the report has only the two provider classes
+#     (sun.util.resources.cldr.provider.CLDRLocaleDataMetaInfo, sun.util.resources.provider.LocaleDataProvider), not the locale data classes,
+#     and sun/text/resources/ext/thai_dict (thaidict.md) is not a registered resource of the library.
+#   jdk.incubator.vector: sleef.md covers the SLEEF C library; the image has the Java classes (VectorMathLibrary$SLEEF looks symbols up by
+#     name) but links no SLEEF code and ships no libsleef.
+#   java.base: the five "not linked" files were reviewed earlier (hotspot, AES-NI, gcc, siphash C code; public-suffix data not in the library).
 REVIEWED_LEGAL = {
     "java.base": {
         "icu.md": "reproduced",
@@ -216,14 +236,68 @@ REVIEWED_LEGAL = {
         "siphash.md": "not linked",
         "public_suffix.md": "not linked",
     },
+    "java.xml": {
+        "xerces.md": "reproduced",
+        "dom.md": "reproduced",
+        "schema10part1.md": "reproduced",
+        "schema10part2.md": "reproduced",
+        "xhtml10.md": "reproduced",
+        "xhtml10schema.md": "reproduced",
+        "xhtml11.md": "reproduced",
+        "xhtml11schema.md": "reproduced",
+        "xmlspec.md": "reproduced",
+        "xmlxsd.md": "reproduced",
+        "bcel.md": "not linked",
+        "xalan.md": "not linked",
+        "jcup.md": "not linked",
+    },
+    "java.desktop": {
+        f: "not linked"
+        for f in (
+            "colorimaging.md",
+            "giflib.md",
+            "harfbuzz.md",
+            "jpeg.md",
+            "lcms.md",
+            "libpng.md",
+            "mesa3d.md",
+            "pipewire.md",
+            "xwd.md",
+        )
+    },
+    "jdk.localedata": {"thaidict.md": "not linked"},
     "jdk.incubator.vector": {"sleef.md": "not linked"},
 }
-REPRODUCED = [
-    f for d in REVIEWED_LEGAL.values() for f, v in d.items() if v == "reproduced"
-]
-GRAALVM_OWN_MODULES = (
-    "org.graalvm.",
-)  # no legal/ directory; their licences are in LICENSE.txt of the GraalVM home (UPL-1.0, GPLv2 + CPE)
+REPRODUCED = sorted(
+    (m, f) for m, d in REVIEWED_LEGAL.items() for f, v in d.items() if v == "reproduced"
+)
+# A "not linked" decision that rests on which classes are in the image: ("never", prefixes) = no used class of the module may be in
+# these packages; ("only", prefixes) = every used class of the module must be in these packages. Otherwise the run fails.
+GUARDS = {
+    ("java.xml", "bcel.md"): ("never", ("com.sun.org.apache.bcel",)),
+    ("java.xml", "xalan.md"): (
+        "never",
+        (
+            "com.sun.org.apache.xalan",
+            "com.sun.org.apache.xpath",
+            "com.sun.org.apache.xml.internal",
+        ),
+    ),
+    ("java.xml", "jcup.md"): ("never", ("com.sun.java_cup",)),
+    **{
+        ("java.desktop", f): ("only", ("java.beans",))
+        for f in REVIEWED_LEGAL["java.desktop"]
+    },
+    ("jdk.localedata", "thaidict.md"): (
+        "only",
+        ("sun.util.resources.cldr.provider", "sun.util.resources.provider"),
+    ),
+}
+# Modules without a legal/<module> directory whose code is GraalVM's own, under the GraalVM licence the wheel ships (LICENSE.txt of the
+# home: GPLv2 + CPE, UPL-1.0). org.graalvm.* by prefix; jdk.graal.compiler.options by name: it is compiler/src/jdk.graal.compiler.options
+# of oracle/graal at the commit the release file names, and its sources carry the Oracle GPLv2 + Classpath Exception header.
+GRAALVM_OWN_PREFIXES = ("org.graalvm.",)
+GRAALVM_OWN_MODULES = ("jdk.graal.compiler.options",)
 
 
 def jimage_packages(G):
@@ -256,41 +330,48 @@ def jimage_packages(G):
 
 
 def used_modules(used_classes, G):
-    """JDK modules that own at least one class of the native-image used_classes_*.txt report (one `<java name>[:<loader>]` per line)."""
+    """{JDK module: packages} for the classes of the native-image used_classes_*.txt report: one `<loader>:<java name>` per line, as CE 25.4
+    writes it (e.g. `null:java.lang.String`, `com.oracle.svm.hosted.NativeImageClassLoader:com.arcadedb.Foo`); loader names hold no colon,
+    so the class is the part after the last one (a bare `<java name>` line also parses).
+    """
     pkgs = jimage_packages(G)
     names = set()
     for line in (
         Path(used_classes).read_text(encoding="utf-8", errors="replace").splitlines()
     ):
-        n = line.strip().split(":", 1)[0]
+        n = line.strip().rsplit(":", 1)[-1]
         n = re.sub(r"(\[\])+$", "", n).split("/", 1)[
             0
         ]  # arrays; hidden classes (Foo$$Lambda/0x...)
         if n:
             names.add(n)
-    mods = set()
+    mods = {}  # module -> packages with a used class
     for n in names:
         if "." in n:
-            mods |= pkgs.get(n.rsplit(".", 1)[0], set())
+            pkg = n.rsplit(".", 1)[0]
+            for m in pkgs.get(pkg, ()):
+                mods.setdefault(m, set()).add(pkg)
     # A report that did not parse would map to no module and pass silently: refuse an implausible one.
     if len(names) < 1000 or "java.base" not in mods:
         sys.exit(
             f"gen_notices: {used_classes} lists {len(names)} classes and {len(mods)} JDK modules: not a used_classes report of this image"
         )
-    return sorted(mods)
+    return mods
 
 
 def check_module_coverage(G, modules):
-    """Problems (strings) for modules whose notices are not covered. Covered = legal/<module> exists in the GraalVM home, its
-    GPLv2 + Classpath Exception files equal java.base's (reproduced once, via LICENSE.txt and legal/java.base), and every further
-    file has a decision in REVIEWED_LEGAL."""
+    """Problems (strings) for modules whose notices are not covered. `modules` is {module: used packages}. Covered = legal/<module> exists
+    in the GraalVM home, its GPLv2 + Classpath Exception files equal java.base's (reproduced once, via LICENSE.txt and legal/java.base),
+    and every further file has a decision in REVIEWED_LEGAL (or is byte-identical to a reproduced file), with its GUARDS holding.
+    """
     legal = G / "legal"
     base = {f: sha((legal / "java.base" / f).read_bytes()) for f in GPL_CPE_FILES}
+    reproduced = {sha((legal / m / f).read_bytes()) for m, f in REPRODUCED}
     problems = []
-    for m in modules:
+    for m, pkgs in sorted(modules.items()):
         d = legal / m
         if not d.is_dir():
-            if not m.startswith(GRAALVM_OWN_MODULES):
+            if not (m in GRAALVM_OWN_MODULES or m.startswith(GRAALVM_OWN_PREFIXES)):
                 problems.append(
                     f"{m}: no legal/{m} in the GraalVM home and not a GraalVM-own module"
                 )
@@ -304,11 +385,30 @@ def check_module_coverage(G, modules):
                     f"{m}: legal/{m}/{f} differs from legal/java.base/{f}; read it and extend the policy"
                 )
         for f in sorted(have - set(GPL_CPE_FILES)):
-            if f not in REVIEWED_LEGAL.get(m, {}):
+            decision = REVIEWED_LEGAL.get(m, {}).get(f)
+            if decision is None:
+                if sha((d / f).read_bytes()) in reproduced:
+                    continue  # the same text is reproduced for another module
                 problems.append(
                     f"{m}: legal/{m}/{f} has no review decision; check whether the code or data it covers is in the image, "
                     "then add it to REVIEWED_LEGAL (reproduced or not linked)"
                 )
+            elif decision == "not linked" and (m, f) in GUARDS:
+                kind, prefixes = GUARDS[(m, f)]
+                hit = sorted(
+                    p
+                    for p in pkgs
+                    if any(p == x or p.startswith(x + ".") for x in prefixes)
+                )
+                if kind == "never" and hit:
+                    problems.append(
+                        f"{m}: legal/{m}/{f} is marked not linked but the image compiles classes of {', '.join(hit)}"
+                    )
+                if kind == "only" and set(pkgs) - set(hit):
+                    problems.append(
+                        f"{m}: legal/{m}/{f} is marked not linked but the image compiles classes of "
+                        f"{', '.join(sorted(set(pkgs) - set(hit)))} (decided for {', '.join(prefixes)} only)"
+                    )
     return problems
 
 
@@ -442,8 +542,9 @@ def main():
             f"gen_notices: {uc} does not exist: build-image.sh writes it from the native-image analysis report (-H:+PrintAnalysisCallTree); "
             "rebuild the image with the current script (or pass --used-classes)"
         )
-    modules = used_modules(uc, G)
-    problems = check_module_coverage(G, modules)
+    used = used_modules(uc, G)
+    modules = sorted(used)
+    problems = check_module_coverage(G, used)
     if a.modules_out:
         Path(a.modules_out).write_text(
             "\n".join(modules) + "\n", encoding="utf-8", newline="\n"
@@ -539,11 +640,21 @@ def main():
         f"{ptr['jdk_url']} ({ptr['jdk_text']}).\n"
     )
     w(
-        "Third-party data inside the JDK classes that the image contains (texts from `legal/java.base` of the GraalVM home, verbatim below): "
-        "ICU normalisation data (`jdk/internal/icu/impl/data/icudt76b/nfc.nrm`, registered resource), Unicode data files, CLDR locale data. "
-        "Other `legal/java.base` notices (aes.md, c-libutl.md, gcc.md, siphash.md, public_suffix.md) concern files or HotSpot code that are not "
-        "linked into the image (checked: the library contains no public-suffix data); `jdk.incubator.vector` (sleef.md) is added to the module "
-        "path but its vector intrinsics are disabled in the build (`-H:-VectorAPISupport`).\n"
+        "Third-party code and data inside the JDK classes that the image contains (texts from `legal/<module>` of the GraalVM home, verbatim below): "
+        "ICU normalisation data (`jdk/internal/icu/impl/data/icudt76b/nfc.nrm`, registered resource), Unicode data files, and CLDR locale data "
+        "(`java.base`); the Apache Xerces classes of `java.xml` (`com.sun.org.apache.xerces.internal.*`, compiled into the image), the W3C DOM "
+        "interfaces (`org.w3c.dom`), and the W3C XML Schema, XHTML 1.0, XHTML 1.1, XML specification and `xml.xsd` DTD and schema files "
+        "(`jdk/xml/internal/jdkcatalog/`, registered resources). "
+        "Notices that cover code or data the image does not contain are not reproduced: in `java.base` aes.md, c-libutl.md, gcc.md and "
+        "siphash.md (HotSpot and C code) and public_suffix.md (checked: the library contains no public-suffix data); in `java.xml` bcel.md, "
+        "xalan.md and jcup.md (no class of `com.sun.org.apache.bcel`, `com.sun.org.apache.xalan`, `com.sun.org.apache.xpath`, "
+        "`com.sun.org.apache.xml.internal` or `com.sun.java_cup` is compiled, and the Xalan resources are not registered); in `java.desktop` "
+        "the notices of the C libraries behind AWT, Java 2D and ImageIO (giflib, libpng, jpeg, lcms, harfbuzz, mesa3d, pipewire, xwd, "
+        "colorimaging: the image reaches only `java.beans.Introspector`, has no AWT or imaging JNI entry point and links none of those "
+        "libraries); in `jdk.localedata` thaidict.md (only the two locale provider classes are compiled, the Thai dictionary is not a "
+        "registered resource; its cldr.md is identical to the `java.base` one); in `jdk.incubator.vector` sleef.md (the SLEEF C library is "
+        "not linked; the module is on the module path but its vector intrinsics are disabled in the build, `-H:-VectorAPISupport`). "
+        "`gen_notices.py` fails the build when the image reaches code that one of the `java.xml`, `java.desktop` or `jdk.localedata` decisions above rests on.\n"
     )
     w(
         "The JDK modules in the image are not typed here but measured on every build: `build-image.sh` builds with `-H:+PrintAnalysisCallTree` "
@@ -551,7 +662,7 @@ def main():
         "image compiles; `gen_notices.py` maps each class to its JDK module with `jimage list` of the GraalVM home. The run fails when a "
         "module has no `legal/<module>` directory in the home (GraalVM's own `org.graalvm.*` modules are covered by `LICENSE.txt`), when its "
         "GPLv2 + Classpath Exception files differ from the `java.base` ones reproduced below, or when its `legal` directory has a further "
-        "notice file that no one has reviewed. The measured list is kept in the build record of each platform (`jdk-modules.txt`).\n"
+        "notice file that no one has reviewed (or that is not-linked by decision while the image reaches its code). The measured list is kept in the build record of each platform (`jdk-modules.txt`).\n"
     )
     w(
         "System libraries linked dynamically and not shipped: `libz.so.1`, `libc.so.6`, `ld-linux-x86-64.so.2` (checked with `ldd`).\n"
@@ -579,9 +690,13 @@ def main():
         "### GraalVM Community Edition LICENSE.txt (GPLv2, Classpath Exception, UPL-1.0, BSD-3-Clause)\n"
     )
     w(fence(text((G / "LICENSE.txt").read_bytes())))
-    for f in ("ADDITIONAL_LICENSE_INFO", "ASSEMBLY_EXCEPTION", *REPRODUCED):
-        w(f"### OpenJDK java.base legal notice: {f}\n")
-        w(fence(text((G / "legal" / "java.base" / f).read_bytes())))
+    for m, f in (
+        ("java.base", "ADDITIONAL_LICENSE_INFO"),
+        ("java.base", "ASSEMBLY_EXCEPTION"),
+        *REPRODUCED,
+    ):
+        w(f"### OpenJDK {m} legal notice: {f}\n")
+        w(fence(text((G / "legal" / m / f).read_bytes())))
     w(
         "### Texts found inside the jars (de-duplicated by content; bracket = sha256 prefix)\n"
     )
