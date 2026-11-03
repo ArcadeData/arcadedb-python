@@ -9,6 +9,8 @@ the JVM (counted on a proxy of the Java object or bridge class, the technique of
 errors, same result-set state), so a count cannot be bought with a change of behaviour.
 """
 
+import datetime
+
 import pytest
 
 from arcadedb import core, results
@@ -201,3 +203,90 @@ def test_count_matches_the_plain_path(db, monkeypatch):
     fast = db.query("sql", "SELECT FROM T WHERE k >= 2").count()
     _no_bridge(monkeypatch, "RowAccess")
     assert db.query("sql", "SELECT FROM T WHERE k >= 2").count() == fast == 3
+
+
+# ---------------------------------------------------------------- lookup_by_key
+
+
+def _plain_lookup_rid(db, type_name, keys, values):
+    cursor = db.get_java_database().lookupByKey(
+        type_name, core._string_array(keys), core._object_array(values)
+    )
+    return str(cursor.next().getIdentity()) if cursor.hasNext() else None
+
+
+def test_lookup_by_key_is_one_crossing_without_java_arrays(db, log, monkeypatch):
+    def boom(values):
+        raise AssertionError("lookup_by_key built a Java array")
+
+    monkeypatch.setattr(core, "_string_array", boom)
+    monkeypatch.setattr(core, "_object_array", boom)
+    del log[:]
+    doc = db.lookup_by_key("T", ["k"], [3])
+    assert log == ["DbCalls.lookupFirstKey"]
+    assert doc.get("v") == 30
+    del log[:]
+    assert db.lookup_by_key("T", ["k"], [99]) is None
+    assert log == ["DbCalls.lookupFirstKey"]
+
+
+def test_lookup_by_key_composite_and_typed_keys_match_the_plain_path(db):
+    db.command("sql", "CREATE DOCUMENT TYPE C")
+    db.command("sql", "CREATE PROPERTY C.a STRING")
+    db.command("sql", "CREATE PROPERTY C.b LONG")
+    db.command("sql", "CREATE PROPERTY C.ts DATETIME")
+    db.command("sql", "CREATE PROPERTY C.f DOUBLE")
+    db.command("sql", "CREATE INDEX ON C (a, b) UNIQUE")
+    db.command("sql", "CREATE INDEX ON C (ts) UNIQUE")
+    db.command("sql", "CREATE INDEX ON C (f) UNIQUE")
+    stamp = datetime.datetime(2026, 10, 25, 12, 30, 45)
+    with db.transaction():
+        db.command(
+            "sql", "INSERT INTO C SET a = ?, b = ?, ts = ?, f = ?", "x", 7, stamp, 2.5
+        )
+        db.command(
+            "sql",
+            "INSERT INTO C SET a = ?, b = ?, ts = ?, f = ?",
+            "y",
+            8,
+            datetime.datetime(2026, 1, 2, 3, 4, 5),
+            3.5,
+        )
+    cases = [
+        (["a", "b"], ["x", 7]),
+        (["a", "b"], ["y", 8]),
+        (["a", "b"], ["x", 8]),
+        (["ts"], [stamp]),
+        (["f"], [2.5]),
+        (["f"], [9.5]),
+    ]
+    for keys, values in cases:
+        found = db.lookup_by_key("C", keys, values)
+        converted = [core.convert_python_to_java(v) for v in values]
+        expected = _plain_lookup_rid(db, "C", keys, converted)
+        assert (None if found is None else str(found.get_identity())) == expected, (
+            keys,
+            values,
+        )
+    assert db.lookup_by_key("C", ["a", "b"], ["x", 7]).get("f") == 2.5
+
+
+def test_lookup_by_key_composite_is_one_crossing(db, log):
+    db.command("sql", "CREATE DOCUMENT TYPE C2")
+    db.command("sql", "CREATE PROPERTY C2.a STRING")
+    db.command("sql", "CREATE PROPERTY C2.b LONG")
+    db.command("sql", "CREATE INDEX ON C2 (a, b) UNIQUE")
+    with db.transaction():
+        db.command("sql", "INSERT INTO C2 SET a = 'x', b = 7")
+    del log[:]
+    assert db.lookup_by_key("C2", ["a", "b"], ["x", 7]) is not None
+    assert log == ["DbCalls.lookupFirstKeys"]
+
+
+def test_lookup_by_key_errors_stay_arcadedb_errors(db):
+    with pytest.raises(ArcadeDBError):
+        db.lookup_by_key("NoSuchType", ["k"], [1])
+    with pytest.raises(ArcadeDBError):
+        db.lookup_by_key("T", ["k", "v"], [1])  # more keys than values
+    with pytest.raises(ArcadeDBError):
+        db.lookup_by_key("T", [3], [1])  # a key name that is not a string
