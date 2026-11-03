@@ -36,6 +36,7 @@ Example:
     100000
 """
 
+import threading
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Callable, Optional, Sequence, Union
 
@@ -48,6 +49,163 @@ if TYPE_CHECKING:
     from .core import Database
 
 _LOGGER = get_logger(__name__)
+
+# The proxy classes are defined once per process, on first use (the JVM must be running, so not at import).
+# A @jpype.JImplements class defined on every call costs a class build per callback (JPype creates a Python
+# type, a Java proxy class and its method table) and keeps that memory for the life of the process:
+# callbacks.py found about 6 KB of Python heap per definition (the same cache is used there).
+# The callbacks of one call are state of the instance, not of a closure: each call builds an instance
+# of the shared class around its own Python callables.
+_PROXY_CLASSES = {}
+# defined under a lock: on a free-threaded CPython (no GIL) two threads that submit their first callback of a kind together
+# would each define a class, and the second definition leaks like the ones this cache exists to avoid
+_PROXY_LOCK = threading.Lock()
+
+
+def _proxy_class(kind, build):
+    """The proxy class of ``kind``: ``build()`` defines it once and every later call gets that class."""
+    cls = _PROXY_CLASSES.get(kind)
+    if cls is None:
+        with _PROXY_LOCK:
+            cls = _PROXY_CLASSES.get(kind)
+            if cls is None:
+                cls = _PROXY_CLASSES[kind] = build()
+    return cls
+
+
+def _build_new_record_proxy():
+    from .graph import Document
+
+    @jpype.JImplements("com.arcadedb.database.async.NewRecordCallback")
+    class _NewRecordCallback:
+        def __init__(self, python_callback):
+            self._callback = python_callback
+
+        @jpype.JOverride
+        def call(self, record):
+            self._callback(Document.wrap(record))
+
+    return _NewRecordCallback
+
+
+def _build_ok_proxy():
+    @jpype.JImplements(jpype.JClass("com.arcadedb.database.async.OkCallback"))
+    class PythonOkCallback:
+        def __init__(self, python_callback):
+            self._callback = python_callback
+
+        @jpype.JOverride
+        def call(self):
+            if self._callback:
+                self._callback()
+
+    return PythonOkCallback
+
+
+def _build_new_edge_proxy():
+    @jpype.JImplements(jpype.JClass("com.arcadedb.database.async.NewEdgeCallback"))
+    class PythonNewEdgeCallback:
+        def __init__(self, python_callback):
+            self._callback = python_callback
+
+        @jpype.JOverride
+        def call(
+            self,
+            edge,
+            created_source_vertex,
+            created_dest_vertex,
+        ):
+            if self._callback:
+                self._callback(edge, created_source_vertex, created_dest_vertex)
+
+    return PythonNewEdgeCallback
+
+
+def _build_error_proxy():
+    @jpype.JImplements(jpype.JClass("com.arcadedb.database.async.ErrorCallback"))
+    class PythonErrorCallback:
+        def __init__(self, python_callback):
+            self._callback = python_callback
+
+        @jpype.JOverride
+        def call(self, exception):
+            if self._callback:
+                self._callback(exception)
+
+    return PythonErrorCallback
+
+
+def _build_result_proxy():
+    @jpype.JImplements(
+        jpype.JClass("com.arcadedb.database.async.AsyncResultsetCallback")
+    )
+    class PythonResultCallback:
+        def __init__(self, python_callback, error_callback):
+            self._callback = python_callback
+            self._error_callback = error_callback
+
+        @jpype.JOverride
+        def onComplete(self, resultset):
+            if not self._callback:
+                return
+            from .results import Result
+
+            while resultset.hasNext():
+                self._callback(Result(resultset.next()))
+
+        @jpype.JOverride
+        def onError(self, exception):
+            if self._error_callback:
+                self._error_callback(exception)
+
+    return PythonResultCallback
+
+
+def _build_document_proxy():
+    @jpype.JImplements(jpype.JClass("com.arcadedb.database.DocumentCallback"))
+    class PythonDocumentCallback:
+        def __init__(self, python_callback):
+            self._callback = python_callback
+
+        @jpype.JOverride
+        def onRecord(self, record):
+            if self._callback is None:
+                return True
+            result = self._callback(record)
+            return True if result is None else bool(result)
+
+    return PythonDocumentCallback
+
+
+def _build_error_record_proxy():
+    @jpype.JImplements(jpype.JClass("com.arcadedb.engine.ErrorRecordCallback"))
+    class PythonErrorRecordCallback:
+        def __init__(self, python_callback):
+            self._callback = python_callback
+
+        @jpype.JOverride
+        def onErrorLoading(self, rid, exception):
+            if self._callback is None:
+                return True
+            result = self._callback(rid, exception)
+            return True if result is None else bool(result)
+
+    return PythonErrorRecordCallback
+
+
+def _build_transaction_scope_proxy():
+    @jpype.JImplements(
+        jpype.JClass("com.arcadedb.database.BasicDatabase$TransactionScope")
+    )
+    class PythonTransactionScope:
+        def __init__(self, python_callback):
+            self._callback = python_callback
+
+        @jpype.JOverride
+        def execute(self):
+            self._callback()
+
+    return PythonTransactionScope
 
 
 def _convert_column(values):
@@ -346,15 +504,7 @@ class AsyncExecutor:
             )
 
     def _create_new_record_callback(self, python_callback):
-        from .graph import Document
-
-        @jpype.JImplements("com.arcadedb.database.async.NewRecordCallback")
-        class _NewRecordCallback:
-            @jpype.JOverride
-            def call(self, record):
-                python_callback(Document.wrap(record))
-
-        return _NewRecordCallback()
+        return _proxy_class("new_record", _build_new_record_proxy)(python_callback)
 
     def new_edge(
         self,
@@ -963,19 +1113,7 @@ class AsyncExecutor:
 
     def _create_ok_callback(self, python_callback):
         """Create Java OkCallback from Python function."""
-        OkCallback = jpype.JClass("com.arcadedb.database.async.OkCallback")
-
-        # Capture callback in closure
-        callback = python_callback
-
-        @jpype.JImplements(OkCallback)
-        class PythonOkCallback:
-            @jpype.JOverride
-            def call(self):
-                if callback:
-                    callback()
-
-        return PythonOkCallback()
+        return _proxy_class("ok", _build_ok_proxy)(python_callback)
 
     def _create_new_edge_callback(self, python_callback):
         """Create Java NewEdgeCallback from Python function.
@@ -985,102 +1123,28 @@ class AsyncExecutor:
         - created_source_vertex: True if source vertex was created
         - created_dest_vertex: True if destination vertex was created
         """
-        NewEdgeCallback = jpype.JClass("com.arcadedb.database.async.NewEdgeCallback")
-
-        # Capture callback in closure
-        callback = python_callback
-
-        @jpype.JImplements(NewEdgeCallback)
-        class PythonNewEdgeCallback:
-            @jpype.JOverride
-            def call(
-                self,
-                edge,
-                created_source_vertex,
-                created_dest_vertex,
-            ):
-                if callback:
-                    callback(edge, created_source_vertex, created_dest_vertex)
-
-        return PythonNewEdgeCallback()
+        return _proxy_class("new_edge", _build_new_edge_proxy)(python_callback)
 
     def _create_error_callback(self, python_callback):
         """Create Java ErrorCallback from Python function."""
-        ErrorCallback = jpype.JClass("com.arcadedb.database.async.ErrorCallback")
-
-        @jpype.JImplements(ErrorCallback)
-        class PythonErrorCallback:
-            @jpype.JOverride
-            def call(self, exception):
-                if python_callback:
-                    python_callback(exception)
-
-        return PythonErrorCallback()
+        return _proxy_class("error", _build_error_proxy)(python_callback)
 
     def _create_result_callback(self, python_callback, error_callback=None):
         """Create Java AsyncResultsetCallback from Python functions."""
-        AsyncResultsetCallback = jpype.JClass(
-            "com.arcadedb.database.async.AsyncResultsetCallback"
+        return _proxy_class("result", _build_result_proxy)(
+            python_callback, error_callback
         )
-
-        @jpype.JImplements(AsyncResultsetCallback)
-        class PythonResultCallback:
-            @jpype.JOverride
-            def onComplete(self, resultset):
-                if not python_callback:
-                    return
-                from .results import Result
-
-                while resultset.hasNext():
-                    python_callback(Result(resultset.next()))
-
-            @jpype.JOverride
-            def onError(self, exception):
-                if error_callback:
-                    error_callback(exception)
-
-        return PythonResultCallback()
 
     def _create_document_callback(self, python_callback):
-        DocumentCallback = jpype.JClass("com.arcadedb.database.DocumentCallback")
-
-        @jpype.JImplements(DocumentCallback)
-        class PythonDocumentCallback:
-            @jpype.JOverride
-            def onRecord(self, record):
-                if python_callback is None:
-                    return True
-                result = python_callback(record)
-                return True if result is None else bool(result)
-
-        return PythonDocumentCallback()
+        return _proxy_class("document", _build_document_proxy)(python_callback)
 
     def _create_error_record_callback(self, python_callback):
-        ErrorRecordCallback = jpype.JClass("com.arcadedb.engine.ErrorRecordCallback")
-
-        @jpype.JImplements(ErrorRecordCallback)
-        class PythonErrorRecordCallback:
-            @jpype.JOverride
-            def onErrorLoading(self, rid, exception):
-                if python_callback is None:
-                    return True
-                result = python_callback(rid, exception)
-                return True if result is None else bool(result)
-
-        return PythonErrorRecordCallback()
+        return _proxy_class("error_record", _build_error_record_proxy)(python_callback)
 
     def _create_transaction_scope(self, python_callback):
-        TransactionScope = jpype.JClass(
-            "com.arcadedb.database.BasicDatabase$TransactionScope"
+        return _proxy_class("transaction_scope", _build_transaction_scope_proxy)(
+            python_callback
         )
-
-        @jpype.JImplements(TransactionScope)
-        class PythonTransactionScope:
-            @jpype.JOverride
-            def execute(self):
-                python_callback()
-
-        return PythonTransactionScope()
 
     def _unwrap_record(self, record):
         java_document = getattr(record, "_java_document", None)

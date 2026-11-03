@@ -111,6 +111,7 @@ NATIVE_NOT_APPLICABLE = {
     "test_query_vector_params_jvm.py": "the java.util objects the JVM build's parameter conversion builds",
     "test_insert_many_gc_pause.py": "the cyclic collector pause is the JVM build's (the native insert_many allocates nothing the collector tracks)",
     "test_graph_batch_tagged_shapes.py": "the JVM wheel's graph batch bulk path (bridge VertexBatcher and EdgeBatcher, the property-matrix fallback)",
+    "test_async_proxy_cache.py": "the JPype proxy classes of the JVM build's async executor",
 }
 if BACKEND == "native" and not os.environ.get("NATIVE_PARITY_ALL"):
     collect_ignore.extend(NATIVE_NOT_APPLICABLE)
