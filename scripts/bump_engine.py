@@ -36,17 +36,17 @@ import argparse
 import importlib.util
 import re
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 SCRIPTS = Path(__file__).resolve().parent
 PACKAGES = ("arcadedb-jvm", "arcadedb")
 OWN_REMOTE = "https://github.com/ArcadeData/arcadedb-python.git"
 
-WORKFLOW = Path(".github/workflows/test-native.yml")
-POM = Path("native/pom.xml")
-BUILD_IMAGE = Path("native/scripts/build-image.sh")
-BUILD_WHEEL = Path("native/wheel/build_wheel.py")
-NOTICES = Path("native/wheel/THIRD_PARTY_NOTICES.md")
+WORKFLOW = PurePosixPath(".github/workflows/test-native.yml")
+POM = PurePosixPath("native/pom.xml")
+BUILD_IMAGE = PurePosixPath("native/scripts/build-image.sh")
+BUILD_WHEEL = PurePosixPath("native/wheel/build_wheel.py")
+NOTICES = PurePosixPath("native/wheel/THIRD_PARTY_NOTICES.md")
 
 # (file, label, regex with one group around the value). One match each, exactly.
 PINS = (

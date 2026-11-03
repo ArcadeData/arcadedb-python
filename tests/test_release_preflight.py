@@ -9,7 +9,10 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
+import shutil
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -30,6 +33,11 @@ def _load():
 rp = _load()
 REAL_RUN = rp.run
 V = "99.1.1"
+# Check (f) runs the bash code of the workflow steps; on Windows the preflight reports a SKIP instead (see the last two tests).
+needs_bash = pytest.mark.skipif(
+    sys.platform == "win32" or shutil.which("bash") is None,
+    reason="runs the bash step code of the workflows: needs a POSIX shell (Linux, macOS)",
+)
 JOBS_OK = {
     "jobs": [
         {"name": "build", "conclusion": "success"},
@@ -337,6 +345,7 @@ def test_e_gh_error_fails_closed(net):
 
 # (f)
 @pytest.mark.parametrize("version", [V, V + ".post1", V + ".dev0"])
+@needs_bash
 def test_f_real_workflows_derive_the_tag(net, version):
     results = [r for r in _checks(version) if r.check.startswith("(f)")]
     assert len(results) == 3 and all(r.status == "PASS" for r in results), results
@@ -354,6 +363,7 @@ def test_f_extract_step_run_finds_the_real_steps():
     assert rp.extract_step_run(text, "No such step") is None
 
 
+@needs_bash
 def test_f_missing_step_fails(net, tmp_path):
     for rel in (
         ".github/workflows/release-jvm.yml",
@@ -373,6 +383,7 @@ def test_f_missing_step_fails(net, tmp_path):
     assert "has no step" in results[0].evidence
 
 
+@needs_bash
 def test_f_wrong_derivation_fails(net, monkeypatch):
     def lying_run(cmd, env=None, cwd=None):
         if cmd[0] == "bash":
@@ -391,6 +402,7 @@ def test_f_wrong_derivation_fails(net, monkeypatch):
     assert "engine '99.0.0', expected '99.1.1'" in results[2].evidence
 
 
+@needs_bash
 def test_f_step_that_exits_nonzero_fails(net, monkeypatch):
     monkeypatch.setattr(
         rp,
@@ -406,12 +418,36 @@ def test_f_step_that_exits_nonzero_fails(net, monkeypatch):
     )
 
 
+def _as(monkeypatch, os_name):
+    # a stand-in for the os module of the script only: patching os.name itself would break pathlib on Windows
+    monkeypatch.setattr(
+        rp, "os", types.SimpleNamespace(name=os_name, environ=os.environ)
+    )
+
+
 def test_f_without_bash_is_a_skip(net, monkeypatch):
+    _as(monkeypatch, "posix")
     monkeypatch.setattr(rp.shutil, "which", lambda name: None)
     results = [r for r in _checks() if r.check.startswith("(f)")]
     assert [r.status for r in results] == ["SKIP"] and "bash not found" in results[
         0
     ].evidence
+
+
+def test_f_on_windows_is_a_skip_and_runs_no_bash(net, monkeypatch):
+    _as(monkeypatch, "nt")
+    monkeypatch.setattr(
+        rp,
+        "run",
+        lambda cmd, env=None, cwd=None: (
+            (_ for _ in ()).throw(AssertionError("bash must not run"))
+            if cmd[0] == "bash"
+            else net.run(cmd, env, cwd)
+        ),
+    )
+    results = [r for r in _checks() if r.check.startswith("(f)")]
+    assert [r.status for r in results] == ["SKIP"] and "Windows" in results[0].evidence
+    assert not _fails(_checks())
 
 
 # (g)

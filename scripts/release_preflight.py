@@ -30,7 +30,7 @@ upstream release and can lag each other: both must pass before the tag is pushed
 usage:
     release_preflight.py VERSION [--remote URL] [--repo OWNER/NAME] [--checkout DIR]
 
-Needs: network, git (for check_version.py), gh (logged in), bash (for check f).
+Needs: network, git (for check_version.py), gh (logged in), bash on Linux or macOS (check f is a SKIP on Windows).
 Tests: tests/test_release_preflight.py. Output is ASCII only.
 """
 
@@ -443,17 +443,27 @@ def _run_step(script: str, env: dict[str, str]) -> dict[str, str]:
         return pairs
 
 
+def posix_shell_unavailable() -> str | None:
+    """The reason check (f) cannot run here, or None. The workflow steps are bash code for a POSIX shell."""
+    if os.name == "nt":
+        return "Windows: the workflow step code needs a POSIX shell; run the preflight on Linux or macOS"
+    if shutil.which("bash") is None:
+        return "bash not found"
+    return None
+
+
 def check_derivation(version: str, repo_root: Path) -> list[Result]:
     cv = _load_check_version()
     parsed = cv.parse_version(version)
     engine = None if parsed.kind == "dev" else parsed.base
     final = parsed.kind != "dev"
-    if shutil.which("bash") is None:
+    unavailable = posix_shell_unavailable()
+    if unavailable:
         return [
             Result(
                 "SKIP",
                 "(f) workflow derivation of version and engine",
-                "bash not found",
+                unavailable,
             )
         ]
     workflows = repo_root / ".github" / "workflows"
