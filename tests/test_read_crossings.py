@@ -290,3 +290,55 @@ def test_lookup_by_key_errors_stay_arcadedb_errors(db):
         db.lookup_by_key("T", ["k", "v"], [1])  # more keys than values
     with pytest.raises(ArcadeDBError):
         db.lookup_by_key("T", [3], [1])  # a key name that is not a string
+
+
+# ---------------------------------------------------------------- transaction bookkeeping
+
+
+def test_transaction_stack_mark_is_one_crossing(db, log):
+    expected = (False, db.get_java_database().getNestedTransactions())
+    del log[:]
+    assert db._transaction_stack_mark() == expected
+    assert log == ["DbCalls.stackMark"]
+
+
+def test_transaction_stack_mark_matches_the_engine_stack(db):
+    java = db.get_java_database()
+    base = java.getNestedTransactions()
+    assert db._transaction_stack_mark() == (False, base)
+    db.begin()
+    inner = db._transaction_stack_mark()
+    assert inner == (True, java.getNestedTransactions())
+    db.begin()  # a nested level
+    nested = db._transaction_stack_mark()
+    assert nested == (True, java.getNestedTransactions())
+    assert nested[1] == inner[1] + 1
+    db.rollback()
+    db.rollback()
+    assert db._transaction_stack_mark() == (False, base)
+
+
+def test_transaction_stack_mark_on_a_closed_database(db):
+    db.close()
+    with pytest.raises(ArcadeDBError, match="closed"):
+        db._transaction_stack_mark()
+
+
+def test_with_transaction_is_three_crossings(db, log):
+    del log[:]
+    with db.transaction():
+        pass
+    assert log == ["DbCalls.stackMark", "db.begin", "db.commit"], log
+
+
+def test_run_in_transaction_crossings(db, log):
+    del log[:]
+    assert db.run_in_transaction(lambda: 41 + 1) == 42
+    # The mark (1), begin, the commit witness (getTransactionIfExists, then getCommitCount on the
+    # transaction object, which is not counted here) and commit: five crossings, six before.
+    assert log == [
+        "DbCalls.stackMark",
+        "db.begin",
+        "db.getTransactionIfExists",
+        "db.commit",
+    ], log
