@@ -5,14 +5,12 @@ dict, and every write is one DSL statement (``CREATE VERTEX .. CONTENT``, ``INSE
 ``DELETE``, ``CREATE EDGE``). They subclass the JPype wrapper classes so ``isinstance`` checks keep their meaning.
 """
 
-import hashlib
-import struct
-import sys
+import copy
+import math
 from array import array
 from collections.abc import Mapping
 from datetime import date, datetime
 from decimal import Decimal
-from operator import itemgetter
 from typing import Any, Dict, List
 
 from ..exceptions import ArcadeDBError
@@ -35,164 +33,158 @@ def _java_object():
 
 _UNSAVED = "#-1:-1"
 
-_pack_d = struct.Struct("<d").pack
-_pack_q = struct.Struct("<q").pack
-_pack_n = struct.Struct("<Q").pack
-_NAN = _pack_d(float("nan"))  # every NaN hashes alike, as every NaN printed alike
-_first = itemgetter(0)
-_BIG_ENDIAN = sys.byteorder == "big"
+_MISSING = object()
+_IMMUTABLE = frozenset(
+    (str, int, float, bool, type(None), bytes, date, datetime, Decimal, RID)
+)
+_PLAIN = frozenset((str, int, bool, type(None)))
+_FLOAT_ONLY = frozenset((float,))
 
 
-def _text(tag: bytes, text: str, out: bytearray) -> None:
-    data = text.encode("utf-8", "surrogatepass")
-    out += tag
-    out += _pack_n(len(data))
-    out += data
-
-
-def _array(code: str, tag: bytes, values, out: bytearray) -> None:
-    packed = array(code, values)
-    if _BIG_ENDIAN:
-        packed.byteswap()
-    out += tag
-    out += _pack_n(len(packed))
-    out += packed.tobytes()
-
-
-def _enc_seq(value, out: bytearray) -> None:
-    """A list or tuple. A list of only floats (a vector) or only ints that fit 64 bits is packed in one call; any other list is its elements
-    one by one. Which form a list takes depends only on its values."""
-    kinds = set(map(type, value))
-    if kinds == {float}:
-        # every NaN is the same bits only when the elements came from one decoder: a vector read twice decodes alike
-        _array("d", b"V", value, out)
-        return
-    if kinds == {int}:
-        try:
-            _array("q", b"J", value, out)
-            return
-        except OverflowError:
-            pass
-    out += b"l"
-    out += _pack_n(len(value))
-    for item in value:
-        _enc(item, out)
-
-
-def _enc(value, out: bytearray) -> None:
-    """Append a canonical byte form of ``value`` to ``out``: a type tag, then the value (a length first for anything of variable size).
-
-    Equal values give equal bytes whatever order a dict or a set was built in; a tuple is a list; int, float and bool differ from each
-    other (``1``, ``1.0`` and ``True`` are three values); a float ndarray is the list of its doubles, so a vector read back as a
-    numpy float32 array equals the same vector read as a list of Python floats (float32 widens to the same double); a NumPy scalar
-    is the Python scalar. A type with no form here (a ``datetime`` subclass, say) is its type name and ``repr``.
+def _snap(value):
+    """A copy of ``value`` that nothing the caller holds can change, in the form a read of the stored value gives: a list for a list, a tuple and
+    a float or int array (``tolist()`` widens float32 to the same double a read gives), a Python scalar for a NumPy scalar, a set for a set.
+    ``set()`` writes into the record's own dict and a caller can change a nested list in place, so the values as read are copied, not kept.
     """
     t = type(value)
-    if t is str:
-        _text(b"s", value, out)
-    elif t is float:
-        out += b"d"
-        out += _NAN if value != value else _pack_d(value)
-    elif t is int:
-        if -9223372036854775808 <= value <= 9223372036854775807:
-            out += b"i"
-            out += _pack_q(value)
-        else:
-            data = value.to_bytes((value.bit_length() + 8) // 8, "little", signed=True)
-            out += b"I"
-            out += _pack_n(len(data))
-            out += data
-    elif t is bool:
-        out += b"t" if value else b"f"
-    elif value is None:
-        out += b"N"
-    elif t is list or t is tuple:
-        _enc_seq(value, out)
-    elif t is dict:
-        _enc_map(value, out)
-    elif t is datetime:
-        _text(b"z", value.isoformat(), out)
-    elif t is date:
-        _text(b"D", value.isoformat(), out)
-    elif t is Decimal:
-        _text(b"n", str(value), out)
-    elif t is RID:
-        _text(b"R", value.text, out)
-    elif t is bytes:
-        out += b"b"
-        out += _pack_n(len(value))
-        out += value
-    elif isinstance(value, Mapping):
-        _enc_map(value, out)
-    elif isinstance(value, (list, tuple)):
-        _enc_seq(value, out)
-    elif isinstance(value, (set, frozenset)):
-        parts = []
-        for item in value:
-            buf = bytearray()
-            _enc(item, buf)
-            parts.append(bytes(buf))
-        parts.sort()
-        out += b"e"
-        out += _pack_n(len(parts))
-        for part in parts:
-            out += part
-    else:
-        _enc_other(value, t, out)
-
-
-def _enc_map(value, out: bytearray) -> None:
-    out += b"m"
-    out += _pack_n(len(value))
-    if all(type(k) is str for k in value):
-        for k, v in sorted(value.items(), key=_first):
-            _text(b"s", k, out)
-            _enc(v, out)
-        return
-    parts = []
-    for k, v in value.items():
-        buf = bytearray()
-        _enc(k, buf)
-        _enc(v, buf)
-        parts.append(bytes(buf))
-    parts.sort()
-    for part in parts:
-        out += part
-
-
-def _enc_other(value, t, out: bytearray) -> None:
+    if t in _IMMUTABLE:
+        return value
+    if t is list or t is tuple:
+        if set(map(type, value)) <= _IMMUTABLE:
+            return list(value)
+        return [_snap(item) for item in value]
+    if t is dict:
+        if set(map(type, value.values())) <= _IMMUTABLE:
+            return dict(value)
+        return {key: _snap(item) for key, item in value.items()}
     tolist = getattr(value, "tolist", None)  # a numpy array or scalar
     if tolist is not None:
-        dtype = getattr(value, "dtype", None)
-        if (
-            getattr(dtype, "kind", "") == "f"
-            and getattr(value, "ndim", 0) == 1
-            and value.size
-        ):
-            # a float vector: its doubles in one call (float32 widens to the double tolist() gives)
-            doubles = value.astype("<f8", copy=False)
-            out += b"V"
-            out += _pack_n(len(doubles))
-            out += doubles.tobytes()
-            return
         listed = tolist()
-        if type(listed) is not t:
-            _enc(listed, out)
-            return
-    _text(b"x", f"{t.__module__}.{t.__qualname__}:{value!r}", out)
+        return listed if type(listed) is not list else _snap(listed)
+    if isinstance(value, Mapping):
+        return {key: _snap(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_snap(item) for item in value]
+    if isinstance(value, (set, frozenset)):
+        return {_snap(item) for item in value}
+    return copy.deepcopy(value)
 
 
-def _fingerprint(props: Dict[str, Any]) -> bytes:
-    """A fingerprint of the values a record holds. Called only when a record is about to be changed (``modify()``, the first ``set()`` of a
-    saved record, ``save()``), never when one is read: the read path keeps the values the record already holds, and this runs on them
-    later. Two reads of one stored record decode to equal values, so equal fingerprints mean an unchanged record.
+def _same_float(a: float, b: float) -> bool:
+    if a == b:
+        return a != 0.0 or math.copysign(1.0, a) == math.copysign(
+            1.0, b
+        )  # 0.0 and -0.0 are two values
+    return a != a and b != b  # NaN is the value NaN, equal to itself
 
-    The values are encoded straight to bytes (see ``_enc``) and hashed once. Building a canonical copy of the values and printing it cost
-    about 500 us for a record with a 768-float vector, three times per ``save()``; the packed form costs a few tens of microseconds.
+
+def _same_after_commit(a, b) -> bool:
+    """Two values of different types are one value in one case: a read inside the transaction that wrote a set, or bytes, gives the object just
+    written, and a read after the commit gives what the engine stored, a list (a set's elements, bytes as signed ints). The stored row is
+    ``a`` and the baseline ``b``, so a list against a set or bytes."""
+    if type(a) is not list:
+        return False
+    if type(b) is set:
+        return (
+            len(a) == len(b) and set(a) == b and set(map(type, a)) == set(map(type, b))
+        )
+    if type(b) is bytes:
+        return a == [x - 256 if x > 127 else x for x in b]
+    return False
+
+
+def _same(a, b) -> bool:
+    """Whether the stored value ``a`` and the baseline ``b`` are one value: the same type (``1``, ``1.0`` and ``True`` are three values) and equal, a NaN equal to a NaN, ``0.0`` not
+    equal to ``-0.0``, a Decimal equal only at the same scale. Both are decoded values (a read never gives an array), so a list is compared as a
+    list; a float list, a vector, is compared in one call (its bytes when a zero is among the values).
     """
-    out = bytearray()
-    _enc(props, out)
-    return hashlib.blake2b(out, digest_size=16).digest()
+    t = type(a)
+    if t is not type(b):
+        return _same_after_commit(a, b)
+    if t is float:
+        return _same_float(a, b)
+    if t is list:
+        if len(a) != len(b):
+            return False
+        kinds = set(map(type, a))
+        if kinds != set(map(type, b)):
+            return False
+        if kinds == _FLOAT_ONLY:
+            if (
+                a == b
+            ):  # in C; equal floats of one type are one value unless a zero is among them (0.0 == -0.0)
+                return (
+                    0.0 not in a or array("d", a).tobytes() == array("d", b).tobytes()
+                )
+            return all(
+                map(_same_float, a, b)
+            )  # a NaN is not equal to itself in the list comparison
+        if len(kinds) <= 1 and kinds <= _PLAIN:
+            return a == b
+        return all(map(_same, a, b))
+    if t is dict:
+        if len(a) != len(b):
+            return False
+        for key, item in a.items():
+            other = b.get(key, _MISSING)
+            if other is _MISSING or not _same(item, other):
+                return False
+        return True
+    if t is set:
+        return a == b and set(map(type, a)) == set(map(type, b))
+    if t is Decimal:
+        return (a == b and a.as_tuple() == b.as_tuple()) or (a.is_nan() and b.is_nan())
+    if t is datetime:
+        return a == b and a.tzinfo == b.tzinfo
+    return bool(a == b)
+
+
+def _exact_value(value) -> bool:
+    """Whether the engine stores this (snapped) value so that a read gives back the same value, whatever the property's declared type allows.
+    A kind that a type can round, truncate or turn into another kind is not on the list: a float the float32 of a FLOAT or ARRAY_OF_FLOATS
+    property would round (a float is exact only when float32 holds it), a datetime (milliseconds, or seconds, by the property's precision;
+    a time zone is dropped), a set (read back as a list), bytes (read back as a list of ints), a RID.
+    """
+    t = type(value)
+    if t is str or t is bool or value is None:
+        return True
+    if t is int:
+        return -9223372036854775808 <= value <= 9223372036854775807
+    if t is float:
+        return (
+            array("f", (value,))[0] == value
+        )  # false for NaN, and for a double float32 rounds
+    if t is date:
+        return True
+    if t is Decimal:
+        return value.is_finite()
+    if t is list:
+        kinds = set(map(type, value))
+        if kinds == _FLOAT_ONLY:
+            return array("f", value).tolist() == value
+        return all(map(_exact_value, value))
+    if t is dict:
+        return all(type(key) is str for key in value) and all(
+            map(_exact_value, value.values())
+        )
+    return False
+
+
+def _stored_as_sent(new, old) -> bool:
+    """Whether a changed value (``new``, snapped) is stored exactly as sent, so that the values just written can be the next baseline without a
+    read. The engine converts a value to the declared type of its property (an int sent to a DOUBLE property reads back as 3.0, a str to a
+    DATE one as a date), and the record object does not know the declaration. What it does know is what a read gave for this property before:
+    a value of that same type is one the property holds as it is, so only a value of the type this property was last read as, with a kind that
+    is exact (``_exact_value``), counts. A new property, a ``None`` before and a list that changes its element kinds do not: they are read
+    back."""
+    if type(new) is not type(old) or old is None:
+        return False
+    if type(new) is list:
+        if not new:
+            return True
+        if not old or set(map(type, new)) != set(map(type, old)):
+            return False
+    return _exact_value(new)
 
 
 def _concurrent_modification(rid: str, type_name: str) -> ArcadeDBError:
@@ -230,10 +222,11 @@ class _Mixin:
     # text and keeps a record id in a FROM target as part of it, so a pasted id would make one cache entry per record
     _SELECT = "SELECT FROM :rid"
     _UPDATE = "UPDATE :rid MERGE :row RETURN AFTER"
+    _UPDATE_SENT = "UPDATE :rid MERGE :row"  # no read-back: used when every changed value is stored exactly as sent (_stored_as_sent)
     _DELETE = "DELETE FROM :rid"
 
     def __init__(
-        self, database, type_name, rid=None, props=None, mutable=False, token=None
+        self, database, type_name, rid=None, props=None, mutable=False, base=None
     ):
         self._java_document = _java_object()
         self._database = database
@@ -242,9 +235,10 @@ class _Mixin:
         self._rid = rid or None
         self._props: Dict[str, Any] = dict(props or {})
         self._mutable = mutable or not rid
-        # fingerprint of the values this record held as read (None: not taken yet). A read does not take it: modify(), the first set() of a
-        # saved record or save() does, from the values then held, which are the read-time snapshot. save() refuses to overwrite a changed record
-        self._token = token
+        # a copy of the values this record held as read (None: not taken yet). A read does not take it: modify(), the first set() of a saved
+        # record or save() does, from the values then held, which are the read-time values. save() refuses to overwrite a changed record.
+        # The dict is never changed in place (a save makes a new one), so the objects modify() hands it to can share it
+        self._base = base
         self._property_names_cache = None
 
     # -- reading
@@ -298,10 +292,10 @@ class _Mixin:
             raise AttributeError(
                 f"{type(self).__name__} is immutable. Call .modify() first to get a mutable version."
             )
-        if self._token is None and self._rid:
-            self._token = _fingerprint(
+        if self._base is None and self._rid:
+            self._base = _snap(
                 self._props
-            )  # a saved record's snapshot, before the first change to it
+            )  # a saved record's values as read, before the first change to it
         self._props[name] = value
         return self
 
@@ -324,10 +318,11 @@ class _Mixin:
     def _save_update(self, db) -> None:
         """UPDATE .. MERGE of a saved record, refused when the stored record is no longer the one this object was read from.
 
-        The engine keeps no record version. The values this object held as read are fingerprinted (once, at modify() or here) and compared
-        with the values stored now, in the caller's transaction; a stored record that differs raises ConcurrentModificationException and
-        nothing is written. The fingerprint then moves to the stored values after this save, so the object's own save is not another
-        transaction's change.
+        The engine keeps no record version. A copy of the values this object held as read (taken once, at modify() or here) is compared by
+        value with the values stored now, in the caller's transaction; a stored record that differs raises ConcurrentModificationException and
+        nothing is written. The copy then becomes the values this save wrote, so the object's own save is not another transaction's change:
+        when every changed value is one the engine stores exactly as sent (``_stored_as_sent``) the statement returns no row and the values
+        sent are the new copy; otherwise the statement returns the stored row (RETURN AFTER) and that row is.
 
         Like every write (and like the JVM build), it needs an active transaction while auto-transaction is off, the engine default:
         outside one it raises ArcadeDBError ("Transaction not begun") before it reads or writes anything. This method opens no
@@ -337,16 +332,38 @@ class _Mixin:
                 "Failed to save record: com.arcadedb.exception.TransactionException: Transaction not begun "
                 "(wrap the write in `with db.transaction():` or call begin() first)"
             )
-        token = self._token
-        if token is None:
-            token = self._token = _fingerprint(self._props)
+        base = self._base
+        if base is None:
+            base = self._base = _snap(self._props)
         stored = db.query("sql", self._SELECT, {"rid": RID(self._rid)}).first()
-        if stored is not None and _fingerprint(stored._props) != token:
+        if stored is not None and not _same(stored._props, base):
             raise _concurrent_modification(self._rid, self._type)
-        after = db.command(
-            "sql", self._UPDATE, {"rid": RID(self._rid), "row": self._props}
-        ).first()
-        self._token = _fingerprint(after._props) if after is not None else None
+        sent = dict(base)
+        exact = True
+        for name, value in self._props.items():
+            old = base.get(name, _MISSING)
+            if old is not _MISSING and _same(value, old):
+                continue  # as read: the copy of it stays
+            value = _snap(value)
+            if old is not _MISSING and _same(value, old):
+                continue  # a tuple or an array of what was read
+            sent[name] = value
+            if exact and (old is _MISSING or not _stored_as_sent(value, old)):
+                exact = False
+        from .extras import veto_count
+
+        vetoes = veto_count()
+        params = {"rid": RID(self._rid), "row": self._props}
+        if exact:
+            row = db.command("sql", self._UPDATE_SENT, params).first()
+            if row is not None and row.get("count") and veto_count() == vetoes:
+                self._base = sent
+        else:
+            after = db.command("sql", self._UPDATE, params).first()
+            if (
+                after is not None
+            ):  # a veto or a record that is gone gives no row: nothing was written, the copy stays
+                self._base = after._props
 
     def _adopt(self, row) -> None:
         if row is None or not row.get_rid():
@@ -355,7 +372,7 @@ class _Mixin:
             )
         self._rid = row.get_rid()
         self._props = row.to_dict()
-        self._token = None  # the stored values are the ones now held: fingerprinted when the first change or the next save needs it
+        self._base = None  # the stored values are the ones now held: copied when the first change or the next save needs it
 
     def delete(self):
         if self._rid is None:
@@ -364,17 +381,17 @@ class _Mixin:
 
     def modify(self):
         self._check_open()
-        if self._rid and self._token is None:
-            self._token = _fingerprint(
+        if self._rid and self._base is None:
+            self._base = _snap(
                 self._props
-            )  # the values held now are the ones read: cached here, used by save()
+            )  # the values held now are the ones read: copied here, used by save()
         return type(self)(
             self._db,
             self._type,
             self._rid,
             self._props,
             mutable=True,
-            token=self._token,
+            base=self._base,
         )
 
     def __repr__(self) -> str:
