@@ -281,7 +281,8 @@ def test_vertices_only_the_chunk_with_the_bad_value_leaves_the_bulk_path(
         got = db.query("sql", "SELECT FROM Bulk ORDER BY id").to_list()
         assert [r["id"] for r in got] == list(range(8))
         assert got[0]["k"] == ["s0", "z"] and got[0]["d"] == {"x": 0}
-        assert math.isnan(got[4]["k"][0]) and got[7]["d"] == {"x": 7}
+        assert got[4]["k"][0] == "x" and math.isnan(got[4]["k"][1])
+        assert got[5]["k"] == ["s5", "z"] and got[7]["d"] == {"x": 7}
 
 
 def test_vertices_a_ragged_list_in_a_declared_vector_property_keeps_the_old_path(
