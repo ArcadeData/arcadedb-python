@@ -57,6 +57,8 @@ if BACKEND != "native":
     collect_ignore.append("test_native_async_callbacks.py")
     # the short call path of a point read (codec.encode_params, lib.exec_query, first()), observed on the native library
     collect_ignore.append("test_native_point_read.py")
+    # to_json_list walks the rows with codec.json_native only when a reply restored a tagged value (#219), observed on the native library
+    collect_ignore.append("test_native_json_list.py")
     # the vector provider the native glue picks by default (ARCADEDB_VECTOR_PROVIDER, #153), observed on the native library
     collect_ignore.append("test_native_vector_provider.py")
     # crossing counts of the transaction entry points (lib.call is the native library's ctypes door)

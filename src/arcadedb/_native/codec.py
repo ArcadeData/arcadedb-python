@@ -383,7 +383,36 @@ def loads(text: str, floats=None):
     return json.loads(text, object_hook=hook)
 
 
-# --- JSON-native form of a row (ResultSet.to_json_list): DATE/DATETIME as epoch millis, DECIMAL as float.
+def loads_tagged(text: str, floats=None):
+    """:func:`loads` that also says whether a tagged value was restored: ``(value, restored)``.
+
+    ``restored`` is False for a reply without the escaped tag, and for one whose only tags are ``["B", offset, count]``
+    (they decode to plain float lists). Then every value is a ``json.loads`` type and :func:`json_native` returns it
+    unchanged, which is what lets ``to_json_list`` skip its walk. The decoded value is the one :func:`loads` returns.
+    """
+    if _TAG_ESCAPED not in text:
+        return json.loads(text), False
+    restored = False
+
+    def hook(obj):
+        nonlocal restored
+        tagged = obj.get(TAG)
+        if tagged is None or len(obj) != 1 or type(tagged) is not list:
+            return obj
+        size = len(tagged)
+        if size == 3 and floats is not None and tagged[0] == "B":
+            return floats[tagged[1] : tagged[1] + tagged[2]].tolist()
+        if size == 2 and tagged[0] in _SIMPLE:
+            restored = True
+            return _SIMPLE[tagged[0]](tagged[1])
+        return obj
+
+    value = json.loads(text, object_hook=hook)
+    return value, restored
+
+
+# --- JSON-native form of a row (ResultSet.to_json_list): DATE/DATETIME as epoch millis, DECIMAL as float, an RID as its text
+# (``"#10:5"``), sets as lists, and a map key that is not a string as the string the JVM build's JSON object writes.
 
 
 def _epoch_millis(delta):
@@ -395,7 +424,22 @@ def _epoch_millis(delta):
     return (delta.days * 86400 + delta.seconds) * 1000 + delta.microseconds // 1000
 
 
+def _json_key(key):
+    """The text of a map key that is not a string, as the JVM build's JSON object has it (``String.valueOf``)."""
+    if type(key) is str:
+        return key
+    if isinstance(key, RID):
+        return key.text
+    if key is None:
+        return "null"
+    if isinstance(key, bool):
+        return "true" if key else "false"
+    return str(key)
+
+
 def json_native(value):
+    if isinstance(value, RID):
+        return value.text
     if isinstance(value, datetime):
         return _epoch_millis(
             value - _EPOCH_AWARE if value.tzinfo is not None else value - _EPOCH_NAIVE
@@ -411,5 +455,8 @@ def json_native(value):
     if isinstance(value, list):
         return [json_native(v) for v in value]
     if isinstance(value, dict):
-        return {k: json_native(v) for k, v in value.items()}
+        return {
+            (k if type(k) is str else _json_key(k)): json_native(v)
+            for k, v in value.items()
+        }
     return value

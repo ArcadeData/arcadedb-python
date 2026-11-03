@@ -16,7 +16,7 @@ from ..type_conversion import json_bulk_dumps
 from . import interrupts, lib, needs_jvm
 from .bulk import insert_rows_columnar
 from .codec import _prep as _prep_row
-from .codec import encode_params, json_native, loads, row_default
+from .codec import encode_params, json_native, loads, loads_tagged, row_default
 
 _LAZY_COMMAND_ROWS = os.environ.get("ARCADEDB_NATIVE_LAZY_CMD", "1") != "0"
 _BINARY_REPLY = os.environ.get("ARCADEDB_NATIVE_BIN_REPLY", "1") != "0"
@@ -164,8 +164,11 @@ class NativeResult:
 class NativeResultSet:
     """Cursor over a statement's rows, fetched in batches through ``arcadedb_n_next``."""
 
-    def __init__(self, database, reply: dict):
+    def __init__(self, database, reply: dict, tagged: bool = True):
         self._database = database  # strong reference: a result keeps its database alive
+        # whether a reply of this result carried a restored tagged value (codec.loads_tagged), so a row may hold a value that is not
+        # JSON-native; to_json_list walks the rows only then. True is the safe answer for a caller that does not know
+        self._tagged = tagged
         self._rs = reply["rs"]
         self._buf = deque(zip(reply["rows"], reply["meta"]))
         self._more = not reply["drained"]
@@ -182,6 +185,7 @@ class NativeResultSet:
         self._database = database
         self._rs = rs_id
         self._buf = deque()
+        self._tagged = False
         self._more = rs_id > 0
         self._closed = False
         self._exhausted = False
@@ -218,13 +222,17 @@ class NativeResultSet:
             return False
         try:
             if lib.NEXT_BIN and _BINARY_REPLY:
-                reply = loads(
+                reply, tagged = loads_tagged(
                     *lib.call_bin("arcadedb_n_next_bin", self._rs, _NEXT_BATCH)
                 )
             else:
-                reply = loads(lib.call("arcadedb_n_next", self._rs, _NEXT_BATCH))
+                reply, tagged = loads_tagged(
+                    lib.call("arcadedb_n_next", self._rs, _NEXT_BATCH)
+                )
         except ArcadeDBError:
             raise
+        if tagged:
+            self._tagged = True
         if not reply.get("ok"):
             self._more = False
             self._closed = True
@@ -293,7 +301,11 @@ class NativeResultSet:
     def to_json_list(self, batch_size: int = 10_000) -> List[Dict[str, Any]]:
         if int(batch_size) < 1:
             raise ValueError("batch_size must be at least 1")
-        return [json_native(row) for row in self._drain_dicts()]
+        rows = self._drain_dicts()
+        if not self._tagged:
+            # no reply of this result restored a tagged value: every value is a json.loads type, which json_native returns as it is
+            return rows
+        return [json_native(row) for row in rows]
 
     def iter_json_batches(self, batch_size: int = 10_000, **kwargs):
         if int(batch_size) < 1:
@@ -561,10 +573,10 @@ class NativeDatabase:
                 lib.b(encode_params(args)),
                 _FIRST_BATCH,
             )
-        reply = loads(raw, floats)
+        reply, tagged = loads_tagged(raw, floats)
         if not reply.get("ok"):
             raise _error(prefix, reply)
-        return NativeResultSet(self, reply)
+        return NativeResultSet(self, reply, tagged)
 
     def query(self, language: str, command: str, *args) -> NativeResultSet:
         """Run a read statement. Parameters bind as on the JPype path (``?`` positional, ``:name`` from one dict)."""
