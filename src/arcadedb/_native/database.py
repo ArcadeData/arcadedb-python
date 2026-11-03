@@ -65,6 +65,14 @@ def _call(prefix: str, name: str, *args) -> dict:
     return reply
 
 
+# Every successful ``arcadedb_n_tx`` reply is ``{"ok":true,"active":<bool>,"depth":<n>,"commits":<n>}`` (``ArcadeNative.txState``). A caller
+# that reads none of the state (begin, commit, rollback), or only ``active``, tells success and that bool from the text it already holds
+# instead of decoding a JSON object. An error reply is ``{"ok":false,...}``: it fails the prefix test and is decoded, as before.
+_TX_OK = '{"ok":true,'
+_TX_ACTIVE = '{"ok":true,"active":true,'
+_TX_IDLE = '{"ok":true,"active":false,'
+
+
 class NativeResult:
     """One row. Values are already Python types (datetime, Decimal, lists, dicts, RID text)."""
 
@@ -576,24 +584,36 @@ class NativeDatabase:
 
     # -- transactions
 
-    def _tx(self, op: int, prefix: str) -> dict:
-        self._check_not_closed()
+    def _tx_text(self, op: int, prefix: str) -> str:
+        """One ``arcadedb_n_tx`` crossing: the reply text of a success (not decoded), an ArcadeDBError for a failure."""
+        if self._closed:
+            raise ArcadeDBError("Database is closed")
         if (op == 1 or op == 2) and lib.CLOSE_BATCH:
             lib.flush_closes()
-        return _call(prefix, "arcadedb_n_tx", self._h, op)
+        text = lib.call("arcadedb_n_tx", self._h, op)
+        if text.startswith(_TX_OK):
+            return text
+        reply = json.loads(text)
+        if not reply.get("ok"):
+            raise _error(prefix, reply)
+        return text
+
+    def _tx(self, op: int, prefix: str) -> dict:
+        """The decoded state reply: for a caller that reads ``depth`` or ``commits``."""
+        return json.loads(self._tx_text(op, prefix))
 
     def begin(self):
-        self._begin_state()
+        self._tx_text(0, "Failed to begin transaction")
 
     def _begin_state(self) -> dict:
         """begin(), and the state right after it: the reply of ``arcadedb_n_tx`` carries ``active``, ``depth`` and ``commits``."""
         return self._tx(0, "Failed to begin transaction")
 
     def commit(self):
-        self._tx(1, "Failed to commit transaction")
+        self._tx_text(1, "Failed to commit transaction")
 
     def rollback(self):
-        self._rollback_state()
+        self._tx_text(2, "Failed to rollback transaction")
 
     def _rollback_state(self) -> dict:
         """rollback(), and the state right after it (the reply carries it, as begin's does): the unwind reads it instead of asking."""
@@ -603,7 +623,12 @@ class NativeDatabase:
         return TransactionContext(self)
 
     def is_transaction_active(self) -> bool:
-        return self._tx(3, "Failed to check transaction status")["active"]
+        text = self._tx_text(3, "Failed to check transaction status")
+        if text.startswith(_TX_ACTIVE):
+            return True
+        if text.startswith(_TX_IDLE):
+            return False
+        return json.loads(text)["active"]
 
     def _transaction_stack_mark(self):
         state = self._tx(3, "Failed to read the transaction state")

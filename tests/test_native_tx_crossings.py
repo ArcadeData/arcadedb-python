@@ -11,8 +11,11 @@ Needs the native library, so conftest.py does not collect this file on the JPype
 scripts/check_test_skips.py); it runs in the native parity run.
 """
 
-import arcadedb as arcadedb
+import json
+
 import pytest
+
+import arcadedb as arcadedb
 from arcadedb import ArcadeDBError
 from arcadedb._native import lib
 
@@ -188,3 +191,95 @@ def test_begin_commit_rollback_return_nothing(db):
     assert db.rollback() is None
     assert db.begin() is None
     assert db.commit() is None
+
+
+# -- decodes: a status the caller does not read is not a JSON decode
+
+
+class _Decodes:
+    """Counts every ``json.loads`` while it is installed (the transaction replies are decoded with it)."""
+
+    def __init__(self, monkeypatch):
+        self.n = 0
+        real = json.loads
+
+        def counting(*args, **kwargs):
+            self.n += 1
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(json, "loads", counting)
+
+
+@pytest.fixture
+def decodes(db, monkeypatch):
+    return _Decodes(monkeypatch)
+
+
+def test_begin_commit_rollback_decode_nothing(db, decodes):
+    db.begin()
+    db.commit()
+    db.begin()
+    db.rollback()
+    assert decodes.n == 0
+
+
+def test_is_transaction_active_decodes_nothing_and_reports_the_state(db, decodes):
+    assert db.is_transaction_active() is False
+    db.begin()
+    assert db.is_transaction_active() is True
+    db.commit()
+    assert db.is_transaction_active() is False
+    assert decodes.n == 0
+
+
+def test_with_transaction_decodes_only_the_mark(db, decodes):
+    # the mark reads two fields (active, depth) and is decoded; begin and commit read none
+    with db.transaction():
+        pass
+    assert decodes.n == 1
+
+
+def test_a_state_reply_still_carries_depth_and_commits(db):
+    db.begin()
+    db.begin()
+    assert db._transaction_stack_mark() == (True, 2)
+    db.rollback()
+    db.rollback()
+    assert db._transaction_stack_mark()[0] is False
+    assert db._begin_state()["depth"] == 1
+    assert db._rollback_state()["active"] is False
+
+
+def test_an_error_reply_is_decoded_into_the_same_error(db, monkeypatch):
+    reply = (
+        '{"ok":false,"error":"boom","cls":"x.Y","chain":[["x.Y","boom"]],'
+        '"retry":"need_retry","retry_ms":3}'
+    )
+    real = lib.call
+    monkeypatch.setattr(
+        lib,
+        "call",
+        lambda name, *a: reply if name == "arcadedb_n_tx" else real(name, *a),
+    )
+    for op, prefix in (
+        (db.begin, "Failed to begin transaction"),
+        (db.commit, "Failed to commit transaction"),
+        (db.rollback, "Failed to rollback transaction"),
+        (db.is_transaction_active, "Failed to check transaction status"),
+    ):
+        with pytest.raises(ArcadeDBError) as caught:
+            op()
+        assert str(caught.value) == f"{prefix}: x.Y: boom"
+        assert caught.value.native["retry"] == "need_retry"
+        assert caught.value.java_chain == [["x.Y", "boom"]]
+
+
+def test_a_differently_spaced_ok_reply_is_still_read(db, monkeypatch):
+    monkeypatch.setattr(
+        lib,
+        "call",
+        lambda name, *a: '{"ok": true, "active": true, "depth": 1, "commits": 0}',
+    )
+    assert db.is_transaction_active() is True
+    db.begin()
+    db.commit()
