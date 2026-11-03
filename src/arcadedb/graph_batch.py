@@ -17,7 +17,7 @@ from .type_conversion import (
     is_vector_candidate,
     json_bulk_dumps_tagged,
     json_bulk_scalar_ok,
-    json_bulk_tagged_ok,
+    json_bulk_shape_ok,
     split_float_vectors,
 )
 
@@ -192,9 +192,11 @@ class GraphBatch:
                 ``ARRAY_OF_FLOATS`` whose value in every row is a list or a numpy
                 array of numbers of one length crosses as one binary float32
                 matrix instead of JSON text.
-                A list, tuple, dict, date-time, date, Decimal or bytes value also
-                stays on the bulk path: it crosses inside the JSON as a tagged
-                value and is stored as the per-element path stores it.
+                A list (not one of only numbers), tuple, dict, date-time, date,
+                Decimal or bytes value also stays on the bulk path: it crosses
+                inside the JSON as a tagged value and is stored as the
+                per-element path stores it. A list of only numbers keeps the
+                property-matrix path, which crosses it as one double[].
 
         Large inputs cross in chunks of 100,000 rows on this build. On the native build (the ``arcadedb`` package) the chunk is the
         batch's ``commit_every``, 1000 unless ``graph_batch()`` got another value, and each chunk is its own transaction. Chunks that
@@ -249,12 +251,14 @@ class GraphBatch:
         string (two bulk copies instead of per-value marshaling, measured
         ~2.4x). The float vectors of ARRAY_OF_FLOATS properties cross as one
         binary matrix beside the JSON instead of as text (split_float_vectors).
-        A list, tuple, dict, date-time, date, Decimal or bytes value crosses
-        inside the JSON as the tagged value json_bulk_dumps_tagged writes and
-        VertexBatcher decodes (the stored value is what the property-matrix
-        path stores). A chunk holding a value the text cannot carry (a NaN, an
-        integer beyond 64 bits or a date-time inside a list, a subnormal) goes
-        through the property-matrix path on its own. Returns None when
+        A list (not one of only numbers), tuple, dict, date-time, date, Decimal
+        or bytes value crosses inside the JSON as the tagged value
+        json_bulk_dumps_tagged writes and VertexBatcher decodes (the stored
+        value is what the property-matrix path stores). An input whose values
+        are all scalars takes the untagged json.dumps path as before. A chunk
+        holding a value the text cannot carry (a NaN, an integer beyond 64
+        bits or a date-time inside a list, a subnormal) goes through the
+        property-matrix path on its own. Returns None when
         unavailable/unsuitable so the caller falls back to the property-matrix
         path for the whole input."""
         try:
@@ -263,6 +267,7 @@ class GraphBatch:
         except Exception:
             return None
 
+        tagged = False  # a value that needs the tagged text; False keeps the untagged code of before
         for row in rows:
             if row:
                 for key, value in row.items():
@@ -273,12 +278,17 @@ class GraphBatch:
                         return None
                     if key in declared and is_vector_candidate(value):
                         continue  # the vector split below takes it, or its chunk goes the matrix way
-                    if not json_bulk_tagged_ok(value):
-                        # a type the tagged JSON does not carry (a set, a numpy or
-                        # pandas value, any subclass: the matrix path converts
-                        # those), or a scalar JSON would change: an integer beyond
-                        # 64 bits, NaN or Infinity, a lone surrogate
-                        return None
+                    if not json_bulk_scalar_ok(value):
+                        if not json_bulk_shape_ok(value):
+                            # a type the tagged JSON does not carry (a set, a numpy
+                            # or pandas value, any subclass, a list of only numbers:
+                            # the matrix path converts those), or a scalar JSON
+                            # would change: an integer beyond 64 bits, NaN or
+                            # Infinity, a lone surrogate
+                            return None
+                        tagged = True
+
+        import json
 
         # chunked so huge ingests never materialize one giant JSON string
         rids = []
@@ -286,12 +296,17 @@ class GraphBatch:
             chunk = rows[start : start + self._BULK_CHUNK]
             split = split_float_vectors(self._java_db, type_name, chunk, declared)
             rest = split[0] if split else chunk
-            text = None
-            if not declared or self._json_bulk_ok(rest, declared):
-                try:
-                    text = json_bulk_dumps_tagged([row or {} for row in rest])
-                except (TypeError, ValueError):
-                    text = None  # a value the text cannot carry, see the docstring
+            if not tagged:
+                text = None
+                if not declared or self._json_bulk_ok(rest):
+                    text = json.dumps([row or {} for row in rest])
+            else:
+                text = None
+                if self._json_bulk_declared_ok(rest, declared):
+                    try:
+                        text = json_bulk_dumps_tagged([row or {} for row in rest])
+                    except (TypeError, ValueError):
+                        text = None  # a value the text cannot carry, see the docstring
             if text is None:
                 # a list the matrix cannot carry (ragged, a null, not numbers)
                 # is left in this chunk, or a value the text would change: the
@@ -315,7 +330,16 @@ class GraphBatch:
         return rids
 
     @staticmethod
-    def _json_bulk_ok(rows, declared):
+    def _json_bulk_ok(rows):
+        for row in rows:
+            if row:
+                for value in row.values():
+                    if not json_bulk_scalar_ok(value):
+                        return False
+        return True
+
+    @staticmethod
+    def _json_bulk_declared_ok(rows, declared):
         """False when a declared ARRAY_OF_FLOATS property still holds a list (or any non-scalar) after the vector split."""
         for row in rows:
             if row:
@@ -436,20 +460,21 @@ class GraphBatch:
                 return self
 
             rows = []
+            tagged = False  # a value that needs the tagged text; False keeps the untagged code of before
             for src, dst, p in zip(source_rids, destination_rids, properties):
                 row = {"_src": str(src), "_dst": str(dst)}
                 for key, value in (p or {}).items():
-                    if (
-                        type(key) is not str
-                        or key in ("_src", "_dst")
-                        or not json_bulk_tagged_ok(value)
-                    ):
+                    ok = type(key) is str and key not in ("_src", "_dst")
+                    if ok and not json_bulk_scalar_ok(value):
+                        ok = json_bulk_shape_ok(value)
+                        tagged = tagged or ok
+                    if not ok:
                         # a type the tagged JSON does not carry (a set, a numpy or
-                        # pandas value), or a scalar JSON would change (an integer
-                        # beyond 64 bits, NaN or Infinity, a lone surrogate), or a
-                        # property name that is not a str (JSON would write 1 as
-                        # "1"): per-edge fallback preserves types exactly and
-                        # refuses the name
+                        # pandas value, a list of only numbers), or a scalar JSON
+                        # would change (an integer beyond 64 bits, NaN or Infinity,
+                        # a lone surrogate), or a property name that is not a str
+                        # (JSON would write 1 as "1"): per-edge fallback preserves
+                        # types exactly and refuses the name
                         props_iter = properties
                         for s2, d2, p2 in zip(
                             source_rids, destination_rids, props_iter
@@ -458,6 +483,17 @@ class GraphBatch:
                         return self
                     row[key] = value
                 rows.append(row)
+
+            if not tagged:
+                import json
+
+                for start in range(0, len(rows), self._BULK_CHUNK):
+                    edge_batcher.newEdgesJson(
+                        self._java_graph_batch,
+                        edge_type,
+                        json.dumps(rows[start : start + self._BULK_CHUNK]),
+                    )
+                return self
 
             # Every chunk is written before the first one crosses, so a value the
             # text cannot carry (a NaN, an integer beyond 64 bits or a date-time

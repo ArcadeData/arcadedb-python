@@ -55,12 +55,11 @@ public final class EdgeBatcher {
       final RID dst = new RID(row.getString("_dst"));
       final Object[] props = new Object[(row.length() - 2) * 2];
       int j = 0;
-      // toMap(): nested objects and arrays as plain Map and List, see VertexBatcher
-      for (final java.util.Map.Entry<String, Object> entry : row.toMap().entrySet()) {
-        if (entry.getKey().equals("_src") || entry.getKey().equals("_dst"))
+      for (final String key : row.keySet()) {
+        if (key.equals("_src") || key.equals("_dst"))
           continue;
-        props[j++] = entry.getKey();
-        props[j++] = DocumentBatcher.untag(entry.getValue());
+        props[j++] = key;
+        props[j++] = DocumentBatcher.value(row.isNull(key) ? null : row.get(key));
       }
       if (props.length == 0)
         batch.newEdge(src, edgeType, dst);

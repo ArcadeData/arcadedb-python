@@ -19,8 +19,6 @@ import com.arcadedb.graph.GraphBatch;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
-import java.util.Map;
-
 public final class VertexBatcher {
 
   private VertexBatcher() {
@@ -45,11 +43,9 @@ public final class VertexBatcher {
       final JSONObject row = rows.getJSONObject(i);
       final Object[] flat = new Object[(row.length() + extra) * 2];
       int j = 0;
-      // toMap() turns nested objects and arrays into plain Map and List: a parsed JSONArray stored as it is reads back as a
-      // JSONArray inside the transaction that wrote it. Scalars come out as row.get(key) gives them.
-      for (final Map.Entry<String, Object> entry : row.toMap().entrySet()) {
-        flat[j++] = entry.getKey();
-        flat[j++] = DocumentBatcher.untag(entry.getValue());
+      for (final String key : row.keySet()) {
+        flat[j++] = key;
+        flat[j++] = DocumentBatcher.value(row.isNull(key) ? null : row.get(key));
       }
       for (int c = 0; c < extra; c++) {
         flat[j++] = vectorNames[c];

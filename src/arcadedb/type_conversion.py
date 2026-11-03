@@ -702,15 +702,34 @@ _BULK_TAGGED_SHAPES = frozenset(
 )
 
 
-def json_bulk_tagged_ok(value: Any) -> bool:
-    """Whether a value may be handed to json_bulk_dumps_tagged by the graph batches (the cheap, per-value gate).
+_NUMBER_TYPES = frozenset((int, float))
 
-    True for what json_bulk_scalar_ok accepts and for the exact types the tagged JSON carries: a list, tuple or dict, a date-time,
-    date, Decimal, bytes or bytearray. The deep check (a NaN, an integer beyond 64 bits or a date-time inside a list, a subnormal)
-    is json_bulk_dumps_tagged's own, which raises ValueError or TypeError so the caller sends the rows down the per-element path.
-    A subclass (pandas.Timestamp), a numpy scalar or array, a set and pandas NA stay refused: the per-element path converts those.
+
+def json_bulk_shape_ok(value: Any) -> bool:
+    """Whether a value that json_bulk_scalar_ok refused may still go through json_bulk_dumps_tagged in the graph batches (the cheap, per-value gate).
+
+    True for the exact types the tagged JSON carries: a list, tuple or dict, a date-time, date, Decimal, bytes or bytearray. The deep
+    check (a NaN, an integer beyond 64 bits or a date-time inside a list, a subnormal) is json_bulk_dumps_tagged's own, which raises
+    ValueError or TypeError so the caller sends the rows down the per-element path. False for a non-empty list or tuple of nothing but
+    int and float: the per-element path crosses it as one double[] and measured about 3.8 times faster than the text for 128 doubles
+    (step-0 probe, 2026-11-04), so it keeps that path. A subclass (pandas.Timestamp), a numpy scalar or array, a set and pandas NA stay
+    refused: the per-element path converts those.
     """
-    return type(value) in _BULK_TAGGED_SHAPES or json_bulk_scalar_ok(value)
+    kind = type(value)
+    if kind not in _BULK_TAGGED_SHAPES:
+        return False
+    if (
+        (kind is list or kind is tuple)
+        and value
+        and set(map(type, value)) <= _NUMBER_TYPES
+    ):
+        return False
+    return True
+
+
+def json_bulk_tagged_ok(value: Any) -> bool:
+    """A scalar json_bulk_scalar_ok accepts, or a shape json_bulk_shape_ok accepts."""
+    return json_bulk_scalar_ok(value) or json_bulk_shape_ok(value)
 
 
 def _json_bulk_check(value: Any) -> None:

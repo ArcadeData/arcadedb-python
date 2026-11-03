@@ -17,6 +17,7 @@ import numpy as np
 import pytest
 
 import arcadedb
+from arcadedb import graph_batch as gbm
 from arcadedb import type_conversion
 from arcadedb.graph_batch import GraphBatch
 
@@ -24,14 +25,10 @@ UTC9 = dt.timezone(dt.timedelta(hours=9))
 
 # name -> value; each is stored by the property-matrix path (convert_python_to_java), so the bulk path has a stored value to match
 VALUES = {
-    "list_floats": [0.1, 1 / 3, 2.5e-3, 1e300, -0.0, 7.0],
-    "list_floats_long": [i * 0.37 for i in range(300)],
-    "list_ints": [1, 2, 3, 2**40, -(2**63)],
     "list_strings": ["a", "b", "é中\U0001f600", ""],
     "list_mixed": [1, 2.5, "x", None, True],
     "list_nested": [[1, 2], [3.5], []],
     "list_empty": [],
-    "tuple_ints": (4, 5, 6),
     "dict_flat": {"a": 1, "b": "two", "c": 3.5, "d": None, "e": False},
     "dict_nested": {"a": [1, 2], "b": {"c": "x", "d": [0.5]}},
     "dict_empty": {},
@@ -43,6 +40,15 @@ VALUES = {
     "bytes": b"\x00\xff abc\x7f",
     "plain_int": 7,
     "plain_str": "text",
+}
+
+# lists and tuples of nothing but numbers keep main's property-matrix path (one double[] per list, about 3.8 times faster than the text)
+NUMERIC_LISTS = {
+    "list_floats": [0.1, 1 / 3, 2.5e-3, 1e300, -0.0, 7.0],
+    "list_floats_long": [i * 0.37 for i in range(300)],
+    "list_ints": [1, 2, 3, 2**40, -(2**63)],
+    "list_int_float": [1, 2.5],
+    "tuple_ints": (4, 5, 6),
 }
 
 # a declared property per value where the type matters, so the engine's conversion to the declared type is compared too
@@ -201,9 +207,10 @@ def test_edges_every_shape_is_stored_as_the_per_edge_path_stores_it(
 
 # a value the text cannot carry, or whose type the tags do not carry: the old path takes it, and stores what it always stored
 OFF_THE_BULK_PATH = {
-    "nan_in_list": [1.0, math.nan],
+    "nan_in_list": ["x", math.nan],
+    "nan_in_number_list": [1.0, math.nan],
     "inf_in_dict": {"a": math.inf},
-    "subnormal_in_list": [5e-324, 1.5],
+    "subnormal_in_list": ["x", 5e-324],
     "datetime_in_list": [dt.datetime(2026, 5, 6, 7, 8, 9)],
     "datetime_in_dict": {"when": dt.datetime(2026, 5, 6, 7, 8, 9)},
     "int_key_dict": {1: "a"},
@@ -217,7 +224,7 @@ def test_vertices_a_value_the_text_cannot_carry_keeps_the_old_path(
     temp_db_path, monkeypatch, matrix_calls, name
 ):
     value = OFF_THE_BULK_PATH[name]
-    rows = [{"id": 0, "k": [1, 2]}, {"id": 1, "k": value}, {"id": 2, "k": "x"}]
+    rows = [{"id": 0, "k": ["a", "b"]}, {"id": 1, "k": value}, {"id": 2, "k": "x"}]
     with arcadedb.create_database(temp_db_path) as db:
         _schema(db, False)
         _reference_vertices(monkeypatch, db, "Ref", rows)
@@ -233,7 +240,7 @@ def test_edges_a_value_the_text_cannot_carry_keeps_the_old_path(
     temp_db_path, edge_calls, name
 ):
     value = OFF_THE_BULK_PATH[name]
-    rows = [{"id": 0, "k": [1, 2]}, {"id": 1, "k": value}, {"id": 2, "k": "x"}]
+    rows = [{"id": 0, "k": ["a", "b"]}, {"id": 1, "k": value}, {"id": 2, "k": "x"}]
     with arcadedb.create_database(temp_db_path) as db:
         _schema(db, False)
         _edges(db, "ERef", rows, per_edge=True)
@@ -250,8 +257,8 @@ def test_edges_a_late_value_the_text_cannot_carry_buffers_each_edge_once(
 ):
     """Every chunk is written before the first crosses: a bad value in the last chunk starts the per-edge path over with nothing buffered."""
     monkeypatch.setattr(GraphBatch, "_BULK_CHUNK", 3)
-    rows = [{"id": i, "k": [i, i + 1]} for i in range(8)]
-    rows[7]["k"] = [math.nan]
+    rows = [{"id": i, "k": [f"s{i}", "z"]} for i in range(8)]
+    rows[7]["k"] = ["x", math.nan]
     with arcadedb.create_database(temp_db_path) as db:
         _schema(db, False)
         _edges(db, "EBulk", rows)
@@ -264,8 +271,8 @@ def test_vertices_only_the_chunk_with_the_bad_value_leaves_the_bulk_path(
     temp_db_path, monkeypatch, matrix_calls
 ):
     monkeypatch.setattr(GraphBatch, "_BULK_CHUNK", 3)
-    rows = [{"id": i, "k": [i, i + 1], "d": {"x": i}} for i in range(8)]
-    rows[4]["k"] = [math.nan]
+    rows = [{"id": i, "k": [f"s{i}", "z"], "d": {"x": i}} for i in range(8)]
+    rows[4]["k"] = ["x", math.nan]
     with arcadedb.create_database(temp_db_path) as db:
         _schema(db, False)
         rids = _vertices(db, "Bulk", rows)
@@ -273,7 +280,7 @@ def test_vertices_only_the_chunk_with_the_bad_value_leaves_the_bulk_path(
         assert len(matrix_calls) == 1, "only rows 3 to 5 needed the old path"
         got = db.query("sql", "SELECT FROM Bulk ORDER BY id").to_list()
         assert [r["id"] for r in got] == list(range(8))
-        assert got[0]["k"] == [0, 1] and got[0]["d"] == {"x": 0}
+        assert got[0]["k"] == ["s0", "z"] and got[0]["d"] == {"x": 0}
         assert math.isnan(got[4]["k"][0]) and got[7]["d"] == {"x": 7}
 
 
@@ -334,8 +341,14 @@ def test_vertices_a_declared_vector_property_and_a_list_property_share_a_chunk(
         (1, True),
         (1.5, True),
         ("text", True),
-        ([1, 2], True),
-        ((1, 2), True),
+        (["a", 1], True),
+        (("a", 1), True),
+        ([[1, 2]], True),
+        ([None, 1.5], True),
+        ([True, 1], True),
+        ([], True),
+        ([1, 2], False),
+        ((1, 2.5), False),
         ({"a": 1}, True),
         (dt.datetime(2026, 5, 6), True),
         (dt.date(2026, 5, 6), True),
@@ -366,6 +379,98 @@ def test_the_bulk_method_returns_none_for_a_type_the_tags_do_not_carry(temp_db_p
         with db.graph_batch(parallel_flush=False) as batch:
             assert batch._create_vertices_json_bulk("V", [{"k": {1, 2}}]) is None
             rids = batch._create_vertices_json_bulk(
-                "V", [{"k": [1, 2]}, {"k": {"a": 1}}]
+                "V", [{"k": ["a"]}, {"k": {"a": 1}}]
             )
             assert rids is not None and len(rids) == 2
+
+
+@pytest.mark.parametrize("name", list(NUMERIC_LISTS))
+def test_vertices_a_list_of_only_numbers_keeps_the_matrix_path(
+    temp_db_path, monkeypatch, matrix_calls, name
+):
+    """One double[] per list beats the text (probe 2026-11-04: 30.8 against 117.4 us per row for 128 doubles): the input takes main's path."""
+    rows = [{"id": i, "k": NUMERIC_LISTS[name]} for i in range(3)]
+    mixed = rows + [
+        {"id": 3, "k": {"a": 1}}
+    ]  # a shape that would take the text, beside it
+    with arcadedb.create_database(temp_db_path) as db:
+        _schema(db, False)
+        _reference_vertices(monkeypatch, db, "Ref", mixed)
+        matrix_calls.clear()
+        _vertices(db, "Bulk", rows)
+        assert len(matrix_calls) == 1, "a numeric list left the matrix path"
+        names = {"id", "k"}
+        assert _stored(db, "Bulk", names) == _stored(db, "Ref", names)[:3]
+        _vertices(db, "Bulk", mixed)
+        assert (
+            len(matrix_calls) == 2
+        ), "one numeric list sent the whole call down the text"
+
+
+@pytest.mark.parametrize("name", list(NUMERIC_LISTS))
+def test_edges_a_list_of_only_numbers_keeps_the_per_edge_path(
+    temp_db_path, edge_calls, name
+):
+    rows = [{"id": i, "k": NUMERIC_LISTS[name]} for i in range(3)]
+    with arcadedb.create_database(temp_db_path) as db:
+        _schema(db, False)
+        _edges(db, "ERef", rows, per_edge=True)
+        edge_calls.clear()
+        _edges(db, "EBulk", rows)
+        assert len(edge_calls) == 3
+        assert _stored(db, "EBulk", {"id", "k"}) == _stored(db, "ERef", {"id", "k"})
+
+
+@pytest.fixture
+def untagged_only(monkeypatch):
+    """Spy on what an input of scalars must not touch: the tagged writer and the shape gate (main's code has neither)."""
+    calls = {"tagged": 0, "shape": 0}
+    real_dumps, real_shape = gbm.json_bulk_dumps_tagged, gbm.json_bulk_shape_ok
+
+    def dumps(*a, **k):
+        calls["tagged"] += 1
+        return real_dumps(*a, **k)
+
+    def shape(*a, **k):
+        calls["shape"] += 1
+        return real_shape(*a, **k)
+
+    monkeypatch.setattr(gbm, "json_bulk_dumps_tagged", dumps)
+    monkeypatch.setattr(gbm, "json_bulk_shape_ok", shape)
+    return calls
+
+
+def test_vertices_an_input_of_scalars_takes_mains_code(
+    temp_db_path, matrix_calls, untagged_only
+):
+    rows = [
+        {"id": i, "p": i, "s": f"t{i}", "f": i * 0.5, "b": i % 2 == 0, "n": None}
+        for i in range(50)
+    ]
+    with arcadedb.create_database(temp_db_path) as db:
+        _schema(db, False)
+        assert len(_vertices(db, "Bulk", rows)) == 50
+        assert matrix_calls == []
+        assert untagged_only == {"tagged": 0, "shape": 0}
+
+
+def test_edges_an_input_of_scalars_takes_mains_code(
+    temp_db_path, edge_calls, untagged_only
+):
+    rows = [{"id": i, "p": i, "s": f"t{i}"} for i in range(50)]
+    with arcadedb.create_database(temp_db_path) as db:
+        _schema(db, False)
+        _edges(db, "EBulk", rows)
+        assert edge_calls == []
+        assert untagged_only == {"tagged": 0, "shape": 0}
+
+
+def test_vertices_a_shape_takes_the_tagged_writer(
+    temp_db_path, matrix_calls, untagged_only
+):
+    rows = [{"id": i, "p": ["a", i]} for i in range(5)]
+    with arcadedb.create_database(temp_db_path) as db:
+        _schema(db, False)
+        _vertices(db, "Bulk", rows)
+        assert matrix_calls == []
+        assert untagged_only["tagged"] == 1 and untagged_only["shape"] == 5

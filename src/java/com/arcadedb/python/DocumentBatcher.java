@@ -294,6 +294,19 @@ public final class DocumentBatcher {
    * A tagged value from the Python side, {"\u0001": [kind, payload]}: T LocalDateTime (UTC wall clock), D LocalDate, n BigDecimal,
    * b byte[] (base64): the objects the per-row path (type_conversion.convert_python_to_java) builds. Anything else is returned unchanged.
    */
+  /**
+   * One value of a parsed JSON row, as the engine stores it: a nested object or array becomes a plain Map or List (a parsed
+   * JSONArray stored as it is reads back as a JSONArray inside the transaction that wrote it) and a tagged value is decoded. A
+   * scalar comes back as it is, after two type tests: the graph batches call this per value, so it adds nothing to a scalar row.
+   */
+  static Object value(final Object v) {
+    if (v instanceof JSONObject o)
+      return untag(o.toMap());
+    if (v instanceof JSONArray a)
+      return a.toList();
+    return v;
+  }
+
   static Object untag(final Object v) {
     if (v instanceof Map<?, ?> m && m.size() == 1 && m.get("\u0001") instanceof java.util.List<?> t && t.size() == 2
         && t.get(0) instanceof String kind && t.get(1) instanceof String s) {
