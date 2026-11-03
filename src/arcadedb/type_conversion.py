@@ -969,9 +969,30 @@ def declared_float_vectors(java_db, type_name):
     return [str(name) for name in vectors.declared(java_db, type_name)]
 
 
+# the JPype types of float[] and double[], resolved once the JVM runs
+_JAVA_VECTOR_TYPES = None
+
+
+def _java_vector_types():
+    """The JPype classes of ``float[]`` and ``double[]`` (what ``to_java_float_array`` returns on the JVM build), empty before the JVM starts."""
+    global _JAVA_VECTOR_TYPES
+    types = _JAVA_VECTOR_TYPES
+    if types is None:
+        if not jpype.isJVMStarted():
+            return ()
+        types = _JAVA_VECTOR_TYPES = frozenset(
+            (jpype.JArray(jpype.JFloat), jpype.JArray(jpype.JDouble))
+        )
+    return types
+
+
 def is_vector_candidate(value):
-    """A value split_float_vectors may take out of the JSON: a list or a numpy array."""
-    return type(value) is list or (_np is not None and isinstance(value, _np.ndarray))
+    """A value split_float_vectors may take out of the JSON: a list, a numpy array, or a Java ``float[]`` or ``double[]`` (JPype buffer protocol, read by numpy as float32 and float64)."""
+    return (
+        type(value) is list
+        or (_np is not None and isinstance(value, _np.ndarray))
+        or type(value) in _java_vector_types()
+    )
 
 
 def split_float_vectors(java_db, type_name, rows, declared=None):
@@ -1008,6 +1029,10 @@ def split_float_vectors(java_db, type_name, rows, declared=None):
             continue
         if not is_vector_candidate(column[0]):
             continue
+        if type(column[0]) in _java_vector_types() and not all(
+            map(is_vector_candidate, column)
+        ):
+            continue  # a Java array first, then a null, a scalar or an array of another kind: numpy would not refuse it
         try:
             array = _np.array(column)
         except (ValueError, TypeError):
