@@ -403,7 +403,11 @@ _INT64_MAX = 2**63 - 1
             True,
             None,
         ),  # int() truncates float timestamps on the text path
-        (np.ones(3, dtype=np.longdouble), False, None),
+        (
+            np.ones(3, dtype=np.longdouble),
+            False,
+            np.float64 if np.dtype(np.longdouble) == np.dtype(np.float64) else None,
+        ),  # longdouble is float64 on Windows (MSVC) and Apple arm64, 80-bit extended on x86-64 Linux
         (np.array([1, 2], dtype="datetime64[ns]"), True, np.int64),
         (np.array([1, 2], dtype="datetime64[ns]"), False, None),
         (
