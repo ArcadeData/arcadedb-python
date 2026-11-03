@@ -92,6 +92,25 @@ def _typed_hook(side):
     return hook
 
 
+def _loads_typed_row(java_row):
+    """The dict of one row or record that ``ReaderCalls.rowJson`` / ``documentJson`` wrote.
+
+    ``java_row`` is ``{String json, Object[] side}``. The side array is read only
+    when the text carries the tag character (the writer escapes it as
+    ``\\u0001``): a row of plain values costs one array read and one string read,
+    and the C ``json`` decoder, and no other JPype call.
+    """
+    text = str(java_row[0])
+    if "\\u0001" not in text:
+        return json.loads(text)
+    return json.loads(text, object_hook=_typed_hook(java_row[1]))
+
+
+def _loads_names(java_text):
+    """The property names ``ReaderCalls.rowNames`` / ``documentNames`` wrote, as a tuple."""
+    return tuple(json.loads(str(java_text)))
+
+
 def _bridge_class(name):
     """Cached bridge-class lookup; None (with one warning) if unavailable.
 
@@ -374,7 +393,15 @@ class ResultSet:
     def __next__(self) -> "Result":
         if self._readable():
             try:
-                if self._java_result_set.hasNext():
+                reader = _bridge_class("ReaderCalls")
+                if reader is not None:
+                    # hasNext() and next() in ONE crossing: the row is still read
+                    # when it is asked for, and the end is the same null as
+                    # hasNext() false
+                    java_row = reader.nextOrNull(self._java_result_set)
+                    if java_row is not None:
+                        return Result(java_row, self._database)
+                elif self._java_result_set.hasNext():
                     return Result(self._java_result_set.next(), self._database)
             except JException as exc:
                 raise _read_error(exc) from exc
@@ -1260,9 +1287,16 @@ class Result:
     def _property_names_tuple(self) -> Tuple[str, ...]:
         self._check_open()
         if self._property_names_cache is None:
-            self._property_names_cache = tuple(
-                str(name) for name in self._java_result.getPropertyNames()
-            )
+            reader = _bridge_class("ReaderCalls")
+            if reader is not None:
+                # the names as one JSON text instead of one JPype read per name
+                self._property_names_cache = _loads_names(
+                    reader.rowNames(self._java_result)
+                )
+            else:
+                self._property_names_cache = tuple(
+                    str(name) for name in self._java_result.getPropertyNames()
+                )
         return self._property_names_cache
 
     def has_property(self, name: str) -> bool:
@@ -1428,10 +1462,21 @@ class Result:
         """
         self._check_open()
         if convert_types:
-            # One crossing for the whole row (names and values) instead of one
-            # per property: a JPype call costs microseconds of dispatch, so a
-            # small row was dominated by the number of calls. The values are
-            # the engine's own objects, converted exactly as below.
+            # One crossing for the whole row, and no JPype read of a name or a
+            # value: Java writes the row as the typed JSON of TypedRows (the
+            # transport of to_list()), so a row of plain values costs the call,
+            # one array read and one string read. The values have the types
+            # convert_java_to_python gives them.
+            reader = _bridge_class("ReaderCalls")
+            if reader is not None:
+                row = _loads_typed_row(reader.rowJson(self._java_result))
+                if self._property_names_cache is None:
+                    self._property_names_cache = tuple(row)
+                return row
+            # Without ReaderCalls: one crossing for the whole row (names and
+            # values) instead of one per property, then a JPype read per name and
+            # value. The values are the engine's own objects, converted exactly
+            # as below.
             row_access = _bridge_class("RowAccess")
             if row_access is not None:
                 pair = row_access.namesAndValues(self._java_result)

@@ -41,6 +41,17 @@ def _graph_calls():
     return _GRAPH_CALLS or None
 
 
+def _reader_calls():
+    """``(ReaderCalls, results)``: the ``com.arcadedb.python.ReaderCalls`` bridge class
+    (None, with the bridge's usual one warning, when the jar is missing, which sends the
+    caller down the plain path) and the ``results`` module that holds the readers of its
+    text. The class is looked up on every call, as ``results._bridge_class`` caches it:
+    the JVM may not have started yet, and an answer given then must not stick."""
+    from . import results
+
+    return results._bridge_class("ReaderCalls"), results
+
+
 class Document:
     """Wrapper for ArcadeDB Document.
 
@@ -66,9 +77,16 @@ class Document:
     def _property_names_tuple(self) -> Tuple[str, ...]:
         self._check_open()
         if self._property_names_cache is None:
-            self._property_names_cache = tuple(
-                str(name) for name in self._java_document.getPropertyNames()
-            )
+            reader, results = _reader_calls()
+            if reader is not None:
+                # the names as one JSON text instead of one JPype read per name
+                self._property_names_cache = results._loads_names(
+                    reader.documentNames(self._java_document)
+                )
+            else:
+                self._property_names_cache = tuple(
+                    str(name) for name in self._java_document.getPropertyNames()
+                )
         return self._property_names_cache
 
     @staticmethod
@@ -179,6 +197,18 @@ class Document:
 
     def to_dict(self, convert_types: bool = True) -> Dict[str, Any]:
         """Convert to dictionary."""
+        if convert_types:
+            reader, results = _reader_calls()
+            if reader is not None:
+                # One crossing for the whole record, and no JPype read of a name
+                # or a value: Java writes it as the typed JSON of TypedRows, the
+                # values keep the types convert_java_to_python gives them.
+                self._check_open()
+                row = results._loads_typed_row(reader.documentJson(self._java_document))
+                # the names of this read, so a property set since an earlier
+                # read is not missing from get_property_names()
+                self._property_names_cache = tuple(row)
+                return row
         property_names = self._property_names_tuple()  # checks the database
         if not convert_types:
             return {name: self._java_document.get(name) for name in property_names}
