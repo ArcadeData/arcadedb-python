@@ -63,6 +63,8 @@ if BACKEND != "native":
     collect_ignore.append("test_native_tx_crossings.py")
     # counts the statement texts the native backend hands to the engine (the JPype backend has no such layer)
     collect_ignore.append("test_native_statement_texts.py")
+    # the cyclic collector pause of the native insert_many, observed on the native library (the JVM build's is test_insert_many_gc_pause.py)
+    collect_ignore.append("test_native_insert_many_gc_pause.py")
 if not os.path.isfile(
     os.path.join(os.path.dirname(os.path.dirname(__file__)), "docs", "index.md")
 ):

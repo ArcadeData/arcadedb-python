@@ -1,5 +1,7 @@
 """NativeDatabase, NativeDatabaseFactory, NativeResultSet and NativeResult: the DSL-first core over libarcadedb."""
 
+import functools
+import gc
 import itertools
 import json
 import os
@@ -63,6 +65,32 @@ def _call(prefix: str, name: str, *args) -> dict:
     if not reply.get("ok"):
         raise _error(prefix, reply)
     return reply
+
+
+def _pause_gc_for_sized_rows(insert_many):
+    """Wrap ``NativeDatabase.insert_many`` so that Python's cyclic garbage collector is paused for the call when ``rows`` is a list or a tuple.
+
+    The previous state is put back in ``finally``: the collector comes back on only when it was on at entry, also after an exception. A
+    lazy input (a generator or any other iterator) is not paused, because user code that runs between the chunks can create reference
+    cycles that only the collector frees. ``gc.disable()`` is process wide, so other threads do not collect automatically while a call
+    with a sized input runs, and with overlapping calls the pause does not last for the whole of each call (it is never left off).
+    """
+
+    @functools.wraps(insert_many)
+    def wrapper(self, *args, **kwargs):
+        rows = args[1] if len(args) > 1 else kwargs.get("rows")
+        if not isinstance(rows, (list, tuple)):
+            return insert_many(self, *args, **kwargs)
+        self._check_not_closed()
+        gc_was_enabled = gc.isenabled()
+        gc.disable()
+        try:
+            return insert_many(self, *args, **kwargs)
+        finally:
+            if gc_was_enabled:
+                gc.enable()
+
+    return wrapper
 
 
 class NativeResult:
@@ -744,6 +772,7 @@ class NativeDatabase:
         row = NativeResultSet(self, reply).first()
         return row.get_element() if row is not None else None
 
+    @_pause_gc_for_sized_rows
     def insert_many(
         self,
         type_name: str,
