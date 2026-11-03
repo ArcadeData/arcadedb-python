@@ -51,6 +51,8 @@ The in-flight transaction is the data that each young garbage collection must co
 
 Rows that are already committed stay committed when a later chunk fails. Only the transaction that was open is rolled back. With a smaller commit size, a failed load keeps its rows up to the last commit, and that commit is now at most 1000 rows behind the failure instead of 10,000. If you need all-or-nothing, open your own transaction, or pass `commit_every=0`.
 
+Because the two packages have different defaults, the same program can keep different rows after the same failure: each keeps its rows up to its own last commit. If the outcome of a failed load must not depend on the package, pass the same `commit_every` on both, or `commit_every=0`.
+
 == Change the commit size
 
 [source,python]
