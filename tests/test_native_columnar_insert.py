@@ -529,15 +529,13 @@ def _sparse_types(
 
 def _sparse_rows(n, ragged, seed=11):
     """Rows of the lanes' shape: an id, the token ids of a sparse vector and their weights (30 nonzeros, or 1 to 40 when ragged)."""
-    import random
-
-    rng = random.Random(seed)
+    rng = np.random.default_rng(seed)
     rows = []
     for i in range(n):
-        nnz = rng.randint(1, 40) if ragged else 30
-        tokens = rng.sample(range(SPARSE_DIMS), nnz)
+        nnz = int(rng.integers(1, 41)) if ragged else 30
+        tokens = rng.choice(SPARSE_DIMS, size=nnz, replace=False).tolist()
         rows.append(
-            {"id": i, "tokens": tokens, "weights": [0.1 + rng.random() for _ in tokens]}
+            {"id": i, "tokens": tokens, "weights": (0.1 + rng.random(nnz)).tolist()}
         )
     return rows
 
