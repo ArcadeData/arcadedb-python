@@ -11,14 +11,14 @@ The tag is the bare version, with no `v`. The tag, the wheel version and the PyP
 |===
 | Version | Meaning
 
-| `26.11.1.dev0`, `26.11.1.dev1`, ...
-| A preview of engine release `26.11.1`, built from the upstream snapshot jars. `devN` starts at 0.
+| `A.B.C.dev0`, `A.B.C.dev1`, ...
+| A preview of engine release `A.B.C`, built from the upstream snapshot jars. `devN` starts at 0.
 
-| `26.11.1`
-| The release. The wheels ship the `26.11.1` engine jar.
+| `A.B.C`
+| The release. The wheels ship the `A.B.C` engine jar.
 
-| `26.11.1.post1`, `26.11.1.post2`, ...
-| A fix in the Python code of the released `26.11.1`. The wheels still ship the `26.11.1` engine jar. `postN` starts at 1.
+| `A.B.C.post1`, `A.B.C.post2`, ...
+| A fix in the Python code of the released `A.B.C`. The wheels still ship the `A.B.C` engine jar. `postN` starts at 1.
 |===
 
 The rule has five parts:
@@ -37,7 +37,7 @@ The base is the version of the engine. The workflow compares the tag with the ve
 
 [source,bash]
 ----
-python3 scripts/check_version.py 26.11.1.dev0 --git-remote origin --pypi arcadedb-jvm
+uv run --no-project python -I scripts/check_version.py <VERSION> --git-remote origin --pypi arcadedb-jvm
 ----
 
 It exits 0 when the version is the correct next one, 1 when it is not, and 2 when a source cannot be read. Exit 2 is a failure, not a pass: the check fails closed.
@@ -48,19 +48,22 @@ The tests of the script are in `tests/test_check_version.py`.
 
 == After the tag push
 
-`scripts/after_tag_verify.sh` checks the finished `arcadedb-jvm` release (the run of `release-jvm.yml`). It only reads from GitHub and PyPI:
+`scripts/after_tag_verify.sh` checks a finished release: `arcadedb-jvm` (the run of `release-jvm.yml`) by default, and the native `arcadedb` (the run of `release-native.yml`) with `PACKAGE=native`. It only reads from GitHub and PyPI:
 
 [source,bash]
 ----
-scripts/after_tag_verify.sh 26.11.1 26.10.1 <release-run-id>
+scripts/after_tag_verify.sh <VERSION> <PREVIOUS> <release-run-id>
+PACKAGE=native scripts/after_tag_verify.sh <VERSION> <PREVIOUS> <native-release-run-id>
 ----
 
-The second argument is the previous release. Use `-` for the first release of the package. The script checks:
+The second argument is the previous release of that package. Use `-` for the first release of the package. The script checks, for the JVM package:
 
 * The workflow run, and the conclusion of the publish job and of its upload step.
 * The files on PyPI: one `py3-none` wheel for each platform (the same file for every Python version), each under 100 MB, none yanked.
 * The sha256 of every file on PyPI against the wheels the workflow checked.
 * A download of the wheel of each of the four platforms from PyPI (picked from the PyPI JSON, fetched with `curl`, sha256 compared with the one PyPI lists), and a fresh `uv run --with` install on Python 3.12 and 3.14 that opens a database and runs one SQL and one openCypher query.
+
+For the native package the steps are the same with three differences: the checked wheels are the artifact `native-release-dist`; `windows-x64` is required for a final release and optional for a `devN` release (as `release-native.yml` publishes it); and the smoke run asserts the native backend and that `ENGINE_VERSION` is the engine the tag is named after, because there is no jar to check.
 
 It prints `PASS` or `FAIL` for each step, and its exit code is the number of failures.
 
@@ -93,8 +96,98 @@ The version rule above holds for both packages. One tag starts both release work
 
 `arcadedb` has one trusted publisher on PyPI (`release-native.yml` with the environment `pypi`) for dev, final and post releases, and one publish job in the workflow. `arcadedb-jvm` has one trusted publisher (`release-jvm.yml` with the environment `pypi-jvm`). PyPI matches the workflow file name, so renaming either file means changing the publisher on PyPI first. There is no separate pre-release environment; the readiness gate below is what keeps a final release back.
 
-* A native pre-release (`26.11.1.devN`) publishes when the builds on `linux-x86_64`, `linux-aarch64` and `macos-arm64` pass.
+* A native pre-release (`A.B.C.devN`) publishes when the builds on `linux-x86_64`, `linux-aarch64` and `macos-arm64` pass.
 * A FINAL native release (`A.B.C` or `A.B.C.postN`) needs two more things:
 ** The repository variable `ARCADEDB_NATIVE_READINESS_BAR_MET` is `true`. A maintainer sets it after checking the readiness bar: the correctness fixes are merged; the full suite is green on every platform, Windows included, and on Python 3.11 to 3.14; the fault and concurrency probes pass; and the documented API raises no `NotOnNativeYet`.
 ** The parity run of every platform and every Python version passes with zero `NotOnNativeYet` skips.
 * Speed parity with the JVM build is not part of the bar.
+
+[[_release_day]]
+== Release day
+
+A release happens about once a month, after upstream ArcadeDB releases an engine version. Everything below takes the version as an argument; nothing is typed into a script. `<VERSION>` is the tag to push (the engine release `A.B.C`, or `A.B.C.postN` for a Python-only fix of a released engine), `<PREVIOUS>` is the previous release of the package on PyPI (`-` for the first one), and `<NEXT_DEV>` is the first dev version of the next base. The checklist with every command is the issue template `.github/ISSUE_TEMPLATE/release.md` (https://github.com/ArcadeData/arcadedb-python/issues/new?template=release.md[open it once per release]); open it first and tick the boxes in order.
+
+The two packages read the engine from two different channels of the same upstream release:
+
+* The JVM wheels take the engine jars from the Docker Hub image `arcadedata/arcadedb:<VERSION>`.
+* The native build resolves `arcadedb-engine` and `arcadedb-server` from Maven Central at that version and compiles them with GraalVM CE `native-image`.
+
+Both channels must carry `<VERSION>`. They are published by different upstream steps and can appear hours apart, so a release is ready only when the preflight passes both.
+
+Each step is a script, CI, or the owner's decision. The owner's tag push is the only step that publishes anything.
+
+[cols="1,4,2"]
+|===
+| Step | What | Who
+
+| 1
+| Preflight. Checks that the upstream GitHub release exists (not draft), that Maven Central has `arcadedb-engine` and `arcadedb-server`, that Docker Hub has the image for `linux/amd64` and `linux/arm64`, that `scripts/check_version.py` accepts `<VERSION>` for both packages against the git tags and PyPI, that the latest conclusive runs of `Test native`, `Test JVM` and `Test Python Examples` on `main` are green on every job, that the release workflows derive `<VERSION>` and the engine from the tag (the real step code of the workflows runs with `TAG=<VERSION>`), and that the native readiness variable is set for a final release. It only reads, prints `PASS`, `FAIL` or `SKIP` with the evidence, fails closed on network errors, and exits with the number of FAILs.
+| script: `scripts/release_preflight.py`
+
+| 2
+| The go. Zero FAILs, the readiness bar met for a final or post release (the `SKIP` on the variable means the login cannot read it, so check it), and a decision to publish.
+| owner
+
+| 3
+| Push the tag, the bare version on the tip of `main`. One tag starts both release workflows.
+| owner (the only publishing step)
+
+| 4
+| `release-jvm.yml` and `release-native.yml` validate the tag, build and test the wheels, check them, and publish with trusted publishing. A failed upload is retried by re-running only the publish job.
+| CI
+
+| 5
+| After-tag verification of both packages: the workflow run and its publish step, the file set and sizes on PyPI, the sha256 of every file against the wheels the workflow checked, and a fresh `uv run --with` install on Python 3.12 and 3.14 that opens a database and runs one SQL and one openCypher query.
+| script: `scripts/after_tag_verify.sh` and `PACKAGE=native scripts/after_tag_verify.sh`
+
+| 6
+| The dev-engine bump PR. `scripts/bump_engine.py` moves the pins that dev, PR and nightly builds link: `DEV_ENGINE`, `DEFAULT_VERSION` and the default of the manual-run input `version` in `test-native.yml`, `arcadedb.version` in `native/pom.xml`, the default in `native/scripts/build-image.sh`, and the default of `--version` in `native/wheel/build_wheel.py`. `--check` reports drift and writes nothing; it refuses a `<NEXT_DEV>` that `check_version.py` would refuse.
+| script: `scripts/bump_engine.py`
+
+| 7
+| The notices of the new engine (below), then the CI of the bump PR, then the merge on green.
+| script, CI, then merge
+|===
+
+=== Commands
+
+[source,bash]
+----
+# 1. preflight
+uv run --no-project python -I scripts/release_preflight.py <VERSION>
+
+# 3. the tag (owner)
+git fetch origin main --no-tags && git tag <VERSION> origin/main && git push origin <VERSION>
+
+# 5. after the workflows finished (run ids: gh run list -R ArcadeData/arcadedb-python --branch <VERSION>)
+scripts/after_tag_verify.sh <VERSION> <PREVIOUS> <jvm-run-id>
+PACKAGE=native scripts/after_tag_verify.sh <VERSION> <PREVIOUS> <native-run-id>
+
+# 6. the bump
+uv run --no-project python scripts/bump_engine.py --engine <VERSION> --dev-version <NEXT_DEV> --check
+uv run --no-project python scripts/bump_engine.py --engine <VERSION> --dev-version <NEXT_DEV>
+----
+
+=== Choosing the next dev version
+
+A dev version of a released base is refused, so after `<VERSION>` is out the dev line moves to the next base. The next base is the version of upstream `main`, which carries `-SNAPSHOT`:
+
+[source,bash]
+----
+curl -fsS https://raw.githubusercontent.com/ArcadeData/arcadedb/main/pom.xml | sed -n '/<artifactId>arcadedb-parent<\/artifactId>/,/<\/version>/ s/.*<version>\(.*\)-SNAPSHOT<\/version>.*/\1/p'
+----
+
+`<NEXT_DEV>` is that base followed by `.dev0`. When the command prints `<VERSION>` itself, upstream has not moved `main` on yet: wait, and do not guess a base. The JVM dev wheels need no pin: they take the jars of the image tag `latest`, which follows upstream.
+
+=== The notices of the new engine
+
+`native/wheel/THIRD_PARTY_NOTICES.md` names the engine and is generated from the build log of the native image, so `build_wheel.py` fails on any difference. `bump_engine.py` reports it as `TODO` and does not edit it, and its `--check` stays at exit 1 until the file names the new engine. To regenerate:
+
+. Push the bump PR. The first `Test native` run stops at the notices drift check on purpose, and its `native-build-record-linux-x86_64` artifact holds `THIRD_PARTY_NOTICES.generated.md`, the output of `gen_notices.py` for the new engine (the text is the same on every platform).
+. Download the artifact with `gh run download <run-id> -R ArcadeData/arcadedb-python -n native-build-record-linux-x86_64 -D <scratch-dir>`, copy `THIRD_PARTY_NOTICES.generated.md` over `native/wheel/THIRD_PARTY_NOTICES.md`, and commit it to the bump branch.
+. When the engine `NOTICE` changed, refresh the kept copy: `git -C <arcadedb clone> show <VERSION>:NOTICE > native/wheel/ARCADEDB_ENGINE_NOTICE`. When the next run still fails on `NOTICE`, run the `gen_notices.py ... --notice` command that the failure message prints.
+. Check with `uv run --no-project python scripts/bump_engine.py --engine <VERSION> --dev-version <NEXT_DEV> --check`, which must exit 0, and wait for the CI of the PR to turn green.
+
+Some tests and skip lists wait for the engine the native image links, and say so in a comment (for example the `29_hybrid_memory_retrieval.py` line of `scripts/native_examples_skip.txt`). After the bump merges, find them with `git grep -n -i "native build links\|native image links"` and remove the ones the new engine settles.
+
+The tests of the two scripts are `tests/test_release_preflight.py` and `tests/test_bump_engine.py`.

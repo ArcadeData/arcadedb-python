@@ -1,9 +1,16 @@
 #!/bin/bash
 # After the tag push: verify the release end to end. Read-only against GitHub and PyPI (no writes).
 # Ported from humemai/arcadedb-embedded-python#479 and adapted to .github/workflows/release-jvm.yml (the arcadedb-jvm release; the artifact it reads is release-dist).
+# PACKAGE=native checks the native `arcadedb` release instead (release-native.yml, artifact native-release-dist).
 #
-# usage: after_tag_verify.sh <version> <previous-version|-> [<release-workflow-run-id>] [<expected-engine-jar-sha256> <expected-engine-buildNumber>]
-# example: after_tag_verify.sh 26.11.1 26.10.1 <run-id>
+# usage: [PACKAGE=jvm|native] after_tag_verify.sh <version> <previous-version|-> [<release-workflow-run-id>] [<expected-engine-jar-sha256> <expected-engine-buildNumber>]
+# example: after_tag_verify.sh <VERSION> <PREVIOUS> <run-id>
+# example: PACKAGE=native after_tag_verify.sh <VERSION> <PREVIOUS> <run-id>
+#
+# PACKAGE=native differs in four things: the distribution is `arcadedb`; the checked wheels are the artifact native-release-dist;
+# the platform windows-x64 is required for a final release (A.B.C, A.B.C.postN) and optional for A.B.C.devN, as release-native.yml
+# publishes it; and the smoke run asserts the native backend and that ENGINE_VERSION is the engine the tag is named after (no jar
+# to check, so the last two arguments are not used).
 #
 # <previous-version> is the release whose PyPI file set this one must match in shape. Pass - when
 # there is none (the first release of the distribution): the file set is then checked against
@@ -18,7 +25,24 @@ RUN="${3:-}"
 ENG_SHA="${4:-}"
 ENG_BUILD="${5:-}"
 R=ArcadeData/arcadedb-python
-DIST=arcadedb-jvm
+PACKAGE="${PACKAGE:-jvm}"
+case "$PACKAGE" in
+    jvm)
+        DIST=arcadedb-jvm
+        ARTIFACT=release-dist
+        WIN_OPTIONAL=0
+        ;;
+    native)
+        DIST=arcadedb
+        ARTIFACT=native-release-dist
+        # a devN native release publishes Windows only when it passed; a final or post release requires it
+        case "$V" in *.dev*) WIN_OPTIONAL=1 ;; *) WIN_OPTIONAL=0 ;; esac
+        ;;
+    *)
+        printf 'PACKAGE must be jvm or native, got %s\n' "$PACKAGE" >&2
+        exit 2
+        ;;
+esac
 W="${WORK:-$(mktemp -d "${TMPDIR:-$HOME}/after-tag-XXXXXX")}"
 FAILS=0
 pass() { printf 'PASS  %s\n' "$*"; }
@@ -51,9 +75,10 @@ if [ "$PREV" = "-" ]; then
 else
     curl -fsS "https://pypi.org/pypi/$DIST/$PREV/json" -o "$W/pypi-prev.json" || fail "cannot read PyPI $PREV"
 fi
-python3 - "$W/pypi-new.json" "$W/pypi-prev.json" "$V" "$PREV" << 'EOF' || FAILS=$((FAILS + 1))
+python3 - "$W/pypi-new.json" "$W/pypi-prev.json" "$V" "$PREV" "$WIN_OPTIONAL" << 'EOF' || FAILS=$((FAILS + 1))
 import json,re,sys
 new,prev,v,pv=json.load(open(sys.argv[1])),json.load(open(sys.argv[2])),sys.argv[3],sys.argv[4]
+win_optional=sys.argv[5]=="1"  # native devN: windows-x64 is published only when it passed
 # Releases up to 26.11.1.dev0 had one cpXY-cpXY wheel for each Python and platform; since then the wheel is py3-none-<platform>,
 # one for each platform. Read the previous file set in the new shape, so the Pythons a release drops or adds change no file.
 want={re.sub(r"-cp3\d+-cp3\d+-","-py3-none-",u["filename"]).replace(pv,v) for u in prev["urls"]}
@@ -65,9 +90,15 @@ if pv=="-":
     for plat in plats:
         hits=[f for f in have if re.search(r"-py3-none-",f) and re.search(plat,f)]
         want.update(hits)
+        if len(hits)==0 and plat=="win_amd64" and win_optional:
+            print("NOTE no windows wheel (optional for a native devN release)"); continue
         if len(hits)!=1:
             print("EXPECTED one wheel on %s, got %d"%(plat,len(hits))); gaps+=1
 missing=sorted(want-set(have)); extra=sorted(set(have)-want)
+if win_optional:
+    skipped=[m for m in missing if "win_amd64" in m]
+    for m in skipped: print("NOTE optional windows wheel not on PyPI:",m)
+    missing=[m for m in missing if m not in skipped]
 print("files on PyPI for %s: %d (previous release had %d)"%(v,len(have),len(prev["urls"])))
 for m in missing: print("MISSING",m)
 for e in extra: print("EXTRA  ",e)
@@ -82,7 +113,7 @@ EOF
 # (c) sha256 of every file on PyPI against the checked wheels the workflow's verify job uploaded and the publish job sent
 if [ -n "$RUN" ] && [ -s "$W/pypi-new.json" ]; then
     mkdir -p "$W/artifacts"
-    gh run download "$RUN" -R "$R" -n release-dist -D "$W/artifacts" > /dev/null 2>&1 || fail "could not download the release-dist artifact of run $RUN (retention is 7 days)"
+    gh run download "$RUN" -R "$R" -n "$ARTIFACT" -D "$W/artifacts" > /dev/null 2>&1 || fail "could not download the $ARTIFACT artifact of run $RUN (retention is 7 days)"
     python3 - "$W/pypi-new.json" "$W/artifacts" << 'EOF' || FAILS=$((FAILS + 1))
 import json,sys,hashlib,pathlib
 d=json.load(open(sys.argv[1])); art={}
@@ -111,7 +142,11 @@ EOF
     )
     read -r url sha name <<< "$pick"
     if [ -z "${url:-}" ]; then
-        fail "no single wheel for $plat on PyPI"
+        if [ "$plat" = 'win_amd64' ] && [ "$WIN_OPTIONAL" = 1 ]; then
+            printf 'SKIP  no windows wheel on PyPI (optional for a native devN release)\n'
+        else
+            fail "no single wheel for $plat on PyPI"
+        fi
         continue
     fi
     mkdir -p "$W/dl"
@@ -129,7 +164,28 @@ for py in 3.12 3.14; do
         fail "uv run --with $DIST==$V on $py: $(tail -1 "$W/install-$py.log")"
         continue
     }
-    ENG_SHA="$ENG_SHA" ENG_BUILD="$ENG_BUILD" V="$V" ${PIN:+taskset -c "$PIN"} "${UVRUN[@]}" python - << 'EOF' > "$W/smoke-$py.log" 2>&1
+    if [ "$PACKAGE" = native ]; then
+        cat > "$W/smoke-native.py" << 'EOF'
+import os, re, tempfile
+import arcadedb as adb
+assert adb.__version__ == os.environ["V"], adb.__version__
+assert adb.__backend__ == "native", adb.__backend__
+# A native wheel links the engine release its tag is named after: A.B.C for A.B.C and A.B.C.postN; a devN links DEV_ENGINE (any release).
+engine = re.sub(r"\.post[0-9]+$", "", os.environ["V"])
+if ".dev" not in engine: assert adb.ENGINE_VERSION == engine, (adb.ENGINE_VERSION, engine)
+print("engine", adb.ENGINE_VERSION, "backend", adb.__backend__)
+with tempfile.TemporaryDirectory() as d:
+    with adb.create_database(os.path.join(d, "smoke")) as db:
+        db.command("sql", "CREATE VERTEX TYPE P")
+        with db.transaction():
+            db.command("sql", "CREATE VERTEX P SET name = 'Ada'")
+        assert db.query("sql", "SELECT name FROM P").to_list()[0]["name"] == "Ada"
+        assert db.query("opencypher", "MATCH (n:P) RETURN n.name AS name").to_list()[0]["name"] == "Ada"
+print("SMOKE OK", adb.__version__)
+EOF
+        SMOKE="$W/smoke-native.py"
+    else
+        cat > "$W/smoke-jvm.py" << 'EOF'
 import hashlib, os, pathlib, re, tempfile, zipfile
 import arcadedb as adb
 assert adb.__version__ == os.environ["V"], adb.__version__
@@ -154,9 +210,13 @@ with tempfile.TemporaryDirectory() as d:
         assert db.query("opencypher", "MATCH (n:P) RETURN n.name AS name").to_list()[0]["name"] == "Ada"
 print("SMOKE OK", adb.__version__)
 EOF
-    if [ $? -eq 0 ] && grep -q 'SMOKE OK' "$W/smoke-$py.log"; then
-        pass "fresh environment Python $py: install, import, SQL, openCypher, official engine jar"
-        grep 'engine jar' "$W/smoke-$py.log"
+        SMOKE="$W/smoke-jvm.py"
+    fi
+    smoke_rc=0
+    ENG_SHA="$ENG_SHA" ENG_BUILD="$ENG_BUILD" V="$V" ${PIN:+taskset -c "$PIN"} "${UVRUN[@]}" python -I "$SMOKE" > "$W/smoke-$py.log" 2>&1 || smoke_rc=$?
+    if [ "${smoke_rc:-0}" -eq 0 ] && grep -q 'SMOKE OK' "$W/smoke-$py.log"; then
+        pass "fresh environment Python $py: install, import, SQL, openCypher, engine ($PACKAGE)"
+        grep -E '^engine' "$W/smoke-$py.log"
     else
         fail "smoke on Python $py (see $W/smoke-$py.log)"
         tail -3 "$W/smoke-$py.log"
