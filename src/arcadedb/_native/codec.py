@@ -201,12 +201,37 @@ def encode_params(args, binary=False):
         return (text, None, 0) if binary else text
     if len(values) == 1 and isinstance(values[0], Mapping):
         named = values[0]
+        if _fast:
+            # every value a plain scalar or an RID (a named point read, the record id of a step or an edge end): no float side buffer
+            # can arise, so the cached encoder writes the text, with an RID as the tagged object the hook would have returned. The
+            # text is the same bytes; what is skipped is _prep, the hook closure and the per-call encoder object.
+            out = {}
+            for k, v in named.items():
+                t = type(v)
+                if t is RID:
+                    v = {TAG: ["R", v.text]}
+                elif t not in plain:
+                    break
+                out[k] = v
+            else:
+                text = _dumps({"named": out})
+                return (text, None, 0) if binary else text
         if not all(type(v) in plain for v in named.values()):
             named = {k: _prep(v, binary) for k, v in named.items()}
         return _dump({"named": dict(named)}, binary)
     if not all(type(v) in plain for v in values):
         values = [_prep(_query_vector(v), binary) for v in values]
     return _dump({"pos": list(values)}, binary)
+
+
+def encode_lookup(keys, values):
+    """The JSON text ``arcadedb_n_lookup`` takes, ``{"keys": [..], "values": [..]}`` in the tagged encoding of query parameters
+    (the text ``json.dumps(_prep(obj), default=_default)`` gives). Plain values are written by the cached encoder: for them
+    ``_prep`` returns its argument and the hook is never called."""
+    obj = {"keys": [str(k) for k in keys], "values": list(values)}
+    if _fast and set(map(type, obj["values"])) <= _PLAIN:
+        return _dumps(obj)
+    return json.dumps(_prep(obj), default=_default)
 
 
 def _dump(obj, binary):

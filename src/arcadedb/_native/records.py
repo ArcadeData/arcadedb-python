@@ -226,14 +226,24 @@ class _Mixin:
     _DELETE = "DELETE FROM :rid"
 
     def __init__(
-        self, database, type_name, rid=None, props=None, mutable=False, base=None
+        self,
+        database,
+        type_name,
+        rid=None,
+        props=None,
+        mutable=False,
+        own=False,
+        base=None,
     ):
         self._java_document = _java_object()
         self._database = database
         self._db = database
         self._type = type_name
         self._rid = rid or None
-        self._props: Dict[str, Any] = dict(props or {})
+        # own: the caller built props for this record and keeps no other reference (the row of a lookup), so the dict is taken as it is
+        self._props: Dict[str, Any] = (
+            props if own and props is not None else dict(props or {})
+        )
         self._mutable = mutable or not rid
         # a copy of the values this record held as read (None: not taken yet). A read does not take it: modify(), the first set() of a saved
         # record or save() does, from the values then held, which are the read-time values. save() refuses to overwrite a changed record.
@@ -431,10 +441,12 @@ class Vertex(_Mixin, _BaseVertex):
 
     def _edges(self, fn: str, labels) -> List["Edge"]:
         self._check_open()
-        args = ", ".join("'" + label.replace("'", "\\'") + "'" for label in labels)
-        edges_sql = f"SELECT expand({fn}({args})) FROM :rid"  # nosec B608 - fn is a fixed function name, labels are escaped literals, the record id is a parameter
+        edges_sql = _edges_sql(fn, labels)
         rows = self._db.query("sql", edges_sql, {"rid": RID(self._rid)})
-        return [_wrap(self._db, row) for row in rows]
+        database = self._db
+        return [
+            _wrap_meta(database, props, meta) for props, meta in rows._drain_pairs()
+        ]
 
     def get_out_edges(self, *labels: str) -> List["Edge"]:
         return self._edges("outE", labels)
@@ -450,9 +462,8 @@ class Edge(_Mixin, _BaseEdge):
 
     def _end(self, fn: str) -> "Vertex":
         self._check_open()
-        end_sql = f"SELECT expand({fn}()) FROM :rid"  # nosec B608 - fn is a fixed function name, the record id is a parameter
-        row = self._db.query("sql", end_sql, {"rid": RID(self._rid)}).first()
-        return _wrap(self._db, row)
+        row = self._db.query("sql", _END_SQL[fn], {"rid": RID(self._rid)}).first()
+        return _wrap(self._db, row, True)
 
     def get_in(self) -> Vertex:
         return self._end("inV")
@@ -463,14 +474,48 @@ class Edge(_Mixin, _BaseEdge):
 
 _CLASS_OF = {"v": Vertex, "e": Edge}
 
+# The statement of a step or an edge end is built once per function and label list, not once per call: the same text object goes to the
+# engine every time (it keys its statement cache by text). The label list is bounded so a program that builds labels cannot grow it.
+_END_SQL: Dict[str, str] = {
+    fn: f"SELECT expand({fn}()) FROM :rid"  # nosec B608 - fn is a fixed function name, the record id is a parameter
+    for fn in ("inV", "outV")
+}
+_EDGES_SQL: Dict[Any, str] = {}
+_EDGES_SQL_MAX = 512
 
-def _wrap(database, row):
-    """The wrapper for a result row that is a record (vertex, edge or document); None for a projection."""
+
+def _edges_sql(fn: str, labels) -> str:
+    key = (fn, labels)
+    try:
+        sql = _EDGES_SQL.get(key)
+    except TypeError:
+        sql = None  # a label that cannot be hashed: building the text below fails as it always did
+    if sql is None:
+        args = ", ".join("'" + label.replace("'", "\\'") + "'" for label in labels)
+        sql = f"SELECT expand({fn}({args})) FROM :rid"  # nosec B608 - fn is a fixed function name, labels are escaped literals, the record id is a parameter
+        if len(_EDGES_SQL) < _EDGES_SQL_MAX:
+            _EDGES_SQL[key] = sql
+    return sql
+
+
+def _wrap(database, row, own=False):
+    """The wrapper for a result row that is a record (vertex, edge or document); None for a projection.
+
+    ``own``: nobody else holds the row, so the record takes its property dict as it is instead of a copy.
+    """
     meta = row._meta
     if not meta:
         return None
     rid, type_name, kind = meta
-    return _CLASS_OF.get(kind, Document)(database, type_name, rid, row._props)
+    return _CLASS_OF.get(kind, Document)(database, type_name, rid, row._props, own=own)
+
+
+def _wrap_meta(database, props, meta):
+    """:func:`_wrap` for the ``(props, meta)`` pair of a row the caller drained itself (nothing else holds the dict)."""
+    if not meta:
+        return None
+    rid, type_name, kind = meta
+    return _CLASS_OF.get(kind, Document)(database, type_name, rid, props, own=True)
 
 
 def _wrap_dict(database, record: dict, kind: str = "d"):
