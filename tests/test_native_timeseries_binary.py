@@ -120,7 +120,10 @@ def test_the_lane_shape_takes_the_binary_entry_and_stores_the_source(
         float(c.sum()) for c in cols
     ]
     # windows: ten instants of one host, as the probe reads them
-    lo_ts, hi_ts = BASE + 1000 * 1000, BASE + 1000 * 1000 + 9 * hosts * 1000
+    lo_ts, hi_ts = (
+        BASE + 1000 * 1000,
+        BASE + 1000 * 1000 + 10 * hosts * 1000 - 1,
+    )  # indices 1000 to 1999: host_7 at 1007, 1107 .. 1907
     got = temp_db.query(
         "sql",
         f"SELECT ts, d1 FROM Lane WHERE host = 'host_7' AND ts BETWEEN {lo_ts} AND {hi_ts} ORDER BY ts",  # nosec B608
@@ -185,7 +188,16 @@ def test_every_numeric_dtype_is_stored_as_the_text_path_stored_it(temp_db, monke
     ex.append_samples("Bin", ts, host, *cols)
     ex.wait_completion()
     assert calls.entries() == ["arcadedb_n_async_bin"]
-    assert calls.texts()[0]["cols"][1:] == ["d", "d", "d", "d", "q", "q", "q", "d"]
+    assert calls.texts()[0]["cols"][1:] == [
+        "d",
+        "d",
+        "d",
+        "q",
+        "q",
+        "q",
+        "q",
+        "d",
+    ]  # d4 is an int32 array: int64
     monkeypatch.setattr(
         lib, "TS_BIN", False
     )  # the library as a build without the entry leaves the flag
@@ -299,7 +311,7 @@ def test_float_timestamps_keep_the_text_path_and_the_columns_still_go_by_address
 
 def test_datetime64_milliseconds_are_refused_as_before(temp_db, monkeypatch):
     calls = _Calls(monkeypatch, stub=True)
-    ts = np.arange(5).astype("datetime64[ms]") + np.datetime64(BASE, "ms")
+    ts = np.datetime64(BASE, "ms") + np.arange(5).astype("timedelta64[ms]")
     with pytest.raises(TypeError):  # int() of a datetime, on the text path
         temp_db.async_executor().append_samples("T", ts, ["a"] * 5, np.zeros(5))
     assert calls.entries() == []
