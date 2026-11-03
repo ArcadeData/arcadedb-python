@@ -76,9 +76,11 @@ Where a pom lists several licences they are alternatives (JTS: EPL-2.0 or EDL-1.
 
 ## GraalVM Community Edition runtime and JDK classes in libarcadedb.so
 
-`libarcadedb.so` contains the Substrate VM runtime and the parts of the OpenJDK class library the engine reaches, built with GraalVM CE 25.4.4.1.1 (Java 25.0.4.1.1, implementor GraalVM Community). Licence: GNU General Public License version 2 with the Classpath Exception (verbatim below, from `LICENSE.txt` of the GraalVM CE home; also in `licenses/`). The exception permits linking and distributing these parts with code under other licences. `graal-sdk`, `polyglot`, `collections` (25.0.2, Maven Central) and `word` (25.4.4.1.1) are UPL-1.0. Oracle GraalVM (GFTC) is not used. Sources: https://github.com/oracle/graal (tag vm-25.4.4.1.1), https://github.com/openjdk/jdk (jdk-25 line).
+`libarcadedb.so` contains the Substrate VM runtime and the parts of the OpenJDK class library the engine reaches, built with GraalVM CE 25.4.4.1.1 (Java 25.0.4.1.1, implementor GraalVM Community). Licence: GNU General Public License version 2 with the Classpath Exception (verbatim below, from `LICENSE.txt` of the GraalVM CE home; also in `licenses/`). The exception permits linking and distributing these parts with code under other licences. `graal-sdk`, `polyglot`, `collections` (25.0.2, Maven Central) and `word` (25.4.4.1.1) are UPL-1.0. Oracle GraalVM (GFTC) is not used. Sources: https://github.com/oracle/graal (tag vm-25.4.4.1.1; the release file of the GraalVM CE home names commit 95ce1499c8c96ab7d5a6697c5b4bf42160f3b68b of substratevm); https://github.com/graalvm/labs-openjdk (the labsjdk that GraalVM CE 25.4.4.1.1 is built on, JAVA_RUNTIME_VERSION 25.0.4.1.1+1-jvmci-25.4-b23; the release file names commit 391a5a739cb6; the OpenJDK update it is based on: https://github.com/openjdk/jdk25u tag jdk-25.0.4-ga).
 
 Third-party data inside the JDK classes that the image contains (texts from `legal/java.base` of the GraalVM home, verbatim below): ICU normalisation data (`jdk/internal/icu/impl/data/icudt76b/nfc.nrm`, registered resource), Unicode data files, CLDR locale data. Other `legal/java.base` notices (aes.md, c-libutl.md, gcc.md, siphash.md, public_suffix.md) concern files or HotSpot code that are not linked into the image (checked: the library contains no public-suffix data); `jdk.incubator.vector` (sleef.md) is added to the module path but its vector intrinsics are disabled in the build (`-H:-VectorAPISupport`).
+
+The JDK modules in the image are not typed here but measured on every build: `build-image.sh` builds with `-H:+PrintAnalysisCallTree` (GraalVM CE has no `--emit build-report`), which makes native-image write `used_classes_*.txt`, the classes whose methods the image compiles; `gen_notices.py` maps each class to its JDK module with `jimage list` of the GraalVM home. The run fails when a module has no `legal/<module>` directory in the home (GraalVM's own `org.graalvm.*` modules are covered by `LICENSE.txt`), when its GPLv2 + Classpath Exception files differ from the `java.base` ones reproduced below, or when its `legal` directory has a further notice file that no one has reviewed. The measured list is kept in the build record of each platform (`jdk-modules.txt`).
 
 System libraries linked dynamically and not shipped: `libz.so.1`, `libc.so.6`, `ld-linux-x86-64.so.2` (checked with `ldd`).
 
@@ -86,7 +88,7 @@ System libraries linked dynamically and not shipped: `libz.so.1`, `libc.so.6`, `
 
 Dependencies whose licence is not in the allowed permissive set or whose provenance is not recorded in the build inputs. The generator lists them; a maintainer decides.
 
-- **libarcadedb.so JDK module set**: which JDK modules end up linked is not recorded by the build; the notices above cover java.base/java.logging/jdk.unsupported by module inspection of the legal directory only. A native-image `-H:+DashboardDump` or `--emit build-report` run would confirm it
+None open.
 
 ## Verbatim texts
 

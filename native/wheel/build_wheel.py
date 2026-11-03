@@ -137,6 +137,10 @@ def main():
         help="Maven repository the image classpath jars are read from (default ~/.m2/repository; the CI container build uses another)",
     )
     ap.add_argument(
+        "--modules-out",
+        help="also write the JDK modules linked into the image here (CI keeps it in the build record)",
+    )
+    ap.add_argument(
         "--notices-out",
         default="",
         help="also write the generated notices here (CI keeps it in the build record)",
@@ -174,13 +178,17 @@ def main():
                 "--check",
                 str(HERE / "THIRD_PARTY_NOTICES.md"),
             ]
+            + ["--notice", str(HERE / "NOTICE")]
             + (["--m2-repo", a.m2_repo] if a.m2_repo else [])
             + (["--out", a.notices_out] if a.notices_out else [])
+            + (["--modules-out", a.modules_out] if a.modules_out else [])
         )
         if chk.returncode:
             sys.exit(
-                "THIRD_PARTY_NOTICES.md is out of date: python native/wheel/gen_notices.py --build-log <lib-dir>/build.log "
-                f"--engine {a.engine} --graalvm-home {a.graalvm_home} --out native/wheel/THIRD_PARTY_NOTICES.md"
+                "THIRD_PARTY_NOTICES.md or NOTICE is out of date, or a JDK module has no notice coverage: python native/wheel/gen_notices.py "
+                "--build-log <lib-dir>/build.log "
+                f"--engine {a.engine} --graalvm-home {a.graalvm_home} --out native/wheel/THIRD_PARTY_NOTICES.md "
+                "--notice native/wheel/NOTICE --notice-out native/wheel/NOTICE"
             )
     stage = out / "stage"
     shutil.rmtree(stage, ignore_errors=True)

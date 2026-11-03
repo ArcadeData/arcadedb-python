@@ -366,7 +366,7 @@ jobs:
           mkdir -p "$T/record"
           uv run --no-project --python 3.12 python native/wheel/build_wheel.py --lib-dir "$T/lib" --version "$VERSION" --engine "$ENGINE" \
             --graalvm-home "$GRAALVM_HOME_P5" --m2-repo "$m2" \
-            --notices-out "$T/record/THIRD_PARTY_NOTICES.generated.md" --out "$T/wheel"
+            --notices-out "$T/record/THIRD_PARTY_NOTICES.generated.md" --modules-out "$T/record/jdk-modules.txt" --out "$T/wheel"
           ls -l "$T/wheel/dist"
           shopt -s nullglob
           wheels=("$T"/wheel/dist/*.whl)
@@ -484,7 +484,7 @@ jobs:
           for f in auditwheel.txt dumpbin.txt; do
             if [ -f "$T/$f" ]; then cp "$T/$f" "$T/record/"; fi
           done
-          cp "$T/lib/sha256.txt" "$T/lib/build.done" "$T/record/" || true
+          cp "$T/lib/sha256.txt" "$T/lib/build.done" "$T/lib/used_classes.txt" "$T/record/" || true
           tail -n 400 "$T/lib/build.log" > "$T/record/build.log.tail" || true
           (cd "$T/dist-out" && if command -v sha256sum > /dev/null; then sha256sum ./*.whl; else shasum -a 256 ./*.whl; fi) | tee "$T/record/wheel.sha256" || true
 
