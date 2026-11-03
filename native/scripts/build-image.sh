@@ -31,9 +31,12 @@ esac
 LIBFILE=libarcadedb.$EXT # not LIB: the MSVC environment on Windows exports LIB (library search path)
 sha256() { if command -v sha256sum > /dev/null; then sha256sum "$@"; else shasum -a 256 "$@"; fi; }
 export JAVA_HOME=$G PATH=$G/bin:$PATH
-export NATIVE_IMAGE_OPTIONS="-J-Dfastops.mode=1 -J-Xmx$XMX -H:-VectorAPISupport -march=$MARCH${NI_EXTRA:+ $NI_EXTRA}"
+# -H:+PrintAnalysisCallTree: the analysis reports (used_classes_*.txt), the JDK module list that gen_notices.py checks for notice coverage.
+# GraalVM CE has no `--emit build-report` (Oracle GraalVM only). The call tree itself is big and is deleted after the copy below.
+export NATIVE_IMAGE_OPTIONS="-J-Dfastops.mode=1 -J-Xmx$XMX -H:-VectorAPISupport -H:+PrintAnalysisCallTree -march=$MARCH${NI_EXTRA:+ $NI_EXTRA}"
 cd "$WT/native"
-rm -f "target/$LIBFILE" "$OUT/$LIBFILE"
+rm -f "target/$LIBFILE" "$OUT/$LIBFILE" "$OUT/used_classes.txt"
+rm -f target/reports/used_classes_*.txt reports/used_classes_*.txt
 ./mvnw -B --no-transfer-progress -f pom.xml -DskipTests -Darcadedb.version="$ENGINE" -Dgraalvm.version=25.4.4.1.1 -Dnative.opt=-O3 package > "$OUT/build.log" 2>&1
 # Windows: the Maven plugin hands native-image its arguments in an @args file that it deletes at exit, so build.log has no
 # "native-image -cp <classpath> --shared" line, which gen_notices.py reads. Append one: the glue jar plus the runtime classpath that
@@ -54,6 +57,24 @@ grep -a -E -q 'PriorityForceInline. \(origin\(s\): .META-INF.native-image.org\.h
     }
 INLINE_LOG="PriorityForceInline picked up from native-image.properties ($(grep -a -c 'PriorityForceInline' "$OUT/build.log") log lines)"
 cp "target/$LIBFILE" "$OUT/"
+# The analysis report of the classes the image compiles (gen_notices.py maps them to JDK modules). Globs, not find: on Windows the
+# MSVC environment can put System32's find.exe first. The report directory is next to the image (-H:Path) as far as known; fail loudly otherwise.
+UC=
+for f in target/reports/used_classes_*.txt reports/used_classes_*.txt; do
+    if [ -f "$f" ]; then UC=$f; fi
+done
+if [ -z "$UC" ]; then
+    echo "no used_classes_*.txt analysis report after the build (-H:+PrintAnalysisCallTree); found:" >&2
+    ls -R target 2> /dev/null | grep -i -E "report|used_" >&2 || true
+    exit 1
+fi
+cp "$UC" "$OUT/used_classes.txt"
+UC_LINES=$(wc -l < "$OUT/used_classes.txt")
+RPT_DIR=$(dirname "$UC")
+RPT_KB=$(du -sk "$RPT_DIR" | cut -f1)
+rm -f "$RPT_DIR"/call_tree_* "$RPT_DIR"/used_methods_* "$RPT_DIR"/used_classes_* "$RPT_DIR"/used_packages_*
+rmdir "$RPT_DIR" 2> /dev/null || true
+REPORT_LOG="used_classes $((UC_LINES)) lines, analysis reports $RPT_KB KB before deletion"
 LIBS=("$OUT/$LIBFILE")
 # Highway (jvector's native library), found next to libarcadedb.so by the image (ARCADEDB_NATIVE_LIBDIR); Linux only: the jvector 4.0.2 jar
 # carries libjvector-x86_64.so and libjvector-aarch64.so and nothing for macOS or Windows. The image uses it only when
@@ -75,4 +96,4 @@ if [ "$EXT" = so ]; then
     fi
 fi
 sha256 "${LIBS[@]}" > "$OUT/sha256.txt"
-echo "native image done: engine $ENGINE; march $MARCH; $INLINE_LOG; $(grep -a 'Finished generating' "$OUT/build.log")" | tee "$OUT/build.done"
+echo "native image done: engine $ENGINE; march $MARCH; $INLINE_LOG; $REPORT_LOG; $(grep -a 'Finished generating' "$OUT/build.log")" | tee "$OUT/build.done"
