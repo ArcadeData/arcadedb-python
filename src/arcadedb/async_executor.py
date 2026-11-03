@@ -826,6 +826,12 @@ class AsyncExecutor:
         argument gives: work a running task schedules after the snapshot is
         not covered by a successful poll.
 
+        Returning from ``wait_completion()`` means every operation queued before
+        the call has run. It does not make a following ``is_pending()`` False at
+        once: since engine 26.11.1-SNAPSHOT a worker can still report itself as
+        executing for an instant after the wait is released. To wait for an idle
+        executor, poll ``is_pending()`` until it is False.
+
         Raises:
             TimeoutError: If timeout is reached before completion
             ValueError: If timeout_ms is negative
