@@ -650,8 +650,9 @@ def test_every_list_shape_stores_what_the_json_path_stores(temp_db, spy, monkeyp
 
     empty = [{"id": 1000 + k, "ai": [], "af": []} for k in range(2)]  # only empty rows
     _json_reference(temp_db, "Ref", empty, monkeypatch)
+    spy.calls.clear()
     temp_db.insert_many("Col", empty)
-    assert spy.count(COLP) == 2 and spy.count(ROWS) == 0
+    assert spy.count(COLP) == 1 and spy.count(ROWS) == 0, spy.calls
     assert _stored_deep(temp_db, "Col") == _stored_deep(temp_db, "Ref")
     assert _stored_deep(temp_db, "Col")[-1]["ai"] == ("list", [])
 
