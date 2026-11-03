@@ -20,7 +20,7 @@ from ..callbacks import check_event, check_function
 from ..exceptions import ArcadeDBError
 from ..graph_batch import GraphBatch as _BaseGraphBatch
 from . import interrupts, lib, not_yet
-from .codec import _PLAIN, _default, _prep, encode_gb_args, loads
+from .codec import _PLAIN, _default, _np, _prep, encode_gb_args, loads, sample_array
 
 # -------------------------------------------------------------------------------------------------------- upcall
 
@@ -622,20 +622,69 @@ class NativeAsyncExecutor:
                 values = values.astype("int64")
             return values.tolist() if hasattr(values, "tolist") else list(values)
 
-        stamps = [int(t) for t in plain(timestamps)]
+        # numpy int and float columns (and an integer timestamp array) cross by address, the rest as the JSON text they always had
+        ts_array = sample_array(timestamps, True) if lib.TS_BIN else None
+        if ts_array is not None:
+            stamps, count = None, len(ts_array)
+        else:
+            stamps = [int(t) for t in plain(timestamps)]
+            count = len(stamps)
         if primitive:
-            # the engine's primitive TimeSeriesBatch is a JVM-boundary optimisation (no boxing per value); here the rows cross
-            # as one JSON text either way, so the columns take the same path, with the primitive path's length check
+            # the engine's primitive TimeSeriesBatch is a JVM-boundary optimisation (no boxing per value); here the columns
+            # take the same path as without it, with the primitive path's length check
             for index, values in enumerate(column_values):
-                if len(values) != len(stamps):
+                if len(values) != count:
                     raise ValueError(
-                        f"column {index} has {len(values)} values for {len(stamps)} timestamps"
+                        f"column {index} has {len(values)} values for {count} timestamps"
                     )
-        self._op(
-            "append_samples",
-            type=type_name,
-            ts=stamps,
-            cols=[plain(c) for c in column_values],
+        arrays = []
+        if lib.TS_BIN:
+            for values in column_values:
+                array = sample_array(values)
+                # a column of another length stays text: the engine pads or cuts it as it always did
+                arrays.append(
+                    array if array is not None and len(array) == count else None
+                )
+        if ts_array is None and not any(a is not None for a in arrays):
+            self._op(
+                "append_samples",
+                type=type_name,
+                ts=stamps,
+                cols=[plain(c) for c in column_values],
+            )
+            return
+        # the address table: per slot (0 the timestamps, 1 + i the column i) the data address and the element count of an array that
+        # stays alive until the call returns; a column that is text has no entry (zeros) and its values are in the JSON
+        table = _np.zeros(2 * (1 + len(column_values)), dtype=_np.int64)
+        if ts_array is not None:
+            table[0], table[1] = ts_array.ctypes.data, count
+        cols = []
+        for index, (values, array) in enumerate(zip(column_values, arrays)):
+            if array is None:
+                cols.append(plain(values))
+            else:
+                table[2 * (index + 1)], table[2 * (index + 1) + 1] = (
+                    array.ctypes.data,
+                    count,
+                )
+                cols.append("d" if array.dtype.kind == "f" else "q")
+        _call(
+            "Async executor failed",
+            "arcadedb_n_async_bin",
+            self._db._h,
+            lib.b("append_samples"),
+            lib.b(
+                _enc(
+                    {
+                        "type": type_name,
+                        "n": count,
+                        "ts": "q" if stamps is None else stamps,
+                        "cols": cols,
+                    }
+                )
+            ),
+            table.ctypes.data,
+            len(table),
         )
 
     def _edge_callback(self, callback):

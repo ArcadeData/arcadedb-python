@@ -77,6 +77,8 @@ if BACKEND != "native":
     collect_ignore.append("test_native_streaming_batches.py")
     # the Python part of the native point operations (lookup_by_key, edge ends, steps): spies on the codec, the cursor and the row object
     collect_ignore.append("test_native_point_op_glue.py")
+    # the address table of append_samples (arcadedb_n_async_bin), observed on the native library
+    collect_ignore.append("test_native_timeseries_binary.py")
 if not os.path.isfile(
     os.path.join(os.path.dirname(os.path.dirname(__file__)), "docs", "index.md")
 ):
