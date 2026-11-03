@@ -291,6 +291,36 @@ class NativeResultSet:
         self._finish()
         return out
 
+    def _iter_dict_batches(self, size: int) -> Iterator[List[Dict[str, Any]]]:
+        """The rows as lists of ``size`` dicts (the last may be shorter), reading the cursor one batch at a time: at most one reply
+        (``_NEXT_BATCH`` rows) and one output batch are held, where ``_drain_dicts`` holds the whole result. The cursor is read
+        when the next batch is asked for, so a result closed between two batches raises the closed-before-read error.
+        """
+        if not self._readable():
+            return
+        out: List[Dict[str, Any]] = []
+        while True:
+            buf = self._buf
+            while buf:
+                need = size - len(out)
+                if len(buf) <= need:
+                    out.extend([p for p, _ in buf])
+                    buf.clear()
+                else:
+                    out.extend([buf.popleft()[0] for _ in range(need)])
+                if len(out) >= size:
+                    full, out = out, []
+                    if not buf and not self._more and self._pending_error is None:
+                        self._finish()  # this batch is the last row: the cursor is finished before it is handed over
+                    yield full
+                    if not self._readable():
+                        return
+            if not self._fill():
+                break
+        self._finish()
+        if out:
+            yield out
+
     def to_list(self, convert_types: bool = True) -> List[Dict[str, Any]]:
         return self._drain_dicts()
 
@@ -314,9 +344,8 @@ class NativeResultSet:
     def iter_json_batches(self, batch_size: int = 10_000, **kwargs):
         if int(batch_size) < 1:
             raise ValueError("batch_size must be at least 1")
-        rows = self.to_json_list()
-        for i in range(0, len(rows), batch_size):
-            yield rows[i : i + batch_size]
+        for batch in self._iter_dict_batches(int(batch_size)):
+            yield [json_native(row) for row in batch]
 
     def to_dataframe(self, convert_types: bool = True):
         import pandas as pd
