@@ -78,7 +78,7 @@ Where a pom lists several licences they are alternatives (JTS: EPL-2.0 or EDL-1.
 
 `libarcadedb.so` contains the Substrate VM runtime and the parts of the OpenJDK class library the engine reaches, built with GraalVM CE 25.4.4.1.1 (Java 25.0.4.1.1, implementor GraalVM Community). Licence: GNU General Public License version 2 with the Classpath Exception (verbatim below, from `LICENSE.txt` of the GraalVM CE home; also in `licenses/`). The exception permits linking and distributing these parts with code under other licences. `graal-sdk`, `polyglot`, `collections` (25.0.2, Maven Central) and `word` (25.4.4.1.1) are UPL-1.0. Oracle GraalVM (GFTC) is not used. Sources: https://github.com/oracle/graal (tag vm-25.4.4.1.1; the release file of the GraalVM CE home names commit 95ce1499c8c96ab7d5a6697c5b4bf42160f3b68b of substratevm); https://github.com/graalvm/labs-openjdk (the labsjdk that GraalVM CE 25.4.4.1.1 is built on, JAVA_RUNTIME_VERSION 25.0.4.1.1+1-jvmci-25.4-b23; the release file names commit 391a5a739cb6; the OpenJDK update it is based on: https://github.com/openjdk/jdk25u tag jdk-25.0.4-ga).
 
-Third-party code and data inside the JDK classes that the image contains (texts from `legal/<module>` of the GraalVM home, verbatim below): ICU normalisation data (`jdk/internal/icu/impl/data/icudt76b/nfc.nrm`, registered resource), Unicode data files, and CLDR locale data (`java.base`); the Apache Xerces classes of `java.xml` (`com.sun.org.apache.xerces.internal.*`, compiled into the image), the W3C DOM interfaces (`org.w3c.dom`), and the W3C XML Schema, XHTML 1.0, XHTML 1.1, XML specification and `xml.xsd` DTD and schema files (`jdk/xml/internal/jdkcatalog/`, registered resources). Notices that cover code or data the image does not contain are not reproduced: in `java.base` aes.md, c-libutl.md, gcc.md and siphash.md (HotSpot and C code) and public_suffix.md (checked: the library contains no public-suffix data); in `java.xml` bcel.md, xalan.md and jcup.md (no class of `com.sun.org.apache.bcel`, `com.sun.org.apache.xalan`, `com.sun.org.apache.xpath`, `com.sun.org.apache.xml.internal` or `com.sun.java_cup` is compiled, and the Xalan resources are not registered); in `java.desktop` the notices of the C libraries behind AWT, Java 2D and ImageIO (giflib, libpng, jpeg, lcms, harfbuzz, mesa3d, pipewire, xwd, colorimaging: the image reaches only `java.beans.Introspector`, has no AWT or imaging JNI entry point and links none of those libraries); in `jdk.localedata` thaidict.md (only the two locale provider classes are compiled, the Thai dictionary is not a registered resource; its cldr.md is identical to the `java.base` one); in `jdk.incubator.vector` sleef.md (the SLEEF C library is not linked; the module is on the module path but its vector intrinsics are disabled in the build, `-H:-VectorAPISupport`). `gen_notices.py` fails the build when the image reaches code that one of the `java.xml`, `java.desktop` or `jdk.localedata` decisions above rests on.
+Third-party code and data inside the JDK classes that the image contains (texts from `legal/<module>` of the GraalVM home, verbatim below): ICU normalisation data (`jdk/internal/icu/impl/data/icudt76b/nfc.nrm`, registered resource), Unicode data files, and CLDR locale data (`java.base`), zlib (the bundled copy that the Windows and macOS builds of libzip link; the Linux image links the system `libz.so.1`) and wepoll (Windows `libnio`); the Apache Xerces classes of `java.xml` (`com.sun.org.apache.xerces.internal.*`, compiled into the image), the W3C DOM interfaces (`org.w3c.dom`), and the W3C XML Schema, XHTML 1.0, XHTML 1.1, XML specification and `xml.xsd` DTD and schema files (`jdk/xml/internal/jdkcatalog/`, registered resources). Notices that cover code or data the image does not contain are not reproduced: in `java.base` aes.md, c-libutl.md, gcc.md and siphash.md (HotSpot and C code) and public_suffix.md (checked: the library contains no public-suffix data); in `java.xml` bcel.md, xalan.md and jcup.md (no class of `com.sun.org.apache.bcel`, `com.sun.org.apache.xalan`, `com.sun.org.apache.xpath`, `com.sun.org.apache.xml.internal` or `com.sun.java_cup` is compiled, and the Xalan resources are not registered); in `java.desktop` the notices of the C libraries behind AWT, Java 2D and ImageIO (giflib, libpng, jpeg, lcms, harfbuzz, mesa3d, pipewire, xwd, colorimaging: the image reaches only `java.beans.Introspector`, has no AWT or imaging JNI entry point and links none of those libraries); in `jdk.localedata` thaidict.md (only the two locale provider classes are compiled, the Thai dictionary is not a registered resource; its cldr.md is identical to the `java.base` one); in `jdk.incubator.vector` sleef.md (the SLEEF C library is not linked; the module is on the module path but its vector intrinsics are disabled in the build, `-H:-VectorAPISupport`). `gen_notices.py` fails the build when the image reaches code that one of the `java.xml`, `java.desktop` or `jdk.localedata` decisions above rests on.
 
 The JDK modules in the image are not typed here but measured on every build: `build-image.sh` builds with `-H:+PrintAnalysisCallTree` (GraalVM CE has no `--emit build-report`), which makes native-image write `used_classes_*.txt`, the classes whose methods the image compiles; `gen_notices.py` maps each class to its JDK module with `jimage list` of the GraalVM home. The run fails when a module has no `legal/<module>` directory in the home (GraalVM's own `org.graalvm.*` modules are covered by `LICENSE.txt`), when its GPLv2 + Classpath Exception files differ from the `java.base` ones reproduced below, or when its `legal` directory has a further notice file that no one has reviewed (or that is not-linked by decision while the image reaches its code). The measured list is kept in the build record of each platform (`jdk-modules.txt`).
 
@@ -1275,6 +1275,77 @@ Products, and to these Terms of Use at any time in its sole d iscretion.
         invalid or unenforceable, the remaining provisions of these Terms of
         Use shall remain in effect.
 ````
+
+### OpenJDK java.base legal notice: wepoll.md
+
+````
+## Bert Belder: wepoll v 1.5.8
+
+### wepoll License
+```
+wepoll - epoll for Windows
+https://github.com/piscisaureus/wepoll
+
+Copyright 2012-2020, Bert Belder <bertbelder@gmail.com>
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
+
+  * Redistributions of source code must retain the above copyright
+    notice, this list of conditions and the following disclaimer.
+
+  * Redistributions in binary form must reproduce the above copyright
+    notice, this list of conditions and the following disclaimer in the
+    documentation and/or other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+```
+````
+
+### OpenJDK java.base legal notice: zlib.md
+
+```
+## zlib v1.3.2
+
+### zlib License
+<pre>
+
+Copyright (C) 1995-2026 Jean-loup Gailly and Mark Adler
+
+This software is provided 'as-is', without any express or implied
+warranty.  In no event will the authors be held liable for any damages
+arising from the use of this software.
+
+Permission is granted to anyone to use this software for any purpose,
+including commercial applications, and to alter it and redistribute it
+freely, subject to the following restrictions:
+
+1. The origin of this software must not be misrepresented; you must not
+   claim that you wrote the original software. If you use this software
+   in a product, an acknowledgment in the product documentation would be
+   appreciated but is not required.
+2. Altered source versions must be plainly marked as such, and must not be
+   misrepresented as being the original software.
+3. This notice may not be removed or altered from any source distribution.
+
+Jean-loup Gailly        Mark Adler
+jloup@gzip.org          madler@alumni.caltech.edu
+
+</pre>
+```
 
 ### OpenJDK java.xml legal notice: dom.md
 

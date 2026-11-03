@@ -230,6 +230,12 @@ REVIEWED_LEGAL = {
         "icu.md": "reproduced",
         "unicode.md": "reproduced",
         "cldr.md": "reproduced",
+        # zlib.md (Windows and macOS homes) and wepoll.md (Windows home) are not in every home: the committed notices must not depend on
+        # the platform, so their texts are stored in notice-texts/jdk/ (checked equal to the home's file where there is one). The Linux
+        # image links the system libz.so.1 and the Windows and macOS images link libzip with its bundled zlib; wepoll is the epoll
+        # emulation of libnio on Windows. Both are reproduced without proof of absence.
+        "zlib.md": "reproduced",
+        "wepoll.md": "reproduced",
         "aes.md": "not linked",
         "c-libutl.md": "not linked",
         "gcc.md": "not linked",
@@ -255,6 +261,7 @@ REVIEWED_LEGAL = {
         f: "not linked"
         for f in (
             "colorimaging.md",
+            "freetype.md",  # Windows and macOS homes; Linux uses the system FreeType
             "giflib.md",
             "harfbuzz.md",
             "jpeg.md",
@@ -268,6 +275,12 @@ REVIEWED_LEGAL = {
     "jdk.localedata": {"thaidict.md": "not linked"},
     "jdk.incubator.vector": {"sleef.md": "not linked"},
 }
+# Windows has no symlinks: its GraalVM home writes `Please see ..\java.base\<same file name>` (CRLF, nothing else; read from the
+# graalvm-community-jdk-25i4-25.0.4.1.1_windows-x64_bin.zip release asset, e.g. legal/jdk.net/LICENSE) where the Linux and macOS homes
+# have a copy of java.base's file. Only exactly that text, naming the same file, is taken as java.base's file.
+WINDOWS_POINTER = re.compile(
+    rb"Please see \.\.[\\/]java\.base[\\/](?P<n>[^\\/\r\n]+)\r?\n?"
+)
 REPRODUCED = sorted(
     (m, f) for m, d in REVIEWED_LEGAL.items() for f, v in d.items() if v == "reproduced"
 )
@@ -298,6 +311,36 @@ GUARDS = {
 # of oracle/graal at the commit the release file names, and its sources carry the Oracle GPLv2 + Classpath Exception header.
 GRAALVM_OWN_PREFIXES = ("org.graalvm.",)
 GRAALVM_OWN_MODULES = ("jdk.graal.compiler.options",)
+
+
+def legal_bytes(legal, m, f):
+    """Content of legal/<m>/<f>; a Windows pointer file to the same-named java.base file reads as that file."""
+    b = (legal / m / f).read_bytes()
+    if m != "java.base":
+        ptr = WINDOWS_POINTER.fullmatch(b)
+        target = legal / "java.base" / f
+        if ptr and ptr.group("n").decode("utf-8", "replace") == f and target.is_file():
+            return target.read_bytes()
+    return b
+
+
+def reproduced_text(G, m, f):
+    """Text of a reproduced notice: the GraalVM home's file, else the stored copy (platform-specific files), which must equal the home's
+    file where the home has it."""
+    home = G / "legal" / m / f
+    stored = TEXTS / "jdk" / f"{m}.{f}"
+    if home.is_file():
+        t = text(home.read_bytes())
+        if stored.exists() and text(stored.read_bytes()) != t:
+            sys.exit(
+                f"gen_notices: legal/{m}/{f} of the GraalVM home differs from {stored}; read it and update the stored copy"
+            )
+        return t
+    if stored.exists():
+        return text(stored.read_bytes())
+    sys.exit(
+        f"gen_notices: legal/{m}/{f} is not in the GraalVM home and there is no stored copy {stored}"
+    )
 
 
 def jimage_packages(G):
@@ -366,7 +409,7 @@ def check_module_coverage(G, modules):
     """
     legal = G / "legal"
     base = {f: sha((legal / "java.base" / f).read_bytes()) for f in GPL_CPE_FILES}
-    reproduced = {sha((legal / m / f).read_bytes()) for m, f in REPRODUCED}
+    reproduced = {sha(reproduced_text(G, m, f).encode()) for m, f in REPRODUCED}
     problems = []
     for m, pkgs in sorted(modules.items()):
         d = legal / m
@@ -380,14 +423,14 @@ def check_module_coverage(G, modules):
         for f in GPL_CPE_FILES:
             if f not in have:
                 problems.append(f"{m}: legal/{m}/{f} is missing")
-            elif sha((d / f).read_bytes()) != base[f]:
+            elif sha(legal_bytes(legal, m, f)) != base[f]:
                 problems.append(
                     f"{m}: legal/{m}/{f} differs from legal/java.base/{f}; read it and extend the policy"
                 )
         for f in sorted(have - set(GPL_CPE_FILES)):
             decision = REVIEWED_LEGAL.get(m, {}).get(f)
             if decision is None:
-                if sha((d / f).read_bytes()) in reproduced:
+                if sha(text(legal_bytes(legal, m, f)).encode()) in reproduced:
                     continue  # the same text is reproduced for another module
                 problems.append(
                     f"{m}: legal/{m}/{f} has no review decision; check whether the code or data it covers is in the image, "
@@ -642,7 +685,7 @@ def main():
     w(
         "Third-party code and data inside the JDK classes that the image contains (texts from `legal/<module>` of the GraalVM home, verbatim below): "
         "ICU normalisation data (`jdk/internal/icu/impl/data/icudt76b/nfc.nrm`, registered resource), Unicode data files, and CLDR locale data "
-        "(`java.base`); the Apache Xerces classes of `java.xml` (`com.sun.org.apache.xerces.internal.*`, compiled into the image), the W3C DOM "
+        "(`java.base`), zlib (the bundled copy that the Windows and macOS builds of libzip link; the Linux image links the system `libz.so.1`) and wepoll (Windows `libnio`); the Apache Xerces classes of `java.xml` (`com.sun.org.apache.xerces.internal.*`, compiled into the image), the W3C DOM "
         "interfaces (`org.w3c.dom`), and the W3C XML Schema, XHTML 1.0, XHTML 1.1, XML specification and `xml.xsd` DTD and schema files "
         "(`jdk/xml/internal/jdkcatalog/`, registered resources). "
         "Notices that cover code or data the image does not contain are not reproduced: in `java.base` aes.md, c-libutl.md, gcc.md and "
@@ -696,7 +739,7 @@ def main():
         *REPRODUCED,
     ):
         w(f"### OpenJDK {m} legal notice: {f}\n")
-        w(fence(text((G / "legal" / m / f).read_bytes())))
+        w(fence(reproduced_text(G, m, f)))
     w(
         "### Texts found inside the jars (de-duplicated by content; bracket = sha256 prefix)\n"
     )
