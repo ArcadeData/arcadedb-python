@@ -1,5 +1,5 @@
 = Bulk loads and commit size
-:description: The default commit size of insert_many, graph_batch and create_vertices on the arcadedb (native) and arcadedb-jvm packages, what it means for a failed load, what to do after an interrupted graph batch, how to change it, and a known limitation: a graph batch does not reuse the space of deleted edges.
+:description: The default commit size of insert_many, graph_batch and create_vertices on the arcadedb (native) and arcadedb-jvm packages, what it means for a failed load, what to do after an interrupted graph batch, how to change it, how insert_many treats Python's cyclic garbage collector on arcadedb-jvm, and a known limitation: a graph batch does not reuse the space of deleted edges.
 
 `insert_many`, `graph_batch` and `GraphBatch.create_vertices` load data in transactions. The commit size is the number of rows in one transaction. It decides how much work the engine holds in memory before it commits, and how many rows stay in the database when a load fails.
 
@@ -66,6 +66,16 @@ with db.graph_batch(commit_every=0) as batch:     # one commit for each flush, a
 with db.graph_batch(commit_every=5000) as batch:  # also sets the create_vertices chunk
     ...
 ----
+
+== The cyclic garbage collector during `insert_many` (`arcadedb-jvm`)
+
+On `arcadedb-jvm`, `insert_many` pauses Python's cyclic garbage collector for the length of a call when `rows` is a list or a tuple, and puts it back as it was when the call ends, also when the call raises. The call allocates many objects that the collector tracks. Without the pause, the collector goes through your whole row list again and again during the load, which makes the load slower. The call itself creates no reference cycles from a list or a tuple of plain rows, and the peak memory of the load did not rise in our measurement.
+
+A generator or any other lazy input is not paused. Your own code runs between the chunks that the generator yields, and that code can create reference cycles that only the collector frees. If your generator builds plain dicts, you can call `gc.disable()` around the load yourself.
+
+`gc.disable()` is process-wide. While a call with a list runs, other Python threads do not collect cyclic garbage automatically. When calls from several threads overlap, the pause does not last for the whole of each call: the collector comes back when the call that paused it ends. The collector is never left disabled by a call, and a collector that you disabled yourself stays disabled.
+
+The `arcadedb` (native) package does not change the collector. In our measurements, no collection ran inside a native `insert_many` call, so there is nothing to pause.
 
 == Graph batches next to deletes (fixed in ArcadeDB 26.11.1)
 

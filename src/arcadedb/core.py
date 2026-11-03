@@ -4,6 +4,7 @@ ArcadeDB Python Bindings - Core Database Classes
 Database and DatabaseFactory classes for embedded database access.
 """
 
+import gc
 import itertools
 from collections.abc import Mapping
 from datetime import date
@@ -719,6 +720,17 @@ class Database:
         property to float. A vector that is ragged, missing or null in a row
         stays in the JSON.
 
+        When ``rows`` is a list or a tuple, Python's cyclic garbage collector
+        is paused for the duration of the call and put back as it was when the
+        call ends, on success and on an exception alike. The call allocates
+        many objects the collector tracks, and without the pause it re-traverses
+        the caller's whole row list again and again, which costs a measurable
+        part of the load time on this build (see the bulk-loads docs page). A
+        generator or any other lazy iterable is not paused, because user code
+        that runs between the chunks can create reference cycles that only the
+        collector frees. ``gc.disable()`` is process wide, so other threads do
+        not collect automatically while a call with a list runs.
+
         Args:
             type_name: Target type (must exist): a document type gets
                 documents, a vertex type gets vertices (use ``graph_batch()``
@@ -761,6 +773,29 @@ class Database:
                 call waits for them before raising.
         """
         self._check_not_closed()
+        if not isinstance(rows, (list, tuple)):
+            # A lazy input runs user code between chunks that may create
+            # reference cycles, so the collector keeps running.
+            return self._insert_many_nogc(
+                type_name, rows, commit_every=commit_every, parallel=parallel
+            )
+        # A sized input: no user code runs between the library's chunk reads, so
+        # the cyclic collector is paused for the call (the caller's live row list
+        # is not re-traversed while the call allocates) and the previous state is
+        # restored in finally: re-enabled only if it was enabled on entry.
+        # Measured in ArcadeData/arcadedb-python#235 (A/B: python-gc-ingest-ab).
+        gc_was_enabled = gc.isenabled()
+        gc.disable()
+        try:
+            return self._insert_many_nogc(
+                type_name, rows, commit_every=commit_every, parallel=parallel
+            )
+        finally:
+            if gc_was_enabled:
+                gc.enable()
+
+    def _insert_many_nogc(self, type_name, rows, commit_every=10_000, parallel=False):
+        """The body of insert_many, without the pause of the cyclic collector."""
         # Rows are read from the iterable one chunk at a time and each chunk
         # crosses as its own JSON text, so the memory a load holds is bounded
         # by the chunk, not by the input. Reading the whole input into a list
