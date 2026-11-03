@@ -7,9 +7,10 @@
  * ~0.2us/vertex Python-side) and returns the created RIDs as ONE
  * semicolon-joined string, so the whole batch costs two bulk string copies.
  *
- * JSON-representable property values only (str/int/float/bool/null and
- * nested lists/maps thereof) — the Python side falls back to the matrix
- * path for anything else (e.g. datetime, bytes).
+ * Property values are str/int/float/bool/null, nested lists and maps thereof,
+ * and the tagged values DocumentBatcher.untag decodes (date-time, date,
+ * BigDecimal, byte[]) sitting directly in a row; the Python side falls back to
+ * the matrix path for anything else.
  */
 package com.arcadedb.python;
 
@@ -17,6 +18,8 @@ import com.arcadedb.database.RID;
 import com.arcadedb.graph.GraphBatch;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+
+import java.util.Map;
 
 public final class VertexBatcher {
 
@@ -42,9 +45,11 @@ public final class VertexBatcher {
       final JSONObject row = rows.getJSONObject(i);
       final Object[] flat = new Object[(row.length() + extra) * 2];
       int j = 0;
-      for (final String key : row.keySet()) {
-        flat[j++] = key;
-        flat[j++] = row.isNull(key) ? null : row.get(key);
+      // toMap() turns nested objects and arrays into plain Map and List: a parsed JSONArray stored as it is reads back as a
+      // JSONArray inside the transaction that wrote it. Scalars come out as row.get(key) gives them.
+      for (final Map.Entry<String, Object> entry : row.toMap().entrySet()) {
+        flat[j++] = entry.getKey();
+        flat[j++] = DocumentBatcher.untag(entry.getValue());
       }
       for (int c = 0; c < extra; c++) {
         flat[j++] = vectorNames[c];

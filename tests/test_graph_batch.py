@@ -461,8 +461,9 @@ def test_graph_batch_create_vertices_failure_rolls_back(temp_db_path, bulk):
     any transaction was accepted and silently lost at close (#121)."""
     with arcadedb.create_database(temp_db_path) as db:
         _unique_person_db(db)
-        # a datetime is not JSON-safe, so it routes to the property-matrix path
-        extra = {} if bulk else {"seen": datetime(2026, 10, 3)}
+        # a NaN is not JSON-safe, so it routes to the property-matrix path (a datetime
+        # crosses inside the JSON as a tagged value since the graph batches carry it)
+        extra = {} if bulk else {"seen": float("nan")}
         rows = [{"id": 2, **extra}, {"id": 2, **extra}]
 
         with db.graph_batch(parallel_flush=False) as batch:
@@ -627,7 +628,7 @@ def test_graph_batch_outside_the_callers_transactions(temp_db_path):
 
 @pytest.mark.parametrize(
     "rows",
-    [2, [{"x": 1}, {"x": 2}], [{"seen": datetime(2026, 10, 5)}, None]],
+    [2, [{"x": 1}, {"x": 2}], [{"seen": float("nan")}, None]],
     ids=["count", "json-bulk", "property-matrix"],
 )
 def test_graph_batch_create_vertices_leaves_the_callers_transaction(temp_db_path, rows):

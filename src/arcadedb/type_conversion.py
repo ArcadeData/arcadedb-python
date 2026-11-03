@@ -697,6 +697,22 @@ def json_bulk_scalar_ok(value: Any) -> bool:
     return False
 
 
+_BULK_TAGGED_SHAPES = frozenset(
+    (list, tuple, dict, datetime, date, Decimal, bytes, bytearray)
+)
+
+
+def json_bulk_tagged_ok(value: Any) -> bool:
+    """Whether a value may be handed to json_bulk_dumps_tagged by the graph batches (the cheap, per-value gate).
+
+    True for what json_bulk_scalar_ok accepts and for the exact types the tagged JSON carries: a list, tuple or dict, a date-time,
+    date, Decimal, bytes or bytearray. The deep check (a NaN, an integer beyond 64 bits or a date-time inside a list, a subnormal)
+    is json_bulk_dumps_tagged's own, which raises ValueError or TypeError so the caller sends the rows down the per-element path.
+    A subclass (pandas.Timestamp), a numpy scalar or array, a set and pandas NA stay refused: the per-element path converts those.
+    """
+    return type(value) in _BULK_TAGGED_SHAPES or json_bulk_scalar_ok(value)
+
+
 def _json_bulk_check(value: Any) -> None:
     """Raise ValueError for a value JSON would change on the way to the engine.
 

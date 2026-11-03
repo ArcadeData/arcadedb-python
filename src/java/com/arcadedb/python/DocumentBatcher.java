@@ -294,7 +294,7 @@ public final class DocumentBatcher {
    * A tagged value from the Python side, {"\u0001": [kind, payload]}: T LocalDateTime (UTC wall clock), D LocalDate, n BigDecimal,
    * b byte[] (base64): the objects the per-row path (type_conversion.convert_python_to_java) builds. Anything else is returned unchanged.
    */
-  private static Object untag(final Object v) {
+  static Object untag(final Object v) {
     if (v instanceof Map<?, ?> m && m.size() == 1 && m.get("\u0001") instanceof java.util.List<?> t && t.size() == 2
         && t.get(0) instanceof String kind && t.get(1) instanceof String s) {
       switch (kind) {
