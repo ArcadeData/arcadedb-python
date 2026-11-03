@@ -98,7 +98,9 @@ Releases from this repository start with 26.11.1. The 26.10.x wheels were built 
 
 The `arcadedb` (native) wheel is built from `native/` with GraalVM Community Edition; [`CLAUDE.md`](https://github.com/ArcadeData/arcadedb-python/blob/main/CLAUDE.md) has the commands. A native image build takes about 5 to 30 minutes per platform (macOS is the slowest).
 
-The JVM build runs in Docker on Linux. macOS and Windows need a JDK 25 or later. The jars come from the `arcadedata/arcadedb` Docker image: `latest` by default, or the tag in `ARCADEDB_TAG` (for example `ARCADEDB_TAG=26.10.2 ./scripts/build.sh`). The package version is read from the engine jar in that image, so a `26.11.1-SNAPSHOT` image builds `26.11.1.devN`.
+The JVM build runs in Docker on Linux. macOS and Windows need a JDK 25 or later. The jars come from the `arcadedata/arcadedb` Docker image: `latest` by default, or the tag in `ARCADEDB_TAG` (for example `ARCADEDB_TAG=26.10.2 ./scripts/build.sh`). The package version is read from the engine jar in that image, so an `A.B.C-SNAPSHOT` image builds `A.B.C.devN`.
+
+The native build does not use the image. It resolves `arcadedb-engine` and `arcadedb-server` from Maven Central at `arcadedb.version` in `native/pom.xml` (release versions only, because a snapshot is not on Maven Central) and compiles them with GraalVM Community Edition. Neither build compiles the engine from source: the engine code is upstream's, unmodified.
 
 Tests run against the built wheel, not the source tree: install the wheel with its `test` extra into a virtual environment, then run `pytest`. [`CLAUDE.md`](https://github.com/ArcadeData/arcadedb-python/blob/main/CLAUDE.md) has the exact commands, the build options and the lint setup.
 

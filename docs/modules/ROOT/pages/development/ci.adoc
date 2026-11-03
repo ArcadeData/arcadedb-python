@@ -54,6 +54,15 @@ The names of the test jobs do not change: `Test arcadedb (<platform>, Python <ve
 
 `release-jvm.yml` expects exactly four wheels, one for each platform, all `py3-none`. It checks the count, the tags, the sizes and the names before it publishes. The nightly run also tests against the newest `arcadedata/arcadedb:latest` image.
 
+== Which engine each workflow tests
+
+The two packages get their engine from different places, so between releases they are tested against different engines:
+
+* `test-jvm.yml` and `test-python-examples.yml` take the engine jars from the `arcadedata/arcadedb` image tag, `latest` by default. `latest` is upstream's newest snapshot and moves nightly, which is why both workflows also run every night.
+* `test-native.yml` links `DEV_ENGINE`, the newest release on Maven Central, unless the tag is a final or post version (then it links the release the tag is named after) or the `engine` input of a manual run says otherwise.
+
+The dev-engine bump after each release, described in xref:development/release.adoc[Release], moves `DEV_ENGINE` to the new release and closes the gap until upstream publishes the next one.
+
 == Other rules
 
 * A pull request that changes only documentation (`docs/**`, `*.adoc`, `CLAUDE.md`, `examples/README.md`, `LICENSE*`) runs nothing.
