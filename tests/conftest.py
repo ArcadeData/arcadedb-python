@@ -58,6 +58,10 @@ if BACKEND != "native":
     collect_ignore.append("test_native_vector_provider.py")
     # the lazy fingerprint of a record that save() compares with the stored one (arcadedb._native.records), counted through its seam
     collect_ignore.append("test_native_save_lazy_fingerprint.py")
+    # crossing counts of the transaction entry points (lib.call is the native library's ctypes door)
+    collect_ignore.append("test_native_tx_crossings.py")
+    # counts the statement texts the native backend hands to the engine (the JPype backend has no such layer)
+    collect_ignore.append("test_native_statement_texts.py")
 if not os.path.isfile(
     os.path.join(os.path.dirname(os.path.dirname(__file__)), "docs", "index.md")
 ):
