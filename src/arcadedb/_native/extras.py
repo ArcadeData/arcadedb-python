@@ -20,7 +20,7 @@ from ..callbacks import check_event, check_function
 from ..exceptions import ArcadeDBError
 from ..graph_batch import GraphBatch as _BaseGraphBatch
 from . import interrupts, lib, not_yet
-from .codec import _PLAIN, _default, _prep, loads
+from .codec import _PLAIN, _default, _prep, encode_gb_args, loads
 
 # -------------------------------------------------------------------------------------------------------- upcall
 
@@ -164,6 +164,20 @@ class NativeGraphBatch(_BaseGraphBatch):
         return cls._VALID_WAL_FLUSH_MODES[normalized]
 
     def _op(self, prefix: str, op: str, **args) -> dict:
+        if lib.GB_BIN:
+            # float32 vectors cross in a binary side buffer; a library without the entry keeps the text path below
+            text, buf, count = encode_gb_args(args)
+            if buf is not None:
+                return _call(
+                    prefix,
+                    "arcadedb_n_gb_bin",
+                    self._gb,
+                    lib.b(op),
+                    lib.b(text),
+                    buf,
+                    count,
+                )
+            return _call(prefix, "arcadedb_n_gb", self._gb, lib.b(op), lib.b(text))
         return _call(prefix, "arcadedb_n_gb", self._gb, lib.b(op), lib.b(_enc(args)))
 
     def new_vertex(self, type_name: str):

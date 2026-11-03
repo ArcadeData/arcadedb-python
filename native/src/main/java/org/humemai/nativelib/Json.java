@@ -84,9 +84,15 @@ final class Json {
    * Parses a top-level object whose value for streamKey is an array of objects: those rows go to the sink one by one and the key maps to
    * the row count (Integer) instead of the list. Every other key is parsed as usual. A streamKey value that is not an array stays as parsed.
    */
-  @SuppressWarnings("unchecked")
   static Map<String, Object> object(final byte[] b, final int len, final String streamKey, final RowSink sink) {
-    final Json j = new Json(b, len, 0L, 0);
+    return object(b, len, streamKey, sink, 0L, 0);
+  }
+
+  /** As above; buf: the float32 side buffer that {"\u0001":["B",offset,count]} values point into (see parse), 0 for none. */
+  @SuppressWarnings("unchecked")
+  static Map<String, Object> object(final byte[] b, final int len, final String streamKey, final RowSink sink, final long buf,
+      final long bufFloats) {
+    final Json j = new Json(b, len, buf, bufFloats);
     j.ws();
     if (j.i >= j.n || j.s[j.i] != '{')
       throw new IllegalArgumentException("expected a JSON object");

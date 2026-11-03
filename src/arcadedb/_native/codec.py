@@ -222,6 +222,35 @@ def _dump(obj, binary):
     return text, buf, state[1]
 
 
+def _gb_default(value, state):
+    """json.dumps hook for a GraphBatch op in binary mode: a one-dimensional non-empty float32 ndarray goes to the side buffer (the
+    ``["B", offset, count]`` tag, a float[] in Java, the value the ``"F"`` text gives); every other value as :func:`_default`
+    writes it, so a list, a float64 array or a 2-D array keeps the text it has always had.
+    """
+    if (
+        _np is not None
+        and isinstance(value, _np.ndarray)
+        and value.dtype == _np.float32
+        and value.ndim == 1
+        and value.size
+    ):
+        return _default(value, state)
+    return _default(value)
+
+
+def encode_gb_args(args):
+    """The ``args`` of ``arcadedb_n_gb_bin``: ``(text, float32 side buffer bytes or None, float count)``, text as :func:`_prep` and
+    :func:`_default` write it for ``arcadedb_n_gb`` except that the float32 vectors of the rows and props are in the buffer.
+    """
+    state = [[], 0]
+    text = json.dumps(_prep(args), default=lambda v: _gb_default(v, state))
+    arrays = state[0]
+    if not arrays:
+        return text, None, 0
+    buf = arrays[0].tobytes() if len(arrays) == 1 else _np.concatenate(arrays).tobytes()
+    return text, buf, state[1]
+
+
 def row_default(value):
     """json.dumps hook for the rows of a bulk load: a NumPy float array that is not float32 is the list it would have been
     (a float64 array stored on an undeclared property keeps its doubles, as on the JPype path); the rest as :func:`_default`.

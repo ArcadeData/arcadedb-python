@@ -67,6 +67,7 @@ import org.graalvm.nativeimage.c.function.CEntryPoint;
 import org.graalvm.nativeimage.c.function.CFunctionPointer;
 import org.graalvm.nativeimage.c.function.InvokeCFunctionPointer;
 import org.graalvm.nativeimage.c.type.CCharPointer;
+import org.graalvm.nativeimage.c.type.CFloatPointer;
 import org.graalvm.nativeimage.c.type.CTypeConversion;
 import org.graalvm.word.Pointer;
 import org.graalvm.word.WordFactory;
@@ -446,8 +447,23 @@ public final class NativeExtras {
    * new_edges {src:[..], type, dst:[..], props:[..]|null}; flush; close; stats.
    */
   @CEntryPoint(name = "arcadedb_n_gb")
-  @SuppressWarnings("unchecked")
   public static CCharPointer gb(final IsolateThread thread, final long h, final CCharPointer op, final CCharPointer argsJson) {
+    return gbImpl(h, op, argsJson, 0L, 0);
+  }
+
+  /**
+   * Same as arcadedb_n_gb plus a float32 side buffer (pointer + count of floats) that values {"\u0001":["B",offset,count]} in argsJson read
+   * from, as arcadedb_n_exec_bin does: a float[] property of create_vertices rows or new_edges props, with no number text.
+   */
+  @CEntryPoint(name = "arcadedb_n_gb_bin")
+  public static CCharPointer gbBin(final IsolateThread thread, final long h, final CCharPointer op, final CCharPointer argsJson,
+      final CFloatPointer buf, final long bufFloats) {
+    return gbImpl(h, op, argsJson, buf.rawValue(), bufFloats);
+  }
+
+  @SuppressWarnings("unchecked")
+  private static CCharPointer gbImpl(final long h, final CCharPointer op, final CCharPointer argsJson, final long buf,
+      final long bufFloats) {
     try {
       final BatchEntry entry = BATCHES.get(h);
       if (entry == null)
@@ -460,9 +476,9 @@ public final class NativeExtras {
       if (chars.n == 0)
         a = new HashMap<>();
       else if (opName.equals("create_vertices"))
-        a = Json.object(chars.b, chars.n, "rows", row -> flats.add(varargs(row)));
+        a = Json.object(chars.b, chars.n, "rows", row -> flats.add(varargs(row)), buf, bufFloats);
       else
-        a = (Map<String, Object>) Json.parse(chars.b, chars.n, 0L, 0);
+        a = (Map<String, Object>) Json.parse(chars.b, chars.n, buf, bufFloats);
       switch (opName) {
       case "create_vertex" -> {
         final MutableVertex v = batch.createVertex((String) a.get("type"), varargs(a.get("props")));
