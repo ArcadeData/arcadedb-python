@@ -28,7 +28,7 @@ The two upstream channels (Maven Central, Docker Hub) are published by separate 
 upstream release and can lag each other: both must pass before the tag is pushed.
 
 usage:
-    release_preflight.py VERSION [--remote URL] [--repo OWNER/NAME] [--repo-root DIR]
+    release_preflight.py VERSION [--remote URL] [--repo OWNER/NAME] [--checkout DIR]
 
 Needs: network, git (for check_version.py), gh (logged in), bash (for check f).
 Tests: tests/test_release_preflight.py. Output is ASCII only.
@@ -649,7 +649,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--repo", default=OWN_REPO, help="GitHub repository of the CI runs"
     )
-    parser.add_argument("--repo-root", default=str(SCRIPTS.parent))
+    parser.add_argument("--checkout", dest="repo_root", default=str(SCRIPTS.parent))
     args = parser.parse_args(argv)
 
     results = run_checks(args.version, args.remote, args.repo, Path(args.repo_root))

@@ -433,7 +433,7 @@ def test_g_unreadable_variable_is_a_skip(net):
 def test_exit_code_is_the_number_of_fails(net, monkeypatch, capsys):
     net.http.clear()
     monkeypatch.setattr(rp, "http_get", net.http_get)
-    code = rp.main([V, "--repo-root", str(REPO)])
+    code = rp.main([V, "--checkout", str(REPO)])
     out = capsys.readouterr().out
     assert code == sum(1 for line in out.splitlines() if line.startswith("FAIL "))
     assert code >= 4 and f"{code} FAIL(s)" in out
@@ -441,10 +441,10 @@ def test_exit_code_is_the_number_of_fails(net, monkeypatch, capsys):
 
 
 def test_main_ready_prints_the_go(net, capsys):
-    assert rp.main([V, "--repo-root", str(REPO)]) == 0
+    assert rp.main([V, "--checkout", str(REPO)]) == 0
     assert "Ready" in capsys.readouterr().out
 
 
 def test_output_is_ascii(net, capsys):
-    rp.main([V, "--repo-root", str(REPO)])
+    rp.main([V, "--checkout", str(REPO)])
     capsys.readouterr().out.encode("ascii")
