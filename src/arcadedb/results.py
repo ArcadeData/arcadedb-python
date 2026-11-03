@@ -1155,6 +1155,15 @@ class ResultSet:
             >>> count = db.query("sql", "SELECT FROM User").count()
             >>> print(f"Found {count} users")
         """
+        row_access = _bridge_class("RowAccess")
+        if row_access is not None and self._readable() and not self._closed:
+            # hasNext() and next() per row, and the close, in ONE crossing
+            try:
+                count = int(row_access.countAndClose(self._java_result_set))
+            except JException as exc:
+                raise _read_error(exc) from exc
+            self._drained()
+            return count
         count = 0
         for _ in self:
             count += 1
@@ -1208,8 +1217,23 @@ class ResultSet:
             ...                 "alice@example.com").one()
             >>> print(user.get("name"))
         """
-        iterator = iter(self)
+        row_access = _bridge_class("RowAccess")
         try:
+            if row_access is not None and self._readable() and not self._closed:
+                # up to two rows and the close in ONE crossing instead of hasNext()/next() per row
+                try:
+                    rows = row_access.upToTwoAndClose(self._java_result_set)
+                except JException as exc:
+                    self._closed = True  # upToTwoAndClose closes on every path
+                    raise _read_error(exc) from exc
+                self._closed = True
+                self._exhausted = len(rows) < 2
+                if len(rows) == 0:
+                    raise ValueError("Query returned no results")
+                if len(rows) > 1:
+                    raise ValueError("Query returned multiple results")
+                return Result(rows[0], self._database)
+            iterator = iter(self)
             try:
                 result = next(iterator)
             except StopIteration as exc:

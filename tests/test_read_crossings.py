@@ -12,6 +12,7 @@ errors, same result-set state), so a count cannot be bought with a change of beh
 import pytest
 
 from arcadedb import core, results
+from arcadedb.exceptions import ArcadeDBError
 
 
 class Counting:
@@ -123,3 +124,80 @@ def test_get_raw_on_vertex_and_edge(db):
     assert vertex.get_raw("nope") is None
     assert edge.get_raw("w") == 7
     assert edge.get_raw("nope") is None
+
+
+# ---------------------------------------------------------------- ResultSet.one() / count()
+
+
+def _state(rs):
+    return rs._closed, rs._exhausted
+
+
+def test_one_is_one_crossing(db, log):
+    rs = db.query("sql", "SELECT FROM T WHERE k = 3")
+    del log[:]
+    row = rs.one()
+    assert len(log) == 1 and log[0].startswith("RowAccess."), log
+    assert row.get("v") == 30
+    assert _state(rs) == (True, True)
+
+
+@pytest.mark.parametrize(
+    "statement, message, state",
+    [
+        ("SELECT FROM T WHERE k = 99", "Query returned no results", (True, True)),
+        ("SELECT FROM T", "Query returned multiple results", (True, False)),
+    ],
+)
+def test_one_errors_and_state_match_the_plain_path(
+    db, monkeypatch, statement, message, state
+):
+    seen = []
+    for plain in (False, True):
+        if plain:
+            _no_bridge(monkeypatch, "RowAccess")
+        rs = db.query("sql", statement)
+        with pytest.raises(ValueError, match=message):
+            rs.one()
+        seen.append(_state(rs))
+        with pytest.raises(ArcadeDBError if state == (True, False) else ValueError):
+            rs.one()
+    assert seen[0] == seen[1] == state
+
+
+def test_one_on_a_closed_database_raises_like_the_plain_path(db, monkeypatch):
+    rs = db.query("sql", "SELECT FROM T WHERE k = 3")
+    db.close()
+    with pytest.raises(ArcadeDBError, match="closed"):
+        rs.one()
+
+
+def test_count_is_one_crossing(db, log):
+    rs = db.query("sql", "SELECT FROM T")
+    del log[:]
+    assert rs.count() == 5
+    assert len(log) == 1 and log[0].startswith("RowAccess."), log
+    assert _state(rs) == (True, True)
+    assert rs.count() == 0  # exhausted: nothing remains, as before
+
+
+def test_count_counts_only_the_remaining_rows(db):
+    rs = db.query("sql", "SELECT FROM T")
+    next(rs)
+    next(rs)
+    assert rs.count() == 3
+    assert _state(rs) == (True, True)
+
+
+def test_count_of_an_empty_result_and_after_close(db):
+    assert db.query("sql", "SELECT FROM T WHERE k = 99").count() == 0
+    rs = db.query("sql", "SELECT FROM T")
+    rs.close()
+    with pytest.raises(ArcadeDBError, match="closed before all its rows were read"):
+        rs.count()
+
+
+def test_count_matches_the_plain_path(db, monkeypatch):
+    fast = db.query("sql", "SELECT FROM T WHERE k >= 2").count()
+    _no_bridge(monkeypatch, "RowAccess")
+    assert db.query("sql", "SELECT FROM T WHERE k >= 2").count() == fast == 3
