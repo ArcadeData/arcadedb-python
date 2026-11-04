@@ -247,6 +247,9 @@ class NativeGraphBatch(_BaseGraphBatch):
     def create_vertices(self, type_name: str, count_or_properties) -> list:
         """The RIDs of the new vertices. Rows go in chunks of the batch's ``commit_every`` (1000 unless graph_batch() got another value;
         0: 10,000), one crossing and one transaction per chunk: chunks that already went in stay stored if a later chunk fails.
+
+        A non-empty one-dimensional ``float32`` numpy array in a row crosses in a binary side buffer; a list or a ``float64`` array
+        crosses as number text (``new_edge`` and ``new_edges`` props follow the same rule).
         """
         self._check_not_closed()
         db = self._db
