@@ -33,13 +33,14 @@ def _select(db):
 
 @pytest.fixture
 def fills(monkeypatch):
-    """The sizes of the buffer after each read of the cursor (``_fill``), as the result set's own count of replies."""
+    """The number of rows each read of the cursor (``_fill``) added to the result set's buffer, one entry per read."""
     seen = []
     real = database.NativeResultSet._fill
 
     def counting(self):
+        before = len(self._buf)
         got = real(self)
-        seen.append(len(self._buf))
+        seen.append(len(self._buf) - before)
         return got
 
     monkeypatch.setattr(database.NativeResultSet, "_fill", counting)
@@ -74,16 +75,28 @@ def test_the_last_batch_finishes_the_cursor(db):
     )  # read to the end, not closed early
 
 
-def test_the_buffer_holds_one_reply_not_the_result(db, fills):
+def test_rows_read_ahead_stay_within_one_reply_not_the_result(db, fills):
+    """Rows read from the cursor but not yet handed to the caller stay within one reply plus one batch.
+
+    The old code drained the whole result into dicts before it cut the first batch, so after the first batch it had read all
+    ROWS rows and the caller held 100: 4900 rows ahead. The buffer alone cannot show that (the drain empties it as it goes), so
+    this counts the rows read from the cursor against the rows delivered, at every batch.
+    """
     rs = _select(db)
-    held = []
-    for batch in rs.iter_json_batches(batch_size=100):
-        # rows in hand: this batch plus what the result set still buffers
-        held.append(len(batch) + len(rs._buf))
+    size = 100
+    read = len(rs._buf)  # the first reply, read when the query ran
+    delivered = 0
+    ahead = []
+    for batch in rs.iter_json_batches(batch_size=size):
+        delivered += len(batch)
+        ahead.append(read + sum(fills) - delivered)
+    assert delivered == ROWS and read + sum(fills) == ROWS
+    assert len(ahead) == ROWS // size
     assert fills, "the cursor was never read past its first reply"
     assert max(fills) <= database._NEXT_BATCH
-    assert max(held) <= 100 + database._NEXT_BATCH
-    assert max(held) < ROWS // 2
+    assert ahead[0] <= database._NEXT_BATCH  # not ROWS - size
+    assert max(ahead) <= database._NEXT_BATCH + size
+    assert max(ahead) < ROWS // 2
 
 
 def test_the_cursor_is_read_when_the_next_batch_is_asked_for(db, fills):

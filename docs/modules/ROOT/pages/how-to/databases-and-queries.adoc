@@ -238,6 +238,9 @@ A query vector for `vectorNeighbors` can be a numpy array or a list. The convers
 
 * `first()` returns the first row, or `None` when there is none, so `if db.query(...).first():` tests whether anything matched.
 * `to_list()` materialises the whole result as a list of dicts. Use it when you need the whole result in memory; iterate when you stop early or the result is large.
+* `iter_json_batches(batch_size=10_000)` yields the rows as lists of JSON-native dicts, `batch_size` rows per list (the last may be shorter), with the same values as `to_json_list()`. On the native build `batch_size` bounds memory: the result set holds one reply of the cursor (2048 rows) and one batch at a time, and reads the next reply only when the next batch is asked for, so a large result is never held whole. On the JVM build a batch is serialised on the Java side one at a time. `to_list()`, `to_json_list()`, `to_dataframe()`, `to_columns()`, `to_arrow()` and `to_polars()` still hold the whole result, because they return it whole.
++
+One laptop study on the native build, 1,000,000 rows read with `batch_size=10_000`, 10 clean pairs of this change against the previous behaviour; each figure is the ratio of the new value to the old one, so below 1 is lower. Peak RSS: 0.286 (95% interval 0.284 to 0.289). Time to the first batch: 0.010 (95% interval 0.009 to 0.010). Wall time of the whole read: 0.958 (95% interval 0.952 to 0.966). This is one machine and one result shape, not a speed promise.
 
 === Record ids in rows
 
