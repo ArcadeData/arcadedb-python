@@ -157,6 +157,83 @@ WARNING: *One JVM configuration per process.* JVM options are locked after the J
 
 Each Python process starts its own JVM, and each JVM sees the whole container limit. With several Python processes in one container, give each process its own `heap_size`.
 
+[[jvm-aot]]
+=== Faster start-up with the AOT cache
+
+JDK 25 can keep an ahead-of-time (AOT) cache of the classes it loads and links at start-up (Project Leyden: the cache is https://openjdk.org/jeps/483[JEP 483], the one-step training run that writes it is https://openjdk.org/jeps/514[JEP 514]). A later JVM start then skips that work. The `{jvm-pkg-name}` package supports it and keeps it *off by default*. Turn it on with the environment variable `ARCADEDB_AOT=1`, or with `start_jvm(aot=True)` before the first database is created. The argument wins over the variable, so `aot=False` turns it off even when the variable is set.
+
+[source,python,subs="attributes+"]
+----
+from {import-name}.jvm import start_jvm
+
+start_jvm(aot=True)   # the same as ARCADEDB_AOT=1 in the environment
+----
+
+How it works. The first process on a machine trains the cache: the JVM writes the file when that process exits normally. The next start checks the file with the bundled JVM and then uses it. The file is in your per-user cache directory (`$XDG_CACHE_HOME/arcadedb/aot` or `~/.cache/arcadedb/aot` on Linux). Set `ARCADEDB_AOT_CACHE=<file>` to name the file yourself. The cache records the jars it was made for, so each package version trains its own file. Any problem (a directory you cannot write, a full disk, a file the JVM refuses) gives a normal start. The same holds when your `jvm_args` carry their own `-XX:AOT*` or `-Xshare` flags: the package then adds nothing.
+
+==== When to turn it on
+
+Turn it on for short-lived processes, where the JVM start and the first queries are a large part of the run time: command-line tools, scripts, test runs and jobs that start often. Keep the cache directory between runs. A file system that is empty at every start trains again each time and pays the one-time cost each time.
+
+Do not bother with it for a long-running service. The cache changes the start only, and the measurement below shows no steady-state gain that we can rely on. If start-up time matters most and you can choose the package, `{native-pkg-name}` has no JVM to start (see xref:which-package.adoc[Which package?]).
+
+==== One-time costs
+
+* *A training run.* In the study below, the training process took 4.5 s, against 2.8 s for the same program without the cache.
+* *One check run.* The next start runs the bundled JVM once more to check the new file (0.7 s in the study).
+* *Disk.* The cache file was 41,529,344 bytes (39.6 MiB).
+
+==== What we measured
+
+One study, on one laptop (Linux x86_64), with `{jvm-pkg-name}` 26.11.1.dev0 on its bundled JDK 25. Each figure is the ratio of the time with `ARCADEDB_AOT=1` to the time without it, so a value below 1 means faster with the cache. The runs alternated between the two settings (ABBA order), 19 rounds each, and each figure has 18 clean pairs. The table gives the median ratio and its 95% interval. A control arm that repeated the setting without the cache gave an interval that includes 1 for each of the five figures that the study had to decide on, which is the check that the method does not invent a difference.
+
+* *First script* (the first five rows of the table): a new process on an existing graph database of 5,000 vertices and 15,000 edges. It imports the package, starts the JVM, opens the database, runs one SQL query by id and runs one openCypher 2-hop query. Each round takes the median of 5 new processes.
+* *Steady* (the last four rows of the table): one process that inserts 300,000 documents with `insert_many` (unique index, `commit_every=5000`), makes 100,000 point reads, and runs 5,000 openCypher 2-hop queries on a graph of 20,000 vertices and 60,000 edges after 500 warm-up queries.
+
+[cols="3,1,1"]
+|===
+| Figure | Median ratio | 95% interval
+
+| First script, from `import` to the first openCypher result
+| 0.653
+| [0.648, 0.658]
+
+| Opening the database
+| 0.482
+| [0.475, 0.489]
+
+| First SQL query
+| 0.579
+| [0.562, 0.590]
+
+| First openCypher query
+| 0.455
+| [0.431, 0.489]
+
+| JVM start (`start_jvm()`)
+| 0.921
+| [0.911, 0.930]
+
+| Steady: `insert_many` of 300,000 documents
+| 1.000
+| [0.948, 1.036]
+
+| Steady: 100,000 point reads
+| 0.931
+| [0.877, 1.002]
+
+| Steady: 5,000 warm 2-hop openCypher queries
+| 0.943
+| [0.902, 0.996]
+
+| Steady: peak memory (RSS)
+| 1.009
+| [0.940, 1.074]
+
+|===
+
+The first script ran about a third faster with the cache (ratio 0.653, interval [0.648, 0.658]), and the gain is in opening the database and in the first queries. The steady rows show at most a small gain: the interval of the 2-hop queries ends just below 1, and the intervals of the insert, the point reads and the memory include 1. The interval of the insert reaches 1.036. This is why the cache stays opt-in. These figures come from one machine and one workload. Measure on your own before you rely on them.
+
 == Native build notes (`{native-pkg-name}`)
 
 The native package is the same engine compiled to a GraalVM native-image shared library. It needs no JVM and no JPype, so the JVM options above do not apply to it. The calls that hand out a Java object (`get_java_database`, `get_java_document`) raise `NotOnNativeYet` (a `NotImplementedError`) instead of misbehaving. The list is in xref:which-package.adoc[Which package?]. Report problems in the {repo-url}/issues[issue tracker] and say which package you use.
@@ -199,7 +276,7 @@ The facts that matter in a container are spread over several pages. This list co
 * *Memory limit.* `{native-pkg-name}` limits its heap to 50% of the container memory limit (the cgroup limit), and the engine also uses memory outside the heap. See <<native-heap>>. Each `{jvm-pkg-name}` process starts its own JVM, and each JVM sees the whole container limit. With several Python processes in one container, give each its own `heap_size`. See <<jvm-options>>.
 * *Transaction size.* A bulk load holds the rows of a transaction in memory until it commits, so a smaller commit size lowers the heap a load needs. See xref:how-to/bulk-loads.adoc[Bulk loads and commit size].
 * *Read-only file systems.* Neither package writes into the working directory. The log goes to a per-user state directory. When that directory cannot be written, the package logs a warning and uses a new directory under the system temp directory. To keep the log, set `ARCADEDB_LOG_DIR` to a writable volume. See xref:how-to/logs.adoc[Where the logs go]. The database directory itself must be on a writable volume.
-* *Start-up.* `{native-pkg-name}` has no JVM to start, so processes that start often, such as serverless functions and short jobs, start faster with it. See xref:which-package.adoc[Which package?].
+* *Start-up.* `{native-pkg-name}` has no JVM to start, so processes that start often, such as serverless functions and short jobs, start faster with it. See xref:which-package.adoc[Which package?]. With `{jvm-pkg-name}`, the opt-in AOT cache shortens the start: see <<jvm-aot>>.
 * *Base image.* Use a glibc-based image, for example `python:3.12-slim`. Alpine and other musl-based images have no wheel. See <<requirements>>.
 
 == Next steps
