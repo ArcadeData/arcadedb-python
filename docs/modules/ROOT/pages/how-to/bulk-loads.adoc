@@ -1,5 +1,5 @@
 = Bulk loads and commit size
-:description: The default commit size of insert_many, graph_batch and create_vertices on the arcadedb (native) and arcadedb-jvm packages, what it means for a failed load, what to do after an interrupted graph batch, how to change it, how insert_many treats Python's cyclic garbage collector on arcadedb-jvm, which property shapes a graph batch loads in bulk on the JVM build, and a known limitation: a graph batch does not reuse the space of deleted edges.
+:description: The default commit size of insert_many, graph_batch and create_vertices on the arcadedb (native) and arcadedb-jvm packages, what it means for a failed load, what to do after an interrupted graph batch, how to change it, how insert_many treats Python's cyclic garbage collector on arcadedb-jvm, which property shapes a graph batch loads in bulk on the JVM build, how to pass time-series columns to append_samples on arcadedb (native), and a known limitation: a graph batch does not reuse the space of deleted edges.
 
 `insert_many`, `graph_batch` and `GraphBatch.create_vertices` load data in transactions. The commit size is the number of rows in one transaction. It decides how much work the engine holds in memory before it commits, and how many rows stay in the database when a load fails.
 
@@ -110,6 +110,22 @@ The table is one laptop study of the `arcadedb-jvm` package: per-row time of thi
 | 1.010 (0.979 to 1.027)
 
 |===
+
+== Time-series samples with `append_samples` (`arcadedb`, native)
+
+`db.async_executor().append_samples(type_name, timestamps, *columns)` loads a columnar batch into a TIMESERIES type: the timestamps, then one column for each tag and field in the order of the type's declaration. Call `wait_completion()` before you read the samples back. How to declare the type is in the main ArcadeDB docs: see {arcadedb-docs-url}/concepts/timeseries[Time series].
+
+On the `arcadedb` (native) package, a NumPy column crosses to the engine by its address, with no JSON text, when it is one of these:
+
+* The timestamps: a one-dimensional, non-empty integer or bool array (`int64` is the plain case), or a `datetime64[ns]` array without `NaT`.
+* A numeric column: a one-dimensional, non-empty array of any integer or bool kind, or of a float kind up to `float64` (`float32` widens to `float64` without a change of value). A `uint64` array, as timestamps or as a column, crosses only if its largest value fits in `int64`.
+* Each column must have as many values as there are timestamps.
+
+Everything else keeps the text path, which stores the same values and only takes longer: a list or a tuple, a subclass of `ndarray`, a two-dimensional or empty array, a float array as the timestamps, a `datetime64` array of another unit or with `NaT`, a `long double` array, and a string or tag column. A call can mix both: the numeric columns cross by address and the tag column goes as text. To get the fast path, build the timestamps and the numeric columns as NumPy arrays with these dtypes and pass the arrays as they are, without `.tolist()`. An array that is not already contiguous `int64` or `float64` is converted first, which copies it in NumPy.
+
+The measurement is a laptop A/B on the `arcadedb` (native) wheel, one fresh process per run, Python 3.12 and NumPy 2.5.4. The workload loaded 2,000,000 points of 100 hosts in chunks of 100,000: an `int64` timestamp array, one list of host names (the tag), and three `float64` arrays, with one `wait_completion()` at the end. The figure is the whole ingest time in seconds, including that wait, as the ratio of the build with this change to the build without it (below 1 means faster): 0.370 (95% interval 0.362 to 0.390, median of 11 clean paired runs). A document insert in the same runs, which does not use this path, took 1.020 (95% interval 1.016 to 1.022) of the time on the build with this change. The figure holds for this shape: your gain depends on how many numeric columns a call carries and how large the chunks are.
+
+`ARCADEDB_NATIVE_TS_BIN=0` in the environment turns the address path off and returns to the text path. A native library that is older than this change falls back to the text path by itself.
 
 == Graph batches next to deletes (fixed in ArcadeDB 26.11.1)
 
