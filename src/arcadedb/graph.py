@@ -129,6 +129,8 @@ class Document:
         Raises:
             ArcadeDBError: If the engine refuses the write (no transaction, a duplicate key,
                 a read-only database, a ``before_*`` callback that raised).
+            ArcadeDBError: If another transaction changed the record after it was read
+                (``ConcurrentModificationException`` in the message; the native build raises the same error).
         """
         try:
             self._java_document.save()

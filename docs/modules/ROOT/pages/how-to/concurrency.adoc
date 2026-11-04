@@ -77,7 +77,7 @@ What the runs show:
 * Reading the value, computing in Python and writing it back lost updates under the default isolation level, also when every conflict was retried: with `run_in_transaction` 1,137 of 12,000 on the JVM build and 201 of 12,000 on the native build, with the own loop 2,883 and 331. In this probe the read is a `SELECT` and the write is a separate `UPDATE` with the computed value.
 * The same read-compute-write under `REPEATABLE_READ` with the own retry loop lost nothing: 0 lost updates in each of the 3 runs, one per build.
 
-Based on that, do the arithmetic in the statement and retry the transaction. If the new value needs a computation that SQL cannot do, start the transaction with `BEGIN ISOLATION REPEATABLE_READ` and retry as in <<retry-loop>>. The evidence for each is one run per build, as in the table. Do not read a value, compute in Python and write it back under the default isolation level.
+Based on that, do the arithmetic in the statement and retry the transaction. If the new value needs a computation that SQL cannot do, start the transaction with `BEGIN ISOLATION REPEATABLE_READ` and retry as in <<retry-loop>>. The evidence for each is one run per build, as in the table. Do not read a value, compute in Python and write it back under the default isolation level. The table does not cover the record object's `save()` on the native build: see <<record-save>>.
 
 [source,python]
 ----
@@ -87,6 +87,26 @@ db.run_in_transaction(
     retries=60,
 )
 ----
+
+[[record-save]]
+=== `save()` of a record object refuses a lost update
+
+`record.modify().set(...).save()` on a record that exists is a read-compute-write: the object holds the values it was read with, and `save()` writes the changed properties back. If another transaction changed the stored record after the object was read, that write used to overwrite the change without an error. The JVM build already refused it. The `arcadedb` (native) build now refuses it too: `save()` raises `ArcadeDBError` with `ConcurrentModificationException` in the message, and writes nothing.
+
+The engine keeps no record version, so the native build compares values. Inside the transaction of the update, `save()` reads the stored record and compares it with the values the object held as read. A record that differs is a lost update. A record that another transaction changed and then changed back is not detected. A `save()` of a new record has nothing to compare and is not checked. A second `save()` of the same object does not conflict with the first, because after a successful save the object holds the values it wrote.
+
+`save()` of an existing record is a write, so it needs an open transaction on both builds (`with db.transaction():`, or `begin()`). Outside one it raises `ArcadeDBError` ("Transaction not begun"). To retry after a conflict, read the record again and repeat the change in a new transaction: `db.run_in_transaction(fn, retries=...)` does this when `fn` does the lookup, `modify()`, `set()` and `save()` itself. A retry that reuses the old object fails again, because the object still holds the old values.
+
+[source,python]
+----
+def rename(rid, name):
+    rec = db.lookup_by_rid(rid).modify()   # read inside the retried function
+    rec.set("name", name).save()
+
+db.run_in_transaction(lambda: rename(rid, "new name"), retries=60)
+----
+
+The check costs on the write side only. A laptop A/B on the native wheel (10 clean interleaved pairs for each figure, with a clean A/A control, reported as the median of the pair ratios of the new build against main, where above 1 means slower) measured one `lookup_by_rid`, `modify()`, `set()` and `save()` of a record in a transaction: 1.241 (95% interval 1.239 to 1.244) for a record with 5 properties and 1.426 (95% interval 1.412 to 1.437) for a record with 20 properties and a 768-float vector. Each `save()` now runs one extra `SELECT`, and when a changed value is not one the engine stores exactly as sent, the `UPDATE` also returns the stored record. All 14 read figures (lookups by RID and by key, `first()`, a 10,000-row `SELECT`, a two-hop `expand()`, a two-hop Cypher query, each on both record sizes, and two projection controls) stayed between 0.991 and 1.004 of main, so reads are unchanged. If you need atomic arithmetic, an `UPDATE ... SET n = n + 1` in the statement does not use this path.
 
 [[retry-loop]]
 === A retry loop for REPEATABLE_READ

@@ -300,6 +300,14 @@ class _Mixin:
         return self
 
     def save(self):
+        """Create the record, or write the changed properties of a saved one.
+
+        A saved record is written back only if the stored record still has the values this object was read with. Otherwise it raises
+        ArcadeDBError ("ConcurrentModificationException" in the message, retryable by ``run_in_transaction``) and writes nothing: read the
+        record again and repeat the change. The check compares values (the engine keeps no version), so a change that was changed back is
+        not seen. Saving an existing record needs an active transaction, like every write; outside one it raises ArcadeDBError
+        ("Transaction not begun"). Creating a new record is not checked.
+        """
         db = self._db
         if self._rid is None:
             from .extras import veto_count
