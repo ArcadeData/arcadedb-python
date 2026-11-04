@@ -160,7 +160,7 @@ Each Python process starts its own JVM, and each JVM sees the whole container li
 [[jvm-aot]]
 === Faster start-up with the AOT cache
 
-JDK 25 can keep an ahead-of-time (AOT) cache of the classes it loads and links at start-up (Project Leyden, https://openjdk.org/jeps/514[JEP 514]). A later JVM start then skips that work. The `{jvm-pkg-name}` package supports it and keeps it *off by default*. Turn it on with the environment variable `ARCADEDB_AOT=1`, or with `start_jvm(aot=True)` before the first database is created. The argument wins over the variable, so `aot=False` turns it off even when the variable is set.
+JDK 25 can keep an ahead-of-time (AOT) cache of the classes it loads and links at start-up (Project Leyden: the cache is https://openjdk.org/jeps/483[JEP 483], the one-step training run that writes it is https://openjdk.org/jeps/514[JEP 514]). A later JVM start then skips that work. The `{jvm-pkg-name}` package supports it and keeps it *off by default*. Turn it on with the environment variable `ARCADEDB_AOT=1`, or with `start_jvm(aot=True)` before the first database is created. The argument wins over the variable, so `aot=False` turns it off even when the variable is set.
 
 [source,python,subs="attributes+"]
 ----
