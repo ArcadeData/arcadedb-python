@@ -395,8 +395,13 @@ class GraphBatch:
             edge_type: Edge type name.
             destination_rids: Sequence of destination RIDs (same length).
             properties: Optional sequence of per-edge property dicts (same
-                length). JSON-representable values take the bulk path;
-                anything else falls back to per-edge buffering.
+                length). Scalars and a list (not one of only numbers), tuple,
+                dict, date-time, date, Decimal or bytes value take the bulk
+                path (the last ones as tagged values inside the JSON). A list
+                of only numbers, a value the text cannot carry (a NaN, an
+                integer beyond 64 bits, a date-time inside a list or dict, a
+                non-str dict key) or any other type sends the whole call to
+                per-edge buffering.
         """
         self._check_not_closed()
         from .results import _bridge_class
