@@ -32,6 +32,9 @@ EXEC_MANY = os.environ.get("ARCADEDB_NATIVE_EXEC_MANY", "1") != "0"
 # ARCADEDB_NATIVE_NEXT_BIN: the batches after the first read through arcadedb_n_next_bin, float arrays of 8 or more elements in a float32 tail (as flag 4 of arcadedb_n_exec does for the first batch), not as number text
 NEXT_BIN = os.environ.get("ARCADEDB_NATIVE_NEXT_BIN", "1") != "0"
 
+# ARCADEDB_NATIVE_GB_BIN: the float32 vectors of a GraphBatch op (create_vertices rows, new_edges props) go through arcadedb_n_gb_bin in a float32 side buffer, not as number text
+GB_BIN = os.environ.get("ARCADEDB_NATIVE_GB_BIN", "1") != "0"
+
 # the directory the engine log, logging.properties and the crash files go to (None until the library is loaded)
 LOG_DIR_USED = None
 
@@ -242,6 +245,7 @@ def _load():
             "arcadedb_n_lookup": [P, L, S, S],
             "arcadedb_n_gb_create": [P, L, S],
             "arcadedb_n_gb": [P, L, S, S],
+            "arcadedb_n_gb_bin": [P, L, S, S, S, L],
             "arcadedb_n_async": [P, L, S, S],
             "arcadedb_n_vindex": [P, L, S, S],
             "arcadedb_n_import": [P, L, S],
@@ -266,7 +270,7 @@ def _load():
                 )
                 else ctypes.c_longlong if name == "arcadedb_n_cmd" else ctypes.c_void_p
             )
-        global BINARY_PARAMS, CMD_PATH, CLOSE_BATCH, INSERT_ROWS, EXEC_MANY, NEXT_BIN
+        global BINARY_PARAMS, CMD_PATH, CLOSE_BATCH, INSERT_ROWS, EXEC_MANY, NEXT_BIN, GB_BIN
         if not hasattr(
             lib, "arcadedb_n_exec_bin"
         ):  # a library built before the binary path
@@ -283,6 +287,10 @@ def _load():
             lib, "arcadedb_n_next_bin"
         ):  # a library built before the binary tail of later batches
             NEXT_BIN = False
+        if not hasattr(
+            lib, "arcadedb_n_gb_bin"
+        ):  # a library built before the side buffer of GraphBatch ops
+            GB_BIN = False
         _isolate = isolate
         _creator = threading.get_ident()
         _local.thread = _Thread(thread, owned=False)

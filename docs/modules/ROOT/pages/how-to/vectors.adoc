@@ -110,6 +110,10 @@ print(db.count_type("Chunk"))
 200
 ----
 
+`GraphBatch.create_vertices` rows and the properties of `new_edge` and `new_edges` take the same arrays. On the `arcadedb` (native) package, a non-empty one-dimensional `float32` array in a row or an edge property crosses in a binary side buffer, and the stored values are bit-identical to the ones the text path gave. A list or a `float64` array still crosses as number text, so make the array with `np.asarray(v, dtype=np.float32)` before the load. A laptop A/B on the native wheel (100,000 vertices for each load, `ab.py --noise`, ABBA order, 12 clean pairs for each figure, clean A/A control) gave this wall time of the new path against the old one (95 % interval of the median pair ratio): 0.517 [0.515, 0.520] at 128 dimensions, 0.218 [0.217, 0.219] at 96, and 0.271 [0.270, 0.272] at 64. A load without vectors was unchanged (1.009 [1.003, 1.012]).
+
+On the `arcadedb-jvm` package, `create_vertices` already sends the values of a property declared `ARRAY_OF_FLOATS` as one binary float32 matrix when every row holds a list or array of numbers of one length. So `float32` arrays in a property declared `ARRAY_OF_FLOATS` take the binary path on both packages.
+
 == Search
 
 === SQL

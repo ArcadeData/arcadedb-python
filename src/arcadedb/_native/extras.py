@@ -20,7 +20,7 @@ from ..callbacks import check_event, check_function
 from ..exceptions import ArcadeDBError
 from ..graph_batch import GraphBatch as _BaseGraphBatch
 from . import interrupts, lib, not_yet
-from .codec import _PLAIN, _default, _prep, loads
+from .codec import _PLAIN, _default, _prep, encode_gb_args, loads
 
 # -------------------------------------------------------------------------------------------------------- upcall
 
@@ -164,6 +164,20 @@ class NativeGraphBatch(_BaseGraphBatch):
         return cls._VALID_WAL_FLUSH_MODES[normalized]
 
     def _op(self, prefix: str, op: str, **args) -> dict:
+        if lib.GB_BIN:
+            # float32 vectors cross in a binary side buffer; a library without the entry keeps the text path below
+            text, buf, count = encode_gb_args(args)
+            if buf is not None:
+                return _call(
+                    prefix,
+                    "arcadedb_n_gb_bin",
+                    self._gb,
+                    lib.b(op),
+                    lib.b(text),
+                    buf,
+                    count,
+                )
+            return _call(prefix, "arcadedb_n_gb", self._gb, lib.b(op), lib.b(text))
         return _call(prefix, "arcadedb_n_gb", self._gb, lib.b(op), lib.b(_enc(args)))
 
     def new_vertex(self, type_name: str):
@@ -233,6 +247,9 @@ class NativeGraphBatch(_BaseGraphBatch):
     def create_vertices(self, type_name: str, count_or_properties) -> list:
         """The RIDs of the new vertices. Rows go in chunks of the batch's ``commit_every`` (1000 unless graph_batch() got another value;
         0: 10,000), one crossing and one transaction per chunk: chunks that already went in stay stored if a later chunk fails.
+
+        A non-empty one-dimensional ``float32`` numpy array in a row crosses in a binary side buffer; a list or a ``float64`` array
+        crosses as number text (``new_edge`` and ``new_edges`` props follow the same rule).
         """
         self._check_not_closed()
         db = self._db
