@@ -37,6 +37,23 @@ def _answer(hits):
     return [(record.get("id"), distance) for record, distance in hits]
 
 
+def _assert_same(got, expected, msg=""):
+    """Same neighbours in the same order at the same distances.
+
+    The native build is compared exactly: that is the path these tests guard (a query that float32 would round must
+    answer like its float32 form, which a tolerance of float32 size could not tell apart). The JVM build can return
+    distances that differ in the last float32 bit between two calls with the same query values (seen in CI:
+    0.9530812501907349 against 0.9530811309814453), so there distances compare to a few float32 ulps.
+    """
+    assert [i for i, _ in got] == [i for i, _ in expected], msg
+    if arcadedb.__backend__ == "native":
+        assert got == expected, msg
+    else:
+        assert [d for _, d in got] == pytest.approx(
+            [d for _, d in expected], rel=1e-6, abs=1e-9
+        ), msg
+
+
 def test_every_form_of_the_query_returns_the_same_neighbours_at_the_same_distances(
     index,
 ):
@@ -53,7 +70,7 @@ def test_every_form_of_the_query_returns_the_same_neighbours_at_the_same_distanc
         "non-contiguous view": np.repeat(query, 2)[::2],
     }
     for name, form in forms.items():
-        assert _answer(index.find_nearest(form, k=10)) == expected, name
+        _assert_same(_answer(index.find_nearest(form, k=10)), expected, name)
 
 
 def test_a_float64_query_that_float32_would_round_answers_like_its_float32_form(
@@ -63,19 +80,19 @@ def test_a_float64_query_that_float32_would_round_answers_like_its_float32_form(
     query = np.random.default_rng(3).standard_normal(DIM)
     assert not np.array_equal(query.astype(np.float32).astype(np.float64), query)
     expected = _answer(index.find_nearest(query.astype(np.float32), k=10))
-    assert _answer(index.find_nearest(query, k=10)) == expected
-    assert _answer(index.find_nearest(query.tolist(), k=10)) == expected
+    _assert_same(_answer(index.find_nearest(query, k=10)), expected)
+    _assert_same(_answer(index.find_nearest(query.tolist(), k=10)), expected)
 
 
 def test_an_integer_array_is_a_numeric_query(index):
     ints = np.arange(DIM) % 5
     expected = _answer(index.find_nearest(ints.tolist(), k=5))
-    assert _answer(index.find_nearest(ints, k=5)) == expected
+    _assert_same(_answer(index.find_nearest(ints, k=5)), expected)
 
 
 def test_find_nearest_by_key_agrees_with_the_array_query(index):
     by_key = _answer(index.find_nearest_by_key(4, k=6))
-    assert by_key == _answer(index.find_nearest(index.vectors[4], k=6))
+    _assert_same(by_key, _answer(index.find_nearest(index.vectors[4], k=6)))
 
 
 def test_filter_and_ef_search_options_still_apply_to_an_array_query(index):
