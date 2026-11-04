@@ -598,7 +598,8 @@ class VectorIndex:
         option, use ``vectorNeighbors`` in SQL.
 
         Args:
-            query_vector: Query vector as Python list, NumPy array, or array-like
+            query_vector: Query vector as Python list, NumPy array, or array-like (on the
+                native build it crosses as one float32 buffer in any of these forms)
             k: Number of nearest neighbors to return (final k). Default is 10.
             ef_search: Optional search beam width override for exact graph search. None
                 uses the Java index default/adaptive behavior.

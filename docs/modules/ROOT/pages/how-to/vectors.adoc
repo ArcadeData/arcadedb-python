@@ -159,9 +159,33 @@ print([row["name"] for row in rows])
 ['python-ish', 'python']
 ----
 
+[[find-nearest]]
 === find_nearest
 
 `VectorIndex.find_nearest(query_vector, k=10, ef_search=None, allowed_rids=None)` searches without a statement. It takes a list or a NumPy array and returns a list of `(record, distance)` tuples, nearest first. Use it when you already hold the index object, or when you have a list of record ids to search within.
+
+On the native package the query vector crosses as one `float32` buffer whatever its form (a list, a `float64` array, or a `float32` array), so you do not need to convert it first. A vector index stores `float32`, so the numbers are rounded the same way as before. The table gives the median `find_nearest` latency with this change over the median without it (95% interval, below 1 is faster), measured on the native wheel `26.11.1.dev0` on one Linux x86_64 laptop with 11 to 12 clean pairs per figure. The wheel built before this change was the baseline.
+
+[cols="3,2,2",options="header"]
+|===
+| Query passed as | 1536 dimensions | 256 dimensions
+
+| `find_nearest`, a `float32` array
+| 0.951 [0.945, 0.954]
+| 0.952 [0.942, 0.96]
+
+| `find_nearest`, a `float64` array
+| 0.616 [0.614, 0.621]
+| 0.777 [0.774, 0.781]
+
+| `find_nearest`, a list of Python floats
+| 0.631 [0.627, 0.635]
+| 0.792 [0.787, 0.798]
+
+| `vectorNeighbors` statement with a `float32` array (not changed)
+| 1.003 [0.995, 1.014]
+| 1.004 [0.991, 1.006]
+|===
 
 [source,python]
 ----

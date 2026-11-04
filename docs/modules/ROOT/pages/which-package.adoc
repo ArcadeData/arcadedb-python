@@ -73,7 +73,7 @@ The API is the same. The runtime is not. These are the differences you can plan 
 | Measure on your own workload.
 
 | [[vector-search]]Vector search (`LSM_VECTOR`)
-| Slower to build and to query, smaller in memory. Against the JVM build, index builds took 1.28 to 1.62 times as long and median queries 1.22 to 1.87 times as long, and peak memory was 0.51 to 0.67 of the JVM build's (medians, 100,000 vectors of 128, 768 and 1536 dimensions, `26.11.1.dev0`, one laptop, with the Highway kernels that are the default on Linux, see xref:how-to/vectors.adoc#native-provider[Distance kernels in the native package]).
+| Slower to build and to query, smaller in memory. Against the JVM build, index builds took 1.28 to 1.62 times as long and median queries 1.22 to 1.87 times as long, and peak memory was 0.51 to 0.67 of the JVM build's (medians, 100,000 vectors of 128, 768 and 1536 dimensions, `26.11.1.dev0`, one laptop, measured before the change that makes native `find_nearest` send its query as one `float32` buffer (#203), with the Highway kernels that are the default on Linux, see xref:how-to/vectors.adoc#native-provider[Distance kernels in the native package]).
 | Faster to build and to query, larger in memory.
 
 | Wheel size
