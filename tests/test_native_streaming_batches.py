@@ -7,6 +7,8 @@ cursor is read when the next batch is asked for. The rows, their order, the batc
 time). conftest.py collects this file on the native backend only: it observes the result set's buffer, which the JVM build does not have.
 """
 
+from datetime import date
+
 import pytest
 
 import arcadedb
@@ -145,3 +147,50 @@ def test_a_batch_size_below_one_is_refused_when_the_first_batch_is_asked_for(db)
     batches = _select(db).iter_json_batches(batch_size=0)
     with pytest.raises(ValueError, match="at least 1"):
         next(batches)
+
+
+@pytest.fixture
+def walked(monkeypatch):
+    """The number of rows ``json_native`` (the walk that converts DATE, DATETIME, DECIMAL, sets and record ids) was called for."""
+    seen = [0]
+    real = database.json_native
+
+    def counting(value):
+        seen[0] += 1
+        return real(value)
+
+    monkeypatch.setattr(database, "json_native", counting)
+    return seen
+
+
+def test_batches_of_an_untagged_result_are_not_walked(db, walked):
+    got = [r for b in _select(db).iter_json_batches(batch_size=100) for r in b]
+    assert len(got) == ROWS
+    assert (
+        walked[0] == 0
+    ), "no reply was tagged, so iter_json_batches must skip json_native like to_json_list does"
+    assert got == _select(db).to_json_list()
+
+
+@pytest.mark.parametrize("size", [100, 1000])
+def test_a_tag_in_a_later_reply_is_converted_in_every_batch_it_reaches(
+    temp_db, walked, size
+):
+    """The first reply (256 rows) has no tagged value and a later one does: its rows must still arrive as JSON-native values."""
+    temp_db.command("sql", "CREATE DOCUMENT TYPE D")
+    temp_db.command("sql", "CREATE PROPERTY D.id INTEGER")
+    temp_db.command("sql", "CREATE PROPERTY D.d DATE")
+    rows = [{"id": i} for i in range(600)]
+    for row in rows[300:]:
+        row["d"] = date(2026, 1, 2)
+    temp_db.insert_many("D", rows)
+    query = "SELECT id, d FROM D ORDER BY id"
+    want = temp_db.query("sql", query).to_json_list()
+    walked[0] = 0
+    got = [r for b in temp_db.query("sql", query).iter_json_batches(size) for r in b]
+    assert got == want
+    assert want[0].get("d") is None
+    assert (
+        type(want[599]["d"]) is int
+    ), "the DATE is epoch milliseconds, not a date object"
+    assert walked[0] > 0

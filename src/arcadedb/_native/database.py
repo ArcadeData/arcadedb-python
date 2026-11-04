@@ -352,7 +352,9 @@ class NativeResultSet:
         if int(batch_size) < 1:
             raise ValueError("batch_size must be at least 1")
         for batch in self._iter_dict_batches(int(batch_size)):
-            yield [json_native(row) for row in batch]
+            # as to_json_list: no reply read so far restored a tagged value, so every value is a json.loads type that json_native
+            # returns as it is. The flag is read after the batch is built, so it covers every reply the batch's rows came from
+            yield [json_native(row) for row in batch] if self._tagged else batch
 
     def to_dataframe(self, convert_types: bool = True):
         import pandas as pd
