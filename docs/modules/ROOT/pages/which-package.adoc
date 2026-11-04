@@ -54,7 +54,7 @@ The API is the same. The runtime is not. These are the differences you can plan 
 
 | Start-up
 | Fast. There is no JVM to start.
-| Slower. Every Python process starts a JVM first.
+| Slower. Every Python process starts a JVM first. The opt-in AOT cache shortens the start (xref:installation.adoc#jvm-aot[Faster start-up with the AOT cache]).
 
 | Memory
 | Small footprint.
