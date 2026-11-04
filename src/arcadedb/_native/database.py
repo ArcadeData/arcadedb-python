@@ -299,6 +299,10 @@ class NativeResultSet:
             yield row.to_dict()
 
     def to_json_list(self, batch_size: int = 10_000) -> List[Dict[str, Any]]:
+        """JSON-native rows as on the JVM build (:meth:`arcadedb.results.ResultSet.to_json_list`). The walk that converts DATE, DATETIME,
+        DECIMAL, sets and record ids runs only when a reply of this result carried such a value; otherwise the rows are returned as
+        parsed.
+        """
         if int(batch_size) < 1:
             raise ValueError("batch_size must be at least 1")
         rows = self._drain_dicts()

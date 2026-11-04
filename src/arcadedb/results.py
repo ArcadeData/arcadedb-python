@@ -568,6 +568,14 @@ class ResultSet:
         floats. Use ``to_list()`` when you want ``date``, ``datetime`` and
         ``Decimal`` values: it costs about the same.
 
+        A record id (a ``LINK`` value, ``@rid``) arrives as its text
+        (``"#10:5"``), at the top level and inside a list or a map, and a map key
+        that is not a string arrives as text (``"1"``, ``"true"``, ``"null"``),
+        on both builds. On the native build the conversion over the rows runs
+        only for a result in which a reply carried a value that JSON cannot
+        carry (DECIMAL, DATE, DATETIME, a set, NaN, a record id, ...); any other
+        result is returned as parsed.
+
         NaN, Infinity and -Infinity arrive as Python floats (``float('nan')``,
         ``float('inf')``), at the top level and inside a list or a map, as on
         the native build. JSON has no literal for them, so the bridge writes
