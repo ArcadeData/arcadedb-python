@@ -162,7 +162,7 @@ print([row["name"] for row in rows])
 [[find-nearest]]
 === find_nearest
 
-`VectorIndex.find_nearest(query_vector, k=10, ef_search=None, allowed_rids=None)` searches without a statement. It takes a list or a NumPy array and returns a list of `(record, distance)` tuples, nearest first. Use it when you already hold the index object, or when you have a list of record ids to search within.
+`VectorIndex.find_nearest(query_vector, k=10, ef_search=None, allowed_rids=None, *, include_vector=True)` searches without a statement. It takes a list or a NumPy array and returns a list of `(record, distance)` tuples, nearest first. Use it when you already hold the index object, or when you have a list of record ids to search within.
 
 On the native package the query vector crosses as one `float32` buffer whatever its form (a list, a `float64` array, or a `float32` array), so you do not need to convert it first. A vector index stores `float32`, so the numbers are rounded the same way as before. The table gives the median `find_nearest` latency with this change over the median without it (95% interval, below 1 is faster), measured on the native wheel `26.11.1.dev0` on one Linux x86_64 laptop with 11 to 12 clean pairs per figure. The wheel built before this change was the baseline.
 
@@ -190,6 +190,22 @@ On the native package the query vector crosses as one `float32` buffer whatever 
 [source,python]
 ----
 for record, distance in index.find_nearest(query, k=2):
+    print(record.get("name"))
+----
+
+[source,text]
+----
+python-ish
+python
+----
+
+=== Hits without the vector
+
+Every hit of `find_nearest` carries its indexed vector, so a search at 1536 dimensions ships and decodes 1536 numbers per hit whether you read them or not. If you need only the ids, the distances or other properties of the hits, pass `include_vector=False`. On the native build each hit is then built without the vector. It loads the vector, with the rest of the record, in one lookup by record id the first time you read it (`get` of the vector, `has_property`, `to_dict`, `get_property_names`, `modify` or `save`), so a loop that reads the vector of every hit pays one lookup per hit and does more work than the default. The values are the ones `db.lookup_by_rid` returns, and a hit deleted since the search raises `ArcadeDBError` on that first read. The arcadedb-jvm package accepts the argument and returns whole records either way.
+
+[source,python]
+----
+for record, distance in index.find_nearest(query, k=2, include_vector=False):
     print(record.get("name"))
 ----
 

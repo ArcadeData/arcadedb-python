@@ -193,6 +193,18 @@ def _query_vector_param(query_vector):
     )
 
 
+def _quote_name(name: str) -> str:
+    return "`" + name.replace("`", "``") + "`"
+
+
+# find_nearest(include_vector=False): the engine's row of a hit is the record's properties plus the columns @rid, @type and distance
+# (ScoredRecordRow; before 26.11.1, ArcadeData/arcadedb#10898, also a nested `record` column holding every property a second time).
+# `*` copies the row, `!name` drops the indexed vector and the `record` column. A property of the record called distance or record is
+# hidden by those columns in the row, so such a hit holds them back too (_LAZY_COLUMNS) and loads them with the vector.
+_LAZY_COLUMNS = ("record", "distance")
+_HITS_FROM = "FROM (SELECT expand(vectorNeighbors(?, ?, ?)))"
+
+
 class NativeVectorIndex(_BaseVectorIndex):
     """``VectorIndex`` over ``vectorNeighbors``: ``find_nearest`` returns ``[(record, distance)]`` like the JPype wrapper."""
 
@@ -210,10 +222,21 @@ class NativeVectorIndex(_BaseVectorIndex):
         return
 
     def _run_search(
-        self, *, query_vector, k, allowed_rids, approximate, ef_search=None
+        self,
+        *,
+        query_vector,
+        k,
+        allowed_rids,
+        approximate,
+        ef_search=None,
+        include_vector=True,
     ):
         if approximate:
             return self._run_approximate(query_vector, k, allowed_rids)
+        if not include_vector:
+            return self._run_search_without_vector(
+                query_vector, k, allowed_rids, ef_search
+            )
         from .records import _wrap_dict
 
         vector = _query_vector_param(query_vector)
@@ -255,6 +278,54 @@ class NativeVectorIndex(_BaseVectorIndex):
                 )
             )
             out.append((record, float(row.get("distance"))))
+        return self._sort_results(out)[:k]
+
+    def _run_search_without_vector(self, query_vector, k, allowed_rids, ef_search):
+        """``find_nearest(include_vector=False)``: the hits come back without the indexed vector, which loads on first use.
+
+        ``expand(vectorNeighbors(..))`` alone ships every hit's vector, and the engine reads each record to build the row whatever
+        the columns asked for. Here the statement drops the vector (and the nested ``record`` column of an engine before 26.11.1),
+        and ``_Mixin._fill`` loads the record, once, by RID, the first time the vector or the whole record is needed.
+        """
+        from .records import _wrap_partial
+
+        vector = _query_vector_param(query_vector)
+        options = {}
+        if ef_search is not None:
+            options["efSearch"] = int(ef_search)
+        if allowed_rids:
+            options["filter"] = [_rid_text(r) for r in allowed_rids]
+        prop = self._shim._prop
+        dropped = ", ".join(
+            "!" + _quote_name(name) for name in dict.fromkeys((prop, "record"))
+        )
+        sql = f"SELECT *, {dropped} {_HITS_FROM}"  # nosec B608 - dropped is backtick-quoted schema names, the values go through ? parameters
+        if options:
+            sql = sql.replace("vectorNeighbors(?, ?, ?)", "vectorNeighbors(?, ?, ?, ?)")
+            rows = self._database.query(
+                "sql", sql, self._shim._name, vector, int(k), options
+            )
+        else:
+            rows = self._database.query("sql", sql, self._shim._name, vector, int(k))
+        omitted = (prop, *_LAZY_COLUMNS)
+        out = []
+        for row in rows:
+            props = row.to_dict()
+            rid = props.pop("@rid", None)
+            type_name = props.pop("@type", None)
+            distance = props.pop("distance")
+            if rid is None:
+                record = None
+            else:
+                record = _wrap_partial(
+                    self._database,
+                    _rid_text(rid),
+                    type_name,
+                    self._database._kind_of(type_name),
+                    props,
+                    omitted,
+                )
+            out.append((record, float(distance)))
         return self._sort_results(out)[:k]
 
     def _run_approximate(self, query_vector, k, allowed_rids):

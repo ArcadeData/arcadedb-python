@@ -250,8 +250,16 @@ class _Mixin:
         # The dict is never changed in place (a save makes a new one), so the objects modify() hands it to can share it
         self._base = base
         self._property_names_cache = None
+        # names of properties a search hit was built without (see ``_wrap_partial``); None for every other record
+        self._lazy = None
 
     # -- reading
+
+    def _fill(self) -> None:
+        """Load the properties a search hit was built without, in one lookup by RID (engine order); nothing to do for any other record."""
+        if self._lazy:
+            self._props = dict(self._db.lookup_by_rid(self._rid)._props)
+            self._lazy = None
 
     def _check_open(self) -> None:
         database = self._database
@@ -263,6 +271,8 @@ class _Mixin:
 
     def get(self, name: str, convert_types: bool = True) -> Any:
         self._check_open()
+        if self._lazy and name in self._lazy:
+            self._fill()
         return self._props.get(name)
 
     def get_raw(self, name: str) -> Any:
@@ -270,14 +280,18 @@ class _Mixin:
 
     def has_property(self, name: str) -> bool:
         self._check_open()
+        if self._lazy and name in self._lazy:
+            self._fill()
         return name in self._props
 
     def get_property_names(self) -> List[str]:
         self._check_open()
+        self._fill()
         return list(self._props)
 
     def to_dict(self, convert_types: bool = True) -> Dict[str, Any]:
         self._check_open()
+        self._fill()
         return dict(self._props)
 
     def get_rid(self) -> str:
@@ -318,6 +332,7 @@ class _Mixin:
         not seen. Saving an existing record needs an active transaction, like every write; outside one it raises ArcadeDBError
         ("Transaction not begun"). Creating a new record is not checked.
         """
+        self._fill()
         db = self._db
         if self._rid is None:
             from .extras import veto_count
@@ -399,6 +414,7 @@ class _Mixin:
 
     def modify(self):
         self._check_open()
+        self._fill()
         if self._rid and self._base is None:
             self._base = _snap(
                 self._props
@@ -525,3 +541,15 @@ def _wrap_dict(database, record: dict, kind: str = "d"):
     type_name = props.pop("@type", None)
     kind = props.pop("@cat", kind)
     return _CLASS_OF.get(kind, Document)(database, type_name, rid, props)
+
+
+def _wrap_partial(database, rid, type_name, kind, props, omitted):
+    """The wrapper for a search hit built without the properties named in ``omitted`` (the indexed vector: not shipped with every hit).
+
+    Reading one of them, or anything that needs the whole record (``to_dict``, ``get_property_names``, ``modify``, ``save``), loads the
+    record once by RID; ``get`` and ``has_property`` of any other property are answered from what was shipped.
+    """
+    cls = {"v": Vertex, "e": Edge}.get(kind, Document)
+    record = cls(database, type_name, rid, props)
+    record._lazy = frozenset(omitted)
+    return record
