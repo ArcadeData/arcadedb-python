@@ -220,15 +220,12 @@ class TestLSMVectorIndex:
             pq_training_limit=5000,
         )
 
-        java_idx = index._java_index
-        if "TypeIndex" in java_idx.getClass().getName():
-            java_idx = java_idx.getSubIndexes().get(0)
-
-        meta = java_idx.getMetadata()
-        assert meta.pqSubspaces == 4
-        assert meta.pqClusters == 128
-        assert meta.pqCenterGlobally is False
-        assert meta.pqTrainingLimit == 5000
+        meta = index.get_metadata()
+        assert meta["quantization"] == "PRODUCT"
+        assert meta["pq_subspaces"] == 4
+        assert meta["pq_clusters"] == 128
+        assert meta["pq_center_globally"] is False
+        assert meta["pq_training_limit"] == 5000
 
     def test_create_vector_index_with_custom_id_property(self, test_db):
         """Custom id_property should propagate to vector metadata."""
@@ -244,11 +241,10 @@ class TestLSMVectorIndex:
             id_property="slug",
         )
 
-        java_idx = index._java_index
-        if "TypeIndex" in java_idx.getClass().getName():
-            java_idx = java_idx.getSubIndexes().get(0)
-
-        assert str(java_idx.getMetadata().idPropertyName) == "slug"
+        assert index.get_metadata()["id_property"] == "slug"
+        # an index read back from the schema carries it too
+        reread = test_db.schema.get_vector_index("Doc", "embedding")
+        assert reread.get_metadata()["id_property"] == "slug"
 
     def test_lsm_vector_search(self, test_db):
         """Test searching in vector index (JVector implementation)."""
@@ -398,7 +394,12 @@ class TestLSMVectorIndex:
             pq_clusters=3,
         )
 
-        assert "TypeIndex" in index._java_index.getClass().getName()
+        # the wrapper holds the index of the type (the JVM build's TypeIndex);
+        # the vectors live in its bucket index, which has a name of its own
+        meta = index.get_metadata()
+        assert meta["index_name"] == "Doc[embedding]"
+        assert meta["bucket_index_name"] != meta["index_name"]
+        assert index.get_quantization() == "PRODUCT"
 
         vectors = [
             [1.0, 0.0, 0.0],
@@ -437,7 +438,12 @@ class TestLSMVectorIndex:
             pq_clusters=2,
         )
 
-        assert "TypeIndex" in index._java_index.getClass().getName()
+        # the wrapper holds the index of the type (the JVM build's TypeIndex);
+        # the vectors live in its bucket index, which has a name of its own
+        meta = index.get_metadata()
+        assert meta["index_name"] == "Doc[embedding]"
+        assert meta["bucket_index_name"] != meta["index_name"]
+        assert index.get_quantization() == "PRODUCT"
 
         vectors = [
             [1.0, 0.0, 0.0],
@@ -486,28 +492,6 @@ class TestLSMVectorIndex:
 
         with pytest.raises(arcadedb.ArcadeDBError):
             index.find_nearest_approximate([0.9, 0.1, 0.0], k=1)
-
-    def test_lsm_vector_search_approximate_product_requires_enough_vectors(
-        self, test_db
-    ):
-        """PRODUCT quantization should fail early on tiny corpora."""
-        test_db.command("sql", "CREATE VERTEX TYPE Doc")
-        test_db.command("sql", "CREATE PROPERTY Doc.embedding ARRAY_OF_FLOATS")
-
-        index = test_db.create_vector_index(
-            "Doc", "embedding", dimensions=3, quantization="PRODUCT"
-        )
-
-        with test_db.transaction():
-            for vec in ([1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]):
-                test_db.command(
-                    "sql",
-                    "INSERT INTO Doc SET embedding = ?",
-                    arcadedb.to_java_float_array(vec),
-                )
-
-        with pytest.raises(arcadedb.ArcadeDBError, match="pq_clusters"):
-            index.build_graph_now()
 
     def test_lsm_vector_search_approximate_returns_k(self, test_db):
         """Approximate search should return exactly k results."""
@@ -603,7 +587,13 @@ class TestLSMVectorIndex:
             vertex = neighbors[0]
             assert vertex is not None
             assert isinstance(vertex, dict)
-            assert vertex.get("record") is not None
+            # ArcadeDB 26.11.1 (ArcadeData/arcadedb#10898) lists the record's properties on the row
+            # once; earlier engines nested them under "record". Either way the record is there.
+            record = vertex.get("record") or vertex
+            assert record.get("@rid") is not None
+            # PQ search is approximate: the first row is a record with an embedding, not always the
+            # exact nearest one (a Windows leg returned [0.01, 0.1, 0.1] for the query [1, 0, 0])
+            assert len(record.get("embedding")) == 3
             assert vertex.get("distance") is not None
 
     def test_lsm_vector_build_graph_now(self, test_db):

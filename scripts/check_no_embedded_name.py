@@ -65,7 +65,7 @@ ALLOWED_LINES = re.compile(
     r"|This package was published as arcadedb-embedded until 26\.10\.x; install arcadedb now\."
     r"|formerly `?arcadedb[_-]embedded"
     # The "Migrate from the old names" steps must name the old packages (one phrase per step):
-    r"|pip uninstall arcadedb[_-]embedded"  # step 1, what to remove
+    r"|uv remove arcadedb[_-]embedded"  # step 1, what to remove
     r"|if you used `arcadedb[_-]embedded"  # step 2, which new package replaces which old one
     r"|`import arcadedb_embedded` and `import arcadedb_native` both become",  # step 3, the import change
     re.IGNORECASE,

@@ -182,22 +182,33 @@ class TestFindNearestApproximate:
     def test_returns_the_nearest_record_and_its_distance(self, temp_db):
         index = self._pq_index(temp_db, PQ_VECTORS)
 
-        results = index.find_nearest_approximate([0.9, 0.1, 0.0], k=1)
+        # k = every row: the walk keeps all four nodes, so the ranking is the PQ scores of the four rows and does
+        # not depend on how a k=1 beam happens to travel the graph (#149)
+        results = index.find_nearest_approximate([0.9, 0.1, 0.0], k=len(PQ_VECTORS))
 
-        assert len(results) == 1
+        assert len(results) == len(PQ_VECTORS)
         record, distance = results[0]
         assert record.get("name") == "x"
         assert isinstance(distance, float)
 
+        # k=1 still returns exactly one result with a float distance
+        ((_, only_distance),) = index.find_nearest_approximate([0.9, 0.1, 0.0], k=1)
+        assert isinstance(only_distance, float)
+
     def test_k_results_come_back_nearest_first(self, temp_db):
         index = self._pq_index(temp_db, PQ_VECTORS)
 
-        results = index.find_nearest_approximate([0.9, 0.1, 0.0], k=3)
+        results = index.find_nearest_approximate([0.9, 0.1, 0.0], k=len(PQ_VECTORS))
 
         assert [r.get("name") for r, _ in results][0] == "x"
-        assert len(results) == 3
+        assert len(results) == len(PQ_VECTORS)
         distances = [d for _, d in results]
         assert distances == sorted(distances)
+
+        # a smaller k returns that many, sorted
+        top3 = index.find_nearest_approximate([0.9, 0.1, 0.0], k=3)
+        assert len(top3) == 3
+        assert [d for _, d in top3] == sorted(d for _, d in top3)
 
     def test_allowed_rids_restrict_the_answer(self, temp_db):
         index = self._pq_index(temp_db, PQ_VECTORS)
@@ -229,3 +240,157 @@ class TestFindNearestApproximate:
 
         with pytest.raises(arcadedb.ArcadeDBError):
             index.find_nearest_approximate([0.9, 0.1, 0.0], k=1)
+
+
+class TestRebuildThreshold:
+    """``mutations_before_rebuild`` is the FLOOR of the rebuild threshold (#110).
+
+    The engine rebuilds after max(mutations_before_rebuild, min(graph size x rebuildGraphRatio, maxPendingMutations))
+    changes; with the defaults (ratio 0.2, cap 50000) a 1000-vector graph gives 200 for any floor up to 200. The
+    vectors are distinct and nonzero (cosine is the default similarity).
+    """
+
+    ROWS = [
+        (f"v{i}", [1.0 + i % 10, 1.0 + i // 10 % 10, 1.0 + i // 100])
+        for i in range(1000)
+    ]
+
+    @pytest.mark.parametrize("floor, expected", [(10, 200), (100, 200), (5000, 5000)])
+    def test_the_threshold_is_the_larger_of_the_floor_and_the_ratio_term(
+        self, temp_db, floor, expected
+    ):
+        _make_type(temp_db)
+        _insert(temp_db, self.ROWS)
+        index = temp_db.create_vector_index(
+            "Doc", "embedding", dimensions=3, mutations_before_rebuild=floor
+        )
+
+        stats = index.get_stats()
+        assert stats["totalVectors"] == len(self.ROWS)
+        assert stats["effectiveMutationsThreshold"] == expected
+
+    def test_alter_database_sets_the_ratio_the_threshold_reads(self, temp_db):
+        # the route the docs give for a database-scope setting (#112): SQL, no Python wrapper
+        _make_type(temp_db)
+        _insert(temp_db, self.ROWS)
+        index = temp_db.create_vector_index("Doc", "embedding", dimensions=3)
+        assert index.get_stats()["effectiveMutationsThreshold"] == 200
+
+        temp_db.command(
+            "sql", "ALTER DATABASE `arcadedb.vectorIndex.rebuildGraphRatio` 0.5"
+        )
+
+        assert index.get_stats()["effectiveMutationsThreshold"] == 500
+
+
+class TestBuildGraphNow:
+    """``build_graph_now()`` rebuilds a graph that already exists, so the vectors written since it was built join it (#162).
+
+    The native build ran one search, which builds a graph only when there is none: on a built index the call returned at
+    once and the new vectors stayed in the delta. The automatic triggers are off (a high floor, no inactivity timer), so
+    only the call can move the counters. The graph starts at 1000 vectors because the engine rebuilds a smaller one
+    synchronously on the next search (ASYNC_REBUILD_MIN_GRAPH_SIZE), which hid the defect.
+    """
+
+    ROWS = [
+        (f"v{i}", [1.0 + i % 10, 1.0 + i // 10 % 10, 1.0 + i // 100])
+        for i in range(1100)
+    ]
+
+    def test_rebuilds_an_existing_graph(self, temp_db):
+        _make_type(temp_db)
+        temp_db.command(
+            "sql",
+            "ALTER DATABASE `arcadedb.vectorIndex.inactivityRebuildTimeoutMs` 0",
+        )
+        _insert(temp_db, self.ROWS[:1000])
+        index = temp_db.create_vector_index(
+            "Doc", "embedding", dimensions=3, mutations_before_rebuild=1_000_000
+        )
+        before = index.get_stats()
+        assert before["graphNodeCount"] == 1000
+
+        _insert(temp_db, self.ROWS[1000:])
+        assert index.get_stats()["graphNodeCount"] == 1000
+
+        index.build_graph_now()
+
+        after = index.get_stats()
+        assert after["totalVectors"] == len(self.ROWS)
+        assert after["graphNodeCount"] == len(self.ROWS)
+        assert after["graphRebuildCount"] > before["graphRebuildCount"]
+
+
+class TestWrapperAcrossRebuildAndDrop:
+    """A ``VectorIndex`` held across SQL ``REBUILD INDEX`` keeps serving; across a drop it raises (#116).
+
+    ``REBUILD INDEX`` replaces the engine's index object. The JVM wrapper used to keep the old one, which answered
+    ``find_nearest`` with no rows and ``totalVectors`` 0 without an error.
+    """
+
+    ROWS = [(f"v{i}", [1.0 + i % 7, 1.0 + i // 7, 2.0 + i % 3]) for i in range(40)]
+
+    def _held_index(self, db):
+        _make_type(db)
+        _insert(db, self.ROWS)
+        index = db.create_vector_index("Doc", "embedding", dimensions=3)
+        assert len(index.find_nearest([1.0, 1.0, 2.0], k=5)) == 5
+        assert index.get_stats()["totalVectors"] == len(self.ROWS)
+        return index
+
+    def test_old_wrapper_serves_after_rebuild_index(self, temp_db):
+        index = self._held_index(temp_db)
+        quantization = index.get_quantization()  # create_vector_index defaults to INT8
+
+        temp_db.command("sql", "REBUILD INDEX `Doc[embedding]`")
+
+        assert len(index.find_nearest([1.0, 1.0, 2.0], k=5)) == 5
+        assert index.get_stats()["totalVectors"] == len(self.ROWS)
+        assert index.get_size() == len(self.ROWS)
+        assert index.get_metadata()["index_name"] == "Doc[embedding]"
+        assert index.get_quantization() == quantization
+        index.warm_up()
+
+    def test_old_wrapper_follows_a_second_rebuild(self, temp_db):
+        index = self._held_index(temp_db)
+
+        for _ in range(2):
+            temp_db.command("sql", "REBUILD INDEX `Doc[embedding]`")
+            assert len(index.find_nearest([1.0, 1.0, 2.0], k=5)) == 5
+            assert index.get_stats()["totalVectors"] == len(self.ROWS)
+
+    def test_dropped_index_raises_and_never_answers_empty(self, temp_db):
+        index = self._held_index(temp_db)
+
+        temp_db.command("sql", "DROP INDEX `Doc[embedding]`")
+
+        with pytest.raises(arcadedb.ArcadeDBError) as excinfo:
+            index.find_nearest([1.0, 1.0, 2.0], k=5)
+        if arcadedb.__backend__ == "jvm":
+            # the JVM wrapper names the index itself; the native one passes the engine's own error on
+            assert "Doc[embedding]" in str(excinfo.value)
+        # every read raises on both builds: the native wrapper answered get_size() with the row count and
+        # get_metadata()/get_quantization() from a memoized read of the dropped index
+        for read in (
+            index.get_stats,
+            index.get_size,
+            index.get_metadata,
+            index.get_quantization,
+        ):
+            with pytest.raises(arcadedb.ArcadeDBError, match=r"Doc\[embedding\]"):
+                read()
+
+    def test_a_recreated_index_reports_its_own_configuration(self, temp_db):
+        index = self._held_index(temp_db)
+        assert (
+            index.get_quantization() != "NONE"
+        )  # create_vector_index defaults to INT8
+
+        temp_db.command("sql", "DROP INDEX `Doc[embedding]`")
+        temp_db.create_vector_index(
+            "Doc", "embedding", dimensions=3, quantization="NONE"
+        )
+
+        assert index.get_quantization() == "NONE"
+        assert index.get_metadata()["quantization"] == "NONE"
+        assert index.get_size() == len(self.ROWS)

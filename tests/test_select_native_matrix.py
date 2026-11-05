@@ -67,7 +67,12 @@ def test_the_script_prints_github_output_lines():
         text=True,
         check=True,
     ).stdout.splitlines()
-    assert [line.split("=", 1)[0] for line in out] == ["build", "test", "pyver"]
+    assert [line.split("=", 1)[0] for line in out] == [
+        "build",
+        "test",
+        "pyver",
+        "examples",
+    ]
     assert json.loads(out[0].split("=", 1)[1])[0]["key"] == "linux-x86_64"
     assert [leg["python"] for leg in json.loads(out[2].split("=", 1)[1])] == [
         "3.11",
@@ -103,7 +108,10 @@ def test_the_python_version_job_covers_what_the_full_parity_run_leaves_out():
             ("3.14t", True, False, True),
         ]
     # a release tests 3.11 to 3.14 in full: 3.15 and the free-threaded build are left
-    assert _pyver("release") == [("3.15", False, True, False), ("3.14t", True, False, True)]
+    assert _pyver("release") == [
+        ("3.15", False, True, False),
+        ("3.14t", True, False, True),
+    ]
 
 
 def test_the_python_version_job_never_repeats_a_full_parity_leg_and_has_no_polars_on_a_free_threaded_python():
@@ -142,3 +150,39 @@ def test_the_linux_legs_build_in_the_manylinux_container_of_the_tag_and_the_work
     workflow = (ROOT / ".github" / "workflows" / "test-native.yml").read_text()
     assert "GLIBC_2.28" in workflow
     assert "GLIBC_2.34" not in workflow
+
+
+def test_the_examples_job_runs_on_the_parity_pythons_3_12_and_3_14_of_every_platform_it_builds():
+    pr = sel.select("pull_request")["examples"]
+    assert [(leg["key"], leg["python"]) for leg in pr] == [("linux-x86_64", "3.12")]
+    for event in ("push", "schedule", "workflow_dispatch", "release"):
+        legs = sel.select(event)["examples"]
+        assert {leg["key"] for leg in legs} == set(sel.ALL_PLATFORMS), event
+        assert {leg["python"] for leg in legs} == {"3.12", "3.14"}, event
+        assert len(legs) == 2 * len(sel.ALL_PLATFORMS), event
+
+
+def test_the_examples_job_installs_the_wheel_of_the_build_job_and_shares_the_runner_with_the_jvm_job():
+    workflows = ROOT / ".github" / "workflows"
+    test_native = (workflows / "test-native.yml").read_text()
+    jvm = (workflows / "test-python-examples.yml").read_text()
+    assert re.search(r"^  examples:\n", test_native, re.M)
+    # one runner for both packages: neither workflow carries the per-example arguments any more
+    assert "scripts/run_examples.sh run" in test_native
+    assert "scripts/run_examples.sh run" in jvm
+    assert "21_graph_analytical_view_sql.py" not in test_native + jvm
+    runner = (ROOT / "scripts" / "run_examples.sh").read_text()
+    assert "21_graph_analytical_view_sql.py" in runner
+    # the wheel is the one the build job uploaded (no rebuild), installed with uv
+    assert "native-wheel-${{ matrix.key }}" in test_native
+    assert "uv pip" not in test_native
+
+
+def test_the_skip_list_of_the_examples_job_names_a_reason_and_an_example_that_exists():
+    skip = ROOT / "scripts" / "native_examples_skip.txt"
+    for line in skip.read_text().splitlines():
+        if not line.strip() or line.startswith("#"):
+            continue
+        name, sep, reason = (part.strip() for part in line.partition("|"))
+        assert sep and reason, line
+        assert (ROOT / "examples" / name).is_file(), line

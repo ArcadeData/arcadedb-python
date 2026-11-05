@@ -14,7 +14,6 @@ insertion order: ``i`` = 0, 1, 2, with ``v`` = 0, 'x', 2.
 
 import os
 import shutil
-import tempfile
 
 import jpype
 import pytest
@@ -63,8 +62,8 @@ READERS = [
 
 
 @pytest.fixture(scope="module")
-def db():
-    temp_dir = tempfile.mkdtemp(prefix="arcadedb_test_db_")
+def db(tmp_path_factory):
+    temp_dir = str(tmp_path_factory.mktemp("arcadedb_test_db_"))
     database = arcadedb.create_database(os.path.join(temp_dir, "test_db"))
     database.command("sql", "CREATE DOCUMENT TYPE E BUCKETS 1")
     with database.transaction():

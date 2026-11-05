@@ -31,6 +31,11 @@ INSERT_ROWS = os.environ.get("ARCADEDB_NATIVE_INSERT_ROWS", "1") != "0"
 EXEC_MANY = os.environ.get("ARCADEDB_NATIVE_EXEC_MANY", "1") != "0"
 # ARCADEDB_NATIVE_NEXT_BIN: the batches after the first read through arcadedb_n_next_bin, float arrays of 8 or more elements in a float32 tail (as flag 4 of arcadedb_n_exec does for the first batch), not as number text
 NEXT_BIN = os.environ.get("ARCADEDB_NATIVE_NEXT_BIN", "1") != "0"
+# ARCADEDB_NATIVE_TS_BIN: the numpy int and float columns (and an integer timestamp array) of append_samples cross by address in arcadedb_n_async_bin, not as .tolist() and JSON text
+TS_BIN = os.environ.get("ARCADEDB_NATIVE_TS_BIN", "1") != "0"
+
+# ARCADEDB_NATIVE_GB_BIN: the float32 vectors of a GraphBatch op (create_vertices rows, new_edges props) go through arcadedb_n_gb_bin in a float32 side buffer, not as number text
+GB_BIN = os.environ.get("ARCADEDB_NATIVE_GB_BIN", "1") != "0"
 
 # the directory the engine log, logging.properties and the crash files go to (None until the library is loaded)
 LOG_DIR_USED = None
@@ -88,6 +93,16 @@ def _log_isolate_args(user_args, log_dir) -> list:
 # memory on top, that let the kernel kill the process in a memory-limited container; 50% ran clean in the same cases, at the same speed.
 HEAP_PERCENT = 50
 _HEAP_ARGS = ("-Xmx", "-XX:MaximumHeapSizePercent=", "-XX:MaxRAM=")
+
+
+def _default_vector_provider(libdir: Path, env) -> None:
+    """Pick jvector's Highway kernels (ARCADEDB_VECTOR_PROVIDER=native) where the wheel ships their library, libjvector-<arch>.so next
+    to the engine library (Linux x86-64 and aarch64). Measured in #153: faster index builds and queries at 768 and 1536 dimensions, the
+    same build and slightly slower queries at 128, the same results. Without the library the engine keeps jvector's scalar provider.
+    A value the user set wins; ARCADEDB_VECTOR_PROVIDER=default forces the scalar provider.
+    """
+    if not env.get("ARCADEDB_VECTOR_PROVIDER") and any(libdir.glob("libjvector-*.so")):
+        env["ARCADEDB_VECTOR_PROVIDER"] = "native"
 
 
 def _heap_isolate_args(user_args) -> list:
@@ -151,6 +166,7 @@ def _load():
         _check_cpu()
         # jvector's Highway library (libjvector-<arch>.so) is looked for next to the engine library
         os.environ.setdefault("ARCADEDB_NATIVE_LIBDIR", str(path.resolve().parent))
+        _default_vector_provider(path.resolve().parent, os.environ)
         lib = ctypes.CDLL(str(path))
         isolate = ctypes.c_void_p()
         thread = ctypes.c_void_p()
@@ -231,7 +247,9 @@ def _load():
             "arcadedb_n_lookup": [P, L, S, S],
             "arcadedb_n_gb_create": [P, L, S],
             "arcadedb_n_gb": [P, L, S, S],
+            "arcadedb_n_gb_bin": [P, L, S, S, S, L],
             "arcadedb_n_async": [P, L, S, S],
+            "arcadedb_n_async_bin": [P, L, S, S, P, I],
             "arcadedb_n_vindex": [P, L, S, S],
             "arcadedb_n_import": [P, L, S],
             "arcadedb_n_export": [P, L, S, S, I, S],
@@ -255,7 +273,7 @@ def _load():
                 )
                 else ctypes.c_longlong if name == "arcadedb_n_cmd" else ctypes.c_void_p
             )
-        global BINARY_PARAMS, CMD_PATH, CLOSE_BATCH, INSERT_ROWS, EXEC_MANY, NEXT_BIN
+        global BINARY_PARAMS, CMD_PATH, CLOSE_BATCH, INSERT_ROWS, EXEC_MANY, NEXT_BIN, GB_BIN, TS_BIN
         if not hasattr(
             lib, "arcadedb_n_exec_bin"
         ):  # a library built before the binary path
@@ -272,6 +290,14 @@ def _load():
             lib, "arcadedb_n_next_bin"
         ):  # a library built before the binary tail of later batches
             NEXT_BIN = False
+        if not hasattr(
+            lib, "arcadedb_n_gb_bin"
+        ):  # a library built before the side buffer of GraphBatch ops
+            GB_BIN = False
+        if not hasattr(
+            lib, "arcadedb_n_async_bin"
+        ):  # a library built before the address table of append_samples
+            TS_BIN = False
         _isolate = isolate
         _creator = threading.get_ident()
         _local.thread = _Thread(thread, owned=False)
@@ -347,6 +373,32 @@ def alloc(size: int):
     """
     lib = _lib or _load()
     return lib.arcadedb_n_alloc(_thread_handle(), size)
+
+
+def exec_query(handle, flags, language, command, params, count):
+    """``arcadedb_n_exec`` for a statement whose parameters need no float side buffer: the same ``(text, floats)`` as :func:`call_bin`
+    returns for it (keep the two reply readers in step). The entry point is not looked up by name per call, the isolate thread is read
+    without a function call and no argument tuple is built.
+    """
+    lib = _lib or _load()
+    t = _local.__dict__.get("thread")
+    th = t.handle if t is not None else _thread_handle()
+    ptr = lib.arcadedb_n_exec(th, handle, flags, language, command, params, count)
+    try:
+        raw = ctypes.string_at(ptr)
+        floats = None
+        # a negative start counts from the end and stops at 0 for a short reply
+        i = raw.rfind(b',"bin":', -40)
+        if i >= 0 and raw.endswith(b"}"):
+            n = int(raw[i + 7 : -1])
+            import numpy as np
+
+            off = (len(raw) + 1 + 3) & ~3
+            floats = np.frombuffer(ctypes.string_at(ptr + off, 4 * n), dtype=np.float32)
+            raw = raw[:i] + b"}"
+    finally:
+        lib.arcadedb_free(th, ptr)
+    return raw.decode("utf-8"), floats
 
 
 def call_void(name: str, *args) -> None:

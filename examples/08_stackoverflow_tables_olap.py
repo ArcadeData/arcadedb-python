@@ -27,8 +27,13 @@ try:
     from lxml import etree
 except ImportError:
     print("Missing dependency: lxml")
-    print("Install with: pip install lxml")
+    print("Install with: uv add lxml")
     sys.exit(1)
+
+
+# The uv release the containers download: the version the repo's CI pins (.github/workflows/test-native.yml UV_VERSION),
+# fetched straight from its release URL instead of asking the GitHub API for "latest" (unpinned, and rate-limited for anonymous use).
+UV_VERSION = "0.12.0"
 
 
 def uv_bootstrap_commands(python_cmd: str) -> List[str]:
@@ -36,8 +41,7 @@ def uv_bootstrap_commands(python_cmd: str) -> List[str]:
         (
             f'{python_cmd} -c "import json, pathlib, platform, shutil, tarfile, urllib.request; '
             "arch={'x86_64':'x86_64-unknown-linux-gnu','amd64':'x86_64-unknown-linux-gnu','aarch64':'aarch64-unknown-linux-gnu','arm64':'aarch64-unknown-linux-gnu'}[platform.machine().lower()]; "
-            "req=urllib.request.Request('https://api.github.com/repos/astral-sh/uv/releases/latest', headers={'User-Agent':'arcadedb-bench'}); "
-            "version=json.load(urllib.request.urlopen(req, timeout=30))['tag_name'].lstrip('v'); "
+            f"version='{UV_VERSION}'; "
             "archive=pathlib.Path('/tmp/uv.tar.gz'); "
             "archive.write_bytes(urllib.request.urlopen(f'https://github.com/astral-sh/uv/releases/download/{version}/uv-{arch}.tar.gz', timeout=30).read()); "
             "target=pathlib.Path('/tmp/uv-extract'); target.mkdir(parents=True, exist_ok=True); "
@@ -1467,24 +1471,23 @@ def run_in_docker(args):
         packages.append("duckdb")
     if args.db == "postgresql":
         packages.append("psycopg[binary]")
-    packages_str = " ".join(packages)
 
     inner_cmd_parts = []
     python_cmd = "python"
     if args.db == "postgresql":
         inner_cmd_parts.append(
-            "apt-get update && apt-get install -y postgresql python3 python3-venv && rm -rf /var/lib/apt/lists/*"
+            "apt-get update && apt-get install -y postgresql python3 && rm -rf /var/lib/apt/lists/*"
         )
         python_cmd = "python3"
-    inner_cmd_parts.append(f"{python_cmd} -m venv /tmp/bench-venv")
-    inner_cmd_parts.append(". /tmp/bench-venv/bin/activate")
     inner_cmd_parts.extend(uv_bootstrap_commands(python_cmd))
-    inner_cmd_parts.append(f"uv pip install {packages_str}")
+    uv_run_cmd = "uv run --no-project " + " ".join(
+        f'--with "{package}"' for package in packages
+    )
     if arcadedb_wheel_mount_path is not None:
-        inner_cmd_parts.append(f'uv pip install "{arcadedb_wheel_mount_path}"')
+        uv_run_cmd += f' --with "{arcadedb_wheel_mount_path}"'
     inner_cmd_parts.append("echo 'Starting benchmark...'")
     inner_cmd_parts.append(
-        f"{python_cmd} -u 08_stackoverflow_tables_olap.py {' '.join(filtered_args)}"
+        f"{uv_run_cmd} python -u 08_stackoverflow_tables_olap.py {' '.join(filtered_args)}"
     )
     if args.db == "postgresql":
         db_name = build_benchmark_db_name(

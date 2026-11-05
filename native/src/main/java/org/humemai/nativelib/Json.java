@@ -84,9 +84,15 @@ final class Json {
    * Parses a top-level object whose value for streamKey is an array of objects: those rows go to the sink one by one and the key maps to
    * the row count (Integer) instead of the list. Every other key is parsed as usual. A streamKey value that is not an array stays as parsed.
    */
-  @SuppressWarnings("unchecked")
   static Map<String, Object> object(final byte[] b, final int len, final String streamKey, final RowSink sink) {
-    final Json j = new Json(b, len, 0L, 0);
+    return object(b, len, streamKey, sink, 0L, 0);
+  }
+
+  /** As above; buf: the float32 side buffer that {"\u0001":["B",offset,count]} values point into (see parse), 0 for none. */
+  @SuppressWarnings("unchecked")
+  static Map<String, Object> object(final byte[] b, final int len, final String streamKey, final RowSink sink, final long buf,
+      final long bufFloats) {
+    final Json j = new Json(b, len, buf, bufFloats);
     j.ws();
     if (j.i >= j.n || j.s[j.i] != '{')
       throw new IllegalArgumentException("expected a JSON object");
@@ -408,7 +414,7 @@ final class Json {
     return out;
   }
 
-  /** Python -> Java tagged values: n Decimal, i big int, m map with non-str keys, D date, T datetime (UTC wall clock), s set, b bytes (base64), F float[] (as a list), B float[] (from the side buffer), R RID. */
+  /** Python -> Java tagged values: n Decimal, i big int, m map with non-str keys, D date, T datetime (UTC wall clock), s set, b bytes (base64), F float[] (as a list), B float[] (from the side buffer), BL List<Double> (from the side buffer), R RID. */
   @SuppressWarnings("unchecked")
   private Object decodeTag(final String kind, final List<?> tag) {
     final Object payload = tag.get(1);
@@ -424,6 +430,19 @@ final class Json {
       for (int k = 0; k < count; k++)
         f[k] = fp.read((int) off + k);
       return f;
+    }
+    case "BL": {
+      // the same side buffer read as a java.util.List of Double: a list of Python floats that float32 holds exactly (the Python
+      // side checks double -> float32 -> double is the identity), so the engine reads the List<Double> the JSON text would have been
+      final long off = ((Number) payload).longValue();
+      final int count = ((Number) tag.get(2)).intValue();
+      if (buf == 0 || off < 0 || count < 0 || off + count > bufFloats)
+        throw new IllegalArgumentException("binary parameter outside the side buffer");
+      final List<Object> list = new ArrayList<>(count);
+      final CFloatPointer fp = WordFactory.pointer(buf);
+      for (int k = 0; k < count; k++)
+        list.add((double) fp.read((int) off + k));
+      return list;
     }
     case "n":
       return new BigDecimal((String) payload);

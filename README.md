@@ -19,12 +19,12 @@ Both packages `import arcadedb`, and they have the same public API. Install one,
 ## Install
 
 ```bash
-pip install arcadedb       # native, the default (or: uv add arcadedb)
-pip install arcadedb-jvm   # JVM, for heavy long-running loads (or: uv add arcadedb-jvm)
+uv add arcadedb       # native, the default
+uv add arcadedb-jvm   # JVM, for heavy long-running loads
 ```
 
 <!-- REMOVE WHEN: the old arcadedb-embedded* shims are retired and two releases have shipped with the two-package layout allow-old-name -->
-> Transition note: the first release of this layout is 26.11.1. Until `arcadedb` passes its readiness bar, it may appear only as pre-releases, `26.11.1.devN`. Install it with `pip install --pre arcadedb` (or `uv add --prerelease allow arcadedb`). A plain `pip install arcadedb` finds only the 0.0.1 placeholder, which installs the old package. The same holds for `arcadedb-jvm` until its 26.11.1 is released.
+> Transition note: the first release of this layout is 26.11.1. Until `arcadedb` passes its readiness bar, it may appear only as pre-releases, `26.11.1.devN`. Until a final 26.11.1 exists, PyPI holds only these pre-releases, and a plain `uv add arcadedb` installs the newest one. After a final release, a plain install takes the final, and a later pre-release needs `uv add --prerelease allow arcadedb`. The same holds for `arcadedb-jvm`.
 
 <!-- REMOVE WHEN: the old arcadedb-embedded* shims are retired and two releases have shipped with the two-package layout allow-old-name -->
 > Old names: `arcadedb-jvm` was formerly `arcadedb-embedded`, and `arcadedb` was formerly `arcadedb-embedded-native` (archived on PyPI). A last `arcadedb-embedded` release will be a deprecation shim that installs `arcadedb`, the native build.
@@ -82,9 +82,8 @@ Releases from this repository start with 26.11.1. The 26.10.x wheels were built 
 
 ## Documentation
 
-- Here: [`docs/`](https://github.com/ArcadeData/arcadedb-python/tree/main/docs/modules/ROOT/pages) is an Antora component (AsciiDoc) with Installation, [Which package?](https://github.com/ArcadeData/arcadedb-python/blob/main/docs/modules/ROOT/pages/which-package.adoc), Quickstart, Databases and queries, and Concurrency, processes and crashes. It covers only what is specific to the Python bindings.
-- The component is not published on docs.arcadedb.com yet; adding it as a content source is open in [ArcadeData/arcadedb-docs#505](https://github.com/ArcadeData/arcadedb-docs/pull/505).
-- The older guide, API reference and example walkthroughs are at [docs.humem.ai/arcadedb](https://docs.humem.ai/arcadedb/latest/). They describe the previous packages and use the import name `arcadedb_embedded`; read it as `arcadedb`. They stay until those pages are ported here ([#19](https://github.com/ArcadeData/arcadedb-python/issues/19)). <!-- allow-old-name -->
+- Here: [`docs/`](https://github.com/ArcadeData/arcadedb-python/tree/main/docs/modules/ROOT/pages) is an Antora component (AsciiDoc) with Installation, [Which package?](https://github.com/ArcadeData/arcadedb-python/blob/main/docs/modules/ROOT/pages/which-package.adoc), Quickstart, Databases and queries, Vectors, and Concurrency, processes and crashes. It covers only what is specific to the Python bindings.
+- Published at [docs.arcadedb.com/arcadedb-python](https://docs.arcadedb.com/arcadedb-python/), the same site as the main ArcadeDB manual, rebuilt daily from `main` (ArcadeData/arcadedb-docs#505). The `Docs` workflow builds it as a site of its own on every change under `docs/` and attaches it as the `docs-site` artifact. To build it locally, run `npx -p @antora/cli@3.2.1 -p @antora/site-generator@3.2.1 antora docs/antora-playbook.yml` and open `docs/build/site/index.html`.
 - ArcadeDB itself (SQL, openCypher, schema, server): [docs.arcadedb.com](https://docs.arcadedb.com). It is not repeated here.
 
 ## Examples
@@ -97,9 +96,11 @@ Releases from this repository start with 26.11.1. The 26.10.x wheels were built 
 ./scripts/build.sh   # an arcadedb-jvm wheel for your platform in dist/
 ```
 
-The `arcadedb` (native) wheel is built from `native/` with GraalVM Community Edition; [`CLAUDE.md`](https://github.com/ArcadeData/arcadedb-python/blob/main/CLAUDE.md) has the commands. A native image build takes about 1 to 2.5 hours per platform.
+The `arcadedb` (native) wheel is built from `native/` with GraalVM Community Edition; [`CLAUDE.md`](https://github.com/ArcadeData/arcadedb-python/blob/main/CLAUDE.md) has the commands. A native image build takes about 5 to 30 minutes per platform (macOS is the slowest).
 
-The JVM build runs in Docker on Linux. macOS and Windows need a JDK 25 or later. The jars come from the `arcadedata/arcadedb` Docker image: `latest` by default, or the tag in `ARCADEDB_TAG` (for example `ARCADEDB_TAG=26.10.2 ./scripts/build.sh`). The package version is read from the engine jar in that image, so a `26.11.1-SNAPSHOT` image builds `26.11.1.devN`.
+The JVM build runs in Docker on Linux. macOS and Windows need a JDK 25 or later. The jars come from the `arcadedata/arcadedb` Docker image: `latest` by default, or the tag in `ARCADEDB_TAG` (for example `ARCADEDB_TAG=26.10.2 ./scripts/build.sh`). The package version is read from the engine jar in that image, so an `A.B.C-SNAPSHOT` image builds `A.B.C.devN`.
+
+The native build does not use the image. It resolves `arcadedb-engine` and `arcadedb-server` from Maven Central at `arcadedb.version` in `native/pom.xml` (release versions only, because a snapshot is not on Maven Central) and compiles them with GraalVM Community Edition. Neither build compiles the engine from source: the engine code is upstream's, unmodified.
 
 Tests run against the built wheel, not the source tree: install the wheel with its `test` extra into a virtual environment, then run `pytest`. [`CLAUDE.md`](https://github.com/ArcadeData/arcadedb-python/blob/main/CLAUDE.md) has the exact commands, the build options and the lint setup.
 

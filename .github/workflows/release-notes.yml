@@ -1,0 +1,173 @@
+name: GitHub Release
+
+# A tag release ends here. When BOTH release workflows of a tag (release-native.yml for `arcadedb`, release-jvm.yml for `arcadedb-jvm`)
+# have finished successfully, this workflow creates the GitHub Release of the tag with notes written by scripts/release_notes.py from the
+# milestone named after the base version (a `postN` uses the commit range since the previous tag instead), and closes that milestone after
+# a FINAL release (A.B.C, not A.B.C.devN, not A.B.C.postN), after moving what is still open in it to the next milestone.
+#
+# Why `workflow_run` and not a last job in each release workflow, or a poll of PyPI: the two release workflows do not wait for each other
+# (the native build and the JVM build take different times and either can need a retry), and a job inside one of them cannot know the
+# other finished. `workflow_run` fires when each one completes, including after a re-run of only a publish job. Each firing looks at both
+# workflows for the same tag commit, and does nothing unless both concluded `success` (the first one to finish therefore exits quietly,
+# the second one creates the release). A workflow only concludes `success` after its publish job uploaded to PyPI and, for the JVM
+# package, after the install from PyPI on every platform. As a last check the gate asks PyPI for both versions. If both firings run at
+# once, the release is created by one and edited by the other (the concurrency group below also serialises them), so the result is the same.
+#
+# A failed or half done release (for example a final tag whose native readiness bar is not met) creates nothing. When the missing part is
+# fixed and its publish job re-run, this workflow fires again. `workflow_dispatch` is the manual way for a tag that is already published
+# (the gate runs the same checks), for example to create the release of a tag that was published before this workflow existed.
+#
+# `workflow_run` workflows always run the file on the default branch, so a change here takes effect after it is merged.
+
+on:
+  workflow_run:
+    workflows: ["Release native (arcadedb)", "Release JVM (arcadedb-jvm)"] # the `name:` of the two release workflows
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "The bare version of a tag that is already published, for example 26.11.1"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: github-release-${{ github.event.workflow_run.head_branch || inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  github-release:
+    name: GitHub Release
+    # A release workflow that did not succeed, or one that was not started by a tag push, never gets here.
+    if: >-
+      ${{ github.repository == 'ArcadeData/arcadedb-python' &&
+      (github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write # create the release on the existing tag
+      issues: write # close the milestone, and read the milestone's pull requests
+      pull-requests: read # merge commit of each pull request
+      actions: read # the runs of the two release workflows
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Both packages must be published before anything is created. Exit 0 with ready=false means "the other package is not finished
+      # yet"; exit 1 means the workflows say success but PyPI does not have the version, which a person must look at.
+      - name: Both release workflows succeeded and both packages are on PyPI
+        id: gate
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          RUN_TAG: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          set -euo pipefail
+          tag="${INPUT_TAG:-$RUN_TAG}"
+          if ! [[ "$tag" =~ ^[0-9]+\.[0-9]+\.[0-9]+(\.(dev|post)[0-9]+)?$ ]]; then
+            echo "::error::'$tag' is not A.B.C, A.B.C.devN or A.B.C.postN (bare version, no v, no aN/bN/rcN)"
+            exit 1
+          fi
+          base="${tag%%.dev*}"
+          base="${base%%.post*}"
+          if [[ "$tag" == *.dev* ]]; then kind=dev; elif [[ "$tag" == *.post* ]]; then kind=post; else kind=final; fi
+          sha="$(gh api "repos/$GH_REPO/commits/$tag" --jq .sha)"
+          for wf in release-native.yml release-jvm.yml; do
+            conclusion="$(gh api "repos/$GH_REPO/actions/workflows/$wf/runs?head_sha=$sha&event=push&per_page=1" --jq '.workflow_runs[0].conclusion // "none"')"
+            echo "$wf for $tag ($sha): $conclusion"
+            if [ "$conclusion" != success ]; then
+              echo "::notice::$wf has not succeeded for $tag ($conclusion): no GitHub Release yet. This workflow runs again when it finishes."
+              echo "ready=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+          for dist in arcadedb arcadedb-jvm; do
+            code="$(curl -sS -o /dev/null -w '%{http_code}' "https://pypi.org/pypi/$dist/$tag/json")"
+            if [ "$code" != 200 ]; then
+              echo "::error::$dist $tag is not on PyPI (HTTP $code) although its release workflow succeeded"
+              exit 1
+            fi
+          done
+          { echo "ready=true"; echo "tag=$tag"; echo "base=$base"; echo "kind=$kind"; } >> "$GITHUB_OUTPUT"
+
+      - name: Write the notes
+        if: steps.gate.outputs.ready == 'true'
+        env:
+          TAG: ${{ steps.gate.outputs.tag }}
+        run: python3 -I scripts/release_notes.py "$TAG" --output "$RUNNER_TEMP/notes.md"
+
+      # A pre-release for A.B.C.devN, a normal release for A.B.C and A.B.C.postN. --verify-tag: the tag must exist, the release never
+      # creates one. When the release exists (the other firing, or an earlier run) its notes and its pre-release flag are brought up to date.
+      - name: Create or update the GitHub Release
+        if: steps.gate.outputs.ready == 'true'
+        env:
+          TAG: ${{ steps.gate.outputs.tag }}
+          KIND: ${{ steps.gate.outputs.kind }}
+        run: |
+          set -euo pipefail
+          if [ "$KIND" = dev ]; then pre=true; else pre=false; fi
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release edit "$TAG" --title "$TAG" --notes-file "$RUNNER_TEMP/notes.md" --prerelease="$pre"
+          elif [ "$pre" = true ]; then
+            gh release create "$TAG" --verify-tag --title "$TAG" --notes-file "$RUNNER_TEMP/notes.md" --prerelease
+          else
+            gh release create "$TAG" --verify-tag --title "$TAG" --notes-file "$RUNNER_TEMP/notes.md" --latest
+          fi
+          gh release view "$TAG" --json url,isPrerelease --jq '"release: " + .url + " (prerelease: " + (.isPrerelease|tostring) + ")"'
+
+      # Only a final release closes its milestone. A dev tag leaves it open (the cycle goes on); a post tag has no milestone of its own
+      # (its notes come from the commit range, not from a milestone). Items still open in the milestone move to the next one first, and
+      # every move is logged. The next one is the open milestone with the earliest due date after this one. When there is none, the
+      # milestone is created, named after the next upstream engine version (due 30 days after this one; the base of the upstream `main` version, as in
+      # development/release.adoc), when that can be read. Otherwise nothing is moved or closed and the job fails, so the maintainer
+      # creates the next milestone and re-runs this workflow (the release step is a no-op edit the second time).
+      - name: Move the open items and close the milestone of a final release
+        if: steps.gate.outputs.ready == 'true' && steps.gate.outputs.kind == 'final'
+        env:
+          BASE: ${{ steps.gate.outputs.base }}
+        run: |
+          set -euo pipefail
+          milestones="$(gh api "repos/$GH_REPO/milestones?state=all&per_page=100")"
+          row="$(jq -r --arg t "$BASE" '[.[] | select(.title == $t)][0] // empty | "\(.number) \(.state) \(.open_issues) \(.due_on // "")"' <<< "$milestones")"
+          if [ -z "$row" ]; then
+            echo "::warning::No milestone named $BASE: nothing to close"
+            exit 0
+          fi
+          read -r number state open_issues due <<< "$row"
+          if [ "$state" = closed ]; then
+            echo "Milestone $BASE (#$number) is already closed"
+            exit 0
+          fi
+          if [ "$open_issues" != 0 ]; then
+            next="$(jq -r --arg n "$number" --arg due "$due" '[.[] | select(.state == "open" and (.number | tostring) != $n and .due_on != null and ($due == "" or .due_on > $due))] | sort_by(.due_on) | .[0].number // empty' <<< "$milestones")"
+            if [ -z "$next" ]; then
+              upstream="$(curl -fsS https://raw.githubusercontent.com/ArcadeData/arcadedb/main/pom.xml | sed -n '/<artifactId>arcadedb-parent<\/artifactId>/,/<\/version>/ s/.*<version>\(.*\)-SNAPSHOT<\/version>.*/\1/p' | head -n 1 || true)"
+              if [[ "$upstream" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ && "$upstream" != "$BASE" ]]; then
+                found="$(jq -r --arg t "$upstream" '[.[] | select(.title == $t)][0] // empty | "\(.number) \(.state)"' <<< "$milestones")"
+                if [ -z "$found" ]; then
+                  # due 30 days after this one (releases are monthly), so a pick-by-due-date finds it
+                  args=(-f title="$upstream")
+                  [ -z "$due" ] || args+=(-f due_on="$(date -u -d "$due + 30 days" +%Y-%m-%dT%H:%M:%SZ)")
+                  next="$(gh api --method POST "repos/$GH_REPO/milestones" "${args[@]}" --jq .number)"
+                  echo "Created milestone $upstream (#$next), named after the next upstream engine version"
+                elif [ "${found#* }" = open ]; then
+                  next="${found%% *}"
+                fi
+              fi
+            fi
+            if [ -z "$next" ]; then
+              echo "::error::Milestone $BASE has $open_issues open items and there is no next open milestone with a due date, and the next upstream version could not be used (read '${upstream:-nothing}'). Nothing was moved or closed. Create the next milestone with a due date, then re-run this workflow."
+              exit 1
+            fi
+            for item in $(gh api --paginate "repos/$GH_REPO/issues?milestone=$number&state=open&per_page=100" --jq '.[].number'); do
+              gh api --method PATCH "repos/$GH_REPO/issues/$item" -F milestone="$next" --jq '"moved #\(.number) \(.title) to milestone \(.milestone.title)"'
+            done
+          fi
+          gh api --method PATCH "repos/$GH_REPO/milestones/$number" -f state=closed --jq '"closed milestone " + .title + " (" + .html_url + ")"'

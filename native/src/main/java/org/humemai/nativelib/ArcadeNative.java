@@ -56,8 +56,10 @@ public final class ArcadeNative {
   }
 
   static {
-    // ARCADEDB_VECTOR_PROVIDER = native | panama | default (jvector's VectorizationProvider, forced); unset: jvector chooses
-    // (Highway through the FFM downcalls when the bundled libjvector loads, else the Vector API classes).
+    // ARCADEDB_VECTOR_PROVIDER = native | panama | default (jvector's VectorizationProvider, forced). Unset, the engine's
+    // VectorApiSupport.configureJVectorProvider() (ArcadeData/arcadedb#10077) sets jvector.vectorization_provider=default in every
+    // native image, so the distance kernels are jvector's scalar DefaultVectorizationProvider. Highway (the bundled libjvector
+    // through the FFM downcalls, Linux x86-64 and aarch64) runs only with ARCADEDB_VECTOR_PROVIDER=native.
     final String forced = System.getenv("ARCADEDB_VECTOR_PROVIDER");
     if (forced != null && !forced.isEmpty() && System.getProperty("jvector.vectorization_provider") == null)
       System.setProperty("jvector.vectorization_provider", forced);
@@ -428,7 +430,9 @@ public final class ArcadeNative {
       sb.append(",\"max_heap\":").append(Runtime.getRuntime().maxMemory());
       sb.append(",\"exec_timers_ns\":{\"calls\":").append(T[0]).append(",\"args\":").append(T[1]).append(",\"json\":").append(T[2])
           .append(",\"engine\":").append(T[3]).append(",\"reply\":").append(T[4]).append('}');
-      final io.github.jbellis.jvector.vector.VectorizationProvider vp = io.github.jbellis.jvector.vector.VectorizationProvider.getInstance();
+      // through the engine, never VectorizationProvider.getInstance(): jvector picks its provider once per process, and asked first it
+      // would pick on its own (Panama, the uncompiled Vector API, where no libjvector ships) before the engine sets the scalar default
+      final io.github.jbellis.jvector.vector.VectorizationProvider vp = com.arcadedb.utility.VectorApiSupport.jvectorProvider();
       sb.append(",\"provider\":");
       NativeCodec.quote(sb, vp.getClass().getName());
       sb.append(",\"util_support\":");

@@ -24,15 +24,13 @@ from arcadedb.exceptions import ArcadeDBError
 
 
 @pytest.fixture
-def cleanup_db():
+def cleanup_db(tmp_path_factory):
     """Fixture to clean up test databases."""
-    import tempfile
-
     db_paths = []
 
     def _create_temp_db(prefix="arcadedb_test_"):
         """Create a temporary database directory and register it for cleanup."""
-        temp_dir = tempfile.mkdtemp(prefix=prefix)
+        temp_dir = str(tmp_path_factory.mktemp(prefix))
         db_paths.append(temp_dir)
         return temp_dir
 

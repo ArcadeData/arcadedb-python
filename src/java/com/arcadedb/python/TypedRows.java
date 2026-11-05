@@ -98,7 +98,7 @@ public final class TypedRows {
     return new Object[] { sb.toString(), side.toArray(), drained };
   }
 
-  private static void appendRow(final StringBuilder sb, final Result row, final List<Object> side) {
+  static void appendRow(final StringBuilder sb, final Result row, final List<Object> side) {
     final String[] names = row.getPropertyNames().toArray(new String[0]);
     for (final String name : names)
       if (TAG.equals(name)) {
@@ -117,7 +117,8 @@ public final class TypedRows {
     sb.append('}');
   }
 
-  private static void append(final StringBuilder sb, final Object value, final List<Object> side) {
+  /** One value as tagged JSON (also the "json" columns of {@link ColumnBatcher}); what JSON cannot carry goes to {@code side}. */
+  static void append(final StringBuilder sb, final Object value, final List<Object> side) {
     if (value == null) {
       sb.append("null");
     } else if (value instanceof String s) {
@@ -286,7 +287,7 @@ public final class TypedRows {
    * A JSON string. Surrogates are always written as \\u escapes (a lone one is not valid UTF-16 text to hand across the
    * bridge), as are control characters.
    */
-  private static void quote(final StringBuilder sb, final String s) {
+  static void quote(final StringBuilder sb, final String s) {
     sb.append('"');
     final int length = s.length();
     for (int i = 0; i < length; i++) {

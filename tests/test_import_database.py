@@ -10,8 +10,8 @@ import arcadedb
 
 
 @pytest.fixture
-def temp_db_path():
-    temp_dir = tempfile.mkdtemp()
+def temp_db_path(tmp_path_factory):
+    temp_dir = str(tmp_path_factory.mktemp("arcadedb_test_db_"))
     db_path = os.path.join(temp_dir, "test_import_database_db")
     yield db_path
 

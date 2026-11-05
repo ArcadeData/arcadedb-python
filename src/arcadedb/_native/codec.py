@@ -12,7 +12,51 @@ except ImportError:  # pragma: no cover
     _np = None
 
 TAG = "\u0001"
+_TAG_ESCAPED = "\\u0001"  # TAG as it appears in reply text: NativeCodec.quote writes it as a \u escape
 _EPOCH_NAIVE = datetime(1970, 1, 1)
+_EPOCH_AWARE = datetime(1970, 1, 1, tzinfo=timezone.utc)
+
+# A list of this many Python floats or more may cross in the float32 side buffer (see _exact_float_list). A shorter one is cheaper
+# as JSON text, and a short IN list is the common use of a list parameter.
+_FLOAT_LIST_MIN = 64
+
+
+class _ExactFloats:
+    """A list of Python floats that float32 holds exactly: ``f32`` is the side-buffer form, ``values`` the list it stands for."""
+
+    __slots__ = ("f32", "values")
+
+    def __init__(self, f32, values):
+        self.f32 = f32
+        self.values = values
+
+
+def _exact_float_list(value):
+    """``value`` as an :class:`_ExactFloats` when it is a list of at least ``_FLOAT_LIST_MIN`` Python floats (no int, bool, None,
+    numpy scalar) that all survive the round trip double -> float32 -> double unchanged; None otherwise.
+
+    The engine then reads the same ``List<Double>`` it read from the JSON text, value for value: the check is exact, never a
+    tolerance. A list from a float32 model (``ndarray.tolist()``) passes; a list of doubles that float32 would round (0.1), NaN,
+    or an infinity fails the check and stays JSON text, so no result changes. The text costs 340 ns a number
+    (611 us for 1536), the buffer 60 us.
+    """
+    if (
+        _np is None
+        or len(value) < _FLOAT_LIST_MIN
+        or set(map(type, value)) != _FLOAT_ONLY
+    ):
+        return None
+    doubles = _np.array(value, dtype=_np.float64)
+    with _np.errstate(
+        over="ignore"
+    ):  # a double beyond float32 becomes an infinity, which fails the check below
+        f32 = doubles.astype(_np.float32)
+    if (
+        not _np.array_equal(f32.astype(_np.float64), doubles)
+        or not _np.isfinite(f32).all()
+    ):
+        return None  # NaN and the infinities stay text: they are what the engine's JSON reader decides about, not this check
+    return _ExactFloats(f32, value)
 
 
 def _default(value, _bin=None):
@@ -23,6 +67,13 @@ def _default(value, _bin=None):
     """
     if isinstance(value, RID):
         return {TAG: ["R", value.text]}
+    if isinstance(value, _ExactFloats):
+        if _bin is None:
+            return value.values
+        off = _bin[1]
+        _bin[0].append(value.f32)
+        _bin[1] = off + value.f32.size
+        return {TAG: ["BL", off, value.f32.size]}
     if isinstance(value, Decimal):
         return {TAG: ["n", str(value)]}
     if isinstance(value, datetime):
@@ -43,6 +94,11 @@ def _default(value, _bin=None):
     if _np is not None:
         if isinstance(value, _np.ndarray):
             if value.dtype.kind == "f":
+                if value.dtype != _np.float32:
+                    # a float64 (or float16, longdouble) array keeps its doubles, as on the JVM build and in row_default. The
+                    # float32 side buffer and the "F" tag (a float[] in Java) would both round it to float32 (0.1 -> 0.10000000149011612).
+                    # Only a lone positional ``?`` is a query vector sent as float32: encode_params narrows that one before it gets here.
+                    return value.tolist()
                 if _bin is not None:
                     arr = _np.ascontiguousarray(value.ravel(), dtype=_np.float32)
                     off = _bin[1]
@@ -65,23 +121,56 @@ def _default(value, _bin=None):
 
 
 _PLAIN = frozenset((str, int, float, bool, type(None)))
+_FLOAT_ONLY = frozenset((float,))
 _dumps = json.dumps
+# the C function that json.dumps writes a str with
+_enc_str = json.encoder.encode_basestring_ascii
 _fast = os.environ.get("ARCADEDB_NATIVE_FASTENC", "1") != "0"
 
 
-def _prep(value):
+def _prep(value, binary=False):
     """A value ready for json.dumps: a dict with a key that is not a str becomes a tagged ``[[k, v], ..]`` map (JSON would turn
     the key into text; the JPype path keeps it), and containers are walked for such dicts. Plain scalars pass untouched.
+
+    ``binary``: a long list of floats that float32 holds exactly is returned as an :class:`_ExactFloats` for the side buffer.
     """
     t = type(value)
     if t in _PLAIN:
         return value
     if isinstance(value, Mapping):
         if all(type(k) is str for k in value):
-            return {k: _prep(v) for k, v in value.items()}
-        return {TAG: ["m", [[_prep(k), _prep(v)] for k, v in value.items()]]}
+            return {k: _prep(v, binary) for k, v in value.items()}
+        return {
+            TAG: [
+                "m",
+                [[_prep(k, binary), _prep(v, binary)] for k, v in value.items()],
+            ]
+        }
     if t is list or t is tuple:
-        return [_prep(v) for v in value]
+        if len(value) > 8:
+            if binary and t is list:
+                exact = _exact_float_list(value)
+                if exact is not None:
+                    return exact
+            if set(map(type, value)) <= _PLAIN:
+                return value  # nothing inside to rewrite: skip the per-element walk (69 us for 1536 numbers)
+        return [_prep(v, binary) for v in value]
+    return value
+
+
+def _query_vector(value):
+    """A float ndarray among the positional parameters (``?``) is a query vector: the engine stores vectors as float32, so it is
+    sent as float32 (the fast side buffer), as ``Database._convert_args`` does on the JVM build and as documented in "A query
+    vector". A named parameter, ``CONTENT :row`` and a record's properties are values, not query vectors: a float64 array there
+    keeps its doubles (see :func:`_default`).
+    """
+    if (
+        _np is not None
+        and isinstance(value, _np.ndarray)
+        and value.dtype.kind == "f"
+        and value.dtype != _np.float32
+    ):
+        return value.astype(_np.float32)
     return value
 
 
@@ -95,18 +184,54 @@ def encode_params(args, binary=False):
         return ("", None, 0) if binary else ""
     values = args[0] if len(args) == 1 and isinstance(args[0], (list, tuple)) else args
     plain = _PLAIN
+    if _fast and len(values) == 1:
+        # one int or str parameter (the point read, WHERE id = ?): the text is written directly, the bytes json.dumps({"pos": [v]}) gives,
+        # without the set of types and the encoder call. Only the exact types: a bool, an int subclass or a float takes the general path
+        v = values[0]
+        t = type(v)
+        if t is int:
+            text = '{"pos": [%d]}' % v
+            return (text, None, 0) if binary else text
+        if t is str:
+            text = '{"pos": [%s]}' % _enc_str(v)
+            return (text, None, 0) if binary else text
     if _fast and set(map(type, values)) <= plain:
         # all plain scalars (the per-row INSERT of a load): the cached default encoder, no default hook, no per-call encoder object
         text = _dumps({"pos": values if type(values) is list else list(values)})
         return (text, None, 0) if binary else text
     if len(values) == 1 and isinstance(values[0], Mapping):
         named = values[0]
+        if _fast:
+            # every value a plain scalar or an RID (a named point read, the record id of a step or an edge end): no float side buffer
+            # can arise, so the cached encoder writes the text, with an RID as the tagged object the hook would have returned. The
+            # text is the same bytes; what is skipped is _prep, the hook closure and the per-call encoder object.
+            out = {}
+            for k, v in named.items():
+                t = type(v)
+                if t is RID:
+                    v = {TAG: ["R", v.text]}
+                elif t not in plain:
+                    break
+                out[k] = v
+            else:
+                text = _dumps({"named": out})
+                return (text, None, 0) if binary else text
         if not all(type(v) in plain for v in named.values()):
-            named = {k: _prep(v) for k, v in named.items()}
+            named = {k: _prep(v, binary) for k, v in named.items()}
         return _dump({"named": dict(named)}, binary)
     if not all(type(v) in plain for v in values):
-        values = [_prep(v) for v in values]
+        values = [_prep(_query_vector(v), binary) for v in values]
     return _dump({"pos": list(values)}, binary)
+
+
+def encode_lookup(keys, values):
+    """The JSON text ``arcadedb_n_lookup`` takes, ``{"keys": [..], "values": [..]}`` in the tagged encoding of query parameters
+    (the text ``json.dumps(_prep(obj), default=_default)`` gives). Plain values are written by the cached encoder: for them
+    ``_prep`` returns its argument and the hook is never called."""
+    obj = {"keys": [str(k) for k in keys], "values": list(values)}
+    if _fast and set(map(type, obj["values"])) <= _PLAIN:
+        return _dumps(obj)
+    return json.dumps(_prep(obj), default=_default)
 
 
 def _dump(obj, binary):
@@ -120,6 +245,76 @@ def _dump(obj, binary):
         return text, None, 0
     buf = arrays[0].tobytes() if len(arrays) == 1 else _np.concatenate(arrays).tobytes()
     return text, buf, state[1]
+
+
+def _gb_default(value, state):
+    """json.dumps hook for a GraphBatch op in binary mode: a one-dimensional non-empty float32 ndarray goes to the side buffer (the
+    ``["B", offset, count]`` tag, a float[] in Java, the value the ``"F"`` text gives); every other value as :func:`_default`
+    writes it, so a list, a float64 array or a 2-D array keeps the text it has always had.
+    """
+    if (
+        _np is not None
+        and isinstance(value, _np.ndarray)
+        and value.dtype == _np.float32
+        and value.ndim == 1
+        and value.size
+    ):
+        return _default(value, state)
+    return _default(value)
+
+
+def encode_gb_args(args):
+    """The ``args`` of ``arcadedb_n_gb_bin``: ``(text, float32 side buffer bytes or None, float count)``, text as :func:`_prep` and
+    :func:`_default` write it for ``arcadedb_n_gb`` except that the float32 vectors of the rows and props are in the buffer.
+    """
+    state = [[], 0]
+    text = json.dumps(_prep(args), default=lambda v: _gb_default(v, state))
+    arrays = state[0]
+    if not arrays:
+        return text, None, 0
+    buf = arrays[0].tobytes() if len(arrays) == 1 else _np.concatenate(arrays).tobytes()
+    return text, buf, state[1]
+
+
+_INT64_MAX = 2**63 - 1
+_NS_DATETIME = None if _np is None else _np.dtype("datetime64[ns]")
+
+
+def sample_array(values, timestamps=False):
+    """The int64 or float64 array that stands for a column of ``append_samples`` in the address table of ``arcadedb_n_async_bin``, or
+    None when the column keeps the JSON text it has always had. It is the array whose ``.tolist()`` the text path writes, value for
+    value: an int, uint (uint64 only inside the int64 range) or bool array is int64, a float array narrower than long double is float64
+    (a float32 widens exactly), and, for the timestamps only, a ``datetime64[ns]`` array without NaT is its int64 count (what ``.tolist()``
+    gives for that unit). Anything else, a list, a subclass of ndarray, a 2-D or empty array, a float array as timestamps, other
+    ``datetime64`` units (``int()`` refuses their datetimes on the text path), a ``datetime64[ns]`` of non-native byte order, returns None.
+    """
+    if (
+        _np is None
+        or type(values) is not _np.ndarray
+        or values.ndim != 1
+        or not values.size
+    ):
+        return None
+    dtype = values.dtype
+    kind = dtype.kind
+    if kind in "ib":
+        return _np.ascontiguousarray(values, dtype=_np.int64)
+    if kind == "u":
+        if dtype.itemsize == 8 and int(values.max()) > _INT64_MAX:
+            return None
+        return _np.ascontiguousarray(values, dtype=_np.int64)
+    if kind == "f":
+        if timestamps or dtype.itemsize > 8:
+            return None
+        return _np.ascontiguousarray(values, dtype=_np.float64)
+    if kind == "M" and timestamps and dtype == _NS_DATETIME:
+        counts = _np.ascontiguousarray(values.view(_np.int64))
+        if (
+            counts == _np.iinfo(_np.int64).min
+        ).any():  # NaT: the text path raises on its None
+            return None
+        return counts
+    return None
 
 
 def row_default(value):
@@ -258,6 +453,11 @@ def _hook(obj):
 
 def loads(text: str, floats=None):
     """Decode a reply, restoring tagged values. ``floats``: the float32 tail of a binary reply (``["B", offset, count]`` values)."""
+    # A tagged value always puts the escaped tag in the text (NativeCodec.quote escapes every character below 0x20). Without it the reply
+    # holds none and the per-object hook, a Python call for every decoded object, is skipped (#151). A string or a key that merely
+    # contains U+0001 takes the hook path as before.
+    if _TAG_ESCAPED not in text:
+        return json.loads(text)
     if floats is None:
         return json.loads(text, object_hook=_hook)
 
@@ -278,22 +478,70 @@ def loads(text: str, floats=None):
     return json.loads(text, object_hook=hook)
 
 
-# --- JSON-native form of a row (ResultSet.to_json_list): DATE/DATETIME as epoch millis, DECIMAL as float.
+def loads_tagged(text: str, floats=None):
+    """:func:`loads` that also says whether a tagged value was restored: ``(value, restored)``.
+
+    ``restored`` is False for a reply without the escaped tag, and for one whose only tags are ``["B", offset, count]``
+    (they decode to plain float lists). Then every value is a ``json.loads`` type and :func:`json_native` returns it
+    unchanged, which is what lets ``to_json_list`` skip its walk. The decoded value is the one :func:`loads` returns.
+    """
+    if _TAG_ESCAPED not in text:
+        return json.loads(text), False
+    restored = False
+
+    def hook(obj):
+        nonlocal restored
+        tagged = obj.get(TAG)
+        if tagged is None or len(obj) != 1 or type(tagged) is not list:
+            return obj
+        size = len(tagged)
+        if size == 3 and floats is not None and tagged[0] == "B":
+            return floats[tagged[1] : tagged[1] + tagged[2]].tolist()
+        if size == 2 and tagged[0] in _SIMPLE:
+            restored = True
+            return _SIMPLE[tagged[0]](tagged[1])
+        return obj
+
+    value = json.loads(text, object_hook=hook)
+    return value, restored
+
+
+# --- JSON-native form of a row (ResultSet.to_json_list): DATE/DATETIME as epoch millis, DECIMAL as float, an RID as its text
+# (``"#10:5"``), sets as lists, and a map key that is not a string as the string the JVM build's JSON object writes.
+
+
+def _epoch_millis(delta):
+    """Whole milliseconds of a timedelta since the epoch, in integer arithmetic and floored toward negative infinity: the
+    ``Instant.toEpochMilli`` of the JVM build. ``days`` floors and ``seconds`` and ``microseconds`` are never negative, so a
+    time before 1970 with microseconds (``.999999``) is not rounded toward zero, and no float product can fall just under an
+    integer (``total_seconds() * 1000`` did both).
+    """
+    return (delta.days * 86400 + delta.seconds) * 1000 + delta.microseconds // 1000
+
+
+def _json_key(key):
+    """The text of a map key that is not a string, as the JVM build's JSON object has it (``String.valueOf``)."""
+    if type(key) is str:
+        return key
+    if isinstance(key, RID):
+        return key.text
+    if key is None:
+        return "null"
+    if isinstance(key, bool):
+        return "true" if key else "false"
+    return str(key)
 
 
 def json_native(value):
+    if isinstance(value, RID):
+        return value.text
     if isinstance(value, datetime):
-        return (
-            int((value.replace(tzinfo=None) - _EPOCH_NAIVE).total_seconds() * 1000)
-            if value.tzinfo is None
-            else int(value.timestamp() * 1000)
+        return _epoch_millis(
+            value - _EPOCH_AWARE if value.tzinfo is not None else value - _EPOCH_NAIVE
         )
     if isinstance(value, date):
-        return int(
-            (
-                datetime.combine(value, datetime.min.time()) - _EPOCH_NAIVE
-            ).total_seconds()
-            * 1000
+        return _epoch_millis(
+            datetime.combine(value, datetime.min.time()) - _EPOCH_NAIVE
         )
     if isinstance(value, Decimal):
         return float(value)
@@ -302,5 +550,8 @@ def json_native(value):
     if isinstance(value, list):
         return [json_native(v) for v in value]
     if isinstance(value, dict):
-        return {k: json_native(v) for k, v in value.items()}
+        return {
+            (k if type(k) is str else _json_key(k)): json_native(v)
+            for k, v in value.items()
+        }
     return value

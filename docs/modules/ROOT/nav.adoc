@@ -7,6 +7,7 @@
 ** xref:how-to/concurrency.adoc[Concurrency, processes and crashes]
 ** xref:how-to/logs.adoc[Where the logs go]
 ** xref:how-to/bulk-loads.adoc[Bulk loads and commit size]
+** xref:how-to/vectors.adoc[Vectors]
 * Development
 ** xref:development/ci.adoc[Continuous integration]
 ** xref:development/release.adoc[Release]

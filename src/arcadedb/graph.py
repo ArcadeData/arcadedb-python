@@ -41,6 +41,17 @@ def _graph_calls():
     return _GRAPH_CALLS or None
 
 
+def _reader_calls():
+    """``(ReaderCalls, results)``: the ``com.arcadedb.python.ReaderCalls`` bridge class
+    (None, with the bridge's usual one warning, when the jar is missing, which sends the
+    caller down the plain path) and the ``results`` module that holds the readers of its
+    text. The class is looked up on every call, as ``results._bridge_class`` caches it:
+    the JVM may not have started yet, and an answer given then must not stick."""
+    from . import results
+
+    return results._bridge_class("ReaderCalls"), results
+
+
 class Document:
     """Wrapper for ArcadeDB Document.
 
@@ -66,9 +77,16 @@ class Document:
     def _property_names_tuple(self) -> Tuple[str, ...]:
         self._check_open()
         if self._property_names_cache is None:
-            self._property_names_cache = tuple(
-                str(name) for name in self._java_document.getPropertyNames()
-            )
+            reader, results = _reader_calls()
+            if reader is not None:
+                # the names as one JSON text instead of one JPype read per name
+                self._property_names_cache = results._loads_names(
+                    reader.documentNames(self._java_document)
+                )
+            else:
+                self._property_names_cache = tuple(
+                    str(name) for name in self._java_document.getPropertyNames()
+                )
         return self._property_names_cache
 
     @staticmethod
@@ -108,8 +126,9 @@ class Document:
     def get_raw(self, name: str) -> Any:
         """Get property value without Java-to-Python conversion."""
         self._check_open()
-        if not self._java_document.has(name):
-            return None
+        # One crossing and one scan of the record: get() answers null for a property the record
+        # does not have, as it does for one set to null, and None is what Python reads either way.
+        # (has() then get() was two crossings and two scans; has() still tells the two apart.)
         return self._java_document.get(name)
 
     def set(self, name: str, value: Any) -> "Document":
@@ -129,6 +148,8 @@ class Document:
         Raises:
             ArcadeDBError: If the engine refuses the write (no transaction, a duplicate key,
                 a read-only database, a ``before_*`` callback that raised).
+            ArcadeDBError: If another transaction changed the record after it was read
+                (``ConcurrentModificationException`` in the message; the native build raises the same error).
         """
         try:
             self._java_document.save()
@@ -177,6 +198,18 @@ class Document:
 
     def to_dict(self, convert_types: bool = True) -> Dict[str, Any]:
         """Convert to dictionary."""
+        if convert_types:
+            reader, results = _reader_calls()
+            if reader is not None:
+                # One crossing for the whole record, and no JPype read of a name
+                # or a value: Java writes it as the typed JSON of TypedRows, the
+                # values keep the types convert_java_to_python gives them.
+                self._check_open()
+                row = results._loads_typed_row(reader.documentJson(self._java_document))
+                # the names of this read, so a property set since an earlier
+                # read is not missing from get_property_names()
+                self._property_names_cache = tuple(row)
+                return row
         property_names = self._property_names_tuple()  # checks the database
         if not convert_types:
             return {name: self._java_document.get(name) for name in property_names}
@@ -221,6 +254,11 @@ class Vertex(Document):
         definition, not by a per-call parameter. Use schema.create_edge_type() to
         control bidirectionality at the type level.
 
+        Both vertices are resolved by record id inside the active transaction,
+        so a vertex object read in an earlier transaction (or before an earlier
+        edge was committed) can still create edges; the object itself is not
+        refreshed.
+
         Args:
             label: Edge label (type)
             target: Target vertex (Python Vertex or Java vertex object)
@@ -237,6 +275,27 @@ class Vertex(Document):
         target_java = (
             target.get_java_document() if isinstance(target, Vertex) else target
         )
+        # A vertex object is the state it had when it was read. The first edge
+        # of a vertex rewrites its record (the head chunk of its edge list), so
+        # an object read before that commit would make the engine's update fail
+        # with ConcurrentModificationException. Resolve both ends by record id
+        # inside the active transaction, as the native build does: the source
+        # is looked up (one lookup), the target goes in as its id and the
+        # engine loads it.
+        source_java = self._java_document
+        source_rid = source_java.getIdentity()
+        if (
+            source_rid is not None
+            and source_rid.isValid()
+            and self._database is not None
+        ):
+            source_java = self._database._java_db.lookupByRID(
+                source_rid, True
+            ).asVertex()
+        if hasattr(target_java, "getIdentity"):
+            target_rid = target_java.getIdentity()
+            if target_rid is not None and target_rid.isValid():
+                target_java = target_rid
 
         # Convert kwargs to flat list of [key, value, key, value...]
         props = []
@@ -245,7 +304,7 @@ class Vertex(Document):
             props.append(convert_python_to_java(v))
 
         # bidirectional is determined by the EdgeType schema
-        java_edge = self._java_document.newEdge(label, target_java, *props)
+        java_edge = source_java.newEdge(label, target_java, *props)
         return Edge(java_edge, self._database)
 
     def get_out_edges(self, *labels: str) -> List["Edge"]:

@@ -39,6 +39,39 @@ _TYPED_SIMPLE = {
 }
 
 
+# NaN and the infinities: JSON has no literal for them and the engine's writers make null of them, so the
+# bridge (RowBatcher, ColumnBatcher) writes each one as {"\u0001": ["f", "NaN"]} (the text is Double.toString).
+_NONFINITE_KIND = "f"
+_NONFINITE_TEXT = frozenset(("NaN", "Infinity", "-Infinity"))
+
+
+def _nonfinite_hook(obj):
+    """The json object_hook that turns the bridge's non-finite tag back into a float."""
+    tagged = obj.get(_TYPED_TAG)
+    if (
+        isinstance(tagged, list)
+        and len(tagged) == 2
+        and tagged[0] == _NONFINITE_KIND
+        and tagged[1] in _NONFINITE_TEXT
+    ):
+        return float(tagged[1])
+    return obj
+
+
+def _loads_nonfinite(text):
+    """``json.loads`` of bridge JSON (a str or UTF-8 bytes) that may hold the non-finite tag.
+
+    The hook runs only when the tag character appears in the text (the writer
+    escapes it as ``\\u0001``), so a batch with no NaN or infinity parses at
+    the speed of the plain C decoder.
+    """
+    if isinstance(text, (bytes, bytearray, memoryview)):
+        text = bytes(text).decode("utf-8")
+    if "\\u0001" in text or _TYPED_TAG in text:
+        return json.loads(text, object_hook=_nonfinite_hook)
+    return json.loads(text)
+
+
 def _typed_hook(side):
     """The json object_hook that restores the values TypedRows tagged."""
 
@@ -57,6 +90,25 @@ def _typed_hook(side):
         return {str(n): convert_java_to_python(v) for n, v in zip(pair[0], pair[1])}
 
     return hook
+
+
+def _loads_typed_row(java_row):
+    """The dict of one row or record that ``ReaderCalls.rowJson`` / ``documentJson`` wrote.
+
+    ``java_row`` is ``{String json, Object[] side}``. The side array is read only
+    when the text carries the tag character (the writer escapes it as
+    ``\\u0001``): a row of plain values costs one array read and one string read,
+    and the C ``json`` decoder, and no other JPype call.
+    """
+    text = str(java_row[0])
+    if "\\u0001" not in text:
+        return json.loads(text)
+    return json.loads(text, object_hook=_typed_hook(java_row[1]))
+
+
+def _loads_names(java_text):
+    """The property names ``ReaderCalls.rowNames`` / ``documentNames`` wrote, as a tuple."""
+    return tuple(json.loads(str(java_text)))
 
 
 def _bridge_class(name):
@@ -165,7 +217,7 @@ def _missing_column_part(count: int, template):
         if template.dtype.kind in "iuf":
             return np.full(count, np.nan)
         if template.dtype.kind == "M":
-            return np.full(count, np.datetime64("NaT", "ms"))
+            return np.full(count, np.datetime64("NaT"), dtype=template.dtype)
         if template.dtype.kind == "O":
             return np.full(count, None, dtype=object)
     return [None] * count
@@ -341,7 +393,15 @@ class ResultSet:
     def __next__(self) -> "Result":
         if self._readable():
             try:
-                if self._java_result_set.hasNext():
+                reader = _bridge_class("ReaderCalls")
+                if reader is not None:
+                    # hasNext() and next() in ONE crossing: the row is still read
+                    # when it is asked for, and the end is the same null as
+                    # hasNext() false
+                    java_row = reader.nextOrNull(self._java_result_set)
+                    if java_row is not None:
+                        return Result(java_row, self._database)
+                elif self._java_result_set.hasNext():
                     return Result(self._java_result_set.next(), self._database)
             except JException as exc:
                 raise _read_error(exc) from exc
@@ -535,6 +595,20 @@ class ResultSet:
         floats. Use ``to_list()`` when you want ``date``, ``datetime`` and
         ``Decimal`` values: it costs about the same.
 
+        A record id (a ``LINK`` value, ``@rid``) arrives as its text
+        (``"#10:5"``), at the top level and inside a list or a map, and a map key
+        that is not a string arrives as text (``"1"``, ``"true"``, ``"null"``),
+        on both builds. On the native build the conversion over the rows runs
+        only for a result in which a reply carried a value that JSON cannot
+        carry (DECIMAL, DATE, DATETIME, a set, NaN, a record id, ...); any other
+        result is returned as parsed.
+
+        NaN, Infinity and -Infinity arrive as Python floats (``float('nan')``,
+        ``float('inf')``), at the top level and inside a list or a map, as on
+        the native build. JSON has no literal for them, so the bridge writes
+        each as a tag that is turned back into a float here: the result is not
+        strict JSON, and ``json.dumps(..., allow_nan=False)`` of it raises.
+
         The encoding is one rule for every row, at the top level and inside a
         list or a map: a DATE is the epoch milliseconds of its UTC midnight (not
         a count of days) whatever the JVM time zone, the same number
@@ -570,9 +644,13 @@ class ResultSet:
         Streaming counterpart of :meth:`to_json_list` with the same JSON-native
         type semantics; bounds memory to one batch. Falls back to chunked
         per-row conversion when the bridge jar is unavailable.
-        """
-        import json
 
+        On the native build the same property holds: ``batch_size`` bounds
+        memory (one reply of the cursor plus one batch), and the next reply is
+        read only when the next batch is asked for.
+
+        One laptop study on the native build, 1,000,000 rows read with ``batch_size=10_000``, 10 clean pairs of this change against the previous behaviour; each figure is the ratio of the new value to the old one, so below 1 is lower. Peak RSS: 0.286 (95% interval 0.284 to 0.289). Time to the first batch: 0.010 (95% interval 0.009 to 0.010). Wall time of the whole read: 0.958 (95% interval 0.952 to 0.966). This is one machine and one result shape, not a speed promise.
+        """
         if int(batch_size) < 1:
             raise ValueError(f"batch_size must be at least 1, got {batch_size}")
         row_batcher = _bridge_class("RowBatcher")
@@ -595,7 +673,7 @@ class ResultSet:
                 java_batch = row_batcher.nextJsonBatch(self._java_result_set, size)
             except JException as exc:
                 raise _read_error(exc) from exc
-            batch = json.loads(str(java_batch))
+            batch = _loads_nonfinite(str(java_batch))
             if len(batch) < size:
                 # nextJsonBatch stops short only when the result set is drained, so a
                 # short batch is the last one: no second call (a JVM crossing, a
@@ -612,6 +690,11 @@ class ResultSet:
         Convert results to pandas DataFrame.
 
         Requires pandas to be installed.
+
+        Values are the ones ``to_list()`` returns: a DATETIME keeps its
+        microseconds (a ``datetime64[us]`` column, where ``to_columns()`` and
+        ``to_arrow()`` carry milliseconds), a DATE is a ``datetime.date`` in an
+        object column, and a ``Decimal`` stays one.
 
         Args:
             convert_types: Convert Java types to Python (default: True)
@@ -631,15 +714,17 @@ class ResultSet:
             import pandas as pd
         except ImportError as exc:
             raise ImportError(
-                "pandas is required for to_dataframe(). "
-                "Install with: pip install pandas"
+                "pandas is required for to_dataframe(). Install with: uv add pandas"
             ) from exc
 
         if convert_types:
             # fast path: columnar binary transport straight into typed
             # columns (numpy dtypes, real datetime64) — measured ~2x the JSON
             # row path and ~6x the per-row path on 100k-row scans
-            columns = self.to_columns()
+            # Datetimes cross with their microseconds (datetime64[us]) and dates as
+            # date objects, the values to_list() returns; to_columns() and
+            # to_arrow() keep the documented milliseconds.
+            columns = self._read_columns(25_000, None, micros=True)
             if columns is not None:
                 # pandas rejects 2-D ndarrays as column values; vector
                 # columns (f4v/f8v) become object columns of row slices
@@ -660,7 +745,7 @@ class ResultSet:
         Reads :meth:`to_arrow` and hands the table to Polars, so nulls keep
         their type (a nullable integer stays an integer column) and a DECIMAL
         column is a Polars ``Decimal``. Requires polars and pyarrow
-        (``pip install 'arcadedb-jvm[polars]'``).
+        (``uv add 'arcadedb-jvm[polars]'``).
 
         Args:
             batch_size: Rows per bridge crossing, as in :meth:`to_arrow`.
@@ -682,14 +767,14 @@ class ResultSet:
         except ImportError as exc:
             raise ImportError(
                 "polars is required for to_polars(). "
-                "Install with: pip install 'arcadedb-jvm[polars]'"
+                "Install with: uv add 'arcadedb-jvm[polars]'"
             ) from exc
         table = self.to_arrow(batch_size=batch_size, columns=columns)
         if table is None:
             raise ImportError(
                 "to_polars() reads through Arrow, which needs pyarrow and numpy "
                 "and the bundled bridge jar. "
-                "Install with: pip install 'arcadedb-jvm[polars]'"
+                "Install with: uv add 'arcadedb-jvm[polars]'"
             )
         return pl.from_arrow(table)
 
@@ -714,9 +799,22 @@ class ResultSet:
         those, as a projection would, and skip it. A row lacking one of them
         reads null, and properties not listed are left out.
 
+        List and map values (and a column of mixed types) are decoded as
+        ``to_list()`` decodes them: a ``date``, ``datetime`` or ``Decimal``
+        inside a list or map stays one, and a map keeps its non-str keys. The
+        ``datetime64[ms]`` rule above is for a column whose values are all
+        datetimes.
+
         Returns None when numpy or the bridge jar is unavailable (callers
         fall back to row-based paths).
         """
+        return self._read_columns(batch_size, columns, micros=False)
+
+    def _read_columns(self, batch_size, columns, micros):
+        """``to_columns()``; with ``micros`` a column of datetimes is a
+        ``datetime64[us]`` array and a column holding DATE values is an object
+        column of ``date`` objects, which is what ``to_dataframe()`` needs to
+        return the values ``to_list()`` does."""
         try:
             import numpy as np
         except ImportError:
@@ -734,7 +832,7 @@ class ResultSet:
         names: List[str] = []
         batches: List[Tuple[int, Dict[str, Any]]] = []
 
-        def decode_batch(buf):
+        def decode_batch(buf, side):
             hlen = int.from_bytes(buf[:4], "little")
             header = json.loads(bytes(buf[4 : 4 + hlen]))
             count = header["count"]
@@ -769,6 +867,11 @@ class ResultSet:
                     if has_nulls:
                         arr[mask] = np.datetime64("NaT", "ms")
                     values = arr
+                elif ctype == "dtu":
+                    arr = np.frombuffer(data, dtype="<i8").astype("datetime64[us]")
+                    if has_nulls:
+                        arr[mask] = np.datetime64("NaT", "us")
+                    values = arr
                 elif ctype == "b1":
                     arr = np.frombuffer(data, dtype=np.uint8).astype(bool)
                     if has_nulls:
@@ -780,11 +883,16 @@ class ResultSet:
                 elif ctype in ("f4v", "f8v"):
                     # fixed-dimension vector column -> 2-D array (count, dim);
                     # Java already writes NaN rows into null slots
-                    dim = col["dim"]
+                    # an empty vector has no "dim" in the header
+                    dim = col.get("dim", 0)
                     dt = "<f4" if ctype == "f4v" else "<f8"
-                    values = np.frombuffer(data, dtype=dt).reshape(count, dim)
+                    if dim == 0:
+                        values = np.empty((count, 0), dtype=dt)
+                    else:
+                        values = np.frombuffer(data, dtype=dt).reshape(count, dim)
                 elif ctype == "json":
-                    values = json.loads(bytes(data))
+                    # tagged JSON (TypedRows): the values to_list() returns
+                    values = json.loads(bytes(data), object_hook=_typed_hook(side))
                 elif ctype == "dec":
                     # an object array of Decimal (None for null): a double
                     # would lose digits, and the dtype would follow the data
@@ -810,13 +918,13 @@ class ResultSet:
         total = 0
         while True:
             try:
-                java_buf = column_batcher.nextColumnBatch(
-                    self._java_result_set, int(batch_size), spec
+                java_batch = column_batcher.nextColumnBatch(
+                    self._java_result_set, int(batch_size), spec, micros
                 )
             except JException as exc:
                 raise _read_error(exc) from exc
-            buf = memoryview(bytes(java_buf))
-            count = decode_batch(buf)
+            buf = memoryview(bytes(java_batch[0]))
+            count = decode_batch(buf, java_batch[1])
             if count == 0:
                 self._finish()
                 break
@@ -899,7 +1007,7 @@ class ResultSet:
                 return None
             return pa.py_buffer(bytes(np.invert(null_bits).tobytes()))
 
-        def decode_batch(buf):
+        def decode_batch(buf, side):
             hlen = int.from_bytes(buf[:4], "little")
             header = json.loads(bytes(buf[4 : 4 + hlen]))
             count = header["count"]
@@ -935,15 +1043,29 @@ class ResultSet:
                     vals = np.frombuffer(data, dtype=np.uint8).astype(bool)
                     arr = pa.array(vals, mask=mask)
                 elif ctype in ("f4v", "f8v"):
-                    dim = col["dim"]
+                    # an empty vector has no "dim" in the header
+                    dim = col.get("dim", 0)
                     dt = "<f4" if ctype == "f4v" else "<f8"
-                    flat = np.frombuffer(data, dtype=dt)
-                    child = pa.array(flat)
-                    arr = pa.FixedSizeListArray.from_arrays(child, dim)
-                    if mask is not None:
-                        arr = pa.array(arr.to_pylist(), type=arr.type, mask=mask)
+                    if dim == 0:
+                        # no fixed-size list of size 0: empty lists, as the row readers give
+                        arr = pa.array(
+                            [
+                                None if mask is not None and mask[i] else []
+                                for i in range(count)
+                            ],
+                            type=pa.list_(
+                                pa.float32() if ctype == "f4v" else pa.float64()
+                            ),
+                        )
+                    else:
+                        flat = np.frombuffer(data, dtype=dt)
+                        child = pa.array(flat)
+                        arr = pa.FixedSizeListArray.from_arrays(child, dim)
+                        if mask is not None:
+                            arr = pa.array(arr.to_pylist(), type=arr.type, mask=mask)
                 elif ctype == "json":
-                    values = json.loads(bytes(data))
+                    # tagged JSON (TypedRows): the values to_list() returns
+                    values = json.loads(bytes(data), object_hook=_typed_hook(side))
                     try:
                         arr = pa.array(values)
                     except pa.ArrowException:
@@ -985,13 +1107,13 @@ class ResultSet:
         total = 0
         while True:
             try:
-                java_buf = column_batcher.nextColumnBatch(
-                    self._java_result_set, int(batch_size), spec
+                java_batch = column_batcher.nextColumnBatch(
+                    self._java_result_set, int(batch_size), spec, False
                 )
             except JException as exc:
                 raise _read_error(exc) from exc
-            buf = memoryview(bytes(java_buf))
-            count = decode_batch(buf)
+            buf = memoryview(bytes(java_batch[0]))
+            count = decode_batch(buf, java_batch[1])
             if count == 0:
                 self._finish()
                 break
@@ -1060,6 +1182,15 @@ class ResultSet:
             >>> count = db.query("sql", "SELECT FROM User").count()
             >>> print(f"Found {count} users")
         """
+        row_access = _bridge_class("RowAccess")
+        if row_access is not None and self._readable() and not self._closed:
+            # hasNext() and next() per row, and the close, in ONE crossing
+            try:
+                count = int(row_access.countAndClose(self._java_result_set))
+            except JException as exc:
+                raise _read_error(exc) from exc
+            self._drained()
+            return count
         count = 0
         for _ in self:
             count += 1
@@ -1113,8 +1244,23 @@ class ResultSet:
             ...                 "alice@example.com").one()
             >>> print(user.get("name"))
         """
-        iterator = iter(self)
+        row_access = _bridge_class("RowAccess")
         try:
+            if row_access is not None and self._readable() and not self._closed:
+                # up to two rows and the close in ONE crossing instead of hasNext()/next() per row
+                try:
+                    rows = row_access.upToTwoAndClose(self._java_result_set)
+                except JException as exc:
+                    self._closed = True  # upToTwoAndClose closes on every path
+                    raise _read_error(exc) from exc
+                self._closed = True
+                self._exhausted = len(rows) < 2
+                if len(rows) == 0:
+                    raise ValueError("Query returned no results")
+                if len(rows) > 1:
+                    raise ValueError("Query returned multiple results")
+                return Result(rows[0], self._database)
+            iterator = iter(self)
             try:
                 result = next(iterator)
             except StopIteration as exc:
@@ -1165,9 +1311,16 @@ class Result:
     def _property_names_tuple(self) -> Tuple[str, ...]:
         self._check_open()
         if self._property_names_cache is None:
-            self._property_names_cache = tuple(
-                str(name) for name in self._java_result.getPropertyNames()
-            )
+            reader = _bridge_class("ReaderCalls")
+            if reader is not None:
+                # the names as one JSON text instead of one JPype read per name
+                self._property_names_cache = _loads_names(
+                    reader.rowNames(self._java_result)
+                )
+            else:
+                self._property_names_cache = tuple(
+                    str(name) for name in self._java_result.getPropertyNames()
+                )
         return self._property_names_cache
 
     def has_property(self, name: str) -> bool:
@@ -1333,10 +1486,21 @@ class Result:
         """
         self._check_open()
         if convert_types:
-            # One crossing for the whole row (names and values) instead of one
-            # per property: a JPype call costs microseconds of dispatch, so a
-            # small row was dominated by the number of calls. The values are
-            # the engine's own objects, converted exactly as below.
+            # One crossing for the whole row, and no JPype read of a name or a
+            # value: Java writes the row as the typed JSON of TypedRows (the
+            # transport of to_list()), so a row of plain values costs the call,
+            # one array read and one string read. The values have the types
+            # convert_java_to_python gives them.
+            reader = _bridge_class("ReaderCalls")
+            if reader is not None:
+                row = _loads_typed_row(reader.rowJson(self._java_result))
+                if self._property_names_cache is None:
+                    self._property_names_cache = tuple(row)
+                return row
+            # Without ReaderCalls: one crossing for the whole row (names and
+            # values) instead of one per property, then a JPype read per name and
+            # value. The values are the engine's own objects, converted exactly
+            # as below.
             row_access = _bridge_class("RowAccess")
             if row_access is not None:
                 pair = row_access.namesAndValues(self._java_result)

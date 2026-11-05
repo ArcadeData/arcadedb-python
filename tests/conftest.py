@@ -5,7 +5,6 @@ Shared pytest fixtures and configuration for ArcadeDB tests.
 import os
 import shutil
 import sys
-import tempfile
 import threading
 
 import pytest
@@ -33,16 +32,27 @@ WINDOWS_NOT_APPLICABLE = {
     # runs scripts/stage_jars.sh under bash with a fake docker; the bash a Windows
     # subprocess finds may be WSL's rather than Git Bash
     "test_stage_jars.py": "bash with a fake docker",
+    # the release preflight is a maintainer tool for a POSIX shell: its check (f) runs the workflows' bash step code,
+    # and on Windows it reports a SKIP, which its own tests cover on Linux and macOS (ArcadeData/arcadedb-python#208)
+    "test_release_preflight.py": "runs the workflows' bash step code",
 }
 if sys.platform == "win32":
     collect_ignore.extend(WINDOWS_NOT_APPLICABLE)
 if BACKEND != "native":
     # Java -> Python upcalls (Python functions in SQL) exist on the native build only
     collect_ignore.append("test_native_udf.py")
+    # how find_nearest hands the query vector to the native library (the codec's side buffer)
+    collect_ignore.append("test_native_find_nearest_params.py")
+    # find_nearest(include_vector=False) on the native wheel fills a hit's vector on first use (counts lookups of the native wrapper)
+    collect_ignore.append("test_native_vector_hit_lazy.py")
     # the columnar insert's stored records are compared between the JSON and the columnar entry points of the native library
     collect_ignore.append("test_native_columnar_insert.py")
+    # the rows of an insert_many chunk with date-times, Decimals, bytes and numpy scalars are told apart by the entry points they cross
+    collect_ignore.append("test_native_mixed_chunk.py")
     # the native build's ingest defaults (insert_many and graph_batch commit size), observed on the native library
     collect_ignore.append("test_native_ingest_defaults.py")
+    # the float32 side buffer of the native GraphBatch entry (arcadedb_n_gb_bin), observed on the native library
+    collect_ignore.append("test_native_graph_batch_binary_vectors.py")
     # the native library's start-up output (#477) can only be checked with the native library loaded
     collect_ignore.append("test_native_startup_runtime.py")
     # the XML entity limits of an import, lifted by the native glue (the JVM build lifts them with JVM system properties)
@@ -53,6 +63,24 @@ if BACKEND != "native":
     collect_ignore.append("test_native_heap.py")
     # the native build's callback table (extras._callbacks), which the async executor releases its ids from
     collect_ignore.append("test_native_async_callbacks.py")
+    # the short call path of a point read (codec.encode_params, lib.exec_query, first()), observed on the native library
+    collect_ignore.append("test_native_point_read.py")
+    # to_json_list walks the rows with codec.json_native only when a reply restored a tagged value (#219), observed on the native library
+    collect_ignore.append("test_native_json_list.py")
+    # the vector provider the native glue picks by default (ARCADEDB_VECTOR_PROVIDER, #153), observed on the native library
+    collect_ignore.append("test_native_vector_provider.py")
+    # the copy of a record's values as read that save() compares with the stored row (arcadedb._native.records), counted through its seams
+    collect_ignore.append("test_native_save_baseline.py")
+    # crossing counts of the transaction entry points (lib.call is the native library's ctypes door)
+    collect_ignore.append("test_native_tx_crossings.py")
+    # counts the statement texts the native backend hands to the engine (the JPype backend has no such layer)
+    collect_ignore.append("test_native_statement_texts.py")
+    # iter_json_batches reads the cursor one batch at a time (the result set's buffer and its _fill are observed)
+    collect_ignore.append("test_native_streaming_batches.py")
+    # the Python part of the native point operations (lookup_by_key, edge ends, steps): spies on the codec, the cursor and the row object
+    collect_ignore.append("test_native_point_op_glue.py")
+    # the address table of append_samples (arcadedb_n_async_bin), observed on the native library
+    collect_ignore.append("test_native_timeseries_binary.py")
 if not os.path.isfile(
     os.path.join(os.path.dirname(os.path.dirname(__file__)), "docs", "index.md")
 ):
@@ -86,6 +114,12 @@ NATIVE_NOT_APPLICABLE = {
     "test_build_scripts.py": "build scripts of the JVM wheel",
     "test_build_no_uv_refresh.py": "build scripts of the JVM wheel",
     "test_build_wheel_check.py": "build scripts of the JVM wheel",
+    "test_query_vector_params_jvm.py": "the java.util objects the JVM build's parameter conversion builds",
+    "test_insert_many_gc_pause.py": "the cyclic collector pause is the JVM build's (the native insert_many allocates nothing the collector tracks)",
+    "test_graph_batch_tagged_shapes.py": "the JVM wheel's graph batch bulk path (bridge VertexBatcher and EdgeBatcher, the property-matrix fallback)",
+    "test_async_proxy_cache.py": "the JPype proxy classes of the JVM build's async executor",
+    "test_read_crossings.py": "crossing counts of the JVM build's read path (JPype proxies of the Java objects and the bridge classes)",
+    "test_reader_crossings.py": "crossing counts of the JVM build's record and row readers (JPype proxies of the Java objects and the bridge classes)",
 }
 if BACKEND == "native" and not os.environ.get("NATIVE_PARITY_ALL"):
     collect_ignore.extend(NATIVE_NOT_APPLICABLE)
@@ -122,10 +156,6 @@ NATIVE_NA_JVM_TESTS = {
     "test_server_wire_protocols.py::test_a_protocol_host_overrides_the_server_host_for_that_protocol_only": "reads the server's GlobalConfiguration through the JVM",
     "test_sql_constraints_and_maintenance.py::test_backup_check_and_rebuild_index_statements": "sets GlobalConfiguration.SERVER_BACKUP_DIRECTORY through the JVM",
     "test_vector_params_verification.py::TestVectorParams::test_jvm_heap_check": "reads java.lang.Runtime through JPype",
-    "test_vector_params_verification.py::TestVectorParams::test_wrapper_default_matches_engine_default": "reads the engine default through java.lang.String and GlobalConfiguration",
-    "test_vector_params_verification.py::TestVectorParams::test_omitted_max_connections_reaches_the_index": "reads the engine default through java.lang.String and GlobalConfiguration",
-    "test_vector_sql.py::TestVectorSearchOptionsSql::test_where_map_and_condition": "picks the expected behaviour by com.arcadedb.Constants.getRawVersion() through JPype",
-    "test_vector_sql.py::TestVectorSearchOptionsSql::test_where_combines_with_filter": "picks the expected behaviour by com.arcadedb.Constants.getRawVersion() through JPype",
     # Java objects built or read by the test
     "test_conversion_fixes.py::test_java_instants_convert_without_losing_microseconds": JAVA_CLASS,
     "test_type_conversion.py::test_offset_datetime_conversion": JAVA_CLASS,
@@ -195,24 +225,8 @@ NATIVE_NA_JVM_TESTS = {
     "test_resultset.py::TestSmallResultsCostOneBridgeCall::test_the_bridge_closes_what_it_drains_and_only_that": BRIDGE_COUNT,
     "test_vector.py::TestLSMVectorIndex::test_lsm_vector_search_looks_up_all_hits_in_one_bridge_call": BRIDGE_COUNT,
     "test_vector.py::TestLSMVectorIndex::test_lsm_vector_search_uses_database_rid_conversion": "intercepts Database.to_java_rid, the JPype path's RID conversion",
-    # the Java index behind the wrapper
-    "test_vector.py::TestLSMVectorIndex::test_create_vector_index_with_pq_params": JAVA_INDEX,
-    "test_vector.py::TestLSMVectorIndex::test_create_vector_index_with_custom_id_property": JAVA_INDEX,
-    "test_vector.py::TestLSMVectorIndex::test_lsm_vector_search_approximate_product": JAVA_INDEX,
-    "test_vector.py::TestLSMVectorIndex::test_lsm_vector_search_approximate_typeindex": JAVA_INDEX,
-    **{
-        f"test_vector_params_verification.py::TestVectorParams::{name}": JAVA_INDEX
-        for name in (
-            "test_quantization_param",
-            "test_store_vectors_in_graph_param",
-            "test_encoding_param",
-            "test_add_hierarchy_param",
-            "test_per_index_cache_params",
-            "test_quantization_none",
-            "test_quantization_binary",
-            "test_quantization_product",
-        )
-    },
+    # the Java index behind the wrapper: encoding is a setting get_metadata() does not return and the native library does not expose
+    "test_vector_params_verification.py::TestVectorParams::test_encoding_param": JAVA_INDEX,
 }
 
 
@@ -364,18 +378,24 @@ def free_port():
 
 
 @pytest.fixture
-def temp_server_root():
-    """Create a temporary server root directory."""
-    temp_dir = tempfile.mkdtemp(prefix="arcadedb_test_server_")
+def temp_server_root(tmp_path_factory):
+    """Create a temporary server root directory (under pytest's basetemp)."""
+    temp_dir = str(tmp_path_factory.mktemp("arcadedb_test_server_"))
     yield temp_dir
     if os.path.exists(temp_dir):
         shutil.rmtree(temp_dir)
 
 
 @pytest.fixture
-def temp_db_path():
-    """Create a temporary database path."""
-    temp_dir = tempfile.mkdtemp(prefix="arcadedb_test_db_")
+def temp_db_path(tmp_path_factory):
+    """Create a temporary database path (under pytest's basetemp).
+
+    pytest keeps only its last three basetemp runs, so a killed run (teardown
+    never runs) leaves nothing permanent in the system temp directory. The
+    explicit close and rmtree with the Windows retry stay: pytest's own cleanup
+    is lazy and cannot retry a directory the JVM still holds open.
+    """
+    temp_dir = str(tmp_path_factory.mktemp("arcadedb_test_db_"))
     db_path = os.path.join(temp_dir, "test_db")
     yield db_path
     # Cleanup
@@ -401,11 +421,11 @@ def temp_db_path():
 
 
 @pytest.fixture
-def temp_db():
+def temp_db(tmp_path_factory):
     """Create a temporary database, yield it, and clean up."""
     import arcadedb
 
-    temp_dir = tempfile.mkdtemp(prefix="arcadedb_test_db_")
+    temp_dir = str(tmp_path_factory.mktemp("arcadedb_test_db_"))
     db_path = os.path.join(temp_dir, "test_db")
 
     db = arcadedb.create_database(db_path)
@@ -448,13 +468,13 @@ def temp_db():
 
 
 @pytest.fixture
-def temp_dir_factory():
+def temp_dir_factory(tmp_path_factory):
     """Factory fixture to create multiple temporary directories with cleanup."""
     temp_dirs = []
 
     def _create_temp_dir(prefix="arcadedb_test_"):
         """Create a temporary directory and register it for cleanup."""
-        temp_dir = tempfile.mkdtemp(prefix=prefix)
+        temp_dir = str(tmp_path_factory.mktemp(prefix))
         temp_dirs.append(temp_dir)
         return temp_dir
 

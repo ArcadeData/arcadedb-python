@@ -9,8 +9,19 @@ import re
 from ..exceptions import ArcadeDBError
 from ..vector import VectorIndex as _BaseVectorIndex
 from . import needs_jvm
+from .codec import _np
 
 _PROPERTY = re.compile(r"name: (.+?), type: ([A-Z_]+)")
+
+
+def _name_type(entry):
+    """(name, type) of an entry of a ``schema:types`` row's ``properties``: a dict since #195 (the codec writes a nested row
+    as a map), the engine's text form of the row before it; (None, None) when neither.
+    """
+    if isinstance(entry, dict):
+        return entry.get("name"), entry.get("type")
+    m = _PROPERTY.search(entry) if isinstance(entry, str) else None
+    return (m.group(1), m.group(2)) if m else (None, None)
 
 
 class NativeType:
@@ -26,11 +37,7 @@ class NativeType:
         return self._row.get("type")
 
     def getPropertyNames(self):
-        return [
-            m.group(1)
-            for m in map(_PROPERTY.search, self._row.get("properties") or [])
-            if m
-        ]
+        return [n for n, _ in map(_name_type, self._row.get("properties") or []) if n]
 
     def existsProperty(self, name: str) -> bool:
         return name in self.getPropertyNames()
@@ -118,7 +125,7 @@ class _IndexShim:
         return info
 
     def getMetadata(self):
-        """Just what the PRODUCT-readiness check reads: the index's quantization and pq_clusters."""
+        """The index's quantization and pq_clusters, shaped like the Java metadata object."""
         from types import SimpleNamespace
 
         info = self.engine_info()
@@ -136,21 +143,66 @@ class _IndexShim:
         return int(row.get("c"))
 
     def warmUp(self):
-        # the engine loads a persisted graph on the first search: run that search now
-        self.buildVectorGraphNow()
-
-    def buildVectorGraphNow(self):
-        # the engine builds the graph on the first search: one search now, on a vector of the index's dimension
+        # the engine loads a persisted graph on the first search: one search now, on a vector of the index's dimension
         dims = self.engine_info()["dimensions"]
         if dims:
             self._db.query(
                 "sql", "SELECT vectorNeighbors(?, ?, 1)", self._name, [1.0] * dims
             ).close()
 
+    def buildVectorGraphNow(self):
+        # the engine's own rebuild of every bucket index (LSMVectorIndex.buildVectorGraphNow), as the JPype wrapper calls it:
+        # a search builds a graph only when there is none, so it left the vectors written since in the delta (#162)
+        from . import lib
+        from .extras import _call, _enc
+
+        _call(
+            "Failed to rebuild vector graph",
+            "arcadedb_n_vindex",
+            self._db._h,
+            lib.b("build"),
+            lib.b(_enc({"type": self._type, "prop": self._prop})),
+        )
+
 
 def _rid_text(value) -> str:
     get_rid = getattr(value, "get_rid", None)
     return get_rid() if get_rid is not None else str(value)
+
+
+def _query_vector_param(query_vector):
+    """The query vector as the one parameter the library takes it in.
+
+    A numeric 1-d vector (an ndarray, or a list/tuple of numbers: numpy walks a list in C) becomes a float32 array, which
+    ``encode_params`` sends through the binary float32 side buffer (tag ``B``): no ``tolist()``, no float32-exactness check of a
+    list, and no JSON number text for a float64 query whose values float32 would round. The engine reads the vector as float32
+    whatever it is given, so the rounding is the same. Anything else (text or None entries, a generator, numpy missing) stays a
+    list and reaches the engine as it was given; numpy would turn a None into nan.
+    """
+    if _np is not None:
+        try:
+            arr = _np.asarray(query_vector)
+        except (
+            Exception
+        ):  # nosec B110 - ragged or unconvertible input: the list path below reports it
+            arr = None
+        if arr is not None and arr.ndim == 1 and arr.dtype.kind in "fiu":
+            return arr.astype(_np.float32, copy=False)
+    return (
+        query_vector.tolist() if hasattr(query_vector, "tolist") else list(query_vector)
+    )
+
+
+def _quote_name(name: str) -> str:
+    return "`" + name.replace("`", "``") + "`"
+
+
+# find_nearest(include_vector=False): the engine's row of a hit is the record's properties plus the columns @rid, @type and distance
+# (ScoredRecordRow; before 26.11.1, ArcadeData/arcadedb#10898, also a nested `record` column holding every property a second time).
+# `*` copies the row, `!name` drops the indexed vector and the `record` column. A property of the record called distance or record is
+# hidden by those columns in the row, so such a hit holds them back too (_LAZY_COLUMNS) and loads them with the vector.
+_LAZY_COLUMNS = ("record", "distance")
+_HITS_FROM = "FROM (SELECT expand(vectorNeighbors(?, ?, ?)))"
 
 
 class NativeVectorIndex(_BaseVectorIndex):
@@ -164,18 +216,30 @@ class NativeVectorIndex(_BaseVectorIndex):
     def _resolve_lsm_indexes(self):
         return [self._shim]
 
+    def _check_live(self):
+        # every search and counter names the index in its statement, so a rebuilt index is found by name on each call:
+        # there is no cached engine object to go stale (the JPype wrapper re-resolves one here)
+        return
+
     def _run_search(
-        self, *, query_vector, k, allowed_rids, approximate, ef_search=None
+        self,
+        *,
+        query_vector,
+        k,
+        allowed_rids,
+        approximate,
+        ef_search=None,
+        include_vector=True,
     ):
         if approximate:
             return self._run_approximate(query_vector, k, allowed_rids)
+        if not include_vector:
+            return self._run_search_without_vector(
+                query_vector, k, allowed_rids, ef_search
+            )
         from .records import _wrap_dict
 
-        vector = (
-            query_vector.tolist()
-            if hasattr(query_vector, "tolist")
-            else list(query_vector)
-        )
+        vector = _query_vector_param(query_vector)
         # the statement's own options: efSearch, and filter (the RIDs the search may return), as the JPype path passes them
         options = {}
         if ef_search is not None:
@@ -202,6 +266,10 @@ class NativeVectorIndex(_BaseVectorIndex):
         out = []
         for row in rows:
             nested = row.get("record")
+            if nested is None and row.get("@rid") is not None:
+                # From ArcadeDB 26.11.1 (ArcadeData/arcadedb#10898) a vector row lists the record's
+                # properties once, on the row itself, and no longer under "record"
+                nested = {k: v for k, v in row.to_dict().items() if k != "distance"}
             record = (
                 None
                 if nested is None
@@ -210,6 +278,54 @@ class NativeVectorIndex(_BaseVectorIndex):
                 )
             )
             out.append((record, float(row.get("distance"))))
+        return self._sort_results(out)[:k]
+
+    def _run_search_without_vector(self, query_vector, k, allowed_rids, ef_search):
+        """``find_nearest(include_vector=False)``: the hits come back without the indexed vector, which loads on first use.
+
+        ``expand(vectorNeighbors(..))`` alone ships every hit's vector, and the engine reads each record to build the row whatever
+        the columns asked for. Here the statement drops the vector (and the nested ``record`` column of an engine before 26.11.1),
+        and ``_Mixin._fill`` loads the record, once, by RID, the first time the vector or the whole record is needed.
+        """
+        from .records import _wrap_partial
+
+        vector = _query_vector_param(query_vector)
+        options = {}
+        if ef_search is not None:
+            options["efSearch"] = int(ef_search)
+        if allowed_rids:
+            options["filter"] = [_rid_text(r) for r in allowed_rids]
+        prop = self._shim._prop
+        dropped = ", ".join(
+            "!" + _quote_name(name) for name in dict.fromkeys((prop, "record"))
+        )
+        sql = f"SELECT *, {dropped} {_HITS_FROM}"  # nosec B608 - dropped is backtick-quoted schema names, the values go through ? parameters
+        if options:
+            sql = sql.replace("vectorNeighbors(?, ?, ?)", "vectorNeighbors(?, ?, ?, ?)")
+            rows = self._database.query(
+                "sql", sql, self._shim._name, vector, int(k), options
+            )
+        else:
+            rows = self._database.query("sql", sql, self._shim._name, vector, int(k))
+        omitted = (prop, *_LAZY_COLUMNS)
+        out = []
+        for row in rows:
+            props = row.to_dict()
+            rid = props.pop("@rid", None)
+            type_name = props.pop("@type", None)
+            distance = props.pop("distance")
+            if rid is None:
+                record = None
+            else:
+                record = _wrap_partial(
+                    self._database,
+                    _rid_text(rid),
+                    type_name,
+                    self._database._kind_of(type_name),
+                    props,
+                    omitted,
+                )
+            out.append((record, float(distance)))
         return self._sort_results(out)[:k]
 
     def _run_approximate(self, query_vector, k, allowed_rids):
@@ -253,7 +369,6 @@ class NativeVectorIndex(_BaseVectorIndex):
         """PQ approximate search over PRODUCT quantization, the engine's own (``findNeighborsFromVectorApproximate``)."""
         if self.get_quantization() != "PRODUCT":
             raise ArcadeDBError("Approximate search requires quantization=PRODUCT (PQ)")
-        self._ensure_product_quantization_ready()
         try:
             return self._run_search(
                 query_vector=query_vector,
@@ -281,9 +396,20 @@ class NativeVectorIndex(_BaseVectorIndex):
             )
         return row.get("query_vector")
 
+    def _live_info(self):
+        # read afresh, the native side of the JPype wrapper's _check_live: a dropped index raises here (the glue names it),
+        # REBUILD INDEX builds new bucket indexes, and a re-created index has its own configuration; a memoized read
+        # answered all three from the old index
+        self._shim.__dict__.pop("_engine_info", None)
+        return self._shim.engine_info()
+
+    def get_size(self):
+        self._live_info()
+        return super().get_size()
+
     def get_stats(self):
         """The engine's live counters of the primary bucket index, from its ``schema:index:<name>`` row (the row's own columns left out)."""
-        bucket = self._shim.engine_info()["bucket"]
+        bucket = self._live_info()["bucket"]
         rows = self._database.query(
             "sql",
             f"SELECT FROM schema:index:`{bucket}`",  # nosec B608 - a backtick-quoted index name the engine reported
@@ -296,7 +422,7 @@ class NativeVectorIndex(_BaseVectorIndex):
 
     def get_metadata(self):
         """The engine's configuration of the index: what this session created and what an index opened from disk carries, defaults included."""
-        info = self._shim.engine_info()
+        info = self._live_info()
         return {
             "index_name": self._shim._name,
             "bucket_index_name": info["bucket"],
@@ -308,7 +434,7 @@ class NativeVectorIndex(_BaseVectorIndex):
         }
 
     def get_quantization(self):
-        return str(self._shim.engine_info()["quantization"] or "NONE")
+        return str(self._live_info()["quantization"] or "NONE")
 
 
 # the descriptive columns of a schema:index row; every other column is a counter of IndexInternal.getStats()
@@ -363,6 +489,7 @@ def _check_vector_arguments(
     rerank_oversample=None,
     fused_pq=None,
 ):
+    quantization_kind = quantization.upper() if quantization else ""
     if any(
         v is not None
         for v in (
@@ -370,12 +497,17 @@ def _check_vector_arguments(
             pq_clusters,
             pq_center_globally,
             pq_training_limit,
-            rerank_oversample,
             fused_pq,
         )
     ):
-        if not quantization or quantization.upper() != "PRODUCT":
+        if quantization_kind != "PRODUCT":
             raise ValueError("PQ parameters require quantization='PRODUCT'")
+    # PRODUCT and, from 26.11.1 (ArcadeData/arcadedb#10968), BINARY rerank on the stored
+    # vectors; every other quantization ignores the setting.
+    if rerank_oversample is not None and quantization_kind not in ("PRODUCT", "BINARY"):
+        raise ValueError(
+            "rerank_oversample requires quantization='PRODUCT' or 'BINARY'"
+        )
     if (
         encoding
         and encoding.upper() == "INT8"

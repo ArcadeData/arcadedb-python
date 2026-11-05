@@ -1,11 +1,11 @@
 = Concurrency, processes and crashes
 :description: What the embedded bindings do with threads, asyncio, several processes, signals and crashes, as measured, and how to write an update that two writers cannot lose.
 
-This page covers what is specific to the Python bindings: which calls work from several threads, from asyncio or from several processes, what a signal or a crash does to the process and the data, and how to write an update that concurrent writers cannot lose. What the engine guarantees at each isolation level is in the main ArcadeDB docs: see xref:arcadedb::concepts/transactions.adoc#isolation[Isolation].
+This page covers what is specific to the Python bindings: which calls work from several threads, from asyncio or from several processes, what a signal or a crash does to the process and the data, and how to write an update that concurrent writers cannot lose. What the engine guarantees at each isolation level is in the main ArcadeDB docs: see {arcadedb-docs-url}/concepts/transactions#isolation[Isolation].
 
 == How to read the numbers
 
-Every number on this page comes from probe scripts that were run on 2026-10-24 on one Linux x86_64 machine. The setup of each probe is next to its numbers. The scripts and their raw logs are not part of this repository yet.
+Every number on this page, except the ratios in <<reads-fewer-calls,Reads with fewer calls into the JVM>>, comes from probe scripts that were run on 2026-10-24 on one Linux x86_64 machine. The setup of each probe is next to its numbers. The scripts and their raw logs are not part of this repository yet.
 
 [cols="1,3,2"]
 |===
@@ -50,9 +50,41 @@ The probe: one writer thread and 1, 4 or 16 reader threads in one process, all u
 
 All 7 runs ended with no error, no bad checksum and the same number of rows before and after the reopen. This probe has one writer. For several writers, read the next section.
 
+[[reads-fewer-calls]]
+=== Reads with fewer calls into the JVM, two threads
+
+Some read calls of the JVM build cross into the JVM fewer times than before: `lookup_by_key` without Java arrays, `ResultSet.one()` and `count()`, `Document.get`, and the transaction-stack mark. This was timed on the `{jvm-pkg-name}` package, built with the change and without it, in a mixed window of two Python threads on one `Database`: one reader thread and one writer thread. The reader rotates `lookup_by_key` with `get`, `.one()`, `.count()` and `.first()` on a graph of 20,000 vertices and 40,000 edges. The writer commits transactions of 10 vertex inserts, each with a `CREATE EDGE`. Each window ran 20 seconds after a 5 second warm-up of the same window.
+
+[cols="3,1,2"]
+|===
+| Figure (time per operation) | Clean pairs | Time with the change, as a ratio of the time without it (median, 95% interval)
+
+| Mixed window, 2 Python threads (reads and writer transactions together)
+| 10
+| 0.489 [0.475, 0.499]
+
+| The same reads on 1 thread, no writer
+| 10
+| 0.510 [0.507, 0.514]
+
+| 2 threads, per reader operation
+| 10
+| 0.476 [0.461, 0.487]
+
+| 2 threads, per writer transaction
+| 10
+| 0.992 [0.945, 1.007]
+
+| Control: Cypher 2-hop count and `.first()` readers with the same writer, 2 threads
+| 10
+| 1.016 [0.978, 1.037]
+|===
+
+A ratio below 1 means the build with the change needs less time per operation. The mixed window is the figure that was set before the run as the claim: its interval lies below 1. The one-thread row shows the single-thread reads got cheaper by a similar ratio, so these figures do not show a gain that is specific to concurrency. The gain is in the reader's share of the window, and the writer's share and the Cypher control did not move beyond their noise. The ratios come from one Linux x86_64 laptop with the two timed cores, Python 3.12, alternating order of the two builds, the first round dropped, and an A/A control (the same build twice) whose intervals contain 1. They are not measured at 4 or more threads, on the native build, or on other hardware.
+
 == Several writers
 
-Two transactions that change the same record conflict at commit. The one that loses raises `ArcadeDBError`, and the name `ConcurrentModificationException` is in the message or in the `__cause__` chain. The engine treats it as retryable: see xref:arcadedb::concepts/transactions.adoc#isolation[Isolation] for when it is raised. `db.run_in_transaction(fn, retries=...)` runs `fn` in a transaction again after such a conflict.
+Two transactions that change the same record conflict at commit. The one that loses raises `ArcadeDBError`, and the name `ConcurrentModificationException` is in the message or in the `__cause__` chain. The engine treats it as retryable: see {arcadedb-docs-url}/concepts/transactions#isolation[Isolation] for when it is raised. `db.run_in_transaction(fn, retries=...)` runs `fn` in a transaction again after such a conflict.
 
 The probe: 8 threads, one shared `Database`, 4 counter records. Each operation is one transaction that changes one counter, chosen by a fixed pseudo-random sequence, and inserts one row with a unique key into a ledger type. Each thread makes 1,500 operations (500 on Python 3.14t), so 12,000 in total (4,000 on Python 3.14t). The probe counts a lost update as an operation whose transaction committed but whose increment is not in the final counters. Each cell below is the number of lost updates out of the number of operations, from one run.
 
@@ -77,7 +109,7 @@ What the runs show:
 * Reading the value, computing in Python and writing it back lost updates under the default isolation level, also when every conflict was retried: with `run_in_transaction` 1,137 of 12,000 on the JVM build and 201 of 12,000 on the native build, with the own loop 2,883 and 331. In this probe the read is a `SELECT` and the write is a separate `UPDATE` with the computed value.
 * The same read-compute-write under `REPEATABLE_READ` with the own retry loop lost nothing: 0 lost updates in each of the 3 runs, one per build.
 
-Based on that, do the arithmetic in the statement and retry the transaction. If the new value needs a computation that SQL cannot do, start the transaction with `BEGIN ISOLATION REPEATABLE_READ` and retry as in <<retry-loop>>. The evidence for each is one run per build, as in the table. Do not read a value, compute in Python and write it back under the default isolation level.
+Based on that, do the arithmetic in the statement and retry the transaction. If the new value needs a computation that SQL cannot do, start the transaction with `BEGIN ISOLATION REPEATABLE_READ` and retry as in <<retry-loop>>. The evidence for each is one run per build, as in the table. Do not read a value, compute in Python and write it back under the default isolation level. The table does not cover the record object's `save()` on the native build: see <<record-save>>.
 
 [source,python]
 ----
@@ -87,6 +119,26 @@ db.run_in_transaction(
     retries=60,
 )
 ----
+
+[[record-save]]
+=== `save()` of a record object refuses a lost update
+
+`record.modify().set(...).save()` on a record that exists is a read-compute-write: the object holds the values it was read with, and `save()` writes the changed properties back. If another transaction changed the stored record after the object was read, that write used to overwrite the change without an error. The JVM build already refused it. The `arcadedb` (native) build now refuses it too: `save()` raises `ArcadeDBError` with `ConcurrentModificationException` in the message, and writes nothing.
+
+The engine keeps no record version, so the native build compares values. Inside the transaction of the update, `save()` reads the stored record and compares it with the values the object held as read. A record that differs is a lost update. A record that another transaction changed and then changed back is not detected. A `save()` of a new record has nothing to compare and is not checked. A second `save()` of the same object does not conflict with the first, because after a successful save the object holds the values it wrote.
+
+`save()` of an existing record is a write, so it needs an open transaction on both builds (`with db.transaction():`, or `begin()`). Outside one it raises `ArcadeDBError` ("Transaction not begun"). To retry after a conflict, read the record again and repeat the change in a new transaction: `db.run_in_transaction(fn, retries=...)` does this when `fn` does the lookup, `modify()`, `set()` and `save()` itself. A retry that reuses the old object fails again, because the object still holds the old values.
+
+[source,python]
+----
+def rename(rid, name):
+    rec = db.lookup_by_rid(rid).modify()   # read inside the retried function
+    rec.set("name", name).save()
+
+db.run_in_transaction(lambda: rename(rid, "new name"), retries=60)
+----
+
+The check costs on the write side only. A laptop A/B on the native wheel (10 clean interleaved pairs for each figure, with a clean A/A control, reported as the median of the pair ratios of the new build against main, where above 1 means slower) measured one `lookup_by_rid`, `modify()`, `set()` and `save()` of a record in a transaction: 1.241 (95% interval 1.239 to 1.244) for a record with 5 properties and 1.426 (95% interval 1.412 to 1.437) for a record with 20 properties and a 768-float vector. Each `save()` now runs one extra `SELECT`, and when a changed value is not one the engine stores exactly as sent, the `UPDATE` also returns the stored record. All 14 read figures (lookups by RID and by key, `first()`, a 10,000-row `SELECT`, a two-hop `expand()`, a two-hop Cypher query, each on both record sizes, and two projection controls) stayed between 0.991 and 1.004 of main, so reads are unchanged. If you need atomic arithmetic, an `UPDATE ... SET n = n + 1` in the statement does not use this path.
 
 [[retry-loop]]
 === A retry loop for REPEATABLE_READ
@@ -203,7 +255,7 @@ Based on that:
 
 == Signals and crashes
 
-A write that has returned from `commit()` survived every kill in the probe. The probe cannot say anything about a power loss or an operating system crash, which a process kill does not simulate. For how the engine flushes its write-ahead log, see xref:arcadedb::concepts/transactions.adoc#wal-flush-durability[WAL flush and durability].
+A write that has returned from `commit()` survived every kill in the probe. The probe cannot say anything about a power loss or an operating system crash, which a process kill does not simulate. For how the engine flushes its write-ahead log, see {arcadedb-docs-url}/concepts/transactions#wal-flush-durability[WAL flush and durability].
 
 The kill probe: a child process writes in a loop, in transactions of 5 or 200 rows, and prints the number of rows after every commit that returned. The parent sends `SIGKILL` (kill -9) at a random time between 0.2 and 2.5 s after the first commit, then reopens the same database. The reopen must recover, `CHECK DATABASE` must report nothing, every acknowledged row must be present with a matching checksum, no transaction may be half applied, and the database must accept a write. The same database was used for all runs of a build.
 
@@ -248,8 +300,46 @@ The signal probe: a child opens a transaction and inserts rows without committin
 
 If a process must stop and it does not react to a signal, `SIGKILL` cost no acknowledged commit in 45 runs (20 on the JVM build, 20 on the native build, 5 on Python 3.14t).
 
+[[durability]]
+== Durability: surviving power loss
+
+By default the engine does not flush its write-ahead log at commit: `arcadedb.txWalFlush` is `0`. A commit that returned then survives a crash of the process, as the kill probe above shows, but not a power loss or an operating system crash. Setting `arcadedb.txWalFlush` to `1` flushes the log data to stable storage at every commit, and `2` flushes the file metadata as well. What each level guarantees is in the main ArcadeDB docs: see {arcadedb-docs-url}/concepts/transactions#wal-flush-durability[WAL flush and durability]. The setting is described in {arcadedb-docs-url}/reference/settings[Settings].
+
+The setting belongs to the database. The same SQL turns it on for `arcadedb` (native) and `arcadedb-jvm`, and the value is stored with the database, so it is still in force after a reopen:
+
+[source,python,subs="attributes+"]
+----
+{import-stmt}
+
+
+def wal_flush(db):
+    row = db.query("sql", "SELECT settings FROM schema:database").first()
+    return next(s["value"] for s in row.get("settings") if s["key"] == "arcadedb.txWalFlush")
+
+
+with arcadedb.create_database("./durable") as db:
+    print(wal_flush(db))
+    db.command("sql", "ALTER DATABASE `arcadedb.txWalFlush` 1")
+    print(wal_flush(db))
+    db.command("sql", "CREATE DOCUMENT TYPE Note")
+    with db.transaction():
+        db.command("sql", "INSERT INTO Note SET text = 'durable'")
+----
+
+[source,text]
+----
+0
+1
+----
+
+The snippet ran on one build of each package (26.11.1.dev0, Python 3.12, Linux), and the value read `1` after a reopen on both. A system property sets the same value for every database in the process, as in xref:how-to/logs.adoc[Where the logs go]: `-Darcadedb.txWalFlush=1` in `jvm_kwargs={"jvm_args": [...]}` or in `ARCADEDB_JVM_ARGS` for `arcadedb-jvm`, and in `ARCADEDB_NATIVE_ISOLATE_ARGS` for `arcadedb`. A database created in such a process reported `1` on both packages.
+
+The flush has a cost on every commit. On one Linux laptop, a commit of one row took about 0.07 ms at level `0` and about 5 ms at level `1`. That is one machine and one run, so read it as an order of magnitude. The cost per row falls when a transaction holds many rows: see xref:how-to/bulk-loads.adoc[Bulk loads and commit size].
+
+On Linux, macOS and Windows the JDK asks the operating system for a flush that reaches the device, and the native image uses the same JDK code. How far a device keeps its promise is up to the hardware.
+
 == Free-threaded Python
 
 The native wheel is a `py3-none` wheel, and it installed and ran on free-threaded Python 3.14.5 with the GIL off. The Python 3.14t rows in the tables above are those runs: threads, several writers, asyncio and the signal and kill probes. The probe on several processes was not run there. The runs are shorter than those on Python 3.12, as listed at the top of this page.
 
-The JVM package was not run on Python 3.14t. Its wheels up to 26.11.1.dev0 were tagged for 3.11 to 3.14 (`cp314`), so `uv` found no wheel for 3.14t (it reported no wheel with a matching Python version tag for `{jvm-pkg-name}` 26.10.2.post1). The newer wheels are `py3-none`, and JPype has a 3.14t wheel on Linux, so pip can now install the package on 3.14t. No JVM test run has been made there, so treat it as untested.
+The JVM package was not run on Python 3.14t. Its wheels up to 26.11.1.dev0 were tagged for 3.11 to 3.14 (`cp314`), so `uv` found no wheel for 3.14t (it reported no wheel with a matching Python version tag for `{jvm-pkg-name}` 26.10.2.post1). The newer wheels are `py3-none`, and JPype has a 3.14t wheel on Linux, so uv can now install the package on 3.14t. No JVM test run has been made there, so treat it as untested.

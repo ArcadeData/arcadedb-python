@@ -14,7 +14,7 @@ cd examples
 python 01_simple_document_store.py
 ```
 
-See the dataset downloader guide: [dataset downloader](https://docs.humem.ai/arcadedb/latest/examples/download_data/).
+The dataset downloader is [download_data.py](./download_data.py): its docstring lists the datasets, and `python download_data.py --help` the options.
 
 ## Available Examples
 
@@ -223,8 +223,8 @@ Synthetic multi-table ingest comparison harness:
   be trusted
 - Current outcome is workload-dependent; SQL import can win on some table-heavy shapes
 - The async SQL arm is a comparison arm, not a recommendation, and `--async-parallel`
-  accepts only 1 (see [Bulk Ingest Recommendation](https://docs.humem.ai/arcadedb/latest/guide/import/#bulk-ingest-recommendation)
-  for why). For bulk document ingest use `db.insert_many(...)`
+  accepts only 1. For bulk document ingest use `db.insert_many(...)` (see
+  [Bulk loads and commit size](https://docs.arcadedb.com/arcadedb-python/how-to/bulk-loads))
 
 **Learn:** Table-ingest tradeoffs for embedded Python workloads
 
@@ -237,9 +237,8 @@ Synthetic graph ingest comparison harness:
 - Runs transactional SQL, GraphBatch, async SQL, and SQL import on equivalent
   vertex/edge data
 - Includes parity checks on final vertex and edge counts
-- The async SQL arm is pinned to `--async-parallel 1` (see
-  [Bulk Ingest Recommendation](https://docs.humem.ai/arcadedb/latest/guide/import/#bulk-ingest-recommendation)).
-  GraphBatch is the recommended bulk graph ingest path
+- The async SQL arm is pinned to `--async-parallel 1`. GraphBatch is the recommended bulk
+  graph ingest path (see [Bulk loads and commit size](https://docs.arcadedb.com/arcadedb-python/how-to/bulk-loads))
 
 **Learn:** Graph-ingest tradeoffs for embedded Python workloads
 
@@ -401,7 +400,7 @@ DataFrames and Arrow tables loaded straight into a type, and a result back out a
   column refused before a row is written
 - `to_polars()` on the result
 - synthetic data; flags: `--rows` (default 100,000) and `--db-path`
-- requires `pip install 'arcadedb-jvm[pandas,polars]'`
+- requires `uv add 'arcadedb-jvm[pandas,polars]'`
 
 **Learn:** How a DataFrame becomes documents or vertices without a row loop, and what each
 Arrow type is stored as
@@ -431,8 +430,8 @@ Hybrid retrieval for an agent memory in one SQL statement instead of three store
   the same tenant, both fused by reciprocal rank fusion with `vector.fuse`, then graph hops
   (`MENTIONS`, `RELATES`) to related entities and facts, kept inside the tenant
 - shows why: a global top-k followed by a tenant test returns 0 rows when the nearest
-  neighbours belong to another tenant (the behaviour of Cypher `db.index.vector.queryNodes`,
-  which has no filter)
+  neighbours belong to another tenant (the behaviour of Cypher `db.index.vector.queryNodes`
+  without its `{where, filter}` options map, new in 26.11.1)
 - checks that every result row, and every fact reached by a hop, belongs to the tenant
 - builds a small synthetic memory (fixed-seed numpy embeddings); no data download
 - flags: `--form` (`where`, default, needs 26.11.1; or `filter`) and `--db-path`
@@ -458,7 +457,7 @@ full-text and graph context in a single query
 ## 🔗 Learn More
 
 - **[ArcadeDB Documentation](https://docs.arcadedb.com/)**
-- **[Python API Reference](https://docs.humem.ai/arcadedb/latest/api/database/)**
+- **[ArcadeDB Python docs](https://docs.arcadedb.com/arcadedb-python/)**
 - **[GitHub Repository](https://github.com/ArcadeData/arcadedb-python)**
 
 ---

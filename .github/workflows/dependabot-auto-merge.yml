@@ -1,0 +1,53 @@
+# Merges Dependabot pull requests that are patch or minor updates once every check is green
+# (adapted from ArcadeData/arcadedb's dependabot-auto-merge.yml). Upstream merges on one human
+# approval and no green condition; this repository's rule is "all green, then merge", majors get
+# a look first.
+#
+# It polls instead of reacting to one event because no single event means "the last check just
+# went green", and `gh pr merge --auto` would need the repository setting "Allow auto-merge" plus
+# required checks, neither of which is on. The rules, and why each one is there, are in
+# .github/scripts/dependabot_merge.py. A merge made with the repository's GITHUB_TOKEN starts no
+# push workflow on main, as in upstream.
+name: Dependabot auto-merge
+
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "If true, log the decisions without merging anything"
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+  pull-requests: write
+
+# Two overlapping runs would try to merge the same pull request twice.
+concurrency:
+  group: dependabot-auto-merge
+  cancel-in-progress: false
+
+jobs:
+  merge:
+    # Never on a fork: the schedule would merge pull requests on someone's copy of the repository.
+    if: github.repository == 'ArcadeData/arcadedb-python'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run != false }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Merge the Dependabot pull requests that are safe
+        run: |
+          if [ "$DRY_RUN" = "true" ]; then
+            python3 .github/scripts/dependabot_merge.py --dry-run
+          else
+            python3 .github/scripts/dependabot_merge.py
+          fi

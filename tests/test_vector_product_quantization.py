@@ -19,6 +19,8 @@ is built from it, delete `has_pq_rerank` and the old-answer branches. The new-an
 only on a build from source (`engine-from-source: true`).
 """
 
+import math
+
 import numpy as np
 import pytest
 
@@ -335,8 +337,7 @@ class TestProductQuantizationHelpers:
         assert meta["rerank_oversample"] == 10
         assert meta["fused_pq"] is False
 
-    @pytest.mark.parametrize("setting", ["rerank_oversample", "fused_pq"])
-    def test_new_settings_require_product_quantization(self, test_db, setting):
+    def test_fused_pq_requires_product_quantization(self, test_db):
         test_db.command("sql", "CREATE VERTEX TYPE PqVertex")
         test_db.command("sql", "CREATE PROPERTY PqVertex.embedding ARRAY_OF_FLOATS")
 
@@ -346,5 +347,213 @@ class TestProductQuantizationHelpers:
                 "embedding",
                 dimensions=DIMS,
                 quantization="INT8",
-                **{setting: 5 if setting == "rerank_oversample" else True},
+                fused_pq=True,
             )
+
+    @pytest.mark.parametrize("quantization", ["INT8", "NONE", None])
+    def test_rerank_oversample_refuses_unquantized_and_int8(
+        self, test_db, quantization
+    ):
+        """Only PRODUCT and BINARY rerank on the stored vectors (ArcadeData/arcadedb#10968)."""
+        test_db.command("sql", "CREATE VERTEX TYPE PqVertex")
+        test_db.command("sql", "CREATE PROPERTY PqVertex.embedding ARRAY_OF_FLOATS")
+
+        with pytest.raises(
+            arcadedb.ArcadeDBError, match="requires quantization='PRODUCT' or 'BINARY'"
+        ):
+            test_db.create_vector_index(
+                "PqVertex",
+                "embedding",
+                dimensions=DIMS,
+                quantization=quantization,
+                rerank_oversample=5,
+            )
+
+
+SMALL_BUCKETS = 4
+SMALL_PQ_CLUSTERS = 16
+
+
+def _cosine_ranking(vectors, query):
+    """Ids sorted by cosine similarity to the query, best first, in plain Python."""
+
+    def cosine(vec):
+        dot = sum(a * b for a, b in zip(vec, query))
+        return dot / (
+            math.sqrt(sum(a * a for a in vec)) * math.sqrt(sum(b * b for b in query))
+        )
+
+    return sorted(range(len(vectors)), key=lambda i: cosine(vectors[i]), reverse=True)
+
+
+class TestProductQuantizationSmallBuckets:
+    """A bucket with fewer vectors than `pq_clusters` cannot train a PQ codebook.
+
+    The engine skips PQ for such a bucket and searches it exactly (ArcadeData/arcadedb#5417). The
+    Python layer used to refuse the build on the JVM build before the engine was asked, with a
+    message that said PRODUCT needs `pq_clusters` vectors per bucket; the native build, which
+    checked the whole type, let a spread type through. Both builds now answer as the engine does.
+    """
+
+    @pytest.mark.parametrize("per_bucket", [5, 15])
+    def test_buckets_below_pq_clusters_build_and_search_exactly(
+        self, test_db, per_bucket
+    ):
+        dims = 8
+        rng = np.random.default_rng(100 + per_bucket)
+        count = per_bucket * SMALL_BUCKETS
+        vectors = [[float(x) for x in rng.standard_normal(dims)] for _ in range(count)]
+        queries = [[float(x) for x in rng.standard_normal(dims)] for _ in range(10)]
+
+        test_db.command("sql", f"CREATE VERTEX TYPE T BUCKETS {SMALL_BUCKETS}")
+        test_db.command("sql", "CREATE PROPERTY T.id INTEGER")
+        test_db.command("sql", "CREATE PROPERTY T.v ARRAY_OF_FLOATS")
+        index = test_db.create_vector_index(
+            "T",
+            "v",
+            dimensions=dims,
+            quantization="PRODUCT",
+            pq_subspaces=4,
+            pq_clusters=SMALL_PQ_CLUSTERS,
+            build_graph_now=False,
+        )
+        with test_db.transaction():
+            for i, vec in enumerate(vectors):
+                test_db.command("sql", "INSERT INTO T SET id = ?, v = ?", i, vec)
+
+        # the premise: every bucket is below pq_clusters (the inserts spread over the buckets)
+        in_bucket = [
+            test_db.query(
+                "sql",
+                f"SELECT count(*) AS c FROM bucket:T_{b}",  # nosec B608 - b from range()
+            )
+            .first()
+            .get("c")
+            for b in range(SMALL_BUCKETS)
+        ]
+        assert sum(in_bucket) == count
+        assert max(in_bucket) < SMALL_PQ_CLUSTERS, in_bucket
+
+        index.build_graph_now()
+
+        for query in queries:
+            ranking = _cosine_ranking(vectors, query)
+            approximate = index.find_nearest_approximate(query, k=5)
+            exact = index.find_nearest(query, k=5)
+            approximate_ids = [int(r.get("id")) for r, _ in approximate]
+            exact_ids = [int(r.get("id")) for r, _ in exact]
+
+            assert approximate_ids[0] == ranking[0]
+            assert exact_ids[0] == ranking[0]
+            assert approximate_ids == ranking[:5]
+            assert exact_ids == ranking[:5]
+            # no PQ estimate is in force: the approximate scores are the exact scores
+            exact_score = {int(r.get("id")): s for r, s in exact}
+            for record, score in approximate:
+                assert score == pytest.approx(
+                    exact_score[int(record.get("id"))], abs=1e-5
+                )
+
+
+class TestBinaryRerankOversample:
+    """`rerank_oversample` on a BINARY index (ArcadeData/arcadedb#10968, ArcadeDB 26.11.1).
+
+    A BINARY index scores nodes on its one-bit codes and reranks `k * rerankOversample`
+    candidates on the stored vectors, the setting a PRODUCT index uses. The Python check
+    that only let PRODUCT carry it is gone; the engine decides, and `has_pq_rerank` is
+    false on an engine from before #10545, which refuses the key outright. What #10968
+    itself changed (how many candidates are reranked) is a recall difference of a few
+    percent that no deterministic assertion can pin; the engine's own tests cover it.
+    """
+
+    @staticmethod
+    def _make(db, **kwargs):
+        db.command("sql", "CREATE VERTEX TYPE BinVertex")
+        db.command("sql", "CREATE PROPERTY BinVertex.embedding ARRAY_OF_FLOATS")
+        return db.create_vector_index(
+            "BinVertex",
+            "embedding",
+            dimensions=DIMS,
+            distance_function="euclidean",
+            quantization="BINARY",
+            **kwargs,
+        )
+
+    def test_binary_accepts_rerank_oversample(self, test_db, has_pq_rerank):
+        if not has_pq_rerank:
+            with pytest.raises(
+                arcadedb.ArcadeDBError, match="Unsupported metadata key"
+            ):
+                self._make(test_db, rerank_oversample=25)
+            return
+
+        meta = self._make(test_db, rerank_oversample=25).get_metadata()
+
+        assert meta["quantization"] == "BINARY"
+        assert meta["rerank_oversample"] == 25
+
+    def test_binary_reports_the_default_rerank_oversample(self, test_db, has_pq_rerank):
+        meta = self._make(test_db).get_metadata()
+
+        if not has_pq_rerank:
+            assert "rerank_oversample" not in meta
+            return
+        assert meta["rerank_oversample"] == 10
+
+    def test_rerank_oversample_is_a_metadata_key_of_a_binary_statement(
+        self, test_db, has_pq_rerank
+    ):
+        test_db.command("sql", "CREATE VERTEX TYPE BinVertex")
+        test_db.command("sql", "CREATE PROPERTY BinVertex.embedding ARRAY_OF_FLOATS")
+        create = lambda: test_db.command(  # noqa: E731
+            "sql",
+            "CREATE INDEX ON BinVertex (embedding) LSM_VECTOR METADATA "
+            f'{{"dimensions": {DIMS}, "quantization": "BINARY", "rerankOversample": 7}}',
+        )
+        if not has_pq_rerank:
+            with pytest.raises(Exception, match="Unsupported metadata key"):
+                create()
+            return
+        create()
+
+        meta = test_db.schema.get_vector_index("BinVertex", "embedding").get_metadata()
+
+        assert meta["quantization"] == "BINARY"
+        assert meta["rerank_oversample"] == 7
+
+    @pytest.mark.parametrize("setting", ["pq_subspaces", "fused_pq"])
+    def test_pq_only_settings_still_need_product(self, test_db, setting):
+        with pytest.raises(arcadedb.ArcadeDBError, match="require quantization"):
+            self._make(test_db, **{setting: 8 if setting == "pq_subspaces" else True})
+
+    def test_binary_search_with_rerank_returns_exact_distances(
+        self, test_db, corpus, has_pq_rerank
+    ):
+        vectors, queries = corpus
+        index = self._make(
+            test_db, **({"rerank_oversample": 20} if has_pq_rerank else {})
+        )
+        with test_db.transaction():
+            for i, vec in enumerate(vectors):
+                test_db.command(
+                    "sql",
+                    "INSERT INTO BinVertex SET id = ?, embedding = ?",
+                    i,
+                    arcadedb.to_java_float_array(vec),
+                )
+        index.build_graph_now()
+        options = (
+            "{ efSearch: 100, rerank: 20 }" if has_pq_rerank else "{ efSearch: 100 }"
+        )
+
+        rows = test_db.query(
+            "sql",
+            "SELECT id, distance FROM "  # nosec B608 - test-owned option literals
+            f"(SELECT expand(vectorNeighbors('BinVertex[embedding]', ?, {K}, {options})))",  # nosec B608
+            arcadedb.to_java_float_array(queries[0]),
+        ).to_list()
+
+        _, exact = _exact_neighbors(vectors, queries[0])
+        assert len(rows) == K
+        for row in rows:
+            assert row["distance"] == pytest.approx(float(exact[row["id"]]), rel=1e-4)

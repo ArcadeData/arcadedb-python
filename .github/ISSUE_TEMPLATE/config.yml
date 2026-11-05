@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Bug in the ArcadeDB engine (queries, storage, server)
+    url: https://github.com/ArcadeData/arcadedb/issues/new
+    about: A problem that also shows in the Java API or in Studio belongs in the engine repository, with a Java or SQL reproduction.

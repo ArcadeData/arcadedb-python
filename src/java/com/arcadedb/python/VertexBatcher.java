@@ -7,9 +7,10 @@
  * ~0.2us/vertex Python-side) and returns the created RIDs as ONE
  * semicolon-joined string, so the whole batch costs two bulk string copies.
  *
- * JSON-representable property values only (str/int/float/bool/null and
- * nested lists/maps thereof) — the Python side falls back to the matrix
- * path for anything else (e.g. datetime, bytes).
+ * Property values are str/int/float/bool/null, nested lists and maps thereof,
+ * and the tagged values DocumentBatcher.untag decodes (date-time, date,
+ * BigDecimal, byte[]) sitting directly in a row; the Python side falls back to
+ * the matrix path for anything else.
  */
 package com.arcadedb.python;
 
@@ -44,7 +45,7 @@ public final class VertexBatcher {
       int j = 0;
       for (final String key : row.keySet()) {
         flat[j++] = key;
-        flat[j++] = row.isNull(key) ? null : row.get(key);
+        flat[j++] = DocumentBatcher.value(row.isNull(key) ? null : row.get(key));
       }
       for (int c = 0; c < extra; c++) {
         flat[j++] = vectorNames[c];

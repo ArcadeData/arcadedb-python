@@ -10,22 +10,22 @@ This page builds a small database from scratch. You need one of the two packages
 | Package | Install | Pick this if
 
 | `{native-pkg-name}` (native, the default)
-| `pip install {native-pkg-name}`
+| `uv add {native-pkg-name}`
 | Scripts, notebooks, tests, CLIs, serverless functions, agents.
 
 | `{jvm-pkg-name}` (JVM)
-| `pip install {jvm-pkg-name}`
+| `uv add {jvm-pkg-name}`
 | Heavy, long-running loads, or the Java-object APIs.
 |===
 
-See xref:which-package.adoc[Which package?] if you are not sure. If you are not sure, take `{native-pkg-name}`. Until a final 26.11.1 is on PyPI, add `--pre` to the install line of `{native-pkg-name}` (see the transition note in xref:installation.adoc[Installation]).
+See xref:which-package.adoc[Which package?] if you are not sure. If you are not sure, take `{native-pkg-name}`. Until a final 26.11.1 is on PyPI, add `--prerelease allow` to the `uv add` line of `{native-pkg-name}` (see the transition note in xref:installation.adoc[Installation]).
 
 // REMOVE WHEN: the old arcadedb-embedded* shims are retired and two releases have shipped with the two-package layout allow-old-name
 The scripts on this page ran against the JVM build, version 26.10.2.post1 (formerly `arcadedb-embedded`). The output shown is what it printed. The code is the same for both packages. The wording of an error message can differ on `{native-pkg-name}`.
 
 == Embedded mode
 
-The database runs in your Python process. You use SQL for the schema and for CRUD, through two calls. ArcadeDB SQL is its own dialect, and it has no JOINs: records link to each other and a query follows the links (see xref:arcadedb::reference/sql/sql-introduction.adoc#no-joins[No JOINs]).
+The database runs in your Python process. You use SQL for the schema and for CRUD, through two calls. ArcadeDB SQL is its own dialect, and it has no JOINs: records link to each other and a query follows the links (see {arcadedb-docs-url}/reference/sql/sql-introduction#no-joins[No JOINs]).
 
 * `db.command(language, statement, *params)` runs a statement that can change data or schema.
 * `db.query(language, statement, *params)` runs a read.

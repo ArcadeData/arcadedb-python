@@ -548,7 +548,6 @@ fi
 echo ""
 
 echo -e "${BLUE}💡 Next steps:${NC}"
-echo -e "   🧪 Run tests against this wheel (from the repository root; uv venv once first):"
-echo -e "      ${YELLOW}uv pip install --reinstall-package arcadedb \"<the wheel above>[test]\"${NC}"
-echo -e "      ${YELLOW}uv run pytest${NC}"
+echo -e "   🧪 Run tests against this wheel (from the repository root):"
+echo -e "      ${YELLOW}uv run --no-project --with \"<the wheel above>[test]\" python -m pytest${NC}"
 echo ""

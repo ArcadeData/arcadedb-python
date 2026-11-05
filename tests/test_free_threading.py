@@ -332,8 +332,8 @@ SCENARIOS = [
 
 
 @pytest.fixture
-def tmp():
-    d = tempfile.mkdtemp(prefix="arcadedb_ft_")
+def tmp(tmp_path_factory):
+    d = str(tmp_path_factory.mktemp("arcadedb_ft_"))
     yield d
     shutil.rmtree(d, ignore_errors=True)
 

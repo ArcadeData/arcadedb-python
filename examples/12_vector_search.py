@@ -78,8 +78,7 @@ RUN apt-get update \\
         docker-compose \\
     && rm -rf /var/lib/apt/lists/*
 
-RUN curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh \
-    && uv pip install --system numpy pymilvus psutil
+RUN curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh
 """
 
 
@@ -162,13 +161,17 @@ def resolve_milvus_compose_version(release_tag: str) -> str:
     return resolved
 
 
+# The uv release the containers download: the version the repo's CI pins (.github/workflows/test-native.yml UV_VERSION),
+# fetched straight from its release URL instead of asking the GitHub API for "latest" (unpinned, and rate-limited for anonymous use).
+UV_VERSION = "0.12.0"
+
+
 def uv_bootstrap_commands(python_cmd: str = "python") -> List[str]:
     return [
         (
             f'{python_cmd} -c "import json, pathlib, platform, shutil, tarfile, urllib.request; '
             "arch={'x86_64':'x86_64-unknown-linux-gnu','amd64':'x86_64-unknown-linux-gnu','aarch64':'aarch64-unknown-linux-gnu','arm64':'aarch64-unknown-linux-gnu'}[platform.machine().lower()]; "
-            "req=urllib.request.Request('https://api.github.com/repos/astral-sh/uv/releases/latest', headers={'User-Agent':'arcadedb-bench'}); "
-            "version=json.load(urllib.request.urlopen(req, timeout=30))['tag_name'].lstrip('v'); "
+            f"version='{UV_VERSION}'; "
             "archive=pathlib.Path('/tmp/uv.tar.gz'); "
             "archive.write_bytes(urllib.request.urlopen(f'https://github.com/astral-sh/uv/releases/download/{version}/uv-{arch}.tar.gz', timeout=30).read()); "
             "target=pathlib.Path('/tmp/uv-extract'); target.mkdir(parents=True, exist_ok=True); "
@@ -1796,7 +1799,7 @@ def resolve_arcadedb_heap_size(
 
 
 def ensure_milvus_runner_image(docker_bin: str) -> str:
-    image_tag = "arcadedb-milvus-bench-runner:py312-v1"
+    image_tag = "arcadedb-milvus-bench-runner:py312-v2"
     inspect = subprocess.run(
         [docker_bin, "image", "inspect", image_tag],
         stdout=subprocess.DEVNULL,
@@ -1973,49 +1976,49 @@ def run_in_docker(args) -> bool:
     if args.backend == "arcadedb_sql":
         inner_cmd = " && ".join(
             [
-                "python -m venv /tmp/bench-venv",
-                ". /tmp/bench-venv/bin/activate",
                 *uv_bootstrap_commands("python"),
-                "uv pip install numpy psutil",
-                f'uv pip install "{arcadedb_wheel_mount_path}"',
                 "echo 'Starting vector search benchmark...'",
-                f"python -u 12_vector_search.py {' '.join(filtered_args)}",
+                (
+                    "uv run --no-project --with numpy --with psutil "
+                    f'--with "{arcadedb_wheel_mount_path}" '
+                    f"python -u 12_vector_search.py {' '.join(filtered_args)}"
+                ),
             ]
         )
         run_user_args = ["-u", user_spec] if user_spec is not None else []
     elif args.backend == "faiss":
         inner_cmd = " && ".join(
             [
-                "python -m venv /tmp/bench-venv",
-                ". /tmp/bench-venv/bin/activate",
                 *uv_bootstrap_commands("python"),
-                "uv pip install faiss-cpu numpy psutil",
                 "echo 'Starting vector search benchmark...'",
-                f"python -u 12_vector_search.py {' '.join(filtered_args)}",
+                (
+                    "uv run --no-project --with faiss-cpu --with numpy --with psutil "
+                    f"python -u 12_vector_search.py {' '.join(filtered_args)}"
+                ),
             ]
         )
         run_user_args = ["-u", user_spec] if user_spec is not None else []
     elif args.backend == "lancedb":
         inner_cmd = " && ".join(
             [
-                "python -m venv /tmp/bench-venv",
-                ". /tmp/bench-venv/bin/activate",
                 *uv_bootstrap_commands("python"),
-                "uv pip install lancedb numpy psutil",
                 "echo 'Starting vector search benchmark...'",
-                f"python -u 12_vector_search.py {' '.join(filtered_args)}",
+                (
+                    "uv run --no-project --with lancedb --with numpy --with psutil "
+                    f"python -u 12_vector_search.py {' '.join(filtered_args)}"
+                ),
             ]
         )
         run_user_args = ["-u", user_spec] if user_spec is not None else []
     elif args.backend == "bruteforce":
         inner_cmd = " && ".join(
             [
-                "python -m venv /tmp/bench-venv",
-                ". /tmp/bench-venv/bin/activate",
                 *uv_bootstrap_commands("python"),
-                "uv pip install numpy psutil",
                 "echo 'Starting vector search benchmark...'",
-                f"python -u 12_vector_search.py {' '.join(filtered_args)}",
+                (
+                    "uv run --no-project --with numpy --with psutil "
+                    f"python -u 12_vector_search.py {' '.join(filtered_args)}"
+                ),
             ]
         )
         run_user_args = ["-u", user_spec] if user_spec is not None else []
@@ -2025,12 +2028,12 @@ def run_in_docker(args) -> bool:
                 "apt-get update",
                 "apt-get install -y --no-install-recommends docker.io docker-cli",
                 "rm -rf /var/lib/apt/lists/*",
-                "python -m venv /tmp/bench-venv",
-                ". /tmp/bench-venv/bin/activate",
                 *uv_bootstrap_commands("python"),
-                "uv pip install numpy qdrant-client psutil",
                 "echo 'Starting vector search benchmark...'",
-                f"python -u 12_vector_search.py {' '.join(filtered_args)}",
+                (
+                    "uv run --no-project --with numpy --with qdrant-client --with psutil "
+                    f"python -u 12_vector_search.py {' '.join(filtered_args)}"
+                ),
             ]
         )
         run_user_args = []
@@ -2040,21 +2043,25 @@ def run_in_docker(args) -> bool:
             inner_cmd = " && ".join(
                 [
                     "echo 'Starting vector search benchmark...'",
-                    f"python -u 12_vector_search.py {' '.join(filtered_args)}",
+                    (
+                        "uv run --no-project --with numpy --with pymilvus "
+                        "--with psutil "
+                        f"python -u 12_vector_search.py {' '.join(filtered_args)}"
+                    ),
                 ]
             )
         else:
             inner_cmd = " && ".join(
                 [
                     "apt-get update",
-                    "apt-get install -y --no-install-recommends python3 python3-venv docker.io docker-cli docker-compose",
+                    "apt-get install -y --no-install-recommends python3 ca-certificates docker.io docker-cli docker-compose",
                     "rm -rf /var/lib/apt/lists/*",
-                    "python -m venv /tmp/bench-venv",
-                    ". /tmp/bench-venv/bin/activate",
-                    *uv_bootstrap_commands("python"),
-                    "uv pip install numpy pymilvus psutil",
+                    *uv_bootstrap_commands("python3"),
                     "echo 'Starting vector search benchmark...'",
-                    f"python -u 12_vector_search.py {' '.join(filtered_args)}",
+                    (
+                        "uv run --no-project --with numpy --with pymilvus --with psutil "
+                        f"python -u 12_vector_search.py {' '.join(filtered_args)}"
+                    ),
                 ]
             )
         run_user_args = []
@@ -2063,18 +2070,18 @@ def run_in_docker(args) -> bool:
             return False
         user_inner_cmd = " && ".join(
             [
-                "python3 -m venv /tmp/bench-venv",
-                ". /tmp/bench-venv/bin/activate",
-                *uv_bootstrap_commands("python"),
-                "uv pip install numpy psycopg[binary] psutil",
+                *uv_bootstrap_commands("python3"),
                 "echo 'Starting vector search benchmark...'",
-                f"python -u 12_vector_search.py {' '.join(filtered_args)}",
+                (
+                    'uv run --no-project --with numpy --with "psycopg[binary]" --with psutil '
+                    f"python -u 12_vector_search.py {' '.join(filtered_args)}"
+                ),
             ]
         )
         inner_cmd = " && ".join(
             [
                 "apt-get update",
-                "apt-get install -y --no-install-recommends python3 python3-venv gosu",
+                "apt-get install -y --no-install-recommends python3 ca-certificates gosu",
                 "rm -rf /var/lib/apt/lists/*",
                 f"getent group {os.getgid()} >/dev/null || echo 'benchgrp:x:{os.getgid()}:' >> /etc/group",
                 f"getent passwd {os.getuid()} >/dev/null || echo 'benchusr:x:{os.getuid()}:{os.getgid()}::/tmp:/bin/sh' >> /etc/passwd",

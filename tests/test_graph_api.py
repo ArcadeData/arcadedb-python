@@ -5,6 +5,8 @@ Tests Document, Vertex, and Edge wrapper classes and their methods.
 """
 
 import arcadedb
+import pytest
+from arcadedb import ArcadeDBError
 from arcadedb.graph import Document, Edge, Vertex
 
 
@@ -538,3 +540,216 @@ def test_delete_via_wrapper_on_fresh_lookup(temp_db_path):
         # Verify deleted
         items_after = list(db.query("sql", "SELECT FROM `Item`"))
         assert len(items_after) == 0, "Item should be deleted via .delete()"
+
+
+def _create_doc_ab(db):
+    """A document type D with one record a=1, b=1; returns its RID."""
+    db.command("sql", "CREATE DOCUMENT TYPE D")
+    with db.transaction():
+        doc = db.new_document("D")
+        doc.set("a", 1)
+        doc.set("b", 1)
+        doc.save()
+        return str(doc.get_identity())
+
+
+def _bump_b_sql(rid):
+    """The statement that changes b of the record at ``rid`` (a RID the test read)."""
+    return f"UPDATE {rid} SET b = 2"  # nosec B608 - rid is a record id the test read
+
+
+def _stored_ab(db):
+    row = list(db.query("sql", "SELECT a, b FROM D"))[0]
+    return row.get("a"), row.get("b")
+
+
+def test_save_refuses_to_overwrite_a_record_changed_after_it_was_read(temp_db_path):
+    """A record object read before another transaction changed the stored record must not write its snapshot back (a lost update)."""
+    with arcadedb.create_database(temp_db_path) as db:
+        rid = _create_doc_ab(db)
+
+        mutable = db.lookup_by_rid(rid).modify()
+        with db.transaction():  # the stored record changes after the read
+            db.command("sql", _bump_b_sql(rid))
+
+        mutable.set("a", 10)
+        with pytest.raises(arcadedb.ArcadeDBError) as excinfo:
+            with db.transaction():
+                mutable.save()
+        message = str(excinfo.value)
+        assert "oncurrent" in message or rid in message
+
+        # nothing of the refused save is stored, and the other transaction's value is kept
+        assert _stored_ab(db) == (1, 2)
+
+
+def test_save_refuses_a_stale_record_from_a_query_result(temp_db_path):
+    """The same rule for a record that was born from a query row."""
+    with arcadedb.create_database(temp_db_path) as db:
+        rid = _create_doc_ab(db)
+
+        row = list(db.query("sql", "SELECT FROM D"))[0]
+        mutable = row.get_element().modify()
+        with db.transaction():
+            db.command("sql", _bump_b_sql(rid))
+
+        mutable.set("a", 10)
+        with pytest.raises(arcadedb.ArcadeDBError):
+            with db.transaction():
+                mutable.save()
+        assert _stored_ab(db) == (1, 2)
+
+        # a fresh read sees the new state and saves
+        fresh = db.lookup_by_rid(rid).modify()
+        fresh.set("a", 10)
+        with db.transaction():
+            fresh.save()
+        assert _stored_ab(db) == (10, 2)
+
+
+def test_save_of_an_existing_record_outside_a_transaction_is_refused(temp_db_path):
+    """Both builds: save() is a write, so it needs an active transaction (auto-transaction is off by default) and opens none of its own."""
+    with arcadedb.create_database(temp_db_path) as db:
+        rid = _create_doc_ab(db)
+
+        mutable = db.lookup_by_rid(rid).modify()
+        mutable.set("a", 10)
+        with pytest.raises(arcadedb.ArcadeDBError) as excinfo:
+            mutable.save()
+        assert "Transaction not begun" in str(excinfo.value)
+        assert not db.is_transaction_active()  # save() left no transaction behind
+        assert _stored_ab(db) == (1, 1)  # and wrote nothing
+
+        # the same object saves inside a transaction
+        with db.transaction():
+            mutable.save()
+        assert _stored_ab(db) == (10, 1)
+
+
+def test_two_saves_in_a_row_by_one_record_object_both_succeed(temp_db_path):
+    """The object's own earlier save is not another transaction's change: the second save, in the same and in a later transaction, goes through."""
+    with arcadedb.create_database(temp_db_path) as db:
+        rid = _create_doc_ab(db)
+
+        mutable = db.lookup_by_rid(rid).modify()
+        with db.transaction():
+            mutable.set("a", 2)
+            mutable.save()
+            mutable.set("b", 3)
+            mutable.save()
+        assert _stored_ab(db) == (2, 3)
+
+        with db.transaction():
+            mutable.set("a", 4)
+            mutable.save()
+        assert _stored_ab(db) == (4, 3)
+
+
+def test_record_saved_for_the_first_time_can_be_saved_again(temp_db_path):
+    """A record created by this object and saved, then changed and saved in a later transaction."""
+    with arcadedb.create_database(temp_db_path) as db:
+        db.command("sql", "CREATE DOCUMENT TYPE D")
+        with db.transaction():
+            created = db.new_document("D")
+            created.set("a", 7)
+            created.set("b", 7)
+            created.save()
+        with db.transaction():
+            created.set("a", 8)
+            created.save()
+        assert _stored_ab(db) == (8, 7)
+
+
+def _chain(db, count):
+    """``count`` Person vertices linked a -> b -> c ... by Knows edges (``w`` = the position of the edge)."""
+    db.command("sql", "CREATE VERTEX TYPE Person")
+    db.command("sql", "CREATE EDGE TYPE Knows")
+    db.command("sql", "CREATE EDGE TYPE Likes")
+    with db.transaction():
+        people = [db.new_vertex("Person").set("n", i).save() for i in range(count)]
+        for i in range(count - 1):
+            people[i].new_edge("Knows", people[i + 1], w=i)
+        people[0].new_edge("Likes", people[-1])
+    return [p.get_rid() for p in people]
+
+
+def test_traversal_steps_over_many_records(temp_db_path):
+    """Edges and ends of every vertex of a chain: the RID of the record each step starts from must not matter."""
+    with arcadedb.create_database(temp_db_path) as db:
+        rids = _chain(db, 12)
+        for i, rid in enumerate(rids):
+            vertex = db.lookup_by_rid(rid)
+            assert isinstance(vertex, Vertex)
+            assert vertex.get("n") == i
+            out_edges = vertex.get_out_edges("Knows")
+            in_edges = vertex.get_in_edges("Knows")
+            assert len(out_edges) == (1 if i < 11 else 0)
+            assert len(in_edges) == (1 if i > 0 else 0)
+            for edge in out_edges:
+                assert isinstance(edge, Edge)
+                assert edge.get_out().get_rid() == rid
+                assert edge.get_in().get_rid() == rids[i + 1]
+                assert edge.get("w") == i
+            for edge in in_edges:
+                assert edge.get_in().get_rid() == rid
+                assert edge.get_out().get_rid() == rids[i - 1]
+            # every edge type, in both directions
+            expected_both = (1 if i < 11 else 0) + (1 if i > 0 else 0)
+            expected_both += (
+                1 if i in (0, 11) else 0
+            )  # the Likes edge joins the first and the last
+            assert len(vertex.get_both_edges()) == expected_both
+        assert len(db.lookup_by_rid(rids[0]).get_out_edges()) == 2
+        assert len(db.lookup_by_rid(rids[0]).get_out_edges("Knows", "Likes")) == 2
+        assert len(db.lookup_by_rid(rids[0]).get_out_edges("Likes")) == 1
+
+
+def test_save_and_delete_by_record_id_for_many_records(temp_db_path):
+    """modify().save() writes to the record the wrapper holds; delete() removes only that record."""
+    with arcadedb.create_database(temp_db_path) as db:
+        rids = _chain(db, 6)
+        with db.transaction():
+            for i, rid in enumerate(rids):
+                db.lookup_by_rid(rid).modify().set("n", 100 + i).save()
+        assert [db.lookup_by_rid(rid).get("n") for rid in rids] == [
+            100 + i for i in range(6)
+        ]
+        with db.transaction():
+            db.lookup_by_rid(rids[2]).delete()
+            db.lookup_by_rid(rids[4]).delete()
+        left = {r.get("n") for r in db.query("sql", "SELECT n FROM Person")}
+        assert left == {100, 101, 103, 105}
+
+
+def test_new_edge_without_and_with_properties_between_saved_vertices(temp_db_path):
+    with arcadedb.create_database(temp_db_path) as db:
+        rids = _chain(db, 3)
+        with db.transaction():
+            a, b = db.lookup_by_rid(rids[0]), db.lookup_by_rid(rids[1])
+            plain = a.new_edge("Likes", b)
+            rich = b.new_edge("Likes", a, since="2020", score=0.5)
+        assert (
+            plain.get_out().get_rid() == rids[0] and plain.get_in().get_rid() == rids[1]
+        )
+        assert (
+            rich.get_out().get_rid() == rids[1] and rich.get_in().get_rid() == rids[0]
+        )
+        assert rich.get("since") == "2020" and rich.get("score") == 0.5
+        assert plain.get("since") is None
+
+
+def test_lookup_by_rid_refusals_name_the_record_id(temp_db_path):
+    """A missing record, a missing bucket and a text that is no record id each raise ArcadeDBError naming the id."""
+    with arcadedb.create_database(temp_db_path) as db:
+        rids = _chain(db, 2)
+        for missing in ("#1:99", "#77:0"):
+            with pytest.raises(
+                ArcadeDBError, match=f"Failed to lookup RID '{missing}'"
+            ):
+                db.lookup_by_rid(missing)
+        for bad in ("bad", "", "#1:0 ", "#1:0; DROP TYPE Person"):
+            with pytest.raises(ArcadeDBError, match="Failed to lookup RID"):
+                db.lookup_by_rid(bad)
+        # the refused texts did nothing to the data
+        assert db.query("sql", "SELECT count(*) AS c FROM Person").first().get("c") == 2
+        assert db.lookup_by_rid(rids[0]).get_rid() == rids[0]

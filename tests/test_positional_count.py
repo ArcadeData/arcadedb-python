@@ -1,10 +1,10 @@
 """More positional values than the statement has placeholders is refused, not bound silently.
 
 ``query("sql", "... WHERE @rid IN ?", [rid_a, rid_b])`` reads the lone list as the positional-parameter list (the documented
-form: one element per ``?``). The statement has one ``?``, so the engine bound the first element, dropped the second without a
-word, and returned fewer rows than the caller meant. The engine does not check the count (it also lets a call with fewer values
-than placeholders bind null; ArcadeData/arcadedb#10721), so the bindings refuse the form that cannot be right: more values than
-the statement can hold.
+form: one element per ``?``). The statement has one ``?``, so engines before 26.11.1 bound the first element, dropped the second
+without a word, and returned fewer rows than the caller meant (and bound null for a missing value). Since 26.11.1 the engine
+refuses a mismatched count itself (ArcadeData/arcadedb#10721); the bindings still refuse the form that cannot be right, more values
+than the statement can hold, before the call, with a TypeError that names the fix.
 
 The check is an upper bound (placeholder characters counted anywhere in the text), so it never refuses a call that binds.
 """

@@ -283,12 +283,35 @@ class VectorIndex:
         """
         self._java_index = java_index
         self._database = database
-        # Resolved once per wrapper: the underlying LSM indexes and the
-        # PRODUCT-quantization readiness check are stable for the lifetime of
-        # this wrapper, but were previously re-derived on every search (several
-        # JPype crossings per query).
+        # Resolved once per wrapper: the underlying LSM indexes are stable for
+        # the lifetime of this wrapper, but were previously re-derived on every
+        # search (several JPype crossings per query). Reset when _check_live()
+        # swaps in a rebuilt Java index.
         self._lsm_indexes = None
-        self._pq_ready = False
+
+    def _check_live(self):
+        """Re-resolve the Java index by name when SQL ``REBUILD INDEX`` (or a drop) invalidated it.
+
+        ``REBUILD INDEX`` drops the Java index and builds a new object under the same
+        name. The old object answers searches and counters empty instead of raising,
+        so a wrapper held across a rebuild would return nothing without an error.
+        Costs one JPype crossing, ``isValid()`` on the cached object, per public call;
+        the lookup by name runs only when the object is no longer valid.
+
+        Raises:
+            ArcadeDBError: the index no longer exists in the schema.
+        """
+        if self._java_index.isValid():
+            return
+        name = str(self._java_index.getName())
+        try:
+            fresh = self._database._java_db.getSchema().getIndexByName(name)
+        except Exception as e:
+            raise ArcadeDBError(
+                f"Vector index '{name}' no longer exists: it was dropped"
+            ) from e
+        self._java_index = fresh
+        self._lsm_indexes = None
 
     def _iter_lsm_indexes(self):
         if self._lsm_indexes is None:
@@ -312,35 +335,6 @@ class VectorIndex:
         for index in self._iter_lsm_indexes():
             return index
         return None
-
-    def _ensure_product_quantization_ready(self):
-        # Once the check confirms enough vectors it stays valid (indexed vectors
-        # only accumulate), so don't repeat the metadata/countEntries crossings
-        # on every search. An empty PRODUCT bucket is inconclusive (data may
-        # arrive later), so it does not memoize.
-        if self._pq_ready:
-            return
-        all_confirmed = True
-        for index in self._iter_lsm_indexes():
-            meta = index.getMetadata()
-            if str(meta.quantizationType) != "PRODUCT":
-                continue
-
-            vector_count = int(index.countEntries())
-            pq_clusters = int(meta.pqClusters)
-
-            if 0 < vector_count < pq_clusters:
-                raise ArcadeDBError(
-                    "PRODUCT quantization in this ArcadeDB version requires at least "
-                    "pq_clusters indexed vectors per bucket before graph build. "
-                    f"Current bucket has {vector_count} vector(s) but "
-                    f"pq_clusters={pq_clusters}. "
-                    "Use a smaller pq_clusters value, insert more vectors, "
-                    "or use INT8/BINARY/NONE."
-                )
-            if vector_count == 0:
-                all_confirmed = False
-        self._pq_ready = all_confirmed
 
     def _normalize_ef_search(self, ef_search):
         if ef_search is None:
@@ -572,6 +566,7 @@ class VectorIndex:
         allowed_rids,
         approximate,
         ef_search=None,
+        include_vector=True,  # accepted for API parity, the JVM build loads whole records
     ):
         java_vector = to_java_float_array(query_vector)
         allowed_rids_set = self._build_allowed_rids_set(allowed_rids)
@@ -590,6 +585,8 @@ class VectorIndex:
         k=10,
         ef_search=None,
         allowed_rids=None,
+        *,
+        include_vector=True,
     ):
         """
         Find k nearest neighbors to the query vector.
@@ -598,32 +595,56 @@ class VectorIndex:
         ``vectorNeighbors``: the walk scores on the in-memory PQ codes and the best
         ``k * rerankOversample`` candidates are re-ranked on the stored vectors, so
         the distances returned are exact and the ranking can differ from an exact
-        walk's. Every other quantization takes the exact walk. For the per-query
-        ``rerank`` option, use ``vectorNeighbors`` in SQL.
+        walk's. A ``BINARY`` index (ArcadeDB 26.11.1 and later) scores on its one-bit
+        codes and re-ranks ``k * rerankOversample`` candidates the same way. The
+        other quantizations take the exact walk. For the per-query ``rerank``
+        option, use ``vectorNeighbors`` in SQL.
 
         Args:
-            query_vector: Query vector as Python list, NumPy array, or array-like
+            query_vector: Query vector as Python list, NumPy array, or array-like (on the
+                native build it crosses as one float32 buffer in any of these forms)
             k: Number of nearest neighbors to return (final k). Default is 10.
             ef_search: Optional search beam width override for exact graph search. None
                 uses the Java index default/adaptive behavior.
             allowed_rids: Optional list of RID strings (e.g. ["#1:0", "#2:5"]) to
                 restrict search
+            include_vector: Keyword only, default ``True``: every hit carries its
+                indexed vector, as always. Pass ``False`` when you need only the
+                ids or the distances (or other properties) of the hits. On the
+                native build each hit is then built without the indexed vector, and
+                loads it, with the rest of the record, in one lookup by RID the
+                first time you read it (``get`` of the vector, ``has_property``,
+                ``to_dict``, ``get_property_names``, ``modify``, ``save``); the
+                values are those of ``lookup_by_rid``, and a hit deleted since the
+                search raises ``ArcadeDBError`` on that first read. The JVM build
+                accepts the argument and ignores it: it loads whole records either
+                way, so the call costs the same.
 
         Returns:
             List of tuples: [(record, score), ...]
             - record: The matching ArcadeDB record (Vertex, Document, or Edge)
             - score: The similarity score/distance
         """
+        self._check_live()
+        return self._find_nearest_live(
+            query_vector, k, ef_search, allowed_rids, include_vector
+        )
+
+    def _find_nearest_live(
+        self, query_vector, k, ef_search, allowed_rids, include_vector=True
+    ):
+        # find_nearest after _check_live(): find_nearest_by_key checks once and
+        # comes here, so a call never pays the isValid() crossing twice.
         effective_ef_search = self._normalize_ef_search(ef_search)
 
         try:
-            self._ensure_product_quantization_ready()
             return self._run_search(
                 query_vector=query_vector,
                 k=k,
                 allowed_rids=allowed_rids,
                 approximate=False,
                 ef_search=effective_ef_search,
+                include_vector=include_vector,
             )
 
         except ArcadeDBError:
@@ -638,6 +659,7 @@ class VectorIndex:
         Returns:
             int: Number of items currently indexed
         """
+        self._check_live()
         try:
             # Both TypeIndex and LSMVectorIndex support countEntries()
             return self._java_index.countEntries()
@@ -654,6 +676,7 @@ class VectorIndex:
             ``rerank_oversample`` and ``fused_pq`` are present when the engine has
             them (ArcadeDB 26.11.1 or later).
         """
+        self._check_live()
         try:
             index = self._get_primary_lsm_index()
             meta = self._get_primary_metadata()
@@ -715,6 +738,7 @@ class VectorIndex:
             >>> stats["vectorCacheHits"], stats["vectorCacheMisses"]
             (10399017, 1840948)
         """
+        self._check_live()
         try:
             raw = self._get_primary_lsm_index().getStats()
         except Exception as e:
@@ -760,13 +784,9 @@ class VectorIndex:
         Returns:
             List of tuples: [(record, score), ...]
         """
+        self._check_live()
         query_vector = self._lookup_query_vector_by_key(key)
-        return self.find_nearest(
-            query_vector,
-            k=k,
-            ef_search=ef_search,
-            allowed_rids=allowed_rids,
-        )
+        return self._find_nearest_live(query_vector, k, ef_search, allowed_rids)
 
     def find_nearest_approximate(
         self,
@@ -790,14 +810,13 @@ class VectorIndex:
         Returns:
             List of tuples: [(record, score), ...]
         """
+        self._check_live()
         try:
-            quantization = self.get_quantization()
+            quantization = self._get_quantization_live()
             if quantization != "PRODUCT":
                 raise ArcadeDBError(
                     "Approximate search requires quantization=PRODUCT (PQ)"
                 )
-
-            self._ensure_product_quantization_ready()
 
             return self._run_search(
                 query_vector=query_vector,
@@ -818,6 +837,10 @@ class VectorIndex:
         Returns:
             str: "NONE", "INT8", "BINARY", or "PRODUCT"
         """
+        self._check_live()
+        return self._get_quantization_live()
+
+    def _get_quantization_live(self):
         try:
             idx_to_check = self._get_primary_lsm_index()
 
@@ -848,6 +871,7 @@ class VectorIndex:
             ArcadeDBError: the index cannot be warmed, including on an engine
                 older than 26.10.1, which has no ``warmUp()``.
         """
+        self._check_live()
         try:
             warmed_any = False
             for index in self._iter_lsm_indexes():
@@ -868,9 +892,8 @@ class VectorIndex:
         Useful after bulk inserts/updates to avoid waiting for a search-triggered lazy
         build. For TypeIndex wrappers, rebuilds all underlying LSMVectorIndex instances.
         """
+        self._check_live()
         try:
-            self._ensure_product_quantization_ready()
-
             built_any = False
             for index in self._iter_lsm_indexes():
                 index.buildVectorGraphNow()

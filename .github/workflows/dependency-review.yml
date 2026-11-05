@@ -1,0 +1,32 @@
+# Fails a pull request that adds a dependency with a known vulnerability or a forbidden licence
+# (adapted from the "Dependency Review" job of ArcadeData/arcadedb's studio-security-audit.yml).
+# The policy lives in .github/dependency-review-config.yml. It reads the repository's dependency
+# graph, so "Dependency graph" must be on in the repository settings (the default for a public
+# repository). It sees pyproject.toml and the workflow files; the jars inside the wheels come from
+# the arcadedb image and are not in the graph.
+name: Dependency review
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  dependency-review:
+    name: Dependency review
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Review the dependency changes
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          config-file: ./.github/dependency-review-config.yml

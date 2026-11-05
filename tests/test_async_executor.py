@@ -1,10 +1,8 @@
 """Tests for AsyncExecutor with SQL/Cypher-first usage."""
 
 import shutil
-import tempfile
 import threading
 import time
-from pathlib import Path
 
 import pytest
 
@@ -15,7 +13,24 @@ import arcadedb
 LOSS_REPRO_ROWS = 9_742
 
 
-def test_async_executor_sql_command_insert_is_exact_at_parallel_one():
+def _wait_until_idle(async_exec, timeout=30.0):
+    """Wait, with a deadline, for ``is_processing()`` to turn False.
+
+    ``wait_completion()`` returns once every task queued before the call has run. It does
+    not promise that the executor is quiet at that instant: from engine 26.11.1-SNAPSHOT
+    (ArcadeData/arcadedb#11191) a worker still flags itself as executing for a moment after
+    the last marker has released the waiter, so ``is_processing()`` asked right after the
+    return can answer True once, with nothing left to run (ArcadeData/arcadedb-python#210).
+    Asserting "idle now" straight after ``wait_completion()`` therefore races; this waits
+    for the documented condition instead.
+    """
+    deadline = time.monotonic() + timeout
+    while async_exec.is_processing():
+        assert time.monotonic() < deadline, "the executor never went idle"
+        time.sleep(0.001)
+
+
+def test_async_executor_sql_command_insert_is_exact_at_parallel_one(tmp_path):
     """Every command submitted at parallel level 1 becomes a row.
 
     This used to run at parallel level 4 and assert `count > 0`, which is the
@@ -23,7 +38,7 @@ def test_async_executor_sql_command_insert_is_exact_at_parallel_one():
     executor stored a quarter of what it was given (before 26.10.1, fixed in
     #7625) and `count > 0` still passed.
     """
-    db_path = Path(tempfile.mkdtemp()) / "test_async_sql_insert"
+    db_path = tmp_path / "test_async_sql_insert"
 
     try:
         db = arcadedb.create_database(str(db_path))
@@ -200,6 +215,7 @@ def test_async_executor_pending_and_processing_flags(temp_db):
         release.set()
 
     async_exec.wait_completion()
+    _wait_until_idle(async_exec)
     assert not async_exec.is_pending()
     assert not async_exec.is_processing()
     assert db.count_type("Msg") == 1
@@ -268,6 +284,7 @@ def test_async_executor_is_pending_true_while_queued(temp_db):
     ]
 
     async_exec.wait_completion()
+    _wait_until_idle(async_exec)
     assert async_exec.is_pending() is False
 
     async_exec.close()
@@ -437,6 +454,7 @@ def test_async_executor_wait_completion_zero_returns_when_idle(temp_db):
     async_exec = temp_db.async_executor()
     try:
         async_exec.wait_completion()
+        _wait_until_idle(async_exec)
 
         assert async_exec.wait_completion(0) is None
     finally:
@@ -537,6 +555,7 @@ def test_wait_completion_commits_everything_queued_including_the_tail(temp_db):
         ex.create_record(doc, callback=callbacks.append)
 
     ex.wait_completion()
+    _wait_until_idle(ex)
 
     assert not ex.is_pending()
     assert not ex.is_processing()

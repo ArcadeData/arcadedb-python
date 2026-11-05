@@ -67,6 +67,7 @@ import org.graalvm.nativeimage.c.function.CEntryPoint;
 import org.graalvm.nativeimage.c.function.CFunctionPointer;
 import org.graalvm.nativeimage.c.function.InvokeCFunctionPointer;
 import org.graalvm.nativeimage.c.type.CCharPointer;
+import org.graalvm.nativeimage.c.type.CFloatPointer;
 import org.graalvm.nativeimage.c.type.CTypeConversion;
 import org.graalvm.word.Pointer;
 import org.graalvm.word.WordFactory;
@@ -315,8 +316,9 @@ public final class NativeExtras {
   }
 
   /**
-   * ops: metadata {type, prop} | approximate {type, prop, vector, k, allowed}. The index is the one the type has on the property; its bucket
-   * indexes are searched in turn (the caller merges). metadata describes the first bucket index, as the JPype wrapper does.
+   * ops: metadata {type, prop} | approximate {type, prop, vector, k, allowed} | build {type, prop}. The index is the one the type has on the
+   * property; its bucket indexes are searched in turn (the caller merges). metadata describes the first bucket index, as the JPype wrapper does.
+   * build rebuilds the graph of every bucket index now (buildVectorGraphNow), as the JPype wrapper's build_graph_now() does (#162).
    */
   @CEntryPoint(name = "arcadedb_n_vindex")
   @SuppressWarnings("unchecked")
@@ -383,6 +385,10 @@ public final class NativeExtras {
         }
         sb.append(']');
       }
+      case "build" -> {
+        for (final LSMVectorIndex lsm : parts)
+          lsm.buildVectorGraphNow();
+      }
       default -> throw new IllegalArgumentException("unknown vector index op " + ArcadeNative.str(op));
       }
       return ArcadeNative.out(sb.append('}').toString());
@@ -441,8 +447,23 @@ public final class NativeExtras {
    * new_edges {src:[..], type, dst:[..], props:[..]|null}; flush; close; stats.
    */
   @CEntryPoint(name = "arcadedb_n_gb")
-  @SuppressWarnings("unchecked")
   public static CCharPointer gb(final IsolateThread thread, final long h, final CCharPointer op, final CCharPointer argsJson) {
+    return gbImpl(h, op, argsJson, 0L, 0);
+  }
+
+  /**
+   * Same as arcadedb_n_gb plus a float32 side buffer (pointer + count of floats) that values {"\u0001":["B",offset,count]} in argsJson read
+   * from, as arcadedb_n_exec_bin does: a float[] property of create_vertices rows or new_edges props, with no number text.
+   */
+  @CEntryPoint(name = "arcadedb_n_gb_bin")
+  public static CCharPointer gbBin(final IsolateThread thread, final long h, final CCharPointer op, final CCharPointer argsJson,
+      final CFloatPointer buf, final long bufFloats) {
+    return gbImpl(h, op, argsJson, buf.rawValue(), bufFloats);
+  }
+
+  @SuppressWarnings("unchecked")
+  private static CCharPointer gbImpl(final long h, final CCharPointer op, final CCharPointer argsJson, final long buf,
+      final long bufFloats) {
     try {
       final BatchEntry entry = BATCHES.get(h);
       if (entry == null)
@@ -455,9 +476,9 @@ public final class NativeExtras {
       if (chars.n == 0)
         a = new HashMap<>();
       else if (opName.equals("create_vertices"))
-        a = Json.object(chars.b, chars.n, "rows", row -> flats.add(varargs(row)));
+        a = Json.object(chars.b, chars.n, "rows", row -> flats.add(varargs(row)), buf, bufFloats);
       else
-        a = (Map<String, Object>) Json.parse(chars.b, chars.n, 0L, 0);
+        a = (Map<String, Object>) Json.parse(chars.b, chars.n, buf, bufFloats);
       switch (opName) {
       case "create_vertex" -> {
         final MutableVertex v = batch.createVertex((String) a.get("type"), varargs(a.get("props")));
@@ -569,8 +590,67 @@ public final class NativeExtras {
    * cb, err} | on_ok {cb} | on_error {cb} | append_samples {type, ts, cols} | insert_parallel {type, rows} | failures {fid}.
    */
   @CEntryPoint(name = "arcadedb_n_async")
-  @SuppressWarnings("unchecked")
   public static CCharPointer async(final IsolateThread thread, final long dbh, final CCharPointer op, final CCharPointer argsJson) {
+    return asyncImpl(dbh, op, argsJson, 0L, 0);
+  }
+
+  /**
+   * Same as arcadedb_n_async plus an address table (pointer and count of longs, TS_SLOTS per slot: data address, element count) that the
+   * append_samples arguments point into, as arcadedb_n_insert_colp reads its columns: "ts" and every entry of "cols" is either a JSON array
+   * of values, as for arcadedb_n_async, or the kind of a column in the table, "q" (int64) or "d" (float64), slot 0 being the timestamps and
+   * slot 1 + i the column i. "n" is the number of samples. The caller keeps every buffer alive and unchanged until the call returns.
+   */
+  @CEntryPoint(name = "arcadedb_n_async_bin")
+  public static CCharPointer asyncBin(final IsolateThread thread, final long dbh, final CCharPointer op, final CCharPointer argsJson,
+      final CCharPointer table, final int nTable) {
+    return asyncImpl(dbh, op, argsJson, table.rawValue(), nTable);
+  }
+
+  /** Longs per slot of the address table of arcadedb_n_async_bin: the data address and the element count. */
+  private static final int TS_SLOTS = 2;
+
+  /** The data address of a table slot, checked to hold n elements of the kind: "q" for the timestamps, "q" or "d" for a column. */
+  private static long sampleAddress(final long table, final int nTable, final int slot, final Object kind, final long n, final boolean timestamps) {
+    final String what = timestamps ? "the timestamps" : "column " + (slot - 1);
+    if (!"q".equals(kind) && (timestamps || !"d".equals(kind)))
+      throw new IllegalArgumentException(what + " has the unknown kind " + kind);
+    if (n < 0 || n > Integer.MAX_VALUE)
+      throw new IllegalArgumentException("sample count out of range: " + n);
+    if (table == 0 || nTable < TS_SLOTS * (slot + 1))
+      throw new IllegalArgumentException(what + " is not in the address table of " + nTable + " entries");
+    final Pointer t = WordFactory.pointer(table);
+    final long address = t.readLong(WordFactory.signed(8L * TS_SLOTS * slot));
+    final long count = t.readLong(WordFactory.signed(8L * (TS_SLOTS * slot + 1)));
+    if (count != n || (n > 0 && address == 0))
+      throw new IllegalArgumentException(what + " has " + count + " values in the address table, " + n + " samples");
+    return address;
+  }
+
+  /** A column of the table as the boxed values the text path gives: a Long for "q", a Double for "d" (a NaN is the canonical NaN of the text). */
+  private static Object[] sampleColumn(final long address, final boolean doubles, final int n) {
+    final Pointer p = WordFactory.pointer(address);
+    final Object[] values = new Object[n];
+    for (int i = 0; i < n; i++) {
+      final long bits = p.readLong(WordFactory.signed(8L * i));
+      if (doubles) {
+        final double d = Double.longBitsToDouble(bits);
+        values[i] = d != d ? Double.NaN : d;
+      } else
+        values[i] = bits;
+    }
+    return values;
+  }
+
+  private static long[] sampleLongs(final long address, final int n) {
+    final Pointer p = WordFactory.pointer(address);
+    final long[] values = new long[n];
+    for (int i = 0; i < n; i++)
+      values[i] = p.readLong(WordFactory.signed(8L * i));
+    return values;
+  }
+
+  @SuppressWarnings("unchecked")
+  private static CCharPointer asyncImpl(final long dbh, final CCharPointer op, final CCharPointer argsJson, final long table, final int nTable) {
     try {
       final DatabaseInternal db = (DatabaseInternal) ArcadeNative.db(dbh);
       final DatabaseAsyncExecutor ex = db.async();
@@ -721,14 +801,26 @@ public final class NativeExtras {
               event("scan_error", "\"rid\":\"" + rid + "\"," + errorBody(t))));
       }
       case "append_samples" -> {
-        final List<Object> ts = (List<Object>) a.get("ts");
-        final long[] stamps = new long[ts.size()];
-        for (int i = 0; i < stamps.length; i++)
-          stamps[i] = ((Number) ts.get(i)).longValue();
+        final Object tsArg = a.get("ts");
+        final long n = a.get("n") instanceof Number num ? num.longValue() : -1L;
+        final long[] stamps;
+        if (tsArg instanceof String kind)
+          stamps = sampleLongs(sampleAddress(table, nTable, 0, kind, n, true), (int) n);
+        else {
+          final List<Object> ts = (List<Object>) tsArg;
+          stamps = new long[ts.size()];
+          for (int i = 0; i < stamps.length; i++)
+            stamps[i] = ((Number) ts.get(i)).longValue();
+        }
         final List<Object> cols = (List<Object>) a.get("cols");
         final Object[][] columns = new Object[cols.size()][];
-        for (int i = 0; i < columns.length; i++)
-          columns[i] = ((List<Object>) cols.get(i)).toArray();
+        for (int i = 0; i < columns.length; i++) {
+          final Object col = cols.get(i);
+          if (col instanceof String kind)
+            columns[i] = sampleColumn(sampleAddress(table, nTable, i + 1, kind, n, false), "d".equals(kind), (int) n);
+          else
+            columns[i] = ((List<Object>) col).toArray();
+        }
         ex.appendSamples((String) a.get("type"), stamps, columns);
       }
       case "insert_parallel" -> {

@@ -1,5 +1,5 @@
 = Bulk loads and commit size
-:description: The default commit size of insert_many, graph_batch and create_vertices on the arcadedb (native) and arcadedb-jvm packages, what it means for a failed load, what to do after an interrupted graph batch, how to change it, and a known limitation: a graph batch does not reuse the space of deleted edges.
+:description: The default commit size of insert_many, graph_batch and create_vertices on the arcadedb (native) and arcadedb-jvm packages, what it means for a failed load, what to do after an interrupted graph batch, how to change it, how insert_many treats Python's cyclic garbage collector on arcadedb-jvm, which property shapes a graph batch loads in bulk on the JVM build, how to pass time-series columns to append_samples on arcadedb (native), and a known limitation: a graph batch does not reuse the space of deleted edges.
 
 `insert_many`, `graph_batch` and `GraphBatch.create_vertices` load data in transactions. The commit size is the number of rows in one transaction. It decides how much work the engine holds in memory before it commits, and how many rows stay in the database when a load fails.
 
@@ -51,6 +51,12 @@ The in-flight transaction is the data that each young garbage collection must co
 
 Rows that are already committed stay committed when a later chunk fails. Only the transaction that was open is rolled back. With a smaller commit size, a failed load keeps its rows up to the last commit, and that commit is now at most 1000 rows behind the failure instead of 10,000. If you need all-or-nothing, open your own transaction, or pass `commit_every=0`.
 
+Because the two packages have different defaults, the same program can keep different rows after the same failure: each keeps its rows up to its own last commit. If the outcome of a failed load must not depend on the package, pass the same `commit_every` on both, or `commit_every=0`.
+
+== Values the bulk path carries
+
+On both packages, `insert_many` keeps rows with `datetime`, `date`, `Decimal`, `bytes`, numpy scalar, or pandas `NA` and `NaT` values on the bulk path. On the `arcadedb` (native) package, a row with a value the bulk text cannot carry (NaN or infinity, an integer beyond 64 bits, a date-time or `Decimal` inside a list or dict, or a `datetime.time`) goes in with its own statement, in the order given.
+
 == Change the commit size
 
 [source,python]
@@ -65,13 +71,69 @@ with db.graph_batch(commit_every=5000) as batch:  # also sets the create_vertice
     ...
 ----
 
-== Known limitation: graph batches next to deletes
+== The cyclic garbage collector during `insert_many` (`arcadedb-jvm`)
 
-WARNING: *A graph batch does not reuse the space of deleted edges.* The engine writes the edge records of each `graph_batch()` flush onto new pages and never looks at the free space that deletes left on older pages. The edge bucket gains one 64 KiB page per flush and never shrinks, while the live data stays flat. Both packages are affected. The engine issue is https://github.com/ArcadeData/arcadedb/issues/10746[ArcadeData/arcadedb#10746].
+On `arcadedb-jvm`, `insert_many` pauses Python's cyclic garbage collector for the length of a call when `rows` is a list or a tuple, and puts it back as it was when the call ends, also when the call raises. The call allocates many objects that the collector tracks. Without the pause, the collector goes through your whole row list again and again during the load, which makes the load slower. The call itself creates no reference cycles from a list or a tuple of plain rows. A laptop A/B on the `arcadedb-jvm` wheel measured the pause with `ab.py --noise` (500,000 dict rows in slices of 100,000, ABBA order, 12 clean pairs for each figure, clean A/A control). Against the default, the call took 0.860 of the time [0.819, 0.903] (95 % interval of the median pair ratio), the whole load 0.876 [0.861, 0.923], and the peak RSS 0.976 [0.924, 1.057], which is no detectable change.
 
-A one-off bulk load is not affected. The workloads that are affected call `graph_batch()` again and again on a type that also sees deletes, for example a sliding window that adds a small batch and deletes the oldest one.
+A generator or any other lazy input is not paused. Your own code runs between the chunks that the generator yields, and that code can create reference cycles that only the collector frees. If your generator builds plain dicts, you can call `gc.disable()` around the load yourself.
 
-The measurement ran a sliding window of 60 rounds for 240 seconds on each package. Each round wrote 30 vertices and about 90 edges and deleted the oldest round with `DELETE FROM Node`, so the live edge count stayed flat. The delete order does not matter: deleting the edges before the vertices gave the same growth.
+`gc.disable()` is process-wide. While a call with a list runs, other Python threads do not collect cyclic garbage automatically. When calls from several threads overlap, the pause does not last for the whole of each call: the collector comes back when the call that paused it ends. The collector is never left disabled by a call, and a collector that you disabled yourself stays disabled.
+
+The `arcadedb` (native) package does not change the collector. In our measurements, no collection ran inside a native `insert_many` call, so there is nothing to pause.
+
+== Property shapes in a graph batch (`arcadedb-jvm`)
+
+On the `arcadedb-jvm` package, `GraphBatch.create_vertices` and `GraphBatch.new_edges` load these property values through the bulk path (the same tagged JSON text as `insert_many`): a list, a tuple, a dict, a `datetime`, a `date`, a `Decimal` and `bytes` (also `bytearray`). A value is stored as the one-by-one path stores it. A list or tuple of only `int` and `float` keeps the older path, which crosses it as one `double[]`.
+
+A value that the text cannot carry sends work to the older path on its own: a `NaN`, an integer beyond 64 bits, a `datetime` inside a list or a dict, or a dict key that is not a `str`. `create_vertices` falls back for the chunk of at most 100,000 rows that holds the value, and `new_edges` for the whole call. A value of another type (a `set`, a numpy or pandas value, a subclass of the types above) also takes the older path. Nothing is lost on a fallback, and the data is the same. Only the speed changes.
+
+The table is one laptop study of the `arcadedb-jvm` package: per-row time of this build against the build before it, 20,000 vertices and 20,000 edges for each shape in chunks of 5,000, one property on every row. Each cell is the median of the pair ratios (below 1 means faster) with its 95 % interval, from 11 to 12 clean ABBA pairs for each figure of `ab.py --noise`, with a clean A/A control. The `arcadedb` (native) package does not change.
+
+[cols="3,2,2"]
+|===
+| Property shape | `create_vertices` | `new_edges`
+
+| List of strings
+| 0.403 (0.378 to 0.420)
+| 0.409 (0.389 to 0.420)
+
+| Dict
+| 0.265 (0.243 to 0.286)
+| 0.278 (0.269 to 0.298)
+
+| Datetime
+| 0.515 (0.503 to 0.550)
+| 0.482 (0.469 to 0.518)
+
+| List of floats (keeps the old path)
+| 1.024 (0.963 to 1.109)
+| 1.010 (0.979 to 1.027)
+
+|===
+
+== Time-series samples with `append_samples` (`arcadedb`, native)
+
+`db.async_executor().append_samples(type_name, timestamps, *columns)` loads a columnar batch into a TIMESERIES type: the timestamps, then one column for each tag and field in the order of the type's declaration. Call `wait_completion()` before you read the samples back. How to declare the type is in the main ArcadeDB docs: see {arcadedb-docs-url}/concepts/timeseries[Time series].
+
+On the `arcadedb` (native) package, a NumPy column crosses to the engine by its address, with no JSON text, when it is one of these:
+
+* The timestamps: a one-dimensional, non-empty integer or bool array (`int64` is the plain case), or a `datetime64[ns]` array without `NaT`.
+* A numeric column: a one-dimensional, non-empty array of any integer or bool kind, or of a float kind up to `float64` (`float32` widens to `float64` without a change of value). A `uint64` array, as timestamps or as a column, crosses only if its largest value fits in `int64`.
+* Each column must have as many values as there are timestamps.
+
+Everything else keeps the text path, which stores the same values and only takes longer: a list or a tuple, a subclass of `ndarray`, a two-dimensional or empty array, a float array as the timestamps, a `datetime64` array of another unit or with `NaT`, a `long double` array, and a string or tag column. A call can mix both: the numeric columns cross by address and the tag column goes as text. To get the fast path, build the timestamps and the numeric columns as NumPy arrays with these dtypes and pass the arrays as they are, without `.tolist()`. An array that is not already contiguous `int64` or `float64` is converted first, which copies it in NumPy.
+
+The measurement is a laptop A/B on the `arcadedb` (native) wheel, one fresh process per run, Python 3.12 and NumPy 2.5.4. The workload loaded 2,000,000 points of 100 hosts in chunks of 100,000: an `int64` timestamp array, one list of host names (the tag), and three `float64` arrays, with one `wait_completion()` at the end. The figure is the whole ingest time in seconds, including that wait, as the ratio of the build with this change to the build without it (below 1 means faster): 0.370 (95% interval 0.362 to 0.390, median of 11 clean paired runs). A document insert in the same runs, which does not use this path, took 1.020 (95% interval 1.016 to 1.022) of the time on the build with this change. The figure holds for this shape: your gain depends on how many numeric columns a call carries and how large the chunks are.
+
+`ARCADEDB_NATIVE_TS_BIN=0` in the environment turns the address path off and returns to the text path. A native library that is older than this change falls back to the text path by itself.
+
+== Graph batches next to deletes (fixed in ArcadeDB 26.11.1)
+
+NOTE: *Fixed in ArcadeDB 26.11.1.* Before 26.11.1, a graph batch did not reuse the space of deleted edges (https://github.com/ArcadeData/arcadedb/issues/10746[ArcadeData/arcadedb#10746]). The engine wrote the edge records of each `graph_batch()` flush onto new pages and never looked at the free space that deletes left on older pages, so the edge bucket gained one 64 KiB page per flush while the live data stayed flat. From 26.11.1 (https://github.com/ArcadeData/arcadedb/pull/10836[ArcadeData/arcadedb#10836]) each edge goes where an ordinary insert would put it while an existing page has room, and only the rest of a flush goes onto new pages, so a large import stays as fast as before. The 26.11.1 packages ship this fix. The `26.11.1.devN` pre-releases embed engine 26.10.2 and still show the growth described below.
+
+On engine 26.10.2, a one-off bulk load is not affected. The workloads that are affected call `graph_batch()` again and again on a type that also sees deletes, for example a sliding window that adds a small batch and deletes the oldest one.
+
+The measurement below ran on engine 26.10.2: a sliding window of 60 rounds for 240 seconds on each package. Each round wrote 30 vertices and about 90 edges and deleted the oldest round with `DELETE FROM Node`, so the live edge count stayed flat. The delete order does not matter: deleting the edges before the vertices gave the same growth.
 
 [cols="3,2,2,2"]
 |===
@@ -100,7 +162,9 @@ The measurement ran a sliding window of 60 rounds for 240 seconds on each packag
 
 An engine-level Java run of the same shape confirms the split: after 2,000 rounds the batch had 2,000 edge pages (125.0 MiB), and `newEdge` in an ordinary transaction had 4 (0.3 MiB). The cost is disk space: in the same runs a scan of the edge type and a two-hop query did not slow down while the bucket grew.
 
-If your workload deletes and inserts again, write the edges with SQL (`CREATE EDGE`) or with `Vertex.new_edge` inside `db.transaction()`. Both stayed flat in the measurement (0.25 MiB in the table). Keep `graph_batch()` for loads that add data and do not delete from the same type.
+The engine-level Java run, repeated on the merge of the fix, kept the batch's edge bucket at 4 pages after 2,000 rounds, the same as `newEdge` in ordinary transactions, against 2,000 pages on its parent (https://github.com/ArcadeData/arcadedb/issues/10746#issuecomment-6462354150[verification on #10746]).
+
+On a `26.11.1.devN` pre-release, if your workload deletes and inserts again, write the edges with SQL (`CREATE EDGE`) or with `Vertex.new_edge` inside `db.transaction()`. Both stayed flat in the measurement (0.25 MiB in the table). From 26.11.1 on, `graph_batch()` is fine for this workload too.
 
 == If a graph batch is interrupted
 
@@ -110,7 +174,7 @@ This section is about a `graph_batch()` load that stops before `close()` returns
 
 * The vertices and edge records that a returned call committed are there. A load that is killed loses the work after the last commit and nothing before it.
 * The edges are not traversable. The engine writes the edge records first and links them to their vertices (the head pointers and the incoming lists) in `close()`. Until `close()` has run, `outE()`, `inE()`, `out()` and `MATCH` find none of them, but `SELECT count(*) FROM E` counts them. In the example: 70,000 edge records, 0 reachable.
-* `CHECK DATABASE` reports each of these edges as an `ORPHAN RECORD` and counts them in `unreachableEdgeRecords`. It also uses the words "was not connected from", "is not referenced back by" and "missing from that vertex's OUT/IN list" for the same state. Read the statement in the xref:arcadedb::reference/sql/sql-database-admin.adoc#sql-check-database[`CHECK DATABASE` reference]; this page does not repeat it.
+* `CHECK DATABASE` reports each of these edges as an `ORPHAN RECORD` and counts them in `unreachableEdgeRecords`. It also uses the words "was not connected from", "is not referenced back by" and "missing from that vertex's OUT/IN list" for the same state. Read the statement in the {arcadedb-docs-url}/reference/sql/sql-database-admin#sql-check-database[`CHECK DATABASE` reference]; this page does not repeat it.
 
 === Recovery that works
 

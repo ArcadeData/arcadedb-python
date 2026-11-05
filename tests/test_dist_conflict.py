@@ -1,6 +1,6 @@
 """The `arcadedb` (native) and `arcadedb-jvm` (JVM) distributions both import as `arcadedb`.
 
-pip overwrites one with the other without a message, so each build refuses to import when the metadata of
+The installer overwrites one with the other without a message, so each build refuses to import when the metadata of
 the other distribution is installed. `arcadedb.__backend__` says which build is running. These tests need no
 engine and no JVM.
 """
@@ -48,7 +48,7 @@ def test_the_other_distribution_installed_refuses_the_import(backend, own, other
     text = str(info.value)
     # names both packages, how to fix it, and where to read more
     assert f"'{own}'" in text and f"'{other}'" in text
-    assert "pip uninstall arcadedb arcadedb-jvm" in text
+    assert "uv remove arcadedb arcadedb-jvm" in text
     assert "which-package" in text
 
 
@@ -115,7 +115,7 @@ def test_import_fails_when_the_other_distribution_is_installed_too(tmp_path):
     result = import_arcadedb(site)
     assert result.returncode != 0
     assert "DistributionConflictError" in result.stderr
-    assert "pip uninstall arcadedb arcadedb-jvm" in result.stderr
+    assert "uv remove arcadedb arcadedb-jvm" in result.stderr
     assert "'arcadedb'" in result.stderr and "'arcadedb-jvm'" in result.stderr
 
 
@@ -124,4 +124,4 @@ def test_import_is_silent_when_only_this_distribution_is_installed(tmp_path):
     fake_dist_info(site, _dist_conflict.DISTRIBUTIONS[own_backend()], "26.11.1")
     result = import_arcadedb(site)
     assert result.returncode == 0, result.stderr
-    assert "pip uninstall" not in result.stderr
+    assert "uv remove" not in result.stderr

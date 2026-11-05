@@ -4,6 +4,7 @@ ArcadeDB Python Bindings - Core Database Classes
 Database and DatabaseFactory classes for embedded database access.
 """
 
+import gc
 import itertools
 from collections.abc import Mapping
 from datetime import date
@@ -326,7 +327,15 @@ class Database:
         converted_args = []
         for arg in args:
             if _np is not None and isinstance(arg, _np.ndarray):
-                converted_args.append(to_java_float_array(arg))
+                if arg.dtype.kind == "f":
+                    # a float array is a query vector: one float[]
+                    converted_args.append(to_java_float_array(arg))
+                else:
+                    # an integer or bool array keeps its kind: it binds as the list
+                    # it holds (ints as Long, bools as Boolean), what a Python list
+                    # and the native build bind. Forced through float[] it arrived
+                    # as floats, and an int64 past 2**24 lost digits.
+                    converted_args.append(convert_python_to_java(arg))
             elif isinstance(arg, (Mapping, list, tuple, set, bytes, bytearray)):
                 # A collection AMONG multiple args is a single collection-typed
                 # parameter (e.g. a query vector). Plain Python collections
@@ -554,6 +563,16 @@ class Database:
         The pair is what _end_transactions_opened_since needs to tell the levels a
         begin() pushed from the ones the caller already held.
         """
+        calls = _db_calls()
+        if calls is not None:
+            # both numbers in ONE crossing: this runs before every begin() of
+            # ``with db.transaction()`` and of run_in_transaction
+            self._check_not_closed()
+            try:
+                packed = int(calls.stackMark(self._java_db))
+            except Exception as e:
+                raise ArcadeDBError(f"Failed to check transaction status: {e}") from e
+            return bool(packed & 1), packed >> 1
         return self.is_transaction_active(), self._java_db.getNestedTransactions()
 
     def _end_transactions_opened_since(self, mark):
@@ -711,6 +730,17 @@ class Database:
         property to float. A vector that is ragged, missing or null in a row
         stays in the JSON.
 
+        When ``rows`` is a list or a tuple, Python's cyclic garbage collector
+        is paused for the duration of the call and put back as it was when the
+        call ends, on success and on an exception alike. The call allocates
+        many objects the collector tracks, and without the pause it re-traverses
+        the caller's whole row list again and again, which costs a measurable
+        part of the load time on this build (see the bulk-loads docs page). A
+        generator or any other lazy iterable is not paused, because user code
+        that runs between the chunks can create reference cycles that only the
+        collector frees. ``gc.disable()`` is process wide, so other threads do
+        not collect automatically while a call with a list runs.
+
         Args:
             type_name: Target type (must exist): a document type gets
                 documents, a vertex type gets vertices (use ``graph_batch()``
@@ -753,6 +783,29 @@ class Database:
                 call waits for them before raising.
         """
         self._check_not_closed()
+        if not isinstance(rows, (list, tuple)):
+            # A lazy input runs user code between chunks that may create
+            # reference cycles, so the collector keeps running.
+            return self._insert_many_nogc(
+                type_name, rows, commit_every=commit_every, parallel=parallel
+            )
+        # A sized input: no user code runs between the library's chunk reads, so
+        # the cyclic collector is paused for the call (the caller's live row list
+        # is not re-traversed while the call allocates) and the previous state is
+        # restored in finally: re-enabled only if it was enabled on entry.
+        # Measured in ArcadeData/arcadedb-python#235 (A/B: python-gc-ingest-ab).
+        gc_was_enabled = gc.isenabled()
+        gc.disable()
+        try:
+            return self._insert_many_nogc(
+                type_name, rows, commit_every=commit_every, parallel=parallel
+            )
+        finally:
+            if gc_was_enabled:
+                gc.enable()
+
+    def _insert_many_nogc(self, type_name, rows, commit_every=10_000, parallel=False):
+        """The body of insert_many, without the pause of the cyclic collector."""
         # Rows are read from the iterable one chunk at a time and each chunk
         # crosses as its own JSON text, so the memory a load holds is bounded
         # by the chunk, not by the input. Reading the whole input into a list
@@ -1402,17 +1455,30 @@ class Database:
         try:
             # Converted like every other parameter: a datetime or a date key
             # matched no Java type at all, and a numpy bool was read as a number.
-            keys_array = _string_array(keys)
-            values_array = _object_array([convert_python_to_java(v) for v in values])
-
             calls = _db_calls()
             if calls is not None:
-                # lookup, hasNext(), next(), and getRecord() in ONE crossing
-                java_record = calls.lookupFirst(
-                    self._java_db, type_name, keys_array, values_array
-                )
+                # lookup, hasNext(), next(), and getRecord() in ONE crossing, and no
+                # Java array built on this side: the names and values cross as scalars
+                # or as the varargs of one call
+                if len(keys) == 1 and len(values) == 1:
+                    java_record = calls.lookupFirstKey(
+                        self._java_db,
+                        type_name,
+                        keys[0],
+                        convert_python_to_java(values[0]),
+                    )
+                else:
+                    java_record = calls.lookupFirstKeys(
+                        self._java_db,
+                        type_name,
+                        len(keys),
+                        *keys,
+                        *[convert_python_to_java(v) for v in values],
+                    )
                 return None if java_record is None else Document.wrap(java_record, self)
 
+            keys_array = _string_array(keys)
+            values_array = _object_array([convert_python_to_java(v) for v in values])
             cursor = self._java_db.lookupByKey(type_name, keys_array, values_array)
 
             # Return first result wrapped, or None
@@ -1522,10 +1588,12 @@ class Database:
                 Options: "INT8", "BINARY", "PRODUCT" (PQ).
                 Reduces memory usage and speeds up search at the cost of some precision.
                 "PRODUCT" enables PQ data for approximate search (zero-disk-I/O path).
-                In current ArcadeDB engine builds, PRODUCT also requires enough indexed
-                vectors per bucket for PQ training; for tiny corpora, set `pq_clusters`
-                explicitly to a small value or prefer INT8/BINARY/NONE.
-                PRODUCT is not recommended; see ArcadeDB #10514.
+                A bucket with fewer vectors than `pq_clusters` has too few points to
+                train a codebook: the engine skips PQ for that bucket and searches it
+                exactly, so approximate search returns exact neighbours there.
+                With PRODUCT, every graph rebuild retrains the codebook and re-encodes
+                every vector (ArcadeDB #10847); measure recall and rebuild time on
+                your data before choosing it.
             encoding: Optional storage encoding for the underlying vector property.
                 Use "INT8" when the document property stores pre-quantized bytes in a
                 `BINARY` property. When using INT8 encoding, set quantization to "NONE"
@@ -1545,15 +1613,20 @@ class Database:
                 below the corpus makes the build re-read vectors from the
                 documents. Set an absolute count only to bound a build on a
                 deliberately small heap.
-            mutations_before_rebuild: Per-index override for mutations threshold
-                before triggering a graph rebuild (maps to Java metadata key
-                "mutationsBeforeRebuild"; uses GlobalConfiguration default if None).
-                Typical ranges: 100–300 for freshness-heavy workloads; 300–800 for
-                write-heavy workloads and larger graphs.
+            mutations_before_rebuild: Floor of the rebuild threshold (maps to Java
+                metadata key "mutationsBeforeRebuild"; the engine default, 100, if
+                None). The graph is rebuilt after max(this, min(graph size x
+                arcadedb.vectorIndex.rebuildGraphRatio, arcadedb.vectorIndex.
+                maxPendingMutations)) changes (defaults 0.2 and 50000), so any
+                value below the ratio term has no effect: at 100000 vectors the
+                threshold is 20000 whether this is 100 or 800. Raise it above that
+                term to rebuild less often. To rebuild sooner, lower
+                rebuildGraphRatio, a database-scope setting (db.command("sql",
+                "ALTER DATABASE `arcadedb.vectorIndex.rebuildGraphRatio` 0.05")); with the ratio at 0
+                the threshold is exactly this value.
             pq_subspaces: Number of PQ subspaces (M). Requires quantization="PRODUCT".
             pq_clusters: Clusters per subspace (K). Requires quantization="PRODUCT".
-                In current ArcadeDB engine builds, this should not exceed the
-                number of indexed vectors available for PQ training in a bucket.
+                A bucket with fewer vectors than this is searched exactly, without PQ.
             pq_center_globally: Whether to globally center vectors before PQ.
                 Requires quantization="PRODUCT".
             pq_training_limit: Max vectors to use for PQ training. Requires
@@ -1563,8 +1636,10 @@ class Database:
                 walking on the PQ codes scores again on the stored vectors
                 (maps to the index setting "rerankOversample"; the engine default
                 is 10, 0 returns the PQ scores alone, negative is refused).
-                Requires quantization="PRODUCT". A query can override it with the
-                `rerank` option of `vectorNeighbors`.
+                Requires quantization="PRODUCT", or "BINARY" (ArcadeDB 26.11.1 and
+                later: the search scores the one-bit codes and reranks
+                k * rerank_oversample candidates; at least one per neighbour). A
+                query can override it with the `rerank` option of `vectorNeighbors`.
             fused_pq: Whether the graph file stores the PQ codes of every node's
                 neighbours inline (jvector FusedPQ; maps to the index setting
                 "fusedPQ"; off by default). Requires quantization="PRODUCT".
@@ -1607,6 +1682,7 @@ class Database:
         try:
             import jpype
 
+            quantization_kind = quantization.upper() if quantization else ""
             if any(
                 val is not None
                 for val in (
@@ -1614,12 +1690,20 @@ class Database:
                     pq_clusters,
                     pq_center_globally,
                     pq_training_limit,
-                    rerank_oversample,
                     fused_pq,
                 )
             ):
-                if not quantization or quantization.upper() != "PRODUCT":
+                if quantization_kind != "PRODUCT":
                     raise ValueError("PQ parameters require quantization='PRODUCT'")
+            # The engine reranks on the stored vectors for PRODUCT and, from 26.11.1
+            # (ArcadeData/arcadedb#10968), BINARY; every other quantization ignores it.
+            if rerank_oversample is not None and quantization_kind not in (
+                "PRODUCT",
+                "BINARY",
+            ):
+                raise ValueError(
+                    "rerank_oversample requires quantization='PRODUCT' or 'BINARY'"
+                )
 
             java_schema = self.schema._java_schema
 
@@ -2072,13 +2156,13 @@ class Database:
         and 40,000 edges with and without ``parallel_flush``.
 
         Note:
-            ``graph_batch()`` is recommended for bulk loads. When it is called again and
-            again on types that also see deletes (a sliding window, for example), each
-            flush writes its edge records onto new pages and never reuses the space
-            that deletes freed, so the edge bucket grows (ArcadeData/arcadedb#10746).
-            For that workload write the edges with SQL ``CREATE EDGE``, or
-            ``Vertex.new_edge`` inside ``db.transaction()``. See "Known limitation:
-            graph batches next to deletes" in
+            ``graph_batch()`` is recommended for bulk loads. Before ArcadeDB 26.11.1, calling
+            it again and again on types that also see deletes (a sliding window, for
+            example) grew the edge bucket by one page per flush, because each flush wrote
+            its edge records onto new pages (ArcadeData/arcadedb#10746, fixed in #10836).
+            The ``26.11.1.devN`` pre-releases embed engine 26.10.2 and still show it; on
+            those, write the edges with SQL ``CREATE EDGE``, or ``Vertex.new_edge`` inside
+            ``db.transaction()``. See "Graph batches next to deletes" in
             docs/modules/ROOT/pages/how-to/bulk-loads.adoc.
 
         Args:
@@ -2439,8 +2523,10 @@ class DatabaseFactory:
             read_only: Open in ``ComponentFile.MODE.READ_ONLY``. Reads, queries
                 and scans work; every write and schema change raises
                 ``ArcadeDBError``. ``begin()`` does not raise: the first write
-                does, and so does the commit. Use it to inspect a database that
-                must not change, such as a backup restored for audit.
+                does. From ArcadeDB 26.11.1 a read-only transaction commits or
+                rolls back without error; engines before that raise the
+                read-only error on ``commit()``. Use it to inspect a database
+                that must not change, such as a backup restored for audit.
         """
         try:
             if read_only:
@@ -2490,8 +2576,10 @@ def open_database(
         path: Database path
         jvm_kwargs: Optional JVM args passed to start_jvm()
             Example: {"heap_size": "8g"}
-        read_only: Open the database read-only. Writes, schema changes and
-            transactions raise ``ArcadeDBError``.
+        read_only: Open the database read-only. Writes and schema changes raise
+            ``ArcadeDBError``. ``begin()`` does not raise, and from ArcadeDB
+            26.11.1 a read-only transaction commits or rolls back without
+            error (writes inside it still raise).
 
     Example:
         >>> db = arcadedb.open_database("./mydb", read_only=True)

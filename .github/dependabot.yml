@@ -6,7 +6,8 @@ version: 2
 # the cooldown and still open the moment an advisory lands.
 updates:
   # pyproject.toml is the package definition (`[tool.uv] managed = false`, no
-  # uv.lock), so it is tracked as a pip project rather than a uv one.
+  # uv.lock), so it is tracked as a pip project rather than a uv one: Dependabot's `uv` ecosystem reads a uv.lock
+  # that this repo does not have. `pip` here is only the Dependabot ecosystem name; nothing in CI runs pip.
   #
   # The lower bounds in pyproject.toml are the oldest versions this package
   # supports, not the newest it was tested with. The "Dependency floor audit"

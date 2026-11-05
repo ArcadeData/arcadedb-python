@@ -22,6 +22,7 @@ on:
       - "native/**"
       - ".github/workflows/test-native.yml"
       - ".github/workflows/release-native.yml"
+      - "scripts/native_examples_skip.txt"
   pull_request:
     # ready_for_review: draft PRs skip the platform matrices (see the job conditions),
     # so marking one ready is what starts them.
@@ -37,6 +38,7 @@ on:
       - "native/**"
       - ".github/workflows/test-native.yml"
       - ".github/workflows/release-native.yml"
+      - "scripts/native_examples_skip.txt"
 
   # A new upstream snapshot is published as arcadedata/arcadedb:latest without
   # any change here, so build and test against it every night as well. The tag
@@ -102,7 +104,9 @@ env:
   EXAMPLES: ${{ inputs.examples || '0[1-9]_*.py 1[0-9]_*.py 2[0-9]_*.py' }}
 
 # Note: Example 21 runs in CI at reduced scale; its arguments and 15-minute
-# limit are set in the per-example case in the "Run all examples" step below.
+# limit are set in the per-example case in scripts/run_examples.sh, which the
+# "Download datasets" and "Run all examples" steps call. test-native.yml calls
+# the same script on the native wheel.
 
 permissions:
   contents: read
@@ -233,16 +237,11 @@ jobs:
           # Retry transient network failures (a connection reset failed a whole examples job on #8897); the
           # script is downloaded first so a retried transfer is never piped half-written into sh.
           installer="$(mktemp)"
-          curl -LsSf --retry 5 --retry-all-errors --retry-delay 5 -o "$installer" https://astral.sh/uv/install.sh
+          curl -LsSf --retry 5 --retry-all-errors --retry-delay 5 -o "$installer" https://astral.sh/uv/0.12.0/install.sh
           sh "$installer"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           export PATH="$HOME/.local/bin:$PATH"
           uv --version
-
-      - name: Install Python build dependencies
-        shell: bash
-        run: |
-          uv pip install --system build wheel setuptools
 
       - name: Set UTF-8 encoding (Windows only)
         if: matrix.platform == 'windows/amd64' || matrix.platform == 'windows/arm64'
@@ -334,7 +333,7 @@ jobs:
           # Retry transient network failures (a connection reset failed a whole examples job on #8897); the
           # script is downloaded first so a retried transfer is never piped half-written into sh.
           installer="$(mktemp)"
-          curl -LsSf --retry 5 --retry-all-errors --retry-delay 5 -o "$installer" https://astral.sh/uv/install.sh
+          curl -LsSf --retry 5 --retry-all-errors --retry-delay 5 -o "$installer" https://astral.sh/uv/0.12.0/install.sh
           sh "$installer"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           export PATH="$HOME/.local/bin:$PATH"
@@ -349,29 +348,54 @@ jobs:
 
       # Note: Java is NOT required - arcadedb has bundled JRE!
 
-      - name: Install ArcadeDB Python bindings
+      # The wheel and the example dependencies live in a uv project of their own (examples-env/, not the repo's pyproject.toml,
+      # which is a package definition and not a uv project), synced with `uv sync`. Nothing is installed into the runner's Python.
+      # torch comes from the CPU-only PyTorch index (explicit: only torch is looked up there), which saves the CUDA download.
+      # PyTorch is required by sentence-transformers, even on macOS.
+      # numpy is not capped: the old macOS `numpy<2.0` was for Intel Macs, where PyTorch stops at 2.2 (built against
+      # NumPy 1.x). That leg (darwin/amd64) is disabled; re-enabling it needs the cap back for that platform only.
+      # On Apple Silicon the cap breaks pyarrow, which requires NumPy 2 (example 27).
+      - name: Install ArcadeDB Python bindings and example dependencies
         shell: bash
+        env:
+          PYVER: ${{ matrix.python-version }}
         run: |
-          uv pip install --system test-install/arcadedb_jvm-*.whl
+          wheels=(test-install/arcadedb_jvm-*.whl)
+          [ "${#wheels[@]}" -eq 1 ] || { echo "expected one wheel in test-install, found ${#wheels[@]}" >&2; exit 1; }
+          mkdir -p examples-env
+          cat > examples-env/pyproject.toml <<TOML
+          [project]
+          name = "examples-env"
+          version = "0"
+          requires-python = ">=3.11"
+          dependencies = [
+              "arcadedb-jvm",
+              "torch",
+              "numpy",
+              "requests",
+              "sentence-transformers",
+              "pandas",
+              "polars",
+              "pyarrow",
+              "tqdm",
+              "py7zr",
+              "lxml",
+          ]
 
-      - name: Install example dependencies
-        shell: bash
-        run: |
-          # Install dependencies needed by examples
-          # PyTorch is required by sentence-transformers, even on macOS
-          # For Python 3.13+, wheels might only be on PyTorch official index
-          if [[ "$OSTYPE" == "darwin"* ]]; then
-            # macOS: Install CPU-only PyTorch (supports MPS acceleration)
-            uv pip install --system torch --index-url https://download.pytorch.org/whl/cpu
-            # numpy is not capped: the old macOS `numpy<2.0` was for Intel Macs, where PyTorch stops at 2.2 (built against
-            # NumPy 1.x). That leg (darwin/amd64) is disabled; re-enabling it needs the cap back for that platform only.
-            # On Apple Silicon the cap breaks pyarrow, which requires NumPy 2 (example 27).
-            uv pip install --system numpy requests sentence-transformers pandas polars pyarrow
-          else
-            # Linux & Windows: Install CPU-only PyTorch to save space (avoid CUDA)
-            uv pip install --system torch --index-url https://download.pytorch.org/whl/cpu
-            uv pip install --system numpy requests sentence-transformers pandas polars pyarrow
-          fi
+          [tool.uv.sources]
+          arcadedb-jvm = { path = "../${wheels[0]}" }
+          torch = { index = "pytorch-cpu" }
+
+          [[tool.uv.index]]
+          name = "pytorch-cpu"
+          url = "https://download.pytorch.org/whl/cpu"
+          explicit = true
+          TOML
+          uv sync --project examples-env --python "$PYVER"
+          # The examples run with this interpreter directly, so a timeout kills the example itself and not a `uv run` wrapper.
+          ex_py="$(uv run --project examples-env --no-sync python -c 'import sys; print(sys.executable)')"
+          echo "EX_PY=$ex_py" >> "$GITHUB_ENV"
+          "$ex_py" -c "import arcadedb; print('arcadedb', arcadedb.__version__)"
 
       # Restored before the dataset step, which is what triggers the model
       # download. Keyed on the model name so bumping the model invalidates it.
@@ -394,9 +418,8 @@ jobs:
         shell: bash
         continue-on-error: true
         run: |
-          uv pip install --system sentence-transformers >/dev/null 2>&1 || true
           for attempt in 1 2 3; do
-            if python3 -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2'); print('model ready')"; then
+            if "$EX_PY" -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2'); print('model ready')"; then
               echo "✅ model cached on attempt $attempt"
               exit 0
             fi
@@ -408,76 +431,7 @@ jobs:
       - name: Download datasets
         shell: bash
         run: |
-          uv pip install --system tqdm py7zr lxml
-          cd examples
-
-          # Determine which examples are selected
-          examples=$(ls $EXAMPLES 2>/dev/null || true)
-
-          # EXIT 75 MEANS "THE DATASET HOST IS DOWN", NOT "THE BINDINGS BROKE".
-          #
-          # On 2026-08-29 the TLS certificate for files.grouplens.org expired and
-          # every job here went red on BOTH this fork and upstream's main -- 11
-          # and 12 jobs, every OS, Python 3.10 through 3.14 -- at this step,
-          # before a single example ran. Re-running does not help: a re-run
-          # happens now, and the certificate is still expired.
-          #
-          # The cost is not the lost coverage, it is that upstream's main showed
-          # a failing run titled with a Python bindings PR. A third party letting
-          # a certificate lapse must not be indistinguishable from a regression
-          # we introduced.
-          #
-          # So: skip the examples that need the dataset, keep running the rest,
-          # and say plainly why. Any other non-zero exit is still a hard failure.
-          SKIPPED_DATASETS=""
-          fetch() {  # fetch <label> <download_data.py args...>
-            local label="$1"; shift
-            # rc MUST be captured in the else branch. After `if cmd; then ...; fi`
-            # with no else, the IF STATEMENT returns 0, so a `$?` read after `fi`
-            # is the if's status and not the command's -- which silently turned
-            # every failure into "exited 0" and would have made this skip
-            # everything, including real ones.
-            local rc=0
-            if python3 download_data.py "$@"; then
-              return 0
-            else
-              rc=$?
-            fi
-            if [ "$rc" -eq 75 ]; then
-              echo "::warning title=Dataset unavailable::$label host unreachable; skipping examples that need it"
-              SKIPPED_DATASETS="$SKIPPED_DATASETS $label"
-              return 0
-            fi
-            echo "::error title=Dataset download failed::$label exited $rc"
-            return "$rc"
-          }
-
-          if echo "$examples" | grep -qE '(^|[[:space:]])(04_csv_import_documents|05_csv_import_graph|06_vector_search_recommendations)\.py([[:space:]]|$)'; then
-            echo "📥 Downloading MovieLens Small dataset..."
-            fetch movielens-small movielens-small
-          fi
-
-          if echo "$examples" | grep -qE '(^|[[:space:]])(07_stackoverflow_tables_oltp|08_stackoverflow_tables_olap|09_stackoverflow_graph_oltp|10_stackoverflow_graph_olap|13_stackoverflow_hybrid_queries)\.py([[:space:]]|$)'; then
-            echo "📥 Downloading Stack Overflow Tiny dataset (no vectors)..."
-            fetch stackoverflow-tiny-novec stackoverflow-tiny --no-vectors
-          fi
-
-          if echo "$examples" | grep -qE '(^|[[:space:]])(11_vector_index_build|12_vector_search)\.py([[:space:]]|$)'; then
-            echo "📥 Downloading Stack Overflow Tiny dataset (with vectors)..."
-            fetch stackoverflow-tiny stackoverflow-tiny
-          fi
-
-          # HAND THE SKIP LIST TO THE NEXT STEP.
-          #
-          # Each step is its own shell, so SKIPPED_DATASETS dies here. Without
-          # this the download skips politely and the example loop then runs
-          # 04_csv_import_documents.py --dataset movielens-small against data
-          # that was never fetched -- the job still fails, just later and with a
-          # worse error. Caught in review on #6889.
-          echo "SKIPPED_DATASETS=$(echo $SKIPPED_DATASETS | xargs)" >> "$GITHUB_ENV"
-          if [ -n "$(echo $SKIPPED_DATASETS | xargs)" ]; then
-            echo "::notice title=Datasets unavailable::skipping examples that need:$SKIPPED_DATASETS"
-          fi
+          bash scripts/run_examples.sh datasets
 
       - name: Install timeout command (macOS only)
         if: matrix.platform == 'darwin/amd64' || matrix.platform == 'darwin/arm64'
@@ -497,283 +451,7 @@ jobs:
         id: run_examples
         shell: bash
         run: |
-          cd examples
-
-          echo "🚀 Running Python Examples..."
-          echo ""
-
-          # Initialize counters
-          total=0
-          passed=0
-          failed=0
-          skipped=0
-
-          # Create results file
-          results_file="example-results.txt"
-          > $results_file
-
-          # Select example files by pattern(s) in EXAMPLES (space-separated globs)
-          examples=$(ls $EXAMPLES 2>/dev/null | sort)
-
-          if [ -z "$examples" ]; then
-            echo "❌ No example files found!"
-            exit 1
-          fi
-
-          # Detect timeout command (macOS uses gtimeout, Linux uses timeout)
-          if command -v gtimeout &> /dev/null; then
-            TIMEOUT_CMD="gtimeout"
-          else
-            TIMEOUT_CMD="timeout"
-          fi
-
-          # WHICH EXAMPLES NEED WHICH DATASET. Same grouping the download step
-          # uses to decide what to fetch, kept in the same file so the two
-          # cannot drift into disagreeing about what a dataset is for.
-          needs_dataset() {  # <example.py> -> prints the label, or nothing
-            case "$1" in
-              04_csv_import_documents.py|05_csv_import_graph.py|06_vector_search_recommendations.py)
-                echo "movielens-small" ;;
-              07_stackoverflow_tables_oltp.py|08_stackoverflow_tables_olap.py|09_stackoverflow_graph_oltp.py|10_stackoverflow_graph_olap.py|13_stackoverflow_hybrid_queries.py)
-                echo "stackoverflow-tiny-novec" ;;
-              11_vector_index_build.py|12_vector_search.py)
-                echo "stackoverflow-tiny" ;;
-            esac
-          }
-
-          # Run each example
-          for example in $examples; do
-            total=$((total + 1))
-
-            # Skip, do not fail, when the dataset host was unreachable. Counted
-            # as skipped and named, so a reader can tell "not run" from "passed".
-            need=$(needs_dataset "$(basename "$example")")
-            if [ -n "$need" ] && echo " ${SKIPPED_DATASETS:-} " | grep -q " $need "; then
-              echo "SKIP $example - dataset '$need' unavailable (third-party host)"
-              skipped=$((skipped + 1))
-              continue
-            fi
-
-            # Set example-specific parameters and timeout
-            case "$example" in
-              "21_graph_analytical_view_sql.py")
-                example_args="--base-cities 1200 --stale-growth-cities 300 --sync-growth-cities 200 --regions 12 --batch-size 300 --sample-limit 5"
-                example_name="$example (reduced scale for CI)"
-                timeout_duration=900  # 15 minutes
-                example_jvm_args=""
-                ;;
-              "22_numpy_bulk_io.py")
-                example_args="--rows 50000 --points 100000 --vectors 5000"
-                example_name="$example (reduced scale for CI)"
-                timeout_duration=600  # 10 minutes
-                example_jvm_args=""
-                ;;
-              "04_csv_import_documents.py")
-                example_args="--dataset movielens-small --export"
-                example_name="$example (movielens-small dataset with export)"
-                timeout_duration=900  # 15 minutes
-                example_jvm_args="-Xmx8g -Xms8g"
-                ;;
-              "05_csv_import_graph.py")
-                example_args="--dataset movielens-small --method sql --import-jsonl ./exports/movielens_small_db.jsonl.tgz --export"
-                example_name="$example (movielens-small dataset, embedded sql method, import/export)"
-                timeout_duration=900  # 15 minutes
-                example_jvm_args=""
-                ;;
-              "06_vector_search_recommendations.py")
-                example_args="--import-jsonl ./exports/movielens_graph_small_db.jsonl.tgz"
-                example_name="$example (vector search, import from JSONL)"
-                timeout_duration=900  # 15 minutes
-                example_jvm_args=""
-                ;;
-              "07_stackoverflow_tables_oltp.py")
-                example_args="--dataset stackoverflow-tiny --db arcadedb_sql --threads 1 --transactions 1000 --batch-size 500 --mem-limit 2g --run-label ci07"
-                example_name="$example (stackoverflow-tiny, arcadedb_sql, minimal oltp)"
-                timeout_duration=900
-                example_jvm_args=""
-                ;;
-              "08_stackoverflow_tables_olap.py")
-                example_args="--dataset stackoverflow-tiny --db arcadedb_sql --threads 1 --batch-size 500 --query-runs 1 --query-order fixed --mem-limit 2g --run-label ci08"
-                example_name="$example (stackoverflow-tiny, arcadedb_sql, minimal olap)"
-                timeout_duration=900
-                example_jvm_args=""
-                ;;
-              "09_stackoverflow_graph_oltp.py")
-                example_args="--dataset stackoverflow-tiny --db arcadedb_cypher --threads 1 --transactions 1000 --batch-size 500 --mem-limit 2g --run-label ci09"
-                example_name="$example (stackoverflow-tiny graph oltp, arcadedb cypher, minimal)"
-                timeout_duration=900
-                example_jvm_args=""
-                ;;
-              "10_stackoverflow_graph_olap.py")
-                example_args="--dataset stackoverflow-tiny --db arcadedb_cypher --threads 1 --batch-size 500 --query-runs 1 --query-order fixed --mem-limit 2g --run-label ci10"
-                example_name="$example (stackoverflow-tiny graph olap, arcadedb cypher, minimal)"
-                timeout_duration=900
-                example_jvm_args=""
-                ;;
-              "11_vector_index_build.py")
-                example_args="--backend arcadedb_sql --dataset stackoverflow-tiny --threads 1 --mem-limit 2g --batch-size 500 --beam-width 100 --quantization NONE --run-label ci11_arcadedb_sql"
-                example_name="$example (vector build, arcadedb_sql backend, minimal)"
-                timeout_duration=1200
-                example_jvm_args=""
-                ;;
-              "12_vector_search.py")
-                db_path=$(find ./my_test_databases -maxdepth 1 -type d -name 'backend=arcadedb_sql_dataset=stackoverflow-tiny_*run=ci11_arcadedb_sql' | head -n 1)
-                if [ -z "$db_path" ]; then
-                  echo "❌ Missing build output for 12_vector_search.py. Ensure 11_vector_index_build.py ran first." | tee -a $results_file
-                  failed=$((failed + 1))
-                  echo ""
-                  continue
-                fi
-                example_args="--backend arcadedb_sql --dataset stackoverflow-tiny --db-path $db_path --ef-search-values 100 --k 10 --query-limit 100 --query-runs 1 --query-order fixed --threads 1 --mem-limit 2g --run-label ci12_arcadedb_sql"
-                example_name="$example (vector search, arcadedb_sql backend, minimal)"
-                timeout_duration=1200
-                example_jvm_args=""
-                ;;
-              "13_stackoverflow_hybrid_queries.py")
-                example_args="--dataset stackoverflow-tiny --batch-size 500 --encode-batch-size 64 --top-k 5 --candidate-limit 100 --min-reputation 100 --infer-sample-limit 5000 --run-label ci13"
-                example_name="$example (hybrid pipeline, tiny + minimal limits)"
-                timeout_duration=1800
-                example_jvm_args=""
-                ;;
-              "14_lifecycle_timing.py")
-                example_args="--runs 1 --table-records 2000 --graph-vertices 500 --vector-records 500 --vector-dimensions 32 --query-runs 10 --jvm-heap 4g"
-                example_name="$example (lifecycle benchmark, minimal)"
-                timeout_duration=900
-                example_jvm_args=""
-                ;;
-              "15_import_database_vs_transactional_table_ingest.py")
-                example_args="--rows-per-table 2000 --tables 2 --columns 6 --string-size 32 --batch-size 500 --async-parallel 1 --parallel 1 --heap-size 4g --work-dir ./my_test_databases/import_vs_txn_dummy_ci"
-                example_name="$example (table ingest benchmark, minimal)"
-                timeout_duration=1200
-                example_jvm_args=""
-                ;;
-              "16_import_database_vs_transactional_graph_ingest.py")
-                example_args="--vertices 2000 --edges 4000 --vertex-int-props 3 --vertex-str-props 2 --edge-int-props 1 --edge-str-props 1 --string-size 32 --batch-size 500 --async-parallel 1 --parallel 1 --heap-size 4g --work-dir ./my_test_databases/import_vs_txn_graph_ci"
-                example_name="$example (graph ingest benchmark, minimal)"
-                timeout_duration=1200
-                example_jvm_args=""
-                ;;
-              "17_timeseries_end_to_end.py")
-                example_args="--hours 2 --interval-minutes 10"
-                example_name="$example (time-series end-to-end, minimal)"
-                timeout_duration=900
-                example_jvm_args=""
-                ;;
-              "18_geo_predicates_wkt.py")
-                example_args=""
-                example_name="$example (geo predicates with WKT points and polygons)"
-                timeout_duration=900
-                example_jvm_args=""
-                ;;
-              "19_hash_index_exact_match.py")
-                example_args=""
-                example_name="$example (hash index exact-match workflow)"
-                timeout_duration=900
-                example_jvm_args=""
-                ;;
-              "20_graph_algorithms_route_planning.py")
-                example_args=""
-                example_name="$example (graph algorithms route planning workflow)"
-                timeout_duration=900
-                example_jvm_args=""
-                ;;
-              *)
-                example_args=""
-                example_name="$example"
-                timeout_duration=900  # 15 minutes default
-                example_jvm_args=""
-                ;;
-            esac
-
-            log_file="${example%.py}.log"
-
-            echo "----------------------------------------"
-            echo "📝 Running: $example_name"
-            echo "----------------------------------------"
-
-            # Run the example with appropriate parameters
-            if [ -n "$example_jvm_args" ]; then
-              if ARCADEDB_JVM_ARGS="$example_jvm_args" JAVA_TOOL_OPTIONS="" _JAVA_OPTIONS="" $TIMEOUT_CMD $timeout_duration python "$example" $example_args > "$log_file" 2>&1; then
-                exit_code=0
-              else
-                exit_code=$?
-              fi
-            else
-              if ARCADEDB_JVM_ARGS="" JAVA_TOOL_OPTIONS="" _JAVA_OPTIONS="" $TIMEOUT_CMD $timeout_duration python "$example" $example_args > "$log_file" 2>&1; then
-                exit_code=0
-              else
-                exit_code=$?
-              fi
-            fi
-            # ANSWERS, NOT ONLY A CLEAN EXIT (humemai/arcadedb-embedded-python#12). Example 10 once returned 0 rows for
-            # 5 of its 10 queries on every platform and passed. After a clean run, the
-            # same arguments on the pure-Python reference backend must give the same
-            # row count and hash for every query.
-            if [ $exit_code -eq 0 ] && [ "$example" = "10_stackoverflow_graph_olap.py" ]; then
-              ref_args="${example_args/--db arcadedb_cypher/--db python_memory}"
-              ref_args="${ref_args/--run-label ci10/--run-label ci10ref}"
-              ref_log="${example%.py}-reference.log"
-              if ! $TIMEOUT_CMD $timeout_duration python "$example" $ref_args > "$ref_log" 2>&1; then
-                echo "❌ reference run (python_memory) of $example failed; last 20 lines:"
-                tail -n 20 "$ref_log"
-                exit_code=1
-              elif ! python scripts/compare_query_hashes.py "$log_file" "$ref_log"; then
-                echo "❌ $example: answers differ from the python_memory reference (above)"
-                exit_code=1
-              fi
-            fi
-            if [ $exit_code -eq 0 ]; then
-              echo "✅ PASSED: $example_name" | tee -a $results_file
-              passed=$((passed + 1))
-            else
-              if [ $exit_code -eq 124 ]; then
-                echo "⏱️  TIMEOUT: $example_name (exceeded $((timeout_duration/60)) minutes)" | tee -a $results_file
-                failed=$((failed + 1))
-              else
-                echo "❌ FAILED: $example_name (exit code: $exit_code)" | tee -a $results_file
-                failed=$((failed + 1))
-              fi
-              # Show last 20 lines of error log
-              echo "Last 20 lines of output:"
-              tail -n 20 "$log_file"
-            fi
-            echo ""
-          done
-
-          # Print summary
-          echo "========================================"
-          echo "📊 EXAMPLE TEST SUMMARY"
-          echo "========================================"
-          echo "Total:   $total"
-          echo "Passed:  $passed ✅"
-          echo "Failed:  $failed ❌"
-          echo "Skipped: $skipped ⏭️"
-          echo "========================================"
-          echo ""
-
-          echo "Examples pattern(s): $EXAMPLES"
-
-          # Output to GitHub Actions
-          echo "total=$total" >> $GITHUB_OUTPUT
-          echo "passed=$passed" >> $GITHUB_OUTPUT
-          echo "failed=$failed" >> $GITHUB_OUTPUT
-          echo "skipped=$skipped" >> $GITHUB_OUTPUT
-
-          # Show detailed results
-          echo "Detailed Results:"
-          cat $results_file
-
-          # Save list of examples for summary (before the failure exit, so
-          # the summary is populated even when some examples fail)
-          echo "$examples" > examples-ran.txt
-
-          # Exit with error if any failed
-          if [ $failed -gt 0 ]; then
-            echo "❌ Some examples failed!"
-            exit 1
-          else
-            echo "✅ All examples passed!"
-          fi
+          bash scripts/run_examples.sh run
 
       - name: Generate test summary
         if: always()

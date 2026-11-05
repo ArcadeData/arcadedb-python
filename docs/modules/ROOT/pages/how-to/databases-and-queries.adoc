@@ -207,10 +207,10 @@ total: 2
 Bind values as parameters instead of pasting them into the statement text. Identifiers such as type and property names cannot be bound and belong in the text.
 
 * Positional: one `?` per value, from the extra arguments (`db.query("sql", q, "Alice", 25)`) or from one list or tuple (`db.query("sql", q, ["Alice", 25])`).
-* Named: `:name` in the statement and a dict as the one extra argument. A named parameter can hold a collection, as in `age IN :ages`.
+* Named: `:name` in the statement and a dict as the one extra argument. A dict is always the named map, never one positional value. A named parameter can hold a collection, as in `age IN :ages`.
 * `None` binds as null.
 
-A list or tuple on its own is the positional list, so it never binds as one parameter. `db.query("sql", "SELECT FROM V WHERE @rid IN ?", [rid_a, rid_b])` has two values for one `?`: the engine would bind `rid_a`, drop `rid_b` without a word and return one row where two were meant. The bindings raise `TypeError` before the statement runs when a SQL or SQLScript call has more positional values than the statement can bind, because the engine does not count them (https://github.com/ArcadeData/arcadedb/issues/10721[ArcadeData/arcadedb#10721]). To bind a list as one parameter, bind it by name or wrap it so it is the one positional value:
+A list or tuple on its own is the positional list, so it never binds as one parameter. `db.query("sql", "SELECT FROM V WHERE @rid IN ?", [rid_a, rid_b])` has two values for one `?`. The bindings raise `TypeError` before the statement runs when a SQL or SQLScript call has more positional values than the statement can bind, and since 26.11.1 the engine refuses a mismatched count too (https://github.com/ArcadeData/arcadedb/issues/10721[ArcadeData/arcadedb#10721]). Older engines bound `rid_a`, dropped `rid_b` without a word and returned one row where two were meant. To bind a list as one parameter, bind it by name or wrap it so it is the one positional value:
 
 [source,python]
 ----
@@ -218,7 +218,19 @@ db.query("sql", "SELECT FROM V WHERE @rid IN :ids", {"ids": [rid_a, rid_b]})
 db.query("sql", "SELECT FROM V WHERE @rid IN ?", [[rid_a, rid_b]])
 ----
 
-The check counts the `?`, `$` and `:` characters of the SQL text, so the count is an upper bound: a `?` inside a string literal counts as a placeholder, and a call that binds is never refused. Fewer values than placeholders are not checked, and the engine binds null for the missing ones. `db.query` and `db.command` run the check; the async executor does not.
+A dict on its own (also `[d]` and `(d,)`) is the named map, so it cannot fill a `?`. Engines before 26.11.1 bind a `?` (or a `:name`) that has no key in the map to null and do not fail: `db.command("sql", "INSERT INTO T SET v = ?", {"a": 1})` would store a record with no `v`. From 26.11.1 the engine refuses such a call and names the missing parameter (ArcadeData/arcadedb#11098: an `ArcadeDBError` caused by the engine's `CommandParameterMissingException`); a key whose value is `None` still binds null. The bindings raise `TypeError` before the statement runs when a SQL or SQLScript call passes a lone dict and the statement has a `?` and no `:name` or `$name` outside string literals. To fix the call, pass a list for a `?` (`[value]`), or write `:name` in the statement and pass `{"name": value}`. A dict that you mean as one value goes in a list together with another positional value, or is bound by name. A dict with a digit-string key (`{"0": value}`) binds positional slot 0 by key, as the engine does, and is not refused.
+
+The exact-count rule below is about positional values (a list, a tuple or separate arguments); it does not cover a dict.
+
+The bindings' check counts the `?`, `$` and `:` characters of the SQL text, so its count is an upper bound: a `?` inside a string literal counts as a placeholder, and a call that binds is never refused. The engine counts exactly: from 26.11.1 it also refuses fewer values than placeholders, with an error that names both counts (an `ArcadeDBError` wrapping the engine's `CommandSQLParsingException`), where older engines bound null for the missing ones. Pass `None` for a placeholder you mean as null. `db.query` and `db.command` run the bindings' check; the async executor does not, so there the engine's error reaches the error callback.
+
+==== A query vector
+
+A query vector for `vectorNeighbors` can be a numpy array or a list. This section is about statements: `VectorIndex.find_nearest` on the native package converts any numeric query to one `float32` buffer itself, see xref:how-to/vectors.adoc#find-nearest[find_nearest]. The conversion before the statement runs is the cost to watch: a query takes about 0.3 to 0.75 ms, and a vector of 1536 numbers took 0.5 to 0.6 ms to convert when it was a list.
+
+* A `float32` array crosses as one buffer on both builds: about 5 to 15 us. This is the fast path. `np.asarray(v, dtype=np.float32)` makes it from a list or from another array.
+* A list that holds only Python floats (no `int`, `bool`, `None`, `str` or numpy scalar) also crosses as one buffer. The statement reads the same list of doubles it always read: no value changes, and an `int` in a list stays an `int`. A list shorter than 32 numbers (JVM build) or 64 numbers (native build) is not worth a buffer and goes number by number. On the native build the list crosses as a buffer only when `float32` holds every number exactly, which is true of a list from a float32 model (`array.tolist()`); a list of other doubles, `NaN` or an infinity is sent as text, because a buffer would round it.
+* A `float64` array among the positional parameters (`?`) is a `float32` array to the engine on both builds, so its numbers are rounded to `float32` (a vector index stores `float32`). As a named parameter, inside `CONTENT :row` or as a property of a record you save, it keeps its doubles on both builds: `0.1` is stored as `0.1`. Such a value goes as text, so give a `float32` array when you want the buffer.
 
 === Results
 
@@ -226,10 +238,38 @@ The check counts the `?`, `$` and `:` characters of the SQL text, so the count i
 
 * `first()` returns the first row, or `None` when there is none, so `if db.query(...).first():` tests whether anything matched.
 * `to_list()` materialises the whole result as a list of dicts. Use it when you need the whole result in memory; iterate when you stop early or the result is large.
+* `iter_json_batches(batch_size=10_000)` yields the rows as lists of JSON-native dicts, `batch_size` rows per list (the last may be shorter), with the same values as `to_json_list()`. On the native build `batch_size` bounds memory: the result set holds one reply of the cursor (2048 rows) and one batch at a time, and reads the next reply only when the next batch is asked for, so a large result is never held whole. On the JVM build a batch is serialised on the Java side one at a time. `to_list()`, `to_json_list()`, `to_dataframe()`, `to_columns()`, `to_arrow()` and `to_polars()` still hold the whole result, because they return it whole.
++
+One laptop study on the native build, 1,000,000 rows read with `batch_size=10_000`, 10 clean pairs of this change against the previous behaviour; each figure is the ratio of the new value to the old one, so below 1 is lower. Peak RSS: 0.286 (95% interval 0.284 to 0.289). Time to the first batch: 0.010 (95% interval 0.009 to 0.010). Wall time of the whole read: 0.958 (95% interval 0.952 to 0.966). This is one machine and one result shape, not a speed promise.
+
+On the JVM build, `Document.to_dict()`, `Result.to_dict()` and `get_property_names()` cross into the JVM once per record or row, not once per property, and stepping through a result set takes one crossing per row, not two. The values and their Python types are the same as before. This was timed on the `{jvm-pkg-name}` package, built with the change and without it, one fresh process per run. The time is per record or row, in microseconds, and the table gives the ratio of the time with the change to the time without it (median over 12 clean pairs, 95% interval). Below 1 means less time.
+
+[cols="3,2"]
+|===
+| What was timed | Ratio with the change / without it
+
+| `to_dict()` of a `Document`, 1,000 records of 3 properties (`INTEGER`, `STRING`, `DOUBLE`)
+| 0.307 [0.303, 0.311]
+
+| `to_dict()` of a `Document`, 1,000 records of 12 properties
+| 0.133 [0.132, 0.135]
+
+| `[row.to_dict() for row in db.query(...)]`, 100 rows of 3 properties, the query start included
+| 0.657 [0.649, 0.664]
+
+| `[row.to_dict() for row in db.query(...)]`, 10,000 rows of 3 properties, the query start included
+| 0.474 [0.454, 0.480]
+|===
+
+The control times `json.dumps` of rows already fetched, which uses no query and no JPype call. Its ratios on the four workloads are 0.996, 0.987, 0.993 and 1.000, and the same build measured twice gave ratios whose intervals contain 1. The figures come from one Linux x86_64 laptop with two cores for the process, Python 3.12, the median of 21 timed passes per run, and builds alternated in both orders. They cover the JVM build and these four workloads only, not wider rows, other value types, `to_list()`, or the native build.
 
 === Record ids in rows
 
-A record id inside a row value (`SELECT @rid AS r`, a `LINK` property, a list of links such as `out('Knows').@rid`) comes back as an RID object, not as text. `str(rid)` is the text (`"#10:5"`), so is an f-string, and `get_rid()` always returns text or `None`. Two RIDs of the same record are equal and hash alike, so they work in sets and as dict keys, and RIDs sort by bucket, then position. `getBucketId()`, `getPosition()`, `toString()` and `isValid()` work on the object. It goes back in as a query parameter (`WHERE @rid = ?`, or a list passed by name) and to `db.lookup_by_rid()`, as itself or as its text.
+A record id inside a row value (`SELECT @rid AS r`, a `LINK` property, a list of links such as `out('Knows').@rid`) comes back as an RID object, not as text. `str(rid)` is the text (`"#10:5"`), so is an f-string, and `get_rid()` always returns text or `None`. Two RIDs of the same record are equal and hash alike, so they work in sets and as dict keys, and RIDs sort by bucket, then position. `getBucketId()`, `getPosition()`, `toString()` and `isValid()` work on the object. It goes back in as a query parameter (`WHERE @rid = ?`, or a list passed by name) and to `db.lookup_by_rid()`, as itself or as its text. `to_json_list()` is the exception: a record id in its rows is the text (`"#10:5"`), on both builds, and so is a map key that is not a string, because a JSON object has no other kind of key.
+
+On the native build the record wrappers send their record id to the engine as a parameter, not in the statement text. The engine keeps a parsed statement in a cache keyed by its text (`arcadedb.sqlStatementCache`, 300 entries by default) and leaves a record id written in a `FROM` target as part of that text, so each record would be a cache entry of its own. `get_out_edges()`, `get_in_edges()`, `get_both_edges()`, `new_edge()`, `Edge.get_in()`, `Edge.get_out()`, `save()` and `delete()` send the id as a parameter, so every record shares one text. `db.lookup_by_rid()` keeps the id in the statement text: measured, the parameter path was 2 % slower for a lookup, so it stays as it is.
+
+`Vertex.new_edge()` works on a vertex object that you read in an earlier transaction, on both builds. The first edge of a vertex rewrites its record, so an object read before that commit is out of date. The native build goes by record id. The JVM build looks up the current source vertex by its record id inside the active transaction and passes the target as its record id, so the engine loads that one too. The vertex object you hold is not refreshed: call `db.lookup_by_rid()` again to see its current properties.
 
 [source,python,subs="attributes+"]
 ----
@@ -247,13 +287,24 @@ Page a large type by `@rid` instead of `SKIP`: each page is `WHERE @rid > ? LIMI
 
 === SQLScript
 
-`db.command("sqlscript", script)` runs several statements in one call, and the result set holds the last executed statement, which is why the script above reports the `ALTER TYPE` statement. The script syntax is in the xref:arcadedb::reference/sql/sql-script.adoc[SQLScript reference].
+`db.command("sqlscript", script)` runs several statements in one call, and the result set holds the last executed statement, which is why the script above reports the `ALTER TYPE` statement. The script syntax is in the {arcadedb-docs-url}/reference/sql/sql-script[SQLScript reference].
 
 === openCypher
 
-The same two calls run openCypher: pass `"opencypher"` as the language. The script creates an edge with a `CREATE` pattern and reads it back with `MATCH`. The language is documented in the xref:arcadedb::reference/cypher/chapter.adoc[openCypher reference].
+The same two calls run openCypher: pass `"opencypher"` as the language. The script creates an edge with a `CREATE` pattern and reads it back with `MATCH`. The language is documented in the {arcadedb-docs-url}/reference/cypher/chapter[openCypher reference].
 
-NOTE: ArcadeDB SQL has no JOINs, so SQLAlchemy and other ORMs, and tools that generate `JOIN` queries, do not work with these two calls. Write the statements yourself, following links as in xref:arcadedb::reference/sql/sql-introduction.adoc#no-joins[No JOINs], or use openCypher for relationships.
+NOTE: ArcadeDB SQL has no JOINs, so SQLAlchemy and other ORMs, and tools that generate `JOIN` queries, do not work with these two calls. Write the statements yourself, following links as in {arcadedb-docs-url}/reference/sql/sql-introduction#no-joins[No JOINs], or use openCypher for relationships.
+
+== Database settings
+
+An engine setting of scope `DATABASE`, which includes every `arcadedb.vectorIndex.*` setting, is changed on one open database with SQL, which `db.command` runs like any other statement:
+
+[source,python]
+----
+db.command("sql", "ALTER DATABASE `arcadedb.vectorIndex.rebuildGraphRatio` 0.05")
+----
+
+The key is backquoted because it contains dots. The change applies to that database only. A setting of scope `SERVER` is refused there, with a message that names `SET SERVER SETTING`. For the vector settings, the index statistics show the value in force: `index.get_stats()["effectiveMutationsThreshold"]` is the number of changes after which the graph is rebuilt, computed from `mutations_before_rebuild`, `rebuildGraphRatio` and `maxPendingMutations` (see the `create_vector_index` docstring).
 
 == Next steps
 

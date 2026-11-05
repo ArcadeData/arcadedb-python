@@ -36,8 +36,10 @@ import json
 import os
 import sys
 
-# Temporarily limited to four platforms: macOS x86_64 (runner macos-15-intel) and Windows ARM64
-# (windows-11-arm) are off. This is the platform column both workflows had before this script.
+# Temporarily limited to four platforms: macOS x86_64 (runner macos-15-intel) is off. Windows ARM64 (runner
+# windows-11-arm exists) is off because neither package can be built there: jpype1 1.7.1 ships no win_arm64 wheel
+# (win_amd64 only) and GraalVM CE 25.4.4.1.1 has no Windows ARM64 build (windows-x64 only). This is the platform
+# column both workflows had before this script.
 RUNNERS = {
     "linux/amd64": "ubuntu-24.04",
     "linux/arm64": "ubuntu-24.04-arm",
@@ -85,7 +87,9 @@ def _legs(per_platform: dict[str, tuple[str, ...]]) -> list[dict[str, str]]:
 def select(workflow: str, event: str) -> dict[str, list[dict[str, str]]]:
     """The `strategy.matrix` of `workflow` ("jvm" or "examples") for `event`."""
     if workflow not in WORKFLOWS:
-        raise ValueError(f"unknown workflow {workflow!r}; use one of {sorted(WORKFLOWS)}")
+        raise ValueError(
+            f"unknown workflow {workflow!r}; use one of {sorted(WORKFLOWS)}"
+        )
     if workflow == "jvm":
         return {"include": _legs(JVM_LEGS)}
     if event == "pull_request":

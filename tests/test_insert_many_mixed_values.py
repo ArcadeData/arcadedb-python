@@ -21,9 +21,8 @@ np = pytest.importorskip("numpy")
 # The call counts below read Database.new_document, the per-row path of the JVM wheel (one JPype crossing per row). The native build has its
 # own per-row path (INSERT ... CONTENT) that never calls it, so only the stored values are compared there.
 JVM = arcadedb.__backend__ == "jvm"
-# pandas NA/NaT and numpy datetime64 are tagged by the JVM wheel's bulk path. The native build refuses them as parameters (TypeError;
-# BACKLOG-bindings.md N-04/J-05, native column): the two tests below assert that refusal there, which turns red the day native accepts them.
-# An xfail would count as an uncounted skip in the native parity gate (native/wheel/parity_wheel.py), so the refusal is asserted instead.
+# pandas NA/NaT and numpy datetime64 are tagged by the bulk path of both builds (the native build since ArcadeData/arcadedb-python#218; before that it
+# refused them as parameters with a TypeError, and these two tests asserted that refusal so that they would turn red the day native accepted them).
 
 UTC9 = dt.timezone(dt.timedelta(hours=9))
 
@@ -175,10 +174,6 @@ def test_pandas_na_and_nat_are_nulls_on_the_bulk_path(temp_db_path, new_document
     ]
     with arcadedb.create_database(temp_db_path) as db:
         _create(db, "Bulk", False)
-        if not JVM:
-            with pytest.raises(TypeError):
-                db.insert_many("Bulk", rows)
-            return
         db.insert_many("Bulk", rows)
         assert new_documents == []
         got = db.query("sql", "SELECT FROM Bulk ORDER BY id").to_list()
@@ -196,10 +191,6 @@ def test_a_numpy_datetime64_is_the_datetime_the_per_row_path_would_store(
     rows = [{"id": 0, "ts": np.datetime64("2026-05-06T07:08:09.123456")}]
     with arcadedb.create_database(temp_db_path) as db:
         _create(db, "Bulk", False)
-        if not JVM:
-            with pytest.raises(TypeError):
-                db.insert_many("Bulk", rows)
-            return
         db.insert_many("Bulk", rows)
         assert new_documents == []
         got = db.query("sql", "SELECT FROM Bulk").first()

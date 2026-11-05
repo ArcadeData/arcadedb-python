@@ -2,7 +2,7 @@
 # wheels and runs the parity suite against them; release-native.yml calls it on a version tag and publishes. The JVM build,
 # `arcadedb-jvm`, is test-jvm.yml / release-jvm.yml.
 #
-# A native image build takes about 1 to 2.5 hours per platform and the ArcadeData organisation shares a runner cap with
+# A native image build takes about 5 to 30 minutes per platform and the ArcadeData organisation shares a runner cap with
 # upstream ArcadeDB, so the load is selective (scripts/select_native_matrix.py holds the legs, tests/test_select_native_matrix.py pins them):
 #   pull request   only when a native path changed (the `paths` filter below); linux-x86_64, Python 3.12; not for a draft
 #   push to main   only when a native path changed; all four platforms, Python 3.12 and 3.14
@@ -16,9 +16,13 @@
 # needs jpype1 and ladybug, which have no cp315 wheel yet, so 3.15 runs without the test files that need jpype1) and into the free-threaded 3.14t, and runs a small subset of the tests there (about 20 s of tests per Python). It is informational: release-native.yml does not need it.
 # scripts/select_native_matrix.py decides its legs.
 #
+# The `examples` job runs every script of examples/ against the installed wheel of each platform (Python 3.12 and 3.14; a pull request: linux-x86_64, 3.12), through
+# scripts/run_examples.sh, the runner test-python-examples.yml uses too. scripts/native_examples_skip.txt lists, with a reason, the examples that need the JVM package.
+# `examples-summary` is the one check for all its legs. They do not decide what a release publishes (release-native.yml reads the markers and the wheels only).
+#
 # One wheel per platform, py3-none-<platform tag>:
 #   linux-x86_64   manylinux_2_28 container          manylinux_2_28_x86_64   libarcadedb.so + libjvector-x86_64.so
-#   linux-aarch64  manylinux_2_28 aarch64 container  manylinux_2_28_aarch64  libarcadedb.so
+#   linux-aarch64  manylinux_2_28 aarch64 container  manylinux_2_28_aarch64  libarcadedb.so + libjvector-aarch64.so
 #   macos-arm64    native, heap and threads capped   macosx_<minos>_arm64    libarcadedb.dylib
 #   windows-x64    native, MSVC environment loaded   win_amd64               libarcadedb.dll
 # Only free GitHub-hosted standard runners. GraalVM Community Edition only (pinned by sha256 per platform), never Oracle GraalVM.
@@ -41,6 +45,10 @@ on:
       - "tests/**"
       - "scripts/select_native_matrix.py"
       - "scripts/smoke_wheel.py"
+      - "scripts/run_examples.sh"
+      - "scripts/native_examples_skip.txt"
+      - "examples/**"
+      - "!examples/README.md"
       - "pyproject.toml"
       - "setup.py"
       - ".github/workflows/test-native.yml"
@@ -71,7 +79,7 @@ on:
       version:
         description: "Wheel version to build (PEP 440: A.B.C.devN, A.B.C or A.B.C.postN)"
         required: false
-        default: "26.11.1.dev0"
+        default: "26.12.1.dev0"
         type: string
       engine:
         description: "Engine release (Maven Central) the image links; empty = the release segment of a final version, else the newest release"
@@ -96,8 +104,8 @@ env:
   PYTHONUTF8: "1" # Windows defaults to cp1252; the notices contain non-ASCII author names
   # The version and engine of a run that does not pass them (pull request, push, nightly). The newest engine release on Maven Central is what an A.B.C.devN wheel links
   # (the A.B.C release does not exist yet); raise it when a newer release is out.
-  DEFAULT_VERSION: "26.11.1.dev0"
-  DEV_ENGINE: "26.10.2"
+  DEFAULT_VERSION: "26.12.1.dev0"
+  DEV_ENGINE: "26.11.1"
 
 jobs:
   plan:
@@ -114,6 +122,7 @@ jobs:
       build: ${{ steps.plan.outputs.build }}
       test: ${{ steps.plan.outputs.test }}
       pyver: ${{ steps.plan.outputs.pyver }}
+      examples: ${{ steps.plan.outputs.examples }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -154,7 +163,7 @@ jobs:
           event="$EVENT"
           if [ "$RELEASE" = true ]; then event=release; fi
           if [ "$EVENT" = "schedule" ]; then
-            changed="$(git log --since='25 hours ago' --format=%h -- src native tests scripts pyproject.toml .github/workflows/test-native.yml | wc -l)"
+            changed="$(git log --since='25 hours ago' --format=%h -- src native tests scripts examples pyproject.toml .github/workflows/test-native.yml | wc -l)"
             monday="$(date -u +%u)"
             if [ "$changed" = 0 ] && [ "$monday" != 1 ]; then
               run=false
@@ -357,7 +366,7 @@ jobs:
           mkdir -p "$T/record"
           uv run --no-project --python 3.12 python native/wheel/build_wheel.py --lib-dir "$T/lib" --version "$VERSION" --engine "$ENGINE" \
             --graalvm-home "$GRAALVM_HOME_P5" --m2-repo "$m2" \
-            --notices-out "$T/record/THIRD_PARTY_NOTICES.generated.md" --out "$T/wheel"
+            --notices-out "$T/record/THIRD_PARTY_NOTICES.generated.md" --modules-out "$T/record/jdk-modules.txt" --out "$T/wheel"
           ls -l "$T/wheel/dist"
           shopt -s nullglob
           wheels=("$T"/wheel/dist/*.whl)
@@ -394,12 +403,12 @@ jobs:
           MANYLINUX_IMAGE: ${{ matrix.container }}
         run: |
           set -euo pipefail
-          docker run --rm -v "$T/wheel/dist:/wheel:ro" -v "$GITHUB_WORKSPACE/scripts/smoke_wheel.py:/smoke_wheel.py:ro" "$MANYLINUX_IMAGE" bash -euo pipefail -c '
+          # The runner's uv is mounted into the container (a glibc 2.17 build); the image's own Python is used, never downloaded.
+          # --no-index: nothing but the wheel is installed.
+          docker run --rm -e UV_PYTHON_DOWNLOADS=never -v "$(command -v uv):/usr/local/bin/uv:ro" -v "$T/wheel/dist:/wheel:ro" -v "$GITHUB_WORKSPACE/scripts/smoke_wheel.py:/smoke_wheel.py:ro" "$MANYLINUX_IMAGE" bash -euo pipefail -c '
             ldd --version | sed -n 1p
-            /opt/python/cp312-cp312/bin/python -m venv /tmp/venv
-            /tmp/venv/bin/python -m pip install --no-index /wheel/*.whl
             cd /tmp
-            /tmp/venv/bin/python /smoke_wheel.py
+            uv run --no-project --no-index --python /opt/python/cp312-cp312/bin/python --with /wheel/*.whl python /smoke_wheel.py
           '
 
       - name: "Gate: the macOS library links system libraries only"
@@ -425,6 +434,18 @@ jobs:
           set -euo pipefail
           dll="$(ls "$T"/lib/libarcadedb.dll)"
           dumpbin //dependents "$dll" | tee "$T/dumpbin.txt"
+
+      - name: "Gate: a Linux wheel carries jvector's library for its architecture"
+        if: ${{ matrix.kind == 'linux' }}
+        env:
+          PLAT: ${{ matrix.plat_re }}
+        run: |
+          set -euo pipefail
+          w="$(ls "$T"/wheel/dist/*.whl)"
+          arch="${KEY#linux-}"   # linux-x86_64 -> x86_64, linux-aarch64 -> aarch64 (${PLAT##*_} gave "64" for x86_64)
+          unzip -Z1 "$w" | tee "$T/wheel-files.txt" > /dev/null
+          grep -Fx "arcadedb/_native/libarcadedb.so" "$T/wheel-files.txt"
+          grep -Fx "arcadedb/_native/libjvector-${arch}.so" "$T/wheel-files.txt"
 
       - name: "Gate: twine check"
         run: uvx twine check --strict "$T"/wheel/dist/*.whl
@@ -463,7 +484,7 @@ jobs:
           for f in auditwheel.txt dumpbin.txt; do
             if [ -f "$T/$f" ]; then cp "$T/$f" "$T/record/"; fi
           done
-          cp "$T/lib/sha256.txt" "$T/lib/build.done" "$T/record/" || true
+          cp "$T/lib/sha256.txt" "$T/lib/build.done" "$T/lib/used_classes.txt" "$T/record/" || true
           tail -n 400 "$T/lib/build.log" > "$T/record/build.log.tail" || true
           (cd "$T/dist-out" && if command -v sha256sum > /dev/null; then sha256sum ./*.whl; else shasum -a 256 ./*.whl; fi) | tee "$T/record/wheel.sha256" || true
 
@@ -597,6 +618,224 @@ jobs:
             ${{ runner.temp }}/parity/parity-wheel-xml/
           if-no-files-found: warn
           retention-days: 30
+
+  # The examples of examples/ against the INSTALLED native wheel, so the scripts a new user copies are run on what `uv add arcadedb` installs.
+  # Nothing is built here: the wheel is the one the build job uploaded (native-wheel-<key>), the file the parity job installs. The platforms are
+  # those of the parity job and the Pythons are 3.12 and 3.14 (scripts/select_native_matrix.py, `examples`). The runner is scripts/run_examples.sh, the
+  # same script test-python-examples.yml calls for the JVM package, so the arguments, timeouts, datasets and answer checks are the same.
+  # An example that needs the JVM package is listed with its reason in scripts/native_examples_skip.txt; the step prints that list.
+  # A failing example turns this job, and so the workflow, red. release-native.yml reads only the native-passed-* markers and the native-wheel-*
+  # wheels, so these legs do not decide what a release publishes.
+  examples:
+    name: Examples on the installed wheel (${{ matrix.key }}, Python ${{ matrix.python }})
+    needs: [plan, build]
+    # A platform whose build failed has no wheel to download and shows red here; the other platforms still run.
+    if: ${{ !cancelled() && needs.plan.outputs.run == 'true' }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 240
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.examples) }}
+    env:
+      KEY: ${{ matrix.key }}
+      PY: ${{ matrix.python }}
+      EXAMPLES: "0[1-9]_*.py 1[0-9]_*.py 2[0-9]_*.py"
+      EXAMPLES_SKIP_FILE: scripts/native_examples_skip.txt
+      # The Hugging Face cache inside the workspace, as in test-python-examples.yml: one path on every platform, cacheable.
+      HF_HOME: ${{ github.workspace }}/.hf-cache
+      PYTHONIOENCODING: utf-8
+    steps:
+      - name: Keep LF line endings
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Paths
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then T="$(cygpath -m "$RUNNER_TEMP")"; else T="$RUNNER_TEMP"; fi
+          echo "T=$T" >> "$GITHUB_ENV"
+
+      - name: Install uv
+        if: ${{ runner.os != 'Windows' }}
+        run: |
+          installer="$(mktemp)"
+          curl -LsSf --retry 5 --retry-all-errors --retry-delay 5 -o "$installer" "https://astral.sh/uv/${UV_VERSION}/install.sh"
+          sh "$installer"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Install uv (Windows)
+        if: ${{ runner.os == 'Windows' }}
+        shell: pwsh
+        run: |
+          $env:UV_NO_MODIFY_PATH = "1"
+          Invoke-RestMethod "https://astral.sh/uv/$env:UV_VERSION/install.ps1" | Invoke-Expression
+          Add-Content -Path $env:GITHUB_PATH -Value "$env:USERPROFILE\.local\bin"
+
+      # The wheel of the build job of this platform, not a rebuild.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: native-wheel-${{ matrix.key }}
+          path: ${{ runner.temp }}/wheel
+
+      # The wheel and the example dependencies live in a uv project of their own (examples-env/, as in test-python-examples.yml), synced with
+      # `uv sync`. The wheel has no dependencies (jpype1 is not installed: a user of `uv add arcadedb` does not have it). torch comes from the
+      # CPU-only PyTorch index (explicit: only torch is looked up there). numpy is not capped (see test-python-examples.yml).
+      - name: Install the wheel and the example dependencies
+        run: |
+          set -euo pipefail
+          wheels=("$T"/wheel/arcadedb-*.whl)
+          [ "${#wheels[@]}" -eq 1 ] || { echo "expected one wheel in $T/wheel, found ${#wheels[@]}" >&2; exit 1; }
+          mkdir -p examples-env
+          cat > examples-env/pyproject.toml <<TOML
+          [project]
+          name = "examples-env"
+          version = "0"
+          requires-python = ">=3.11"
+          dependencies = [
+              "arcadedb",
+              "torch",
+              "numpy",
+              "requests",
+              "sentence-transformers",
+              "pandas",
+              "polars",
+              "pyarrow",
+              "tqdm",
+              "py7zr",
+              "lxml",
+          ]
+
+          [tool.uv.sources]
+          arcadedb = { path = "${wheels[0]}" }
+          torch = { index = "pytorch-cpu" }
+
+          [[tool.uv.index]]
+          name = "pytorch-cpu"
+          url = "https://download.pytorch.org/whl/cpu"
+          explicit = true
+          TOML
+          uv sync --project examples-env --python "$PY"
+          # The examples run with this interpreter directly, so a timeout kills the example itself and not a `uv run` wrapper.
+          ex_py="$(uv run --project examples-env --no-sync python -c 'import sys; print(sys.executable)')"
+          echo "EX_PY=$ex_py" >> "$GITHUB_ENV"
+          "$ex_py" -c "import arcadedb; print('arcadedb', arcadedb.__version__, arcadedb.__file__)"
+
+      - name: Cache Hugging Face model
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ github.workspace }}/.hf-cache
+          key: hf-all-MiniLM-L6-v2-${{ runner.os }}-${{ runner.arch }}
+          restore-keys: |
+            hf-all-MiniLM-L6-v2-${{ runner.os }}-
+
+      # Not fail-fast, as in test-python-examples.yml: a hub outage here must not hide behind a retry, the dataset step fails with its own message.
+      - name: Pre-warm embedding model
+        continue-on-error: true
+        run: |
+          for attempt in 1 2 3; do
+            if "$EX_PY" -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2'); print('model ready')"; then
+              echo "model cached on attempt $attempt"
+              exit 0
+            fi
+            echo "::warning::model fetch failed (attempt $attempt/3)"
+            [ "$attempt" -lt 3 ] && sleep $((attempt * 20))
+          done
+          echo "::warning::could not pre-warm the embedding model after 3 attempts; the dataset step will retry"
+
+      - name: Download datasets
+        run: bash scripts/run_examples.sh datasets
+
+      - name: Install timeout command (macOS only)
+        if: ${{ runner.os == 'macOS' }}
+        run: brew install coreutils
+
+      - name: Run all examples
+        id: run_examples
+        run: bash scripts/run_examples.sh run
+
+      - name: Generate test summary
+        if: ${{ always() }}
+        run: |
+          cd examples
+          {
+            echo "## Examples on the installed wheel ($KEY, Python $PY)"
+            echo
+            if [ "${{ steps.run_examples.outcome }}" = "success" ]; then
+              echo "**Status**: all examples passed (${{ steps.run_examples.outputs.passed || '0' }}/${{ steps.run_examples.outputs.total || '0' }})"
+            else
+              echo "**Status**: some examples failed (${{ steps.run_examples.outputs.passed || '0' }}/${{ steps.run_examples.outputs.total || '0' }} passed)"
+            fi
+            echo
+            echo "| Metric | Count |"
+            echo "|--------|------:|"
+            echo "| Total | ${{ steps.run_examples.outputs.total || '0' }} |"
+            echo "| Passed | ${{ steps.run_examples.outputs.passed || '0' }} |"
+            echo "| Failed | ${{ steps.run_examples.outputs.failed || '0' }} |"
+            echo "| Skipped | ${{ steps.run_examples.outputs.skipped || '0' }} |"
+            echo
+            echo "### Skip list (scripts/native_examples_skip.txt)"
+            echo
+            echo '```'
+            grep -v -e '^[[:space:]]*#' -e '^[[:space:]]*$' ../scripts/native_examples_skip.txt || echo "(empty: no example is skipped)"
+            echo '```'
+            if [ -f example-results.txt ]; then
+              echo
+              echo "### Detailed results"
+              echo
+              echo '```'
+              cat example-results.txt
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ !cancelled() }}
+        with:
+          name: native-examples-${{ matrix.key }}-py${{ matrix.python }}
+          path: |
+            examples/*.log
+            examples/example-results.txt
+          if-no-files-found: warn
+          retention-days: 7
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ failure() }}
+        with:
+          name: native-examples-databases-${{ matrix.key }}-py${{ matrix.python }}
+          path: examples/my_test_databases/
+          if-no-files-found: ignore
+          retention-days: 3
+
+  # One check for the examples of every platform and Python: red when any leg of the `examples` job failed or the job did not run to the end.
+  examples-summary:
+    name: Examples summary
+    needs: [plan, examples]
+    if: ${{ always() && needs.plan.outputs.run == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check the examples legs
+        env:
+          RESULT: ${{ needs.examples.result }}
+        run: |
+          {
+            echo "## Examples on the installed wheel"
+            echo
+            if [ "$RESULT" = success ]; then
+              echo "All example legs passed."
+            else
+              echo "The examples job ended with: $RESULT. See the legs of the job \"Examples on the installed wheel\"."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          [ "$RESULT" = success ]
 
   # The cheap Python-version coverage of the wheel of linux-x86_64 (py3-none: the same file for every Python, nothing is rebuilt): a subset of
   # the test files, not the whole suite. The legs are the supported Pythons the full parity runs of this event leave out, plus the

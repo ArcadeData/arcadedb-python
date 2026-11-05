@@ -291,6 +291,23 @@ class TestCreateVertices:
             )
         _assert_float32_of(self._ids(vec_db), x)
 
+    @pytest.mark.parametrize("dim", [64, 96, 128])
+    def test_float32_rows_are_stored_bit_equal(self, vec_db, dim):
+        # the lanes' shapes (SIFT 128, Deep 96, e2 64): float32 values a 6-digit text would not hold, -0.0 and the extremes included.
+        # The native build sends them in a binary side buffer (test_native_graph_batch_binary_vectors.py), the JVM build as a matrix
+        x = np.random.default_rng(dim).standard_normal((N, dim)).astype(np.float32)
+        x[0, 0] = np.float32(-0.0)
+        x[1, 0] = np.finfo(np.float32).max
+        x[1, 1] = np.finfo(np.float32).tiny
+        x[1, 2] = np.finfo(np.float32).smallest_subnormal
+        with vec_db.graph_batch() as gb:
+            gb.create_vertices("Vx", [{"id": i, "embedding": x[i]} for i in range(N)])
+        stored = self._ids(vec_db)
+        assert sorted(stored) == list(range(N))
+        for i in range(N):
+            got = stored[i].astype(np.float32)
+            assert got.view(np.uint32).tolist() == x[i].view(np.uint32).tolist()
+
     def test_one_value_json_cannot_carry_sends_only_its_chunk_the_typed_way(
         self, vec_db
     ):

@@ -2,30 +2,26 @@
 
 Test suite for the ArcadeDB Python bindings. It runs against the built wheel, so it covers the embedded engine (SQL, OpenCypher, vectors, graphs) and the optional in-process HTTP server with Studio.
 
-The [Testing Guide](https://docs.humem.ai/arcadedb/latest/development/testing/) lists every test file and what it checks, and describes the markers, the zero-skips gate, and how to write a test for this suite.
+[Continuous integration](https://docs.arcadedb.com/arcadedb-python/development/ci) describes which test legs run for a pull request, for `main`, the nightly run and a release. How to run the suite, by marker or by file, and the no-skips rule are below.
 
 ## Running Tests
 
 ```bash
-# Once
-uv venv
-
-# After each build: the wheel and its test extra into .venv. --reinstall-package,
-# as a rebuild keeps the version (26.11.1.dev0)
-uv pip install --reinstall-package arcadedb "$(ls dist/*.whl | head -1)[test]"
+# The wheel and its test extra go into a throwaway environment on every run, so there is no
+# environment to create. --reinstall-package, as a rebuild keeps the version (26.11.1.dev0)
 
 # Run all tests
-uv run pytest
+uv run --no-project --reinstall-package arcadedb-jvm --with "$(ls dist/*.whl | head -1)[test]" python -m pytest
 
 # Run specific file
-uv run pytest tests/test_core.py -v
+uv run --no-project --reinstall-package arcadedb-jvm --with "$(ls dist/*.whl | head -1)[test]" python -m pytest tests/test_core.py -v
 
 # Run matching keyword
-uv run pytest -k "transaction" -v
+uv run --no-project --reinstall-package arcadedb-jvm --with "$(ls dist/*.whl | head -1)[test]" python -m pytest -k "transaction" -v
 
 # Only the server tests, or everything except them (they start a real HTTP listener)
-uv run pytest -m server -v
-uv run pytest -m "not server"
+uv run --no-project --reinstall-package arcadedb-jvm --with "$(ls dist/*.whl | head -1)[test]" python -m pytest -m server -v
+uv run --no-project --reinstall-package arcadedb-jvm --with "$(ls dist/*.whl | head -1)[test]" python -m pytest -m "not server"
 ```
 
 ## Tests that send SIGINT to their own process
@@ -48,4 +44,4 @@ A test that fails on the native build for any other reason is a failure. Fix the
 ## Need Help?
 
 - **Found a bug?** [Open an issue](https://github.com/ArcadeData/arcadedb-python/issues)
-- **Contributing?** Read the [Contributing Guide](https://docs.humem.ai/arcadedb/latest/development/contributing/)
+- **Contributing?** Read the development pages: [Continuous integration](https://docs.arcadedb.com/arcadedb-python/development/ci) and [Release](https://docs.arcadedb.com/arcadedb-python/development/release)

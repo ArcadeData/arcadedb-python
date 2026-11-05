@@ -26,8 +26,8 @@ import jpype
 from .exceptions import ArcadeDBError
 
 _PYARROW_HINT = (
-    "pyarrow is required for {what}. Install with: pip install pyarrow "
-    "(or pip install 'arcadedb-jvm[arrow]')"
+    "pyarrow is required for {what}. Install with: uv add pyarrow "
+    "(or uv add 'arcadedb-jvm[arrow]')"
 )
 
 # Declared property types (the engine's Type names) that an Arrow column kind
@@ -156,6 +156,16 @@ def _is_native(db) -> bool:
 _PROPERTY = re.compile(r"name: (.+?), type: ([A-Z_]+)")
 
 
+def _property_name_type(entry):
+    """(name, type) of an entry of a native ``schema:types`` row's ``properties``: a dict since #195, the engine's text form
+    of the row before it; (None, None) when neither. Kept here, not imported from ``_native``, so the JVM build never loads it.
+    """
+    if isinstance(entry, dict):
+        return entry.get("name"), entry.get("type")
+    m = _PROPERTY.search(entry) if isinstance(entry, str) else None
+    return (m.group(1), m.group(2)) if m else (None, None)
+
+
 def _declared_types_native(
     db, type_name: str, names: List[str]
 ) -> Tuple[bool, Dict[str, str]]:
@@ -180,10 +190,10 @@ def _declared_types_native(
         if current in seen or current not in rows:
             continue
         seen.add(current)
-        for text in rows[current].get("properties") or []:
-            m = _PROPERTY.search(text)
-            if m and m.group(1) in names:
-                declared.setdefault(m.group(1), m.group(2))
+        for entry in rows[current].get("properties") or []:
+            name, kind_name = _property_name_type(entry)
+            if name in names and kind_name:
+                declared.setdefault(name, str(kind_name))
         queue.extend(rows[current].get("parentTypes") or [])
     return kind == "vertex", declared
 

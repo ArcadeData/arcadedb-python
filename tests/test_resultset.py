@@ -2,6 +2,8 @@
 Tests for enhanced ResultSet and Result functionality.
 """
 
+from datetime import datetime
+
 import pytest
 
 import arcadedb
@@ -751,3 +753,46 @@ class TestSmallResultsCostOneBridgeCall:
             page = getattr(temp_db.query("sql", q), read)()
             assert len(page) == 5000
             last = str(page[-1]["rid"])
+
+
+def _epoch_millis(value):
+    """Epoch milliseconds of a naive UTC datetime in integer arithmetic, floored toward negative infinity (``Instant.toEpochMilli``)."""
+    delta = value - datetime(1970, 1, 1)
+    return (delta.days * 86400 + delta.seconds) * 1000 + delta.microseconds // 1000
+
+
+_EPOCH_MILLIS_VALUES = [
+    datetime(
+        1969, 12, 31, 23, 59, 59, 999999
+    ),  # before 1970 with microseconds: 1 ms low when rounded toward zero
+    datetime(1950, 6, 1, 12, 0, 0, 123000),  # an exact millisecond before 1970
+    datetime(
+        9999, 12, 31, 23, 59, 59, 999000
+    ),  # the last whole millisecond of year 9999
+    datetime(9999, 12, 31, 23, 59, 59, 999999),  # .999999 must not roll into year 10000
+    datetime(
+        2026, 11, 1, 12, 0, 0, 123000
+    ),  # exact milliseconds: a float product can land just under the integer
+    datetime(2026, 10, 3, 12, 34, 56, 123456),
+]
+
+
+@pytest.mark.parametrize("declared", ["DATETIME_MICROS", "DATETIME"])
+def test_to_json_list_datetime_is_the_floored_epoch_millis(temp_db, declared):
+    """DATETIME_MICROS keeps every value above; DATETIME keeps milliseconds, so only the millisecond-exact ones are compared there."""
+    values = [
+        v
+        for v in _EPOCH_MILLIS_VALUES
+        if declared == "DATETIME_MICROS" or v.microsecond % 1000 == 0
+    ]
+    temp_db.command("sql", "CREATE DOCUMENT TYPE Stamp")
+    temp_db.command(
+        "sql", f"CREATE PROPERTY Stamp.at {declared}"
+    )  # nosec B608 - test-owned
+    with temp_db.transaction():
+        for i, v in enumerate(values):
+            temp_db.command(
+                "sql", "INSERT INTO Stamp SET i = :i, at = :at", {"i": i, "at": v}
+            )
+    rows = temp_db.query("sql", "SELECT i, at FROM Stamp ORDER BY i").to_json_list()
+    assert [r["at"] for r in rows] == [_epoch_millis(v) for v in values]

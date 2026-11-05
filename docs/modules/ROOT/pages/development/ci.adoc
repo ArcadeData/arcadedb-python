@@ -16,7 +16,9 @@ Each package has one test workflow and one release workflow:
 | `release-native.yml`
 |===
 
-The release workflows call the test workflows (`workflow_call`) and then publish; see xref:development/release.adoc[Release]. Two workflows test the `arcadedb-jvm` package: `test-jvm.yml` builds a wheel and runs the unit tests, and `test-python-examples.yml` runs the scripts in `examples/`. Both build the wheel once for each platform, on a native runner of that platform (`Build arcadedb-jvm wheel (<platform>)` and `Build wheel for examples (<platform>)`), and install that one file into each Python they test. `test-native.yml` builds and tests the `arcadedb` (native) package; see <<_native_build,Native build>>.
+The release workflows call the test workflows (`workflow_call`) and then publish; see xref:development/release.adoc[Release]. `release-notes.yml` runs after both of them have succeeded for a tag and creates the GitHub Release (and closes the milestone of a final release). Two workflows test the `arcadedb-jvm` package: `test-jvm.yml` builds a wheel and runs the unit tests, and `test-python-examples.yml` runs the scripts in `examples/`. Both build the wheel once for each platform, on a native runner of that platform (`Build arcadedb-jvm wheel (<platform>)` and `Build wheel for examples (<platform>)`), and install that one file into each Python they test. `test-native.yml` builds and tests the `arcadedb` (native) package; see <<_native_build,Native build>>.
+
+The workflow `docs.yml` builds these docs (the Antora component in `docs/`) as a site of its own with `docs/antora-playbook.yml`, on every pull request and push to `main` that changes `docs/`, and attaches the site as the `docs-site` artifact. Download it from the run to read a page as it will render. The test workflows ignore `docs/**` and `*.adoc`, so for a docs-only pull request this job is the only check. A warning fails it: a broken `xref:`, a misspelled `+{attribute}+`, an AsciiDoc syntax problem. Pages link into the main ArcadeDB manual as `+{arcadedb-docs-url}/<page>+`, not with an `arcadedb::` xref, which the component on its own cannot resolve. To build the site locally, run `npx -p @antora/cli@3.2.1 -p @antora/site-generator@3.2.1 antora docs/antora-playbook.yml` from the repository root and open `docs/build/site/index.html`.
 
 The package supports four platforms and four Python versions (3.11 to 3.14). That is 16 combinations. The organisation shares one runner limit with ArcadeData/arcadedb, so each macOS or Windows job delays the upstream jobs too, and not every combination runs.
 
@@ -25,9 +27,9 @@ The package supports four platforms and four Python versions (3.11 to 3.14). Tha
 The wheel of `arcadedb-jvm` is tagged `py3-none-<platform>` (`setup.py`), like the native wheel: it carries a JRE for its platform, but nothing in it is compiled against CPython. So a Python version is a test, not a build. `test-jvm.yml` has two jobs:
 
 * `Build arcadedb-jvm wheel (<platform>)` builds the wheel once for each platform and uploads it as `wheel-<platform>`. `scripts/verify_wheel_tag.py` fails the build when the wheel is not `py3-none-<platform>`.
-* `Test arcadedb (<platform>, Python <version>)` downloads that wheel and installs it into one Python. It builds nothing. The release publishes these same four files.
+* `Test arcadedb (<platform>, Python <version>)` downloads that wheel and runs the tests on one Python in a throwaway `uv run --no-project --with "<wheel>[test]" python -m pytest` environment. It builds nothing. The release publishes these same four files.
 
-The `requires-python` of the package is `>=3.11,<3.15`. The wheel tag no longer keeps pip off Python 3.15, so the cap does it. JPype has no 3.15 wheel yet; remove the cap, and add 3.15 to the matrix, when it has one.
+The `requires-python` of the package is `>=3.11,<3.15`. The wheel tag no longer keeps an installer off Python 3.15, so the cap does it. JPype has no 3.15 wheel yet; remove the cap, and add 3.15 to the matrix, when it has one.
 
 == What runs when
 
@@ -52,11 +54,38 @@ The names of the test jobs do not change: `Test arcadedb (<platform>, Python <ve
 
 `release-jvm.yml` expects exactly four wheels, one for each platform, all `py3-none`. It checks the count, the tags, the sizes and the names before it publishes. The nightly run also tests against the newest `arcadedata/arcadedb:latest` image.
 
+== Which engine each workflow tests
+
+The two packages get their engine from different places, so between releases they are tested against different engines:
+
+* `test-jvm.yml` and `test-python-examples.yml` take the engine jars from the `arcadedata/arcadedb` image tag, `latest` by default. `latest` is upstream's newest snapshot and moves nightly, which is why both workflows also run every night.
+* `test-native.yml` links `DEV_ENGINE`, the newest release on Maven Central, unless the tag is a final or post version (then it links the release the tag is named after) or the `engine` input of a manual run says otherwise.
+
+The dev-engine bump after each release, described in xref:development/release.adoc[Release], moves `DEV_ENGINE` to the new release and closes the gap until upstream publishes the next one.
+
 == Other rules
 
 * A pull request that changes only documentation (`docs/**`, `*.adoc`, `CLAUDE.md`, `examples/README.md`, `LICENSE*`) runs nothing.
 * A draft pull request skips the platform jobs. Marking it ready for review starts them.
 * A new push to a pull request cancels the run it replaces. A run on `main` is never cancelled.
+
+== Repository automation
+
+These workflows follow ArcadeData/arcadedb and need no secret. Issues and pull requests carry labels and a release milestone (one open milestone per version, with a due date).
+
+[cols="2,3"]
+|===
+| Workflow | What it does
+
+| `classify-issue.yml` | Labels a new issue from rules: the package from the bug form (`native`, `jvm`) and topic words (`vector`, `performance`, `concurrency`, `timeseries`). It only adds labels that exist. Run it by hand with the issue number to see the labels without applying them.
+| `label-issue-in-progress.yml` | Adds `in progress` to the issues a pull request closes (`Closes #N` in the body).
+| `assign-milestone.yml` | On merge, puts the pull request and the issues it closes into the open milestone with the earliest due date, unless they have one. Dependabot pull requests are skipped.
+| `dependabot-auto-merge.yml` | Every hour, squash-merges Dependabot pull requests that are patch or minor updates, mergeable, and have a non-empty list of checks that all succeeded. Majors and grouped updates stay open. Logic in `.github/scripts/dependabot_merge.py`.
+| `dependency-review.yml` | Fails a pull request that adds a dependency with a known vulnerability (moderate or worse) or a GPL, AGPL or SSPL licence. Policy in `.github/dependency-review-config.yml`.
+| `gitignore-hygiene.yml` | Fails when a `.gitignore` pattern matches a tracked file.
+|===
+
+To close a release, close its milestone and open the next one with its due date: `assign-milestone.yml` picks the open milestone that is due first.
 
 == Native build
 
@@ -65,7 +94,7 @@ The workflow `test-native.yml` builds the native image of the `arcadedb` package
 * A pull request runs it only when native paths change: `native/**`, `src/arcadedb/**`, `tests/**`, `scripts/select_native_matrix.py` or `test-native.yml` itself. Changes under `tests/` and `src/arcadedb/` are included because both backends share those files, so a shared test or source can break native parity without touching a native file; docs outside those paths do not run it. It then runs on `linux-x86_64` with Python 3.12 only.
 * A push to `main`, the nightly run, a manual run (dispatch) run all four platforms: `linux-x86_64`, `linux-aarch64`, `macos-arm64` and `windows-x64` (Python 3.12 and 3.14). A release (`release-native.yml` calls the workflow with `release: true`) runs the same four platforms on all four Python versions, 16 legs.
 * The `pyver` job installs the already built `linux-x86_64` wheel (no rebuild) into the Pythons that the full parity runs of the event leave out (3.11, 3.13 and 3.14 on a pull request; 3.11 and 3.13 on a push to `main`, the nightly run and a dispatch; none on a release) into 3.15 and into the free-threaded 3.14t, and runs 13 test files there (14 where polars installs; 3.15 has no jpype1 wheel, so it leaves out the two files that need jpype1), about 20 seconds of tests per Python. It is informational: `release-native.yml` reads only the `native-passed-*` markers and the `native-wheel-*` wheels, so a red `pyver` leg never blocks a release. The 3.14t leg has no polars (no free-threaded wheel exists), so it skips `test_dataframe_ingest.py`. `scripts/select_native_matrix.py` decides its legs.
-* A native image build takes about 1 to 2.5 hours for each platform. The organisation shares one runner limit with upstream ArcadeDB, so do not add runs lightly. Change the paths or the matrix of `test-native.yml` only for a reason that you can write down.
+* A native image build takes about 5 to 30 minutes for each platform (macOS is the slowest). The organisation shares one runner limit with upstream ArcadeDB, so do not add runs lightly. Change the paths or the matrix of `test-native.yml` only for a reason that you can write down.
 
 == Change the selection
 
