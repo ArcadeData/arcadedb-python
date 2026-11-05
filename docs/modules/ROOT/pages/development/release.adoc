@@ -207,9 +207,10 @@ curl -fsS https://raw.githubusercontent.com/ArcadeData/arcadedb/main/pom.xml | s
 
 `native/wheel/THIRD_PARTY_NOTICES.md` names the engine and is generated from the build log of the native image, so `build_wheel.py` fails on any difference. `bump_engine.py` reports it as `TODO` and does not edit it, and its `--check` stays at exit 1 until the file names the new engine. To regenerate:
 
+. First refresh the kept copy of the engine `NOTICE`: `git -C <arcadedb clone> show <VERSION>:NOTICE > native/wheel/ARCADEDB_ENGINE_NOTICE`. The generated notices embed it, so a stale copy costs one more CI round (the 26.11.1 bump needed two because its `NOTICE` gained an entry).
 . Push the bump PR. The first `Test native` run stops at the notices drift check on purpose, and its `native-build-record-linux-x86_64` artifact holds `THIRD_PARTY_NOTICES.generated.md`, the output of `gen_notices.py` for the new engine (the text is the same on every platform).
 . Download the artifact with `gh run download <run-id> -R ArcadeData/arcadedb-python -n native-build-record-linux-x86_64 -D <scratch-dir>`, copy `THIRD_PARTY_NOTICES.generated.md` over `native/wheel/THIRD_PARTY_NOTICES.md`, and commit it to the bump branch.
-. When the engine `NOTICE` changed, refresh the kept copy: `git -C <arcadedb clone> show <VERSION>:NOTICE > native/wheel/ARCADEDB_ENGINE_NOTICE`. When the next run still fails on `NOTICE`, run the `gen_notices.py ... --notice` command that the failure message prints.
+. When the next run still fails on `NOTICE`, run the `gen_notices.py ... --notice` command that the failure message prints.
 . Check with `uv run --no-project python scripts/bump_engine.py --engine <VERSION> --dev-version <NEXT_DEV> --check`, which must exit 0, and wait for the CI of the PR to turn green.
 
 Some tests and skip lists wait for the engine the native image links, and say so in a comment (for example the `29_hybrid_memory_retrieval.py` line of `scripts/native_examples_skip.txt`). After the bump merges, find them with `git grep -n -i "native build links\|native image links"` and remove the ones the new engine settles.
