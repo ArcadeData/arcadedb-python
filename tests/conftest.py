@@ -118,6 +118,8 @@ NATIVE_NOT_APPLICABLE = {
     "test_insert_many_gc_pause.py": "the cyclic collector pause is the JVM build's (the native insert_many allocates nothing the collector tracks)",
     "test_graph_batch_tagged_shapes.py": "the JVM wheel's graph batch bulk path (bridge VertexBatcher and EdgeBatcher, the property-matrix fallback)",
     "test_async_proxy_cache.py": "the JPype proxy classes of the JVM build's async executor",
+    "test_read_crossings.py": "crossing counts of the JVM build's read path (JPype proxies of the Java objects and the bridge classes)",
+    "test_reader_crossings.py": "crossing counts of the JVM build's record and row readers (JPype proxies of the Java objects and the bridge classes)",
 }
 if BACKEND == "native" and not os.environ.get("NATIVE_PARITY_ALL"):
     collect_ignore.extend(NATIVE_NOT_APPLICABLE)

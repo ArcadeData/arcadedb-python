@@ -65,4 +65,38 @@ public final class DbCalls {
     final IndexCursor cursor = db.lookupByKey(type, keys, values);
     return cursor.hasNext() ? cursor.next().getRecord() : null;
   }
+
+  /**
+   * {@link #lookupFirst} for one key, the scalars as they come from Python: the one-element arrays are built here and
+   * not through JPype, which costs a conversion call per array.
+   */
+  public static Record lookupFirstKey(final Database db, final String type, final String key, final Object value) {
+    final IndexCursor cursor = db.lookupByKey(type, new String[] { key }, new Object[] { value });
+    return cursor.hasNext() ? cursor.next().getRecord() : null;
+  }
+
+  /**
+   * {@link #lookupFirst} for any number of keys with the key names and the values as the varargs of ONE call:
+   * {@code keyCount} names, then the values ({@code k1, ..., kn, v1, ..., vm}). The two lists are cut here and handed to
+   * the engine as they are, so a different number of names and values reaches it as before.
+   */
+  public static Record lookupFirstKeys(final Database db, final String type, final int keyCount,
+      final Object... keysThenValues) {
+    final String[] keys = new String[keyCount];
+    for (int i = 0; i < keyCount; i++)
+      keys[i] = (String) keysThenValues[i];
+    final Object[] values = new Object[keysThenValues.length - keyCount];
+    System.arraycopy(keysThenValues, keyCount, values, 0, values.length);
+    final IndexCursor cursor = db.lookupByKey(type, keys, values);
+    return cursor.hasNext() ? cursor.next().getRecord() : null;
+  }
+
+  /**
+   * The transaction stack of {@code db} as one number, {@code nestedTransactions * 2 + (active ? 1 : 0)}: the
+   * {@code isTransactionActive()} and {@code getNestedTransactions()} of the mark {@code run_in_transaction} and
+   * {@code with db.transaction()} take before {@code begin()} (#9970, #9813), in one crossing instead of two.
+   */
+  public static long stackMark(final Database db) {
+    return ((long) db.getNestedTransactions() << 1) | (db.isTransactionActive() ? 1L : 0L);
+  }
 }
