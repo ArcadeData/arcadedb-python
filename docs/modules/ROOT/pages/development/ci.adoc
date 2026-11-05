@@ -69,6 +69,24 @@ The dev-engine bump after each release, described in xref:development/release.ad
 * A draft pull request skips the platform jobs. Marking it ready for review starts them.
 * A new push to a pull request cancels the run it replaces. A run on `main` is never cancelled.
 
+== Repository automation
+
+These workflows follow ArcadeData/arcadedb and need no secret. Issues and pull requests carry labels and a release milestone (one open milestone per version, with a due date).
+
+[cols="2,3"]
+|===
+| Workflow | What it does
+
+| `classify-issue.yml` | Labels a new issue from rules: the package from the bug form (`native`, `jvm`) and topic words (`vector`, `performance`, `concurrency`, `timeseries`). It only adds labels that exist. Run it by hand with the issue number to see the labels without applying them.
+| `label-issue-in-progress.yml` | Adds `in progress` to the issues a pull request closes (`Closes #N` in the body).
+| `assign-milestone.yml` | On merge, puts the pull request and the issues it closes into the open milestone with the earliest due date, unless they have one. Dependabot pull requests are skipped.
+| `dependabot-auto-merge.yml` | Every hour, squash-merges Dependabot pull requests that are patch or minor updates, mergeable, and have a non-empty list of checks that all succeeded. Majors and grouped updates stay open. Logic in `.github/scripts/dependabot_merge.py`.
+| `dependency-review.yml` | Fails a pull request that adds a dependency with a known vulnerability (moderate or worse) or a GPL, AGPL or SSPL licence. Policy in `.github/dependency-review-config.yml`.
+| `gitignore-hygiene.yml` | Fails when a `.gitignore` pattern matches a tracked file.
+|===
+
+To close a release, close its milestone and open the next one with its due date: `assign-milestone.yml` picks the open milestone that is due first.
+
 == Native build
 
 The workflow `test-native.yml` builds the native image of the `arcadedb` package and runs the test suite against the installed wheel. It does not follow the table above. It never publishes; `release-native.yml` calls it on a version tag.

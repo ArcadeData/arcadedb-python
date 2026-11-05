@@ -1,0 +1,31 @@
+# Configuration for actions/dependency-review-action, read by .github/workflows/dependency-review.yml
+# (adapted from ArcadeData/arcadedb). The action's configuration is flat and drops unknown keys
+# silently, so every key below is one the action understands. Inline `with:` inputs of the
+# workflow would override this file, so the workflow passes only `config-file`.
+
+# Fail the job on a vulnerability of this severity or above.
+fail-on-severity: moderate
+
+# Runtime dependencies only, the action's default.
+fail-on-scopes:
+  - runtime
+
+# Licences CLAUDE.md forbids outright (GPL and AGPL families, SSPL). Both the current SPDX ids and
+# their deprecated spellings are listed because a dependency may declare either form.
+deny-licenses:
+  - GPL-1.0
+  - GPL-1.0-only
+  - GPL-1.0-or-later
+  - GPL-2.0
+  - GPL-2.0-only
+  - GPL-2.0-or-later
+  - GPL-3.0
+  - GPL-3.0-only
+  - GPL-3.0-or-later
+  - AGPL-1.0
+  - AGPL-1.0-only
+  - AGPL-1.0-or-later
+  - AGPL-3.0
+  - AGPL-3.0-only
+  - AGPL-3.0-or-later
+  - SSPL-1.0
