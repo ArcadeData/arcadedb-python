@@ -43,12 +43,16 @@ The script `scripts/select_matrix.py` chooses the combinations. The first job of
 | 10 legs: `linux/amd64` on all four Python versions. `linux/arm64`, `darwin/arm64` and `windows/amd64` on Python 3.11 and 3.14.
 | All four platforms on Python 3.14.
 
-| Push to `main`, the nightly run, a manual run, a release
+| Push to `main`, the nightly run
 | The same 10 legs.
+| All 16 combinations.
+
+| A manual run (dispatch), a release
+| All 16 combinations.
 | All 16 combinations.
 |===
 
-The unit tests run the same 10 legs on every event, like the native package (all Python versions on one Linux platform, the oldest and the newest elsewhere). They were 16 legs on `main`, the nightly run and a release before the wheel became `py3-none`; the extra legs tested the same file again. A pull request runs 28 checks: 14 test jobs (10 and 4), 8 wheel builds (4 for each workflow), the two `Download ArcadeDB JARs` jobs, the two summary jobs, `Bandit security scan` and `Dependency floor audit`. The other events run 40: the examples run all 16 combinations there, from 4 wheel builds.
+The unit tests run 10 legs on a pull request, a push to `main` and the nightly run (all Python versions on one Linux platform, the oldest and the newest elsewhere), and all 16 combinations on a release and a manual run, like the native package: what is published is tested on every platform and Python it claims. `release-jvm.yml` calls the workflow with `release: true`, which the matrix step turns into the event `release`, because in a called workflow `github.event_name` is the caller's tag push. A pull request runs 28 checks: 14 test jobs (10 and 4), 8 wheel builds (4 for each workflow), the two `Download ArcadeDB JARs` jobs, the two summary jobs, `Bandit security scan` and `Dependency floor audit`. A push and the nightly run run 40: the examples run all 16 combinations there, from 4 wheel builds. A manual run and a release run 46, with the 6 extra unit-test legs.
 
 The names of the test jobs do not change: `Test arcadedb (<platform>, Python <version>)`. A check keeps its history when a pull request runs fewer of them.
 
@@ -98,4 +102,4 @@ The workflow `test-native.yml` builds the native image of the `arcadedb` package
 
 == Change the selection
 
-Edit `JVM_LEGS` (unit tests, every event) or `PULL_REQUEST_LEGS` (examples on a pull request) in `scripts/select_matrix.py`. The test `tests/test_select_matrix.py` fixes the legs, so a change that shrinks them fails. When you add a Python version, add it to `PYTHONS` in the script and to the classifiers in `pyproject.toml`. A test checks that both lists are the same, that `requires-python` starts at the oldest of them and stops before the minor after the newest. When you drop one, remove it from the same places and update the counts in the test.
+Edit `JVM_LEGS` (unit tests on the events in `JVM_REDUCED_EVENTS`: a pull request, a push and the nightly run; every other event runs the full matrix) or `PULL_REQUEST_LEGS` (examples on a pull request) in `scripts/select_matrix.py`. The test `tests/test_select_matrix.py` fixes the legs, so a change that shrinks them fails. When you add a Python version, add it to `PYTHONS` in the script and to the classifiers in `pyproject.toml`. A test checks that both lists are the same, that `requires-python` starts at the oldest of them and stops before the minor after the newest. When you drop one, remove it from the same places and update the counts in the test.
