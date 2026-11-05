@@ -68,14 +68,29 @@ def test_every_event_but_pull_request_runs_the_full_examples_matrix(event):
     assert _pairs(matrix) == FULL
 
 
-@pytest.mark.parametrize("event", ["pull_request", *NON_PULL_REQUEST_EVENTS])
-def test_jvm_tests_the_one_wheel_of_a_platform_on_the_same_ten_legs_on_every_event(event):
+@pytest.mark.parametrize("event", ["pull_request", "push", "schedule"])
+def test_jvm_tests_the_one_wheel_of_a_platform_on_ten_legs_on_a_pull_request_a_push_and_the_nightly(
+    event,
+):
     # The wheel is py3-none-<platform>: every Python of linux/amd64, the oldest and the newest elsewhere (as test-native.yml)
     pairs = _pairs(sm.select("jvm", event))
     assert {v for p, v in pairs if p == "linux/amd64"} == set(PYTHONS)
     for platform in ("linux/arm64", "darwin/arm64", "windows/amd64"):
         assert {v for p, v in pairs if p == platform} == {"3.11", "3.14"}, platform
     assert len(pairs) == 10
+
+
+@pytest.mark.parametrize(
+    "event", ["release", "workflow_dispatch", "workflow_call", "", "some_new_event"]
+)
+def test_jvm_tests_every_platform_and_python_for_a_release_a_dispatch_and_any_other_event(
+    event,
+):
+    # What is published (release-jvm.yml passes release: true, test-jvm.yml turns it into the event `release`), a run
+    # started by hand before a release, and any event the script does not know (it fails open) get all 16 legs
+    matrix = sm.select("jvm", event)
+    assert len(matrix["include"]) == 16
+    assert _pairs(matrix) == FULL
 
 
 @pytest.mark.parametrize("event", ["pull_request", *NON_PULL_REQUEST_EVENTS])
@@ -94,7 +109,9 @@ def test_pull_request_examples_matrix():
 @pytest.mark.parametrize("workflow", ["jvm", "examples"])
 def test_pull_request_matrix_is_part_of_the_full_matrix(workflow):
     assert _pairs(sm.select(workflow, "pull_request")) < FULL
-    assert _pairs(sm.select(workflow, "pull_request")) <= _pairs(sm.select(workflow, "push"))
+    assert _pairs(sm.select(workflow, "pull_request")) <= _pairs(
+        sm.select(workflow, "push")
+    )
 
 
 def test_unknown_workflow_is_refused():
@@ -124,7 +141,7 @@ def test_pythons_match_the_classifiers_of_pyproject():
 
 
 def test_command_line_prints_one_line_of_matrix_json():
-    for event, count in (("pull_request", 10), ("push", 10)):
+    for event, count in (("pull_request", 10), ("push", 10), ("release", 16)):
         out = subprocess.run(  # nosec B603 - fixed argument list, no untrusted input
             [sys.executable, "-I", str(SCRIPT_PATH), "jvm", "--event", event],
             capture_output=True,
@@ -145,20 +162,43 @@ def test_workflow_takes_its_matrix_from_the_script(workflow):
         assert "python-version:\n" not in strategy.split("steps:", 1)[0]
 
 
+def test_a_jvm_release_run_asks_for_the_full_matrix():
+    # In a workflow_call github.event_name is the caller's (a tag push), so the release says so through an input
+    text = WORKFLOWS["jvm"].read_text(encoding="utf-8")
+    call = text.split("  workflow_call:\n", 1)[1].split("\n  workflow_dispatch:\n", 1)[
+        0
+    ]
+    assert (
+        "      release:\n" in call
+        and "type: boolean" in call.split("      release:\n", 1)[1]
+    )
+    assert "EVENT_NAME: ${{ inputs.release && 'release' || github.event_name }}" in text
+    release = (ROOT / ".github" / "workflows" / "release-jvm.yml").read_text(
+        encoding="utf-8"
+    )
+    job = release.split("    uses: ./.github/workflows/test-jvm.yml\n", 1)[1].split(
+        "\n\n", 1
+    )[0]
+    assert "      release: true" in job
+
+
 def test_the_jvm_workflow_builds_each_platform_once_and_tests_that_wheel():
     text = WORKFLOWS["jvm"].read_text(encoding="utf-8")
-    assert "scripts/select_matrix.py jvm --event \"$EVENT_NAME\" --wheels" in text
+    assert 'scripts/select_matrix.py jvm --event "$EVENT_NAME" --wheels' in text
     assert "matrix: ${{ fromJSON(needs.download-jars.outputs.wheel-matrix) }}" in text
     build, test = text.split("\n  build:\n")[1].split("\n  test:\n")
     # no Python in the build matrix, and the test job builds nothing: it installs the wheel the build job uploaded
     assert "python-version: ${{ matrix.python-version }}" not in build
-    assert "scripts/build.sh" in build and "scripts/build.sh" not in test.split("\n  test-summary:")[0]
+    assert (
+        "scripts/build.sh" in build
+        and "scripts/build.sh" not in test.split("\n  test-summary:")[0]
+    )
     assert "actions/download-artifact" in test and "name: wheel-" in test
 
 
 def test_the_examples_workflow_builds_each_platform_once_and_runs_the_examples_against_that_wheel():
     text = WORKFLOWS["examples"].read_text(encoding="utf-8")
-    assert "scripts/select_matrix.py examples --event \"$EVENT_NAME\" --wheels" in text
+    assert 'scripts/select_matrix.py examples --event "$EVENT_NAME" --wheels' in text
     assert "matrix: ${{ fromJSON(needs.download-jars.outputs.wheel-matrix) }}" in text
     build, rest = text.split("\n  build:\n")[1].split("\n  test-examples:\n")
     test = rest.split("\n  test-examples-summary:")[0]

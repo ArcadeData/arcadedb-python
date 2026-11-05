@@ -60,6 +60,11 @@ on:
         description: "Override package version (PEP 440) for build.sh"
         required: false
         type: string
+      release:
+        description: "A release run (release-jvm.yml): every platform x Python leg (scripts/select_matrix.py, event `release`)"
+        required: false
+        type: boolean
+        default: false
 
   # Allow manual trigger
   workflow_dispatch:
@@ -244,7 +249,8 @@ jobs:
         id: matrix
         shell: bash
         env:
-          EVENT_NAME: ${{ github.event_name }}
+          # In a workflow_call github.event_name is the caller's event (a tag push), so a release says so through its input
+          EVENT_NAME: ${{ inputs.release && 'release' || github.event_name }}
         run: |
           matrix="$(python3 scripts/select_matrix.py jvm --event "$EVENT_NAME")"
           wheel_matrix="$(python3 scripts/select_matrix.py jvm --event "$EVENT_NAME" --wheels)"

@@ -3,18 +3,19 @@
 
 The wheels support four platforms and four Python versions.
 
-- `jvm` (test-jvm.yml) runs the same 10 legs on every event: a pull request, a push to main, the nightly
-  schedule, a manual dispatch and the release workflow (which calls the workflow as `workflow_call`). The JVM
-  wheel is one file for each platform (py3-none-<platform>, built once by the `build` job), so a Python version
-  is a test leg, not a build. Like the native package (test-native.yml), the Pythons are all four on
+- `jvm` (test-jvm.yml) runs 10 legs on a pull request, a push to main and the nightly schedule, and all 16 for
+  a release (release-jvm.yml calls the workflow with `release: true`, which test-jvm.yml passes as the event
+  `release`) and a manual dispatch. The JVM wheel is one file for each platform (py3-none-<platform>, built once
+  by the `build` job), so a Python version is a test leg, not a build. The 10 legs are all four Pythons on
   linux/amd64 and the oldest and the newest on the other platforms: a bug that depends on the interpreter shows
   on the ends of the range, and one that depends on the platform shows on any version of it. The organisation
-  shares one runner cap with ArcadeData/arcadedb, so every extra macOS or Windows leg delays upstream too.
+  shares one runner cap with ArcadeData/arcadedb, so every extra macOS or Windows leg delays upstream too; what
+  is published, and a run started by hand before a release, gets every combination, like test-native.yml.
 - `examples` (test-python-examples.yml) runs the newest Python on every platform on a pull request, and every
   combination (16 legs) on every other event.
 
 The selection fails open to the full matrix: an event name this script does not know runs everything, never less
-(for `jvm`, whose legs do not depend on the event, that is the same 10 legs).
+(for `jvm` too: only a pull request, a push and the nightly schedule get its 10 legs).
 
 usage:
     select_matrix.py jvm [--event NAME]             # test-jvm.yml: the test legs
@@ -53,7 +54,7 @@ PYTHONS = ("3.11", "3.12", "3.13", "3.14")
 OLDEST = PYTHONS[0]
 NEWEST = PYTHONS[-1]
 
-# The legs of `jvm`, the same for every event: all Pythons on linux/amd64 (the cheap, fast runner and the one most
+# The legs of `jvm` on a pull request, a push and the nightly run: all Pythons on linux/amd64 (the cheap, fast runner and the one most
 # contributors use), the oldest and the newest on the three other platforms (the shape of test-native.yml). The wheel
 # is py3-none-<platform>, one file for each platform, so these are test legs against that file, not builds.
 JVM_LEGS = {
@@ -62,6 +63,10 @@ JVM_LEGS = {
     "darwin/arm64": (OLDEST, NEWEST),
     "windows/amd64": (OLDEST, NEWEST),
 }
+
+# The events on which `jvm` runs only JVM_LEGS. Every other event (a release, a manual dispatch, an event this
+# script does not know) runs every platform x Python combination, so the selection fails open.
+JVM_REDUCED_EVENTS = ("pull_request", "push", "schedule")
 
 # The legs of a pull request, for the workflows whose legs depend on the event.
 #
@@ -91,7 +96,9 @@ def select(workflow: str, event: str) -> dict[str, list[dict[str, str]]]:
             f"unknown workflow {workflow!r}; use one of {sorted(WORKFLOWS)}"
         )
     if workflow == "jvm":
-        return {"include": _legs(JVM_LEGS)}
+        if event in JVM_REDUCED_EVENTS:
+            return {"include": _legs(JVM_LEGS)}
+        return {"include": _legs({platform: PYTHONS for platform in RUNNERS})}
     if event == "pull_request":
         return {"include": _legs(PULL_REQUEST_LEGS[workflow])}
     return {"include": _legs({platform: PYTHONS for platform in RUNNERS})}

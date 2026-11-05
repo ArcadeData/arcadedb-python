@@ -102,6 +102,7 @@ jobs:
     with:
       arcadedb-tag: ${{ needs.validate-version.outputs.arcadedb-tag }}
       build-version: ${{ needs.validate-version.outputs.version }}
+      release: true
 
   test-examples:
     name: Example tests
