@@ -343,7 +343,9 @@ class RID:
     __slots__ = ("text",)
 
     def __init__(self, text):
-        self.text = text
+        # An RID of an RID is the same id: a hit of find_nearest(include_vector=True) already carries the row's RID and the record
+        # wrappers wrap their rid again (save, delete, new_edge); the fast parameter path writes .text into the JSON text (#265)
+        self.text = text.text if isinstance(text, RID) else text
 
     def __str__(self):
         return self.text
