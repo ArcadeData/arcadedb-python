@@ -20,7 +20,9 @@ on:
 
 permissions:
   issues: write
-  pull-requests: read
+  # setting the milestone of a pull request needs pull-requests: write (issues: write covers issues only;
+  # with read the PR update got 403 Resource not accessible by integration on the merges of #252 and #256)
+  pull-requests: write
   contents: read
 
 jobs:
