@@ -76,6 +76,12 @@ Notes on the script:
 * `db.drop()` deletes all files of the database. It cannot be undone.
 * `db.is_transaction_active()` is `True` only inside `with db.transaction():`.
 
+=== Read-only open
+
+`open_database(path, read_only=True)` opens an existing database for reading only; `DatabaseFactory(path).open(read_only=True)` does the same. Queries, counts and record reads work as usual and `db.is_read_only()` is `True`. Every write raises `ArcadeDBError` with "read only" in the message: an `INSERT`, a schema change such as `CREATE DOCUMENT TYPE`, or `save()` on a record. Reads inside `with db.transaction():` work too; on ArcadeDB 26.11.1 and later the commit or rollback of such a transaction returns, while earlier engines raise the same read-only error there.
+
+Use it when a process only reads a finished database, so that a stray write fails instead of changing the data. It is a safety setting, not a speed setting: no measurement here shows reads getting faster.
+
 === Locking
 
 The open database holds an operating-system lock on `database.lck` in its directory. A second process cannot open the same directory while the first holds it; open it in one process and share the handle between that process's threads.
