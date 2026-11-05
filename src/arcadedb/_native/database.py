@@ -16,7 +16,14 @@ from ..type_conversion import bulk_row_ok, json_bulk_dumps_tagged
 from . import interrupts, lib, needs_jvm
 from .bulk import insert_rows_columnar
 from .codec import _prep as _prep_row
-from .codec import encode_params, json_native, loads, loads_tagged, row_default
+from .codec import (
+    encode_lookup,
+    encode_params,
+    json_native,
+    loads,
+    loads_tagged,
+    row_default,
+)
 
 _LAZY_COMMAND_ROWS = os.environ.get("ARCADEDB_NATIVE_LAZY_CMD", "1") != "0"
 _BINARY_REPLY = os.environ.get("ARCADEDB_NATIVE_BIN_REPLY", "1") != "0"
@@ -71,6 +78,29 @@ def _call(prefix: str, name: str, *args) -> dict:
 _TX_OK = '{"ok":true,'
 _TX_ACTIVE = '{"ok":true,"active":true,'
 _TX_IDLE = '{"ok":true,"active":false,'
+
+
+def _first_row(database, reply: dict):
+    """``NativeResultSet(database, reply).first()`` for a reply that holds the whole result: the first row as a ``NativeResult``, with no
+    cursor object built to hand out one row and be closed. A reply with more rows to fetch, or with a pending read error, takes the cursor.
+    """
+    rows = reply["rows"]
+    if rows and reply["drained"] and not reply.get("rerr") and not database._closed:
+        return NativeResult(rows[0], reply["meta"][0], database)
+    return NativeResultSet(database, reply).first()
+
+
+def _element_of(database, row):
+    """``row.get_element()`` for a row that only the caller holds: the record takes the row's properties as they are (no copy)."""
+    global _wrap_record
+    if row is None:
+        return None
+    if _wrap_record is None:
+        from .records import _wrap as _wrap_record
+    row._check_open()
+    if not row._meta or row._meta[2] not in "vde":
+        return None
+    return _wrap_record(database, row, True)
 
 
 class NativeResult:
@@ -286,6 +316,19 @@ class NativeResultSet:
         if not self._closed:
             self._finish()
         raise StopIteration
+
+    def _drain_pairs(self) -> list:
+        """The ``(props, meta)`` of every row, read as :meth:`_drain_dicts` reads them, for a caller that builds its own objects."""
+        out: list = []
+        if not self._readable():
+            return out
+        while True:
+            out.extend(self._buf)
+            self._buf.clear()
+            if not self._fill():
+                break
+        self._finish()
+        return out
 
     def _drain_dicts(self) -> List[Dict[str, Any]]:
         out: List[Dict[str, Any]] = []
@@ -799,7 +842,7 @@ class NativeDatabase:
         row = self.query("sql", rid_sql).first()
         if row is None:
             raise ArcadeDBError(f"Failed to lookup RID '{rid}': record not found")
-        return row.get_element()
+        return _element_of(self, row)
 
     def lookup_by_key(self, type_name: str, keys: List[str], values: List[Any]):
         """The first record of ``type_name`` whose ``keys`` properties equal ``values``, wrapped, or None.
@@ -809,20 +852,17 @@ class NativeDatabase:
         (a scan is ``query()`` with a ``WHERE``). No statement has that rule, hence this op and not a ``SELECT``.
         """
         self._check_not_closed()
-        from .extras import _enc
-
         reply = loads(
             lib.call(
                 "arcadedb_n_lookup",
                 self._h,
                 lib.b(type_name),
-                lib.b(_enc({"keys": [str(k) for k in keys], "values": list(values)})),
+                lib.b(encode_lookup(keys, values)),
             )
         )
         if not reply.get("ok"):
             raise _error(f"Failed to lookup by key in '{type_name}'", reply)
-        row = NativeResultSet(self, reply).first()
-        return row.get_element() if row is not None else None
+        return _element_of(self, _first_row(self, reply))
 
     def insert_many(
         self,

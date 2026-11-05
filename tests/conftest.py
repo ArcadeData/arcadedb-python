@@ -75,6 +75,8 @@ if BACKEND != "native":
     collect_ignore.append("test_native_statement_texts.py")
     # iter_json_batches reads the cursor one batch at a time (the result set's buffer and its _fill are observed)
     collect_ignore.append("test_native_streaming_batches.py")
+    # the Python part of the native point operations (lookup_by_key, edge ends, steps): spies on the codec, the cursor and the row object
+    collect_ignore.append("test_native_point_op_glue.py")
 if not os.path.isfile(
     os.path.join(os.path.dirname(os.path.dirname(__file__)), "docs", "index.md")
 ):
