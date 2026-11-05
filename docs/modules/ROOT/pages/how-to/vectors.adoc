@@ -159,12 +159,18 @@ print([row["name"] for row in rows])
 ['python-ish', 'python']
 ----
 
+On ArcadeDB 26.11.1 and later, openCypher also creates and searches vector indexes: `CREATE VECTOR INDEX ... FOR (n:Label) ON n.property OPTIONS {...}` creates an `LSM_VECTOR` index, and `SEARCH ... IN (VECTOR INDEX ...)` queries it. The syntax is in the main manual: {arcadedb-docs-url}/reference/cypher/cypher-clauses#cypher-create-vector-index[CREATE VECTOR INDEX] and {arcadedb-docs-url}/reference/cypher/cypher-clauses#cypher-search[SEARCH].
+
 [[find-nearest]]
 === find_nearest
 
 `VectorIndex.find_nearest(query_vector, k=10, ef_search=None, allowed_rids=None, *, include_vector=True)` searches without a statement. It takes a list or a NumPy array and returns a list of `(record, distance)` tuples, nearest first. Use it when you already hold the index object, or when you have a list of record ids to search within.
 
 With `ef_search=None` the search width comes from the index's `efSearch` metadata when it is set, otherwise from the engine: `max(k, 100)` candidates on an index of under 10,000 vectors and `max(2k, 100)` from 10,000 vectors on. Before ArcadeDB 26.11.1 the larger indexes searched `max(2k, 20)`, which gave recall@10 0.929 on SIFT 100k against 0.998 now (https://github.com/ArcadeData/arcadedb/issues/10704[ArcadeData/arcadedb#10704]), so a search on a large index is more accurate and slower than on earlier releases. Pass a smaller `ef_search` to trade recall for speed, or a larger one for more recall.
+
+The second element of each tuple is a distance, and lower is closer, for every similarity function (`COSINE`, `EUCLIDEAN` and `DOT_PRODUCT`) and on both packages. `find_nearest` sorts the hits by it, ascending. It is the `distance` column of `vectorNeighbors`, not the `score` of the Cypher procedure above, where higher is closer.
+
+`VectorIndex.find_nearest_by_key(key, k=10, ef_search=None, allowed_rids=None)` searches with the stored vector of an existing record as the query, so you do not fetch the vector first. `key` is the value of the index's id property for that record. `get_metadata()["id_property"]` names that property, and `create_vector_index(..., id_property=...)` sets it. The other arguments and the result are those of `find_nearest`. The call raises `ArcadeDBError` when no record has that key, or when the record's vector property is null.
 
 On the native package the query vector crosses as one `float32` buffer whatever its form (a list, a `float64` array, or a `float32` array), so you do not need to convert it first. A vector index stores `float32`, so the numbers are rounded the same way as before. The table gives the median `find_nearest` latency with this change over the median without it (95% interval, below 1 is faster), measured on the native wheel `26.11.1.dev0` on one Linux x86_64 laptop with 11 to 12 clean pairs per figure. The wheel built before this change was the baseline.
 
