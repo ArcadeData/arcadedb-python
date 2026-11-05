@@ -6,8 +6,8 @@
  * whole edge list as String[] RIDs (marshaled in one bulk array copy) and
  * loops Java-side, so Python pays one crossing per batch.
  *
- * Property-less edges only — the common bulk-ingest shape; edges with
- * properties keep the per-edge path.
+ * newEdgesJson takes edges with properties too, in the value shapes of
+ * VertexBatcher.createVerticesJson (JSON values and tagged date-times).
  */
 package com.arcadedb.python;
 
@@ -44,8 +44,8 @@ public final class EdgeBatcher {
 
   /**
    * Bulk edges WITH properties: one JSON array of rows, each
-   * {"_src": "#1:0", "_dst": "#1:1", ...properties}. JSON-representable
-   * property values only; the Python side falls back per-edge otherwise.
+   * {"_src": "#1:0", "_dst": "#1:1", ...properties}. Property values are JSON values and the tagged values
+   * DocumentBatcher.untag decodes; the Python side falls back per-edge otherwise.
    */
   public static void newEdgesJson(final GraphBatch batch, final String edgeType, final String jsonRows) {
     final com.arcadedb.serializer.json.JSONArray rows = new com.arcadedb.serializer.json.JSONArray(jsonRows);
@@ -59,7 +59,7 @@ public final class EdgeBatcher {
         if (key.equals("_src") || key.equals("_dst"))
           continue;
         props[j++] = key;
-        props[j++] = row.isNull(key) ? null : row.get(key);
+        props[j++] = DocumentBatcher.value(row.isNull(key) ? null : row.get(key));
       }
       if (props.length == 0)
         batch.newEdge(src, edgeType, dst);

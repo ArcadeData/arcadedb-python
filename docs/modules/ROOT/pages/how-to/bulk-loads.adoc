@@ -1,5 +1,5 @@
 = Bulk loads and commit size
-:description: The default commit size of insert_many, graph_batch and create_vertices on the arcadedb (native) and arcadedb-jvm packages, what it means for a failed load, what to do after an interrupted graph batch, how to change it, how insert_many treats Python's cyclic garbage collector on arcadedb-jvm, and a known limitation: a graph batch does not reuse the space of deleted edges.
+:description: The default commit size of insert_many, graph_batch and create_vertices on the arcadedb (native) and arcadedb-jvm packages, what it means for a failed load, what to do after an interrupted graph batch, how to change it, how insert_many treats Python's cyclic garbage collector on arcadedb-jvm, which property shapes a graph batch loads in bulk on the JVM build, and a known limitation: a graph batch does not reuse the space of deleted edges.
 
 `insert_many`, `graph_batch` and `GraphBatch.create_vertices` load data in transactions. The commit size is the number of rows in one transaction. It decides how much work the engine holds in memory before it commits, and how many rows stay in the database when a load fails.
 
@@ -80,6 +80,36 @@ A generator or any other lazy input is not paused. Your own code runs between th
 `gc.disable()` is process-wide. While a call with a list runs, other Python threads do not collect cyclic garbage automatically. When calls from several threads overlap, the pause does not last for the whole of each call: the collector comes back when the call that paused it ends. The collector is never left disabled by a call, and a collector that you disabled yourself stays disabled.
 
 The `arcadedb` (native) package does not change the collector. In our measurements, no collection ran inside a native `insert_many` call, so there is nothing to pause.
+
+== Property shapes in a graph batch (`arcadedb-jvm`)
+
+On the `arcadedb-jvm` package, `GraphBatch.create_vertices` and `GraphBatch.new_edges` load these property values through the bulk path (the same tagged JSON text as `insert_many`): a list, a tuple, a dict, a `datetime`, a `date`, a `Decimal` and `bytes` (also `bytearray`). A value is stored as the one-by-one path stores it. A list or tuple of only `int` and `float` keeps the older path, which crosses it as one `double[]`.
+
+A value that the text cannot carry sends work to the older path on its own: a `NaN`, an integer beyond 64 bits, a `datetime` inside a list or a dict, or a dict key that is not a `str`. `create_vertices` falls back for the chunk of at most 100,000 rows that holds the value, and `new_edges` for the whole call. A value of another type (a `set`, a numpy or pandas value, a subclass of the types above) also takes the older path. Nothing is lost on a fallback, and the data is the same. Only the speed changes.
+
+The table is one laptop study of the `arcadedb-jvm` package: per-row time of this build against the build before it, 20,000 vertices and 20,000 edges for each shape in chunks of 5,000, one property on every row. Each cell is the median of the pair ratios (below 1 means faster) with its 95 % interval, from 11 to 12 clean ABBA pairs for each figure of `ab.py --noise`, with a clean A/A control. The `arcadedb` (native) package does not change.
+
+[cols="3,2,2"]
+|===
+| Property shape | `create_vertices` | `new_edges`
+
+| List of strings
+| 0.403 (0.378 to 0.420)
+| 0.409 (0.389 to 0.420)
+
+| Dict
+| 0.265 (0.243 to 0.286)
+| 0.278 (0.269 to 0.298)
+
+| Datetime
+| 0.515 (0.503 to 0.550)
+| 0.482 (0.469 to 0.518)
+
+| List of floats (keeps the old path)
+| 1.024 (0.963 to 1.109)
+| 1.010 (0.979 to 1.027)
+
+|===
 
 == Graph batches next to deletes (fixed in ArcadeDB 26.11.1)
 
