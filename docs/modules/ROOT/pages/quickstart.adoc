@@ -156,6 +156,27 @@ HTTP port: 2480
 
 The server runs only while your Python process runs. See xref:index.adoc#embedded-vs-http[Embedded bindings or the HTTP driver] for when to run the regular ArcadeDB server (the official Docker image `arcadedata/arcadedb`) instead.
 
+The server takes a `config` dictionary. These keys matter first:
+
+* `host` defaults to `localhost`, so only clients on the same machine connect. A client in a Docker container or on another machine needs `config={"host": "0.0.0.0"}` (all IPv4 interfaces, or `"::"` for IPv6). `host` applies to the HTTP server and to every wire protocol that you enable. A per-protocol key such as `postgres_host` overrides it for that protocol.
+* `http_port` (default 2480) and `mode` (default `development`) are read by the bindings.
+* Any other key becomes the engine setting `arcadedb.<key with _ replaced by .>`. For example, `postgres_port` sets `arcadedb.postgres.port`.
+
+Both packages carry the Postgres, Redis and Bolt wire protocol plugins, and none starts unless you name it in `server_plugins`:
+
+[source,python]
+----
+config = {
+    "host": "0.0.0.0",
+    "server_plugins": "Postgres:com.arcadedb.postgres.PostgresProtocolPlugin",
+    "postgres_port": 5432,   # sets arcadedb.postgres.port
+}
+----
+
+The class names of the other two are `com.arcadedb.redis.RedisProtocolPlugin` (port key `redis_port`) and `com.arcadedb.bolt.BoltProtocolPlugin` (port key `bolt_port`).
+
+The native server has no Studio web UI.
+
 // REMOVE WHEN: the old arcadedb-embedded* shims are retired and two releases have shipped with the two-package layout allow-old-name
 In the `{jvm-pkg-name}` wheels from 26.11.1 the server also serves the Studio web UI, and `get_studio_url()` returns its address. The earlier 26.10.x wheels do not contain Studio: see the note in xref:installation.adoc#what-is-included[What is included].
 
