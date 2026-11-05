@@ -9,4 +9,3 @@
 14_lifecycle_timing.py | starts the JVM itself (start_jvm) to time the JVM lifecycle; arcadedb-jvm only
 15_import_database_vs_transactional_table_ingest.py | reads Java Schema objects (getProperty), NotOnNativeYet on the native package
 25_sparse_quantization_and_compact.py | imports jpype.types (Java arrays); runs on the arcadedb-jvm package
-29_hybrid_memory_retrieval.py | needs the vectorNeighbors where option of engine 26.11.1; the CI native image links release 26.10.2 (remove when 26.11.1 is out)
