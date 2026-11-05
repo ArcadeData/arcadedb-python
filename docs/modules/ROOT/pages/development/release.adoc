@@ -133,7 +133,7 @@ Each step is a script, CI, or the owner's decision. The owner's tag push is the 
 | owner (the only publishing step)
 
 | 4
-| `release-jvm.yml` and `release-native.yml` validate the tag, build and test the wheels, check them, and publish with trusted publishing. A failed upload is retried by re-running only the publish job.
+| `release-jvm.yml` and `release-native.yml` validate the tag, build and test the wheels, check them, and publish with trusted publishing. A failed upload is retried by re-running only the publish job. When both have succeeded, `release-notes.yml` creates the GitHub Release and, for a final release, closes the milestone (<<_github_release,GitHub Release>>).
 | CI
 
 | 5
@@ -159,6 +159,9 @@ uv run --no-project python -I scripts/release_preflight.py <VERSION>
 # 3. the tag (owner)
 git fetch origin main --no-tags && git tag <VERSION> origin/main && git push origin <VERSION>
 
+# 3a. preview the GitHub Release notes (read-only; a tag that does not exist yet is read as the tip of main)
+uv run --no-project python -I scripts/release_notes.py <VERSION> --dry-run
+
 # 5. after the workflows finished (run ids: gh run list -R ArcadeData/arcadedb-python --branch <VERSION>)
 scripts/after_tag_verify.sh <VERSION> <PREVIOUS> <jvm-run-id>
 PACKAGE=native scripts/after_tag_verify.sh <VERSION> <PREVIOUS> <native-run-id>
@@ -167,6 +170,26 @@ PACKAGE=native scripts/after_tag_verify.sh <VERSION> <PREVIOUS> <native-run-id>
 uv run --no-project python scripts/bump_engine.py --engine <VERSION> --dev-version <NEXT_DEV> --check
 uv run --no-project python scripts/bump_engine.py --engine <VERSION> --dev-version <NEXT_DEV>
 ----
+
+[[_github_release]]
+=== GitHub Release and milestone
+
+A release does not end on PyPI: it ends with a GitHub Release, as in the upstream repository. `.github/workflows/release-notes.yml` runs when `release-native.yml` or `release-jvm.yml` completes (`workflow_run`). It looks at both workflows for the commit of the tag and does nothing until both concluded `success`, so the workflow that finishes first exits quietly and the second one creates the release. Both workflows only succeed after their publish job uploaded to PyPI, and the gate also asks PyPI for both versions. A tag whose native build is held back by the readiness gate therefore gets no GitHub Release until that package is published and its publish job re-run. `workflow_dispatch` with the tag does the same by hand for a tag that is already published. It needs no secret: `GITHUB_TOKEN` with `contents: write` (the release), `issues: write` (the milestone), `pull-requests: read` and `actions: read`.
+
+* `A.B.C.devN` becomes a GitHub pre-release. `A.B.C` and `A.B.C.postN` become a normal release, marked as the latest.
+* The notes come from `scripts/release_notes.py`. The milestone is named after the base `A.B.C` (`26.11.1` for `26.11.1`, `26.11.1.dev2` and `26.11.1.post1`). A pull request is listed when it is merged, has that milestone and its merge commit is in the tag, grouped by its first matching label: `bug` (Bug fixes), `performance` (Performance), `enhancement` (Features), `documentation` (Documentation), everything else under Other. Each line is the title and `(#N)`. The notes also have the install lines, the engine version and the PyPI pages of both packages.
+* A final release lists the whole milestone. A `devN` and a `postN` list only what is not in the previous tag of the same base (`dev(N-1)`; for `postN` the final or `post(N-1)`). A pull request without the milestone is not in the notes, so check the milestone before the tag.
+* After a final release (not `devN`, not `postN`) the milestone `A.B.C` is closed. Items still open in it stay in it and are listed in the log of the run; move them to the next milestone by hand.
+* A run for a release that already exists edits its notes and flag, so a re-run is safe.
+
+Preview the notes before the tag, and read them again after the release:
+
+[source,bash]
+----
+uv run --no-project python -I scripts/release_notes.py <VERSION> --dry-run
+----
+
+The script only reads (`gh api`, so it needs `gh auth login` or `GH_TOKEN`) and prints the notes. A tag that does not exist yet is read as the tip of `main`.
 
 === Choosing the next dev version
 
