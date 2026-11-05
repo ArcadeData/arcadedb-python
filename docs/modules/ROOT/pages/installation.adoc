@@ -13,13 +13,11 @@ Pick one of the two packages. Both import as `{import-name}`. If you are not sur
 | Package | Install | Pick this if
 
 | `{native-pkg-name}` (native, the default)
-| `uv add {native-pkg-name}` +
-`uv add {native-pkg-name}`
+| `uv add {native-pkg-name}`
 | You write scripts, notebooks, tests, CLIs, serverless functions or agents. You want a fast start and a small footprint, and you need no JVM.
 
 | `{jvm-pkg-name}` (JVM)
-| `uv add {jvm-pkg-name}` +
-`uv add {jvm-pkg-name}`
+| `uv add {jvm-pkg-name}`
 | Your load is heavy and long-running, so the JIT compiler pays off. Or you need the Java-object APIs, JVM options, `jvm_kwargs` or `start_jvm`.
 |===
 
