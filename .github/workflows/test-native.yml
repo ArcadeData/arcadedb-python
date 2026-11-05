@@ -79,7 +79,7 @@ on:
       version:
         description: "Wheel version to build (PEP 440: A.B.C.devN, A.B.C or A.B.C.postN)"
         required: false
-        default: "26.11.1.dev0"
+        default: "26.12.1.dev0"
         type: string
       engine:
         description: "Engine release (Maven Central) the image links; empty = the release segment of a final version, else the newest release"
@@ -104,8 +104,8 @@ env:
   PYTHONUTF8: "1" # Windows defaults to cp1252; the notices contain non-ASCII author names
   # The version and engine of a run that does not pass them (pull request, push, nightly). The newest engine release on Maven Central is what an A.B.C.devN wheel links
   # (the A.B.C release does not exist yet); raise it when a newer release is out.
-  DEFAULT_VERSION: "26.11.1.dev0"
-  DEV_ENGINE: "26.10.2"
+  DEFAULT_VERSION: "26.12.1.dev0"
+  DEV_ENGINE: "26.11.1"
 
 jobs:
   plan:
