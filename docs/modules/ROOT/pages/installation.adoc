@@ -24,7 +24,7 @@ Pick one of the two packages. Both import as `{import-name}`. If you are not sur
 Install one of them, not both. If both are installed, `import arcadedb` raises an `ImportError` that names both packages. See xref:which-package.adoc[Which package?] for the comparison, and for how to switch.
 
 // REMOVE WHEN: the old arcadedb-embedded* shims are retired and two releases have shipped with the two-package layout allow-old-name
-NOTE: *Transition note.* The first release of this layout is 26.11.1. Until `{native-pkg-name}` passes its readiness bar, it may appear only as pre-releases, `26.11.1.devN`. Until a final 26.11.1 exists, PyPI holds only these pre-releases, and a plain `uv add {native-pkg-name}` installs the newest one. After a final release, a plain install takes the final, and a later pre-release needs `uv add --prerelease allow {native-pkg-name}` or `uv add --prerelease allow {native-pkg-name}`. The same holds for `{jvm-pkg-name}`.
+NOTE: *First release.* The first release of this layout is 26.11.1, and both packages have a final release on PyPI. A plain `uv add {native-pkg-name}` installs the final, and a later pre-release (`A.B.C.devN`) needs `uv add --prerelease allow {native-pkg-name}`. The same holds for `{jvm-pkg-name}`.
 
 // REMOVE WHEN: the old arcadedb-embedded* shims are retired and two releases have shipped with the two-package layout allow-old-name
 NOTE: *Old names.* The JVM package was formerly `arcadedb-embedded`. It is now `{jvm-pkg-name}`, the same build. The native package was formerly `arcadedb-embedded-native`. It is now `{native-pkg-name}`, and the old project is archived. A last `arcadedb-embedded` release will install `{native-pkg-name}`, not `{jvm-pkg-name}`. See xref:which-package.adoc#old-names[Old names].
@@ -98,11 +98,11 @@ with arcadedb.create_database("./test") as db:
     print(f"Database working: {result.first().get('test') == 1}")
 ----
 
-Run in an empty directory, the script prints (the version and the backend match what you installed; this output is from `{native-pkg-name}` 26.11.1.dev2, and `{jvm-pkg-name}` prints `Backend: jvm`):
+Run in an empty directory, the script prints (the version and the backend match what you installed; this output is from `{native-pkg-name}` 26.11.1, and `{jvm-pkg-name}` prints `Backend: jvm`):
 
 [source,text]
 ----
-ArcadeDB Python bindings version: 26.11.1.dev2
+ArcadeDB Python bindings version: 26.11.1
 Backend: native
 Database working: True
 ----

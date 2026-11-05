@@ -25,7 +25,7 @@ uv add {jvm-pkg-name}        # JVM, for heavy long-running loads
 If you are not sure, install `{native-pkg-name}`. You can switch later: your code does not change (see <<switching>>).
 
 // REMOVE WHEN: the old arcadedb-embedded* shims are retired and two releases have shipped with the two-package layout allow-old-name
-NOTE: *Transition note.* The first release of this layout is 26.11.1. Until the native build passes its readiness bar, `{native-pkg-name}` may appear only as pre-releases, `26.11.1.devN`. Until a final 26.11.1 exists, PyPI holds only these pre-releases, and a plain `uv add {native-pkg-name}` installs the newest one. After a final release, a plain install takes the final, and a later pre-release needs `uv add --prerelease allow {native-pkg-name}` (or `uv add --prerelease allow {native-pkg-name}`). The same holds for `{jvm-pkg-name}`. The readiness bar is listed in xref:development/release.adoc[Release].
+NOTE: *First release.* The first release of this layout is 26.11.1, and both packages have a final release on PyPI. A plain `uv add {native-pkg-name}` installs the final, and a later pre-release (`A.B.C.devN`) needs `uv add --prerelease allow {native-pkg-name}`. The same holds for `{jvm-pkg-name}`. The readiness bar for the native build is listed in xref:development/release.adoc[Release].
 
 [[which-one-do-i-have]]
 == Check which one you have
@@ -143,7 +143,7 @@ The packages had other names until 26.10.x. Search results and old tutorials may
 === Migrate from the old names
 
 . Remove the old package: `uv remove arcadedb-embedded`, or `uv remove arcadedb-embedded-native` if that is the one you have.
-. Install the new one: `uv add {jvm-pkg-name}` if you used `arcadedb-embedded`, or `uv add {native-pkg-name}` if you used `arcadedb-embedded-native`. Add `--prerelease allow` while the transition note above applies.
+. Install the new one: `uv add {jvm-pkg-name}` if you used `arcadedb-embedded`, or `uv add {native-pkg-name}` if you used `arcadedb-embedded-native`.
 . Change the import: `import arcadedb_embedded` and `import arcadedb_native` both become `import {import-name}`. The builds are the same as in the table above, so the rest of your code stays.
 
 Releases of the new layout start with 26.11.1. The 26.10.x wheels were built in a separate repository of the humemai organisation.

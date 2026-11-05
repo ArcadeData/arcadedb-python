@@ -24,7 +24,7 @@ uv add arcadedb-jvm   # JVM, for heavy long-running loads
 ```
 
 <!-- REMOVE WHEN: the old arcadedb-embedded* shims are retired and two releases have shipped with the two-package layout allow-old-name -->
-> Transition note: the first release of this layout is 26.11.1. Until `arcadedb` passes its readiness bar, it may appear only as pre-releases, `26.11.1.devN`. Until a final 26.11.1 exists, PyPI holds only these pre-releases, and a plain `uv add arcadedb` installs the newest one. After a final release, a plain install takes the final, and a later pre-release needs `uv add --prerelease allow arcadedb`. The same holds for `arcadedb-jvm`.
+> The first release of this layout is 26.11.1, and both packages have a final release on PyPI. A plain `uv add arcadedb` installs the final, and a later pre-release (`A.B.C.devN`) needs `uv add --prerelease allow arcadedb`. The same holds for `arcadedb-jvm`.
 
 <!-- REMOVE WHEN: the old arcadedb-embedded* shims are retired and two releases have shipped with the two-package layout allow-old-name -->
 > Old names: `arcadedb-jvm` was formerly `arcadedb-embedded`, and `arcadedb` was formerly `arcadedb-embedded-native` (archived on PyPI). A last `arcadedb-embedded` release will be a deprecation shim that installs `arcadedb`, the native build.
@@ -72,7 +72,7 @@ For several processes, other languages, HA or replication, run the official Dock
 
 | Package | What it is | Status |
 |---|---|---|
-| [`arcadedb`](https://pypi.org/project/arcadedb/) | The native build: the engine compiled by GraalVM Community Edition, no JVM, no JPype. The default for embedded use | First release of this layout: 26.11.1. It may first appear as `26.11.1.devN` pre-releases |
+| [`arcadedb`](https://pypi.org/project/arcadedb/) | The native build: the engine compiled by GraalVM Community Edition, no JVM, no JPype. The default for embedded use | First release of this layout: 26.11.1 |
 | [`arcadedb-jvm`](https://pypi.org/project/arcadedb-jvm/) | The JVM build: the Java engine on a bundled JVM, through JPype. The package this README described before the two-package layout | First release from this repository: 26.11.1 |
 
 <!-- REMOVE WHEN: the old arcadedb-embedded* shims are retired and two releases have shipped with the two-package layout allow-old-name -->

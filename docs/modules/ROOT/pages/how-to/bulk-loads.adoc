@@ -164,7 +164,7 @@ An engine-level Java run of the same shape confirms the split: after 2,000 round
 
 The engine-level Java run, repeated on the merge of the fix, kept the batch's edge bucket at 4 pages after 2,000 rounds, the same as `newEdge` in ordinary transactions, against 2,000 pages on its parent (https://github.com/ArcadeData/arcadedb/issues/10746#issuecomment-6462354150[verification on #10746]).
 
-On a `26.11.1.devN` pre-release, if your workload deletes and inserts again, write the edges with SQL (`CREATE EDGE`) or with `Vertex.new_edge` inside `db.transaction()`. Both stayed flat in the measurement (0.25 MiB in the table). From 26.11.1 on, `graph_batch()` is fine for this workload too.
+From 26.11.1 on, `graph_batch()` is fine for a workload that deletes and inserts again. On a `26.11.1.devN` pre-release, write the edges with SQL (`CREATE EDGE`) or with `Vertex.new_edge` inside `db.transaction()` instead. Both stayed flat in the measurement (0.25 MiB in the table).
 
 == If a graph batch is interrupted
 
