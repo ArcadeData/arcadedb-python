@@ -45,6 +45,8 @@ if BACKEND != "native":
     collect_ignore.append("test_native_find_nearest_params.py")
     # the columnar insert's stored records are compared between the JSON and the columnar entry points of the native library
     collect_ignore.append("test_native_columnar_insert.py")
+    # the rows of an insert_many chunk with date-times, Decimals, bytes and numpy scalars are told apart by the entry points they cross
+    collect_ignore.append("test_native_mixed_chunk.py")
     # the native build's ingest defaults (insert_many and graph_batch commit size), observed on the native library
     collect_ignore.append("test_native_ingest_defaults.py")
     # the float32 side buffer of the native GraphBatch entry (arcadedb_n_gb_bin), observed on the native library
