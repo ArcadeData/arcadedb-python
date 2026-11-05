@@ -76,6 +76,12 @@ Notes on the script:
 * `db.drop()` deletes all files of the database. It cannot be undone.
 * `db.is_transaction_active()` is `True` only inside `with db.transaction():`.
 
+=== Read-only open
+
+`open_database(path, read_only=True)` opens an existing database for reading only; `DatabaseFactory(path).open(read_only=True)` does the same. Queries, counts and record reads work as usual and `db.is_read_only()` is `True`. Every write raises `ArcadeDBError` with "read only" in the message: an `INSERT`, a schema change such as `CREATE DOCUMENT TYPE`, or `save()` on a record. Reads inside `with db.transaction():` work too; on ArcadeDB 26.11.1 and later the commit or rollback of such a transaction returns, while earlier engines raise the same read-only error there.
+
+Use it when a process only reads a finished database, so that a stray write fails instead of changing the data. It is a safety setting, not a speed setting: no measurement here shows reads getting faster.
+
 === Locking
 
 The open database holds an operating-system lock on `database.lck` in its directory. A second process cannot open the same directory while the first holds it; open it in one process and share the handle between that process's threads.
@@ -87,6 +93,12 @@ After a crash the operating system releases the lock and leaves the file behind.
 Each Python process starts one JVM, on the first database or server it creates. All databases of the process share it. To set JVM options, call `start_jvm(...)` before the first database; see xref:installation.adoc#jvm-options[JVM options].
 
 == Write and query
+
+=== Which query language
+
+Both languages run through the same two calls, so the choice depends on the question you ask. Use openCypher for graph patterns and traversals: who knows whom, friends of friends, paths of a given length. Use SQL for document and table queries, schema, inserts, filters, aggregates, and pagination. The older SQL graph syntax (`MATCH {type: Person, as: p}` patterns, `out()`, `in()`, `outE()`, `inE()`, and `TRAVERSE`) is supported but not recommended for new code: openCypher is a graph pattern language shared by many databases and close to the ISO GQL standard (ISO/IEC 39075), so queries and skills carry over. This page shows both languages on one database. The languages themselves are documented in the main ArcadeDB manual, see the {arcadedb-docs-url}/reference/sql/sql-introduction[SQL reference] and the {arcadedb-docs-url}/reference/cypher/chapter[openCypher reference]; this guide does not repeat them.
+
+=== Write and read
 
 [source,python,subs="attributes+"]
 ----
@@ -262,6 +274,19 @@ On the JVM build, `Document.to_dict()`, `Result.to_dict()` and `get_property_nam
 |===
 
 The control times `json.dumps` of rows already fetched, which uses no query and no JPype call. Its ratios on the four workloads are 0.996, 0.987, 0.993 and 1.000, and the same build measured twice gave ratios whose intervals contain 1. The figures come from one Linux x86_64 laptop with two cores for the process, Python 3.12, the median of 21 timed passes per run, and builds alternated in both orders. They cover the JVM build and these four workloads only, not wider rows, other value types, `to_list()`, or the native build.
+
+[[result-set-single-pass]]
+=== A result set is read once
+
+A result set is a lazy cursor, and you read it once. The engine computes the rows as you read them, not in `db.query(...)`. Both packages behave the same way:
+
+* A second pass over a set that you read to its end returns nothing. The set closes itself at its end, and it reads as empty afterwards.
+* `first()` and `one()` close the set after they take their row. `close()` closes it too. A set closed before its end raises `ArcadeDBError` when you read it again, because the rows it had not returned are gone. Leaving a `with` block closes the set too.
+* `count()` reads and counts the remaining rows, so the set is empty after it.
+* An error in the statement can surface while you read the rows, not in `db.query(...)`. Every way of reading raises it as `ArcadeDBError`.
+* If you stop reading early, close the set, or use it in a `with` block, so the engine releases its scan. An unclosed set keeps the threads of the engine's parallel scan parked for up to `arcadedb.parallelScanAbandonedTimeout` (10 minutes by default), and a few of them can stall the next query. Reading to the end also closes it.
+
+Use `to_list()` when you need the rows twice. It reads the whole result into a list of dicts, which you can loop over as often as you like.
 
 === Record ids in rows
 

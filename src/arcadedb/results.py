@@ -419,7 +419,7 @@ class ResultSet:
         (RIDs, embedded documents, ``float[]``, ...) over as the engine's own
         object, so each value has the Python type it always had and no value
         crosses the JVM boundary on its own. That is within a few percent of
-        ``to_json_list()`` on a wide scan (see the performance guide).
+        ``to_json_list()`` on a wide scan.
 
         For large results, ``to_columns()``, ``to_dataframe()`` or
         ``to_arrow()`` move the data as columns and are faster still.

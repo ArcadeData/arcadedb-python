@@ -31,8 +31,9 @@ class GraphBatch:
     buffer fills, manage their own transactions. From engine 26.10.1 they refuse
     to run inside a transaction you opened (an ArcadeDBError) and leave it
     untouched; on 26.9.1 and earlier they commit it (ArcadeData/arcadedb#9242).
-    Call them outside your own transactions either way; see
-    docs/api/graph_batch.md.
+    Call them outside your own transactions either way. Commit sizes and what
+    an interrupted batch leaves behind are in
+    docs/modules/ROOT/pages/how-to/bulk-loads.adoc.
     """
 
     _VALID_WAL_FLUSH_MODES = {

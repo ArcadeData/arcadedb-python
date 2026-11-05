@@ -8,20 +8,21 @@ a social network with people and friendships. It showcases:
 1. Creating vertex and edge types (schema definition)
 2. Creating vertices (people) with properties
 3. Creating edges (friendships) between vertices
-4. Querying the graph using SQL MATCH and OpenCypher dialects
+4. Querying the graph with openCypher (recommended) and the older SQL MATCH syntax
 5. Finding friends, friends of friends, and mutual connections
-6. Comparing SQL vs OpenCypher syntax and performance
+6. Comparing openCypher with the older SQL MATCH syntax, in syntax and timing
 
 Key Concepts:
 - Vertices represent entities (Person)
 - Edges represent relationships (FRIEND_OF)
 - Properties store data on both vertices and edges
 - Graph traversal allows complex relationship queries
-- SQL MATCH and OpenCypher provide different graph querying capabilities
+- openCypher and SQL MATCH are two ways to ask the same graph questions
 
 ArcadeDB Query Languages:
-- SQL MATCH: ArcadeDB's extended SQL syntax for graph traversal
-- OpenCypher: openCypher query language for declarative graph patterns
+- OpenCypher: the openCypher language for graph patterns and traversals (use it for new code)
+- SQL MATCH: ArcadeDB's older SQL graph syntax, supported but not recommended for new code
+- Plain SQL stays the language for document and table queries (inserts, aggregates, IS NULL filters)
 
 ⚡ Performance Findings (This Example):
 - SQL MATCH and OpenCypher performance varies by dataset and runtime configuration
@@ -374,14 +375,14 @@ def create_sample_data(db):
 
 
 def demonstrate_graph_queries(db):
-    """Demonstrate various graph queries using SQL and OpenCypher"""
+    """Demonstrate various graph queries using OpenCypher and SQL"""
     print("\n🔍 Demonstrating graph queries...")
 
-    # SQL-based queries
-    demonstrate_sql_queries(db)
-
-    # OpenCypher-based queries
+    # OpenCypher-based queries (the recommended language for graph patterns)
     demonstrate_opencypher_queries(db)
+
+    # SQL-based queries (the older SQL MATCH syntax, plus plain SQL on the same data)
+    demonstrate_sql_queries(db)
 
 
 def demonstrate_sql_queries(db):
@@ -793,22 +794,27 @@ def compare_query_languages(db):
         # Show syntax differences
         print("\n    🔍 Key Syntax Differences:")
         print("    " + "-" * 40)
-        print("    SQL MATCH:")
-        print("      • Nodes: {type: Person, as: alias, where: (condition)}")
-        print("      • Edges: -EDGE_TYPE-> or -EDGE_TYPE->{as: alias}")
-        print("      • Conditions: where: (property = 'value')")
-        print("      • More verbose but explicit about types")
-        print()
         print("    OpenCypher:")
         print("      • Pattern matching with MATCH and relationships")
         print("      • Filters: WHERE clauses")
         print("      • Aggregations: count(), distinct")
         print("      • Declarative graph patterns")
+        print()
+        print("    SQL MATCH:")
+        print("      • Nodes: {type: Person, as: alias, where: (condition)}")
+        print("      • Edges: -EDGE_TYPE-> or -EDGE_TYPE->{as: alias}")
+        print("      • Conditions: where: (property = 'value')")
+        print("      • More verbose but explicit about types")
 
         print("\n    💡 When to use each:")
         print("    " + "-" * 30)
-        print("    • SQL MATCH: Mixing graph and relational queries")
-        print("    • OpenCypher: Declarative graph patterns")
+        print(
+            "    • OpenCypher: graph patterns and traversals (recommended for new code)"
+        )
+        print(
+            "    • SQL MATCH: older graph syntax, supported but not recommended for new code"
+        )
+        print("    • Plain SQL: document and table queries")
         print("    • Both support the same underlying graph operations")
 
         print(f"  ⏱️  Comparison section: {time.time() - section_start:.3f}s")
