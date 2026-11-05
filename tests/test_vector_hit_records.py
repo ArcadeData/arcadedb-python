@@ -9,6 +9,8 @@ modified and saved after a search. The default call (``include_vector=True``) is
 import numpy as np
 import pytest
 
+import arcadedb
+
 DIM = 8
 N_DOC = 48
 N_SUB = 16
@@ -62,6 +64,15 @@ def clash_db(temp_db):
     )
 
 
+def _assert_same_distances(got, expected):
+    """Exactly on the native build; to a few float32 ulps on the JVM build, whose repeated calls can differ in the last float32 bit
+    (the rule of ``_assert_same`` in ``test_find_nearest_query_forms.py``)."""
+    if arcadedb.__backend__ == "native":
+        assert got == expected
+    else:
+        assert got == pytest.approx(expected, rel=1e-6, abs=1e-9)
+
+
 def _same_record(hit, ref):
     assert hit.get_rid() == ref.get_rid()
     assert hit.get_type_name() == ref.get_type_name()
@@ -93,9 +104,8 @@ def test_the_keyword_changes_no_answer(hit_db):
     for q in (1, 20, 55):
         full = index.find_nearest(vecs[q], k=9)
         lean = index.find_nearest(vecs[q], k=9, include_vector=False)
-        assert [(r.get_rid(), d) for r, d in full] == [
-            (r.get_rid(), d) for r, d in lean
-        ]
+        assert [r.get_rid() for r, _ in full] == [r.get_rid() for r, _ in lean]
+        _assert_same_distances([d for _, d in full], [d for _, d in lean])
         assert [r.get("id") for r, _ in full] == [r.get("id") for r, _ in lean]
         for (a, _), (b, _) in zip(full, lean):
             assert list(a.get("embedding")) == list(b.get("embedding"))
