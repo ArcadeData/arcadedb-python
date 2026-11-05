@@ -13,8 +13,7 @@ and the old repository name `arcadedb-embedded-python`) and the title `ArcadeDB 
 
 What the allowlist lets through, and why:
 
-* Whole files that are history or that must name the old package to do their job: the plan and spec
-  documents under docs/superpowers/, a changelog, and this script.
+* Whole files that are history or that must name the old package to do their job: a changelog, and this script.
 * References to issues of the old repository, written `humemai/arcadedb-embedded-python#123`. They
   point at real threads, so they keep their text.
 * The sentence "This package was published as arcadedb-embedded until 26.10.x; install arcadedb or arcadedb-jvm now."
@@ -48,7 +47,6 @@ OLD_NAME = re.compile(
 
 # Files (fnmatch patterns on the path relative to the repository root) that may name the old package.
 ALLOWED_PATHS: tuple[str, ...] = (
-    "docs/superpowers/*",  # plans and specs of the move, history
     "CHANGELOG*",
     "HISTORY*",
     "NEWS*",
