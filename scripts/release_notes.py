@@ -1,18 +1,20 @@
 #!/usr/bin/env python3
 """Write the notes of the GitHub Release of one tag from the milestone of its version.
 
-The tag is a bare version (docs page "Release"): `A.B.C.devN`, `A.B.C` or `A.B.C.postN`. The milestone is named after the base
-`A.B.C`. The notes list the pull requests of that milestone that are merged, grouped by label, then the install lines, the engine
-version and the PyPI pages of the two packages.
+The tag is a bare version (docs page "Release"): `A.B.C.devN`, `A.B.C` or `A.B.C.postN`. The notes list merged pull requests grouped
+by label, then the install lines, the engine version and the PyPI pages of the two packages. The pull requests of a `devN` and of a
+final release come from the milestone named after the base `A.B.C`; a `postN` does not use a milestone (see below).
 
 Which pull requests a tag lists:
 
 - `A.B.C`           every merged pull request of the milestone that is in the tag (the first release of a base is the whole cycle)
 - `A.B.C.devN`      those that are in the tag and not in the previous tag of the same base (`A.B.C.dev(N-1)`), so a preview lists only
                     what is new since the last preview
-- `A.B.C.postN`     those that are in the tag and not in the previous tag of the same base (`A.B.C` or `A.B.C.post(N-1)`)
+- `A.B.C.postN`     every pull request merged between the previous tag of the same base (`A.B.C` or `A.B.C.post(N-1)`) and the tag, found
+                    from the commits of that range, with whatever milestone it has or none: the final release closes the milestone
+                    `A.B.C`, so a fix made after it is not in it
 
-"In a tag" means the merge commit of the pull request is an ancestor of the tag (the GitHub compare API), so a pull request that merges
+For `devN` and the final release "in a tag" means the merge commit of the pull request is an ancestor of the tag (the GitHub compare API), so a pull request that merges
 after the tag, while the release still runs, is not listed. A tag that does not exist yet (a dry run before the release) is read as the
 tip of the default branch.
 
@@ -130,7 +132,7 @@ def clean_title(title, number):
 
 def safe_title(title):
     """No @mention in a release body: a zero width space after the @ stops the notification."""
-    return re.sub(r"@(?=\w)", "@​", title.strip())
+    return re.sub(r"@(?=\w)", "@\u200b", title.strip())
 
 
 def is_ancestor(repo, sha, ref):
@@ -166,6 +168,39 @@ def milestone_prs(repo, base):
     return milestone, prs
 
 
+def compare_commits(repo, base, head):
+    """The commits after `base` up to `head` (all pages of the compare API)."""
+    out = []
+    page = 1
+    while True:
+        data = gh_api(
+            f"repos/{repo}/compare/{quote(base, safe='')}...{quote(head, safe='')}"
+            f"?per_page=100&page={page}"
+        )
+        commits = (data or {}).get("commits", [])
+        out.extend(commits)
+        if len(commits) < 100:
+            return out
+        page += 1
+
+
+def range_prs(repo, prev, ref):
+    """Merged pull requests whose merge commit lies between `prev` (excluded) and `ref`, whatever their milestone."""
+    found = {}
+    for commit in compare_commits(repo, prev, ref):
+        for pr in gh_api(f"repos/{repo}/commits/{commit['sha']}/pulls") or []:
+            if not pr.get("merged_at") or pr.get("merge_commit_sha") != commit["sha"]:
+                continue
+            found[pr["number"]] = {
+                "number": pr["number"],
+                "title": pr["title"],
+                "labels": [lb["name"] for lb in pr.get("labels", [])],
+                "sha": commit["sha"],
+                "merged_at": pr["merged_at"],
+            }
+    return list(found.values())
+
+
 def engine_of(repo, kind, base, ref):
     """(engine version, how it is known). A final or post wheel links the engine it is named after."""
     if kind != "dev":
@@ -196,15 +231,21 @@ def build_notes(repo, tag):
 
     tags = [t["name"] for t in gh_pages(f"repos/{repo}/tags")]
     prev = previous_tag(tag, [t for t in tags if t != tag])
-    milestone, prs = milestone_prs(repo, base)
-
+    milestone = None
     listed = []
-    for pr in prs:
-        if not is_ancestor(repo, pr["sha"], ref):
-            continue
-        if prev and is_ancestor(repo, pr["sha"], prev):
-            continue
-        listed.append(pr)
+    if kind == "post":
+        if prev:
+            listed = range_prs(repo, prev, ref)
+        else:
+            print(f"warning: no earlier tag of {base} for {tag}", file=sys.stderr)
+    else:
+        milestone, prs = milestone_prs(repo, base)
+        for pr in prs:
+            if not is_ancestor(repo, pr["sha"], ref):
+                continue
+            if prev and is_ancestor(repo, pr["sha"], prev):
+                continue
+            listed.append(pr)
     listed.sort(key=lambda p: p["number"])
 
     groups = {title: [] for title, _ in SECTIONS}
@@ -224,7 +265,7 @@ def build_notes(repo, tag):
         )
     lines.append("")
 
-    if milestone is None:
+    if kind != "post" and milestone is None:
         lines.append(
             f"No milestone named `{base}` exists, so this release has no change list."
         )
@@ -232,6 +273,8 @@ def build_notes(repo, tag):
         lines.append("")
     else:
         scope = f"since `{prev}`" if prev else f"in the milestone `{base}`"
+        if kind == "post" and not prev:
+            scope = "since the previous release"
         lines.append(f"## What changed {scope}")
         lines.append("")
         if not listed:

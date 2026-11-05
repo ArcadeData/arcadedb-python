@@ -22,7 +22,7 @@ Every step says who does it: script (run the command, read the result), CI (a wo
   ```
 
 - [ ] 2. owner: for a final or post release, the native readiness bar is met and the repository variable `ARCADEDB_NATIVE_READINESS_BAR_MET` is `true` (the preflight line `(g)` shows it, or SKIPs when the login cannot read variables).
-- [ ] 3. owner: the go. Nothing is published before this box is ticked. Before it, preview the GitHub Release notes and check that every pull request of this release has the milestone `<VERSION>` (a pull request without it is not listed):
+- [ ] 3. owner: the go. Nothing is published before this box is ticked. Before it, preview the GitHub Release notes and check that every pull request of this release has the milestone `<VERSION>` (a pull request without it is not listed in a `devN` or final release; a `postN` lists the commit range instead and needs no milestone):
 
   ```bash
   uv run --no-project python -I scripts/release_notes.py <VERSION> --dry-run
@@ -73,4 +73,4 @@ Every step says who does it: script (run the command, read the result), CI (a wo
   If the engine NOTICE changed, also refresh the kept copy with `git -C <arcadedb clone> show <VERSION>:NOTICE > native/wheel/ARCADEDB_ENGINE_NOTICE`.
 
 - [ ] 9. CI, then owner: merge the bump PR when every check is green, and delete the branch and the worktree. Then remove the tests and skip-list lines that waited for the new engine: `git grep -n -i "native build links\|native image links"`.
-- [ ] 10. owner: check the GitHub Release (notes, pre-release flag) and, after a final release, that the milestone is closed and its open items moved to the next one. Close this issue with the two run ids and the two PyPI links.
+- [ ] 10. owner: check the GitHub Release (notes, pre-release flag) and, after a final release, that the milestone is closed and what was still open in it moved to the next milestone (the open one due next, or one the workflow created named after the next upstream engine version). If the run failed with a message about the next milestone, create it with a due date and re-run `GitHub Release` (Actions, `workflow_dispatch`, the tag). Close this issue with the two run ids and the two PyPI links.

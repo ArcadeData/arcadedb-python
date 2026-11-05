@@ -2,7 +2,8 @@ name: GitHub Release
 
 # A tag release ends here. When BOTH release workflows of a tag (release-native.yml for `arcadedb`, release-jvm.yml for `arcadedb-jvm`)
 # have finished successfully, this workflow creates the GitHub Release of the tag with notes written by scripts/release_notes.py from the
-# milestone named after the base version, and closes that milestone after a FINAL release (A.B.C, not A.B.C.devN, not A.B.C.postN).
+# milestone named after the base version (a `postN` uses the commit range since the previous tag instead), and closes that milestone after
+# a FINAL release (A.B.C, not A.B.C.devN, not A.B.C.postN), after moving what is still open in it to the next milestone.
 #
 # Why `workflow_run` and not a last job in each release workflow, or a poll of PyPI: the two release workflows do not wait for each other
 # (the native build and the JVM build take different times and either can need a retry), and a job inside one of them cannot know the
@@ -121,26 +122,52 @@ jobs:
           fi
           gh release view "$TAG" --json url,isPrerelease --jq '"release: " + .url + " (prerelease: " + (.isPrerelease|tostring) + ")"'
 
-      # Only a final release closes its milestone. A dev tag leaves it open (the cycle goes on), a post tag belongs to a milestone that is
-      # already closed. Anything still open in the milestone is listed in the log first: closing does not move or close it.
-      - name: Close the milestone of a final release
+      # Only a final release closes its milestone. A dev tag leaves it open (the cycle goes on); a post tag has no milestone of its own
+      # (its notes come from the commit range, not from a milestone). Items still open in the milestone move to the next one first, and
+      # every move is logged. The next one is the open milestone with the earliest due date after this one. When there is none, the
+      # milestone is created, named after the next upstream engine version (due 30 days after this one; the base of the upstream `main` version, as in
+      # development/release.adoc), when that can be read. Otherwise nothing is moved or closed and the job fails, so the maintainer
+      # creates the next milestone and re-runs this workflow (the release step is a no-op edit the second time).
+      - name: Move the open items and close the milestone of a final release
         if: steps.gate.outputs.ready == 'true' && steps.gate.outputs.kind == 'final'
         env:
           BASE: ${{ steps.gate.outputs.base }}
         run: |
           set -euo pipefail
-          row="$(gh api "repos/$GH_REPO/milestones?state=all&per_page=100" | jq -r --arg t "$BASE" '[.[] | select(.title == $t)][0] // empty | "\(.number) \(.state) \(.open_issues)"')"
+          milestones="$(gh api "repos/$GH_REPO/milestones?state=all&per_page=100")"
+          row="$(jq -r --arg t "$BASE" '[.[] | select(.title == $t)][0] // empty | "\(.number) \(.state) \(.open_issues) \(.due_on // "")"' <<< "$milestones")"
           if [ -z "$row" ]; then
             echo "::warning::No milestone named $BASE: nothing to close"
             exit 0
           fi
-          read -r number state open_issues <<< "$row"
+          read -r number state open_issues due <<< "$row"
           if [ "$state" = closed ]; then
             echo "Milestone $BASE (#$number) is already closed"
             exit 0
           fi
           if [ "$open_issues" != 0 ]; then
-            echo "::warning::Milestone $BASE still has $open_issues open items; they stay in it. Move them to the next milestone if they are not part of this release."
-            gh api "repos/$GH_REPO/issues?milestone=$number&state=open&per_page=100" --jq '.[] | "  open: #\(.number) \(.title)"'
+            next="$(jq -r --arg n "$number" --arg due "$due" '[.[] | select(.state == "open" and (.number | tostring) != $n and .due_on != null and ($due == "" or .due_on > $due))] | sort_by(.due_on) | .[0].number // empty' <<< "$milestones")"
+            if [ -z "$next" ]; then
+              upstream="$(curl -fsS https://raw.githubusercontent.com/ArcadeData/arcadedb/main/pom.xml | sed -n '/<artifactId>arcadedb-parent<\/artifactId>/,/<\/version>/ s/.*<version>\(.*\)-SNAPSHOT<\/version>.*/\1/p' | head -n 1 || true)"
+              if [[ "$upstream" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ && "$upstream" != "$BASE" ]]; then
+                found="$(jq -r --arg t "$upstream" '[.[] | select(.title == $t)][0] // empty | "\(.number) \(.state)"' <<< "$milestones")"
+                if [ -z "$found" ]; then
+                  # due 30 days after this one (releases are monthly), so a pick-by-due-date finds it
+                  args=(-f title="$upstream")
+                  [ -z "$due" ] || args+=(-f due_on="$(date -u -d "$due + 30 days" +%Y-%m-%dT%H:%M:%SZ)")
+                  next="$(gh api --method POST "repos/$GH_REPO/milestones" "${args[@]}" --jq .number)"
+                  echo "Created milestone $upstream (#$next), named after the next upstream engine version"
+                elif [ "${found#* }" = open ]; then
+                  next="${found%% *}"
+                fi
+              fi
+            fi
+            if [ -z "$next" ]; then
+              echo "::error::Milestone $BASE has $open_issues open items and there is no next open milestone with a due date, and the next upstream version could not be used (read '${upstream:-nothing}'). Nothing was moved or closed. Create the next milestone with a due date, then re-run this workflow."
+              exit 1
+            fi
+            for item in $(gh api --paginate "repos/$GH_REPO/issues?milestone=$number&state=open&per_page=100" --jq '.[].number'); do
+              gh api --method PATCH "repos/$GH_REPO/issues/$item" -F milestone="$next" --jq '"moved #\(.number) \(.title) to milestone \(.milestone.title)"'
+            done
           fi
           gh api --method PATCH "repos/$GH_REPO/milestones/$number" -f state=closed --jq '"closed milestone " + .title + " (" + .html_url + ")"'
