@@ -566,6 +566,7 @@ class VectorIndex:
         allowed_rids,
         approximate,
         ef_search=None,
+        include_vector=True,  # accepted for API parity, the JVM build loads whole records
     ):
         java_vector = to_java_float_array(query_vector)
         allowed_rids_set = self._build_allowed_rids_set(allowed_rids)
@@ -584,6 +585,8 @@ class VectorIndex:
         k=10,
         ef_search=None,
         allowed_rids=None,
+        *,
+        include_vector=True,
     ):
         """
         Find k nearest neighbors to the query vector.
@@ -605,6 +608,17 @@ class VectorIndex:
                 uses the Java index default/adaptive behavior.
             allowed_rids: Optional list of RID strings (e.g. ["#1:0", "#2:5"]) to
                 restrict search
+            include_vector: Keyword only, default ``True``: every hit carries its
+                indexed vector, as always. Pass ``False`` when you need only the
+                ids or the distances (or other properties) of the hits. On the
+                native build each hit is then built without the indexed vector, and
+                loads it, with the rest of the record, in one lookup by RID the
+                first time you read it (``get`` of the vector, ``has_property``,
+                ``to_dict``, ``get_property_names``, ``modify``, ``save``); the
+                values are those of ``lookup_by_rid``, and a hit deleted since the
+                search raises ``ArcadeDBError`` on that first read. The JVM build
+                accepts the argument and ignores it: it loads whole records either
+                way, so the call costs the same.
 
         Returns:
             List of tuples: [(record, score), ...]
@@ -612,9 +626,13 @@ class VectorIndex:
             - score: The similarity score/distance
         """
         self._check_live()
-        return self._find_nearest_live(query_vector, k, ef_search, allowed_rids)
+        return self._find_nearest_live(
+            query_vector, k, ef_search, allowed_rids, include_vector
+        )
 
-    def _find_nearest_live(self, query_vector, k, ef_search, allowed_rids):
+    def _find_nearest_live(
+        self, query_vector, k, ef_search, allowed_rids, include_vector=True
+    ):
         # find_nearest after _check_live(): find_nearest_by_key checks once and
         # comes here, so a call never pays the isValid() crossing twice.
         effective_ef_search = self._normalize_ef_search(ef_search)
@@ -626,6 +644,7 @@ class VectorIndex:
                 allowed_rids=allowed_rids,
                 approximate=False,
                 ef_search=effective_ef_search,
+                include_vector=include_vector,
             )
 
         except ArcadeDBError:

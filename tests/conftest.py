@@ -43,6 +43,8 @@ if BACKEND != "native":
     collect_ignore.append("test_native_udf.py")
     # how find_nearest hands the query vector to the native library (the codec's side buffer)
     collect_ignore.append("test_native_find_nearest_params.py")
+    # find_nearest(include_vector=False) on the native wheel fills a hit's vector on first use (counts lookups of the native wrapper)
+    collect_ignore.append("test_native_vector_hit_lazy.py")
     # the columnar insert's stored records are compared between the JSON and the columnar entry points of the native library
     collect_ignore.append("test_native_columnar_insert.py")
     # the rows of an insert_many chunk with date-times, Decimals, bytes and numpy scalars are told apart by the entry points they cross
