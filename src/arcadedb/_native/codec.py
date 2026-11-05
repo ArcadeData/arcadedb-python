@@ -276,6 +276,47 @@ def encode_gb_args(args):
     return text, buf, state[1]
 
 
+_INT64_MAX = 2**63 - 1
+_NS_DATETIME = None if _np is None else _np.dtype("datetime64[ns]")
+
+
+def sample_array(values, timestamps=False):
+    """The int64 or float64 array that stands for a column of ``append_samples`` in the address table of ``arcadedb_n_async_bin``, or
+    None when the column keeps the JSON text it has always had. It is the array whose ``.tolist()`` the text path writes, value for
+    value: an int, uint (uint64 only inside the int64 range) or bool array is int64, a float array narrower than long double is float64
+    (a float32 widens exactly), and, for the timestamps only, a ``datetime64[ns]`` array without NaT is its int64 count (what ``.tolist()``
+    gives for that unit). Anything else, a list, a subclass of ndarray, a 2-D or empty array, a float array as timestamps, other
+    ``datetime64`` units (``int()`` refuses their datetimes on the text path), a ``datetime64[ns]`` of non-native byte order, returns None.
+    """
+    if (
+        _np is None
+        or type(values) is not _np.ndarray
+        or values.ndim != 1
+        or not values.size
+    ):
+        return None
+    dtype = values.dtype
+    kind = dtype.kind
+    if kind in "ib":
+        return _np.ascontiguousarray(values, dtype=_np.int64)
+    if kind == "u":
+        if dtype.itemsize == 8 and int(values.max()) > _INT64_MAX:
+            return None
+        return _np.ascontiguousarray(values, dtype=_np.int64)
+    if kind == "f":
+        if timestamps or dtype.itemsize > 8:
+            return None
+        return _np.ascontiguousarray(values, dtype=_np.float64)
+    if kind == "M" and timestamps and dtype == _NS_DATETIME:
+        counts = _np.ascontiguousarray(values.view(_np.int64))
+        if (
+            counts == _np.iinfo(_np.int64).min
+        ).any():  # NaT: the text path raises on its None
+            return None
+        return counts
+    return None
+
+
 def row_default(value):
     """json.dumps hook for the rows of a bulk load: a NumPy float array that is not float32 is the list it would have been
     (a float64 array stored on an undeclared property keeps its doubles, as on the JPype path); the rest as :func:`_default`.
