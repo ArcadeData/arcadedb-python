@@ -1,5 +1,5 @@
 = Bulk loads and commit size
-:description: The default commit size of insert_many, graph_batch and create_vertices on the arcadedb (native) and arcadedb-jvm packages, what it means for a failed load, what to do after an interrupted graph batch, how to change it, how insert_many treats Python's cyclic garbage collector on arcadedb-jvm, which property shapes a graph batch loads in bulk on the JVM build, how to pass time-series columns to append_samples on arcadedb (native), and a known limitation: a graph batch does not reuse the space of deleted edges.
+:description: The default commit size of insert_many, graph_batch and create_vertices on the arcadedb (native) and arcadedb-jvm packages, what it means for a failed load, what to do after an interrupted graph batch, how to change it, how insert_many treats Python's cyclic garbage collector on arcadedb-jvm, which property shapes a graph batch loads in bulk on the JVM build, how to pass time-series columns to append_samples (the address path is native only), and a known limitation: a graph batch does not reuse the space of deleted edges.
 
 `insert_many`, `graph_batch` and `GraphBatch.create_vertices` load data in transactions. The commit size is the number of rows in one transaction. It decides how much work the engine holds in memory before it commits, and how many rows stay in the database when a load fails.
 
@@ -111,9 +111,9 @@ The table is one laptop study of the `arcadedb-jvm` package: per-row time of thi
 
 |===
 
-== Time-series samples with `append_samples` (`arcadedb`, native)
+== Time-series samples with `append_samples`
 
-`db.async_executor().append_samples(type_name, timestamps, *columns)` loads a columnar batch into a TIMESERIES type: the timestamps, then one column for each tag and field in the order of the type's declaration. Call `wait_completion()` before you read the samples back. How to declare the type is in the main ArcadeDB docs: see {arcadedb-docs-url}/concepts/timeseries[Time series].
+`db.async_executor().append_samples(type_name, timestamps, *columns)` loads a columnar batch into a TIMESERIES type: the timestamps, then one column for each tag and field in the order of the type's declaration. Call `wait_completion()` before you read the samples back. How to declare the type is in the main ArcadeDB docs: see {arcadedb-docs-url}/concepts/timeseries[Time series]. The call exists on both packages. The rest of this section describes the fast path of the `arcadedb` (native) package. On `arcadedb-jvm`, a NumPy array for the timestamps or for a numeric column crosses as one buffer copy, and any other sequence converts value by value.
 
 On the `arcadedb` (native) package, a NumPy column crosses to the engine by its address, with no JSON text, when it is one of these:
 

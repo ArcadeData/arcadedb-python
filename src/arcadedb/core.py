@@ -1974,7 +1974,7 @@ class Database:
         is the one exception to that: the statement is aborted and the caller gets a
         ``KeyboardInterrupt``, chained from the ``ArcadeDBError``, wherever the signal
         landed. A numeric argument costs about 30 bytes of Python memory per call that
-        JPype 1.7.1 does not give back (see the Python functions guide).
+        JPype 1.7.1 does not give back.
 
         The engine registers functions for the whole process, not for one database: every
         database in this process sees the function, and a function stays registered until

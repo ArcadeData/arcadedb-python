@@ -93,7 +93,7 @@ The API is the same. The runtime is not. These are the differences you can plan 
 | Available.
 
 | JVM options (`jvm_kwargs`, `start_jvm`, `-X` and `-D` flags)
-| Do not exist. There is no JVM.
+| `start_jvm` and the `-X` and `-D` flags do not exist, because there is no JVM. `jvm_kwargs` is accepted and ignored, with a logged warning.
 | Available. See xref:installation.adoc#jvm-options[JVM options].
 
 | A few API calls
