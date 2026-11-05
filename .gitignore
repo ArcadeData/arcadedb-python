@@ -221,7 +221,7 @@ __marimo__/
 .superpowers/
 
 # --- Python bindings (from ArcadeData/arcadedb bindings/python/.gitignore) ---
-# SPDX-FileCopyrightText: Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+# SPDX-FileCopyrightText: Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com) and HumemAI (info@humem.ai)
 # SPDX-License-Identifier: Apache-2.0
 
 # Generated during build - do not commit

@@ -1,5 +1,5 @@
 arcadedb (native build)
-Copyright 2021-present Arcade Data Ltd; Python bindings copyright Taewoon Kim (humem.ai)
+Copyright 2021-present Arcade Data Ltd (info@arcadedata.com) and HumemAI (info@humem.ai)
 Licensed under the Apache License, Version 2.0 (licenses/Apache-2.0.txt, LICENSE).
 
 This wheel contains the ArcadeDB engine (https://github.com/ArcadeData/arcadedb, release named in
