@@ -35,14 +35,14 @@ Perfect introduction to ArcadeDB basics:
 ---
 
 ### 🔗 [02_social_network_graph.py](./02_social_network_graph.py)
-**Vertex Types | Edge Types | Graph Traversal | SQL MATCH vs OpenCypher | NULL Handling**
+**Vertex Types | Edge Types | Graph Traversal | OpenCypher vs SQL MATCH | NULL Handling**
 
 Complete social network modeling with graph database:
 - Creating vertex types (Person) and edge types (FRIEND_OF) with rich properties
 - NULL value handling for optional fields (email, phone, reputation)
 - Bidirectional relationships with metadata (since, closeness)
 - Graph traversal patterns (friends, friends-of-friends, mutual connections)
-- Comparing SQL MATCH vs OpenCypher query languages
+- Comparing OpenCypher (recommended for graph patterns) with the older SQL MATCH syntax
 - Variable-length path queries (`*1..3`) and graph aggregations
 - NULL filtering (IS NULL queries for missing contact info)
 - Relationship property queries (closeness filtering)

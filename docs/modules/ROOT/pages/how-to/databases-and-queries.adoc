@@ -88,6 +88,12 @@ Each Python process starts one JVM, on the first database or server it creates. 
 
 == Write and query
 
+=== Which query language
+
+Both languages run through the same two calls, so the choice depends on the question you ask. Use openCypher for graph patterns and traversals: who knows whom, friends of friends, paths of a given length. Use SQL for document and table queries, schema, inserts, filters, aggregates, and pagination. The older SQL graph syntax (`MATCH {type: Person, as: p}` patterns, `out()`, `in()`, `outE()`, `inE()`, and `TRAVERSE`) is supported but not recommended for new code: openCypher is a graph pattern language shared by many databases and close to the ISO GQL standard (ISO/IEC 39075), so queries and skills carry over. This page shows both languages on one database. The languages themselves are documented in the main ArcadeDB manual, see the {arcadedb-docs-url}/reference/sql/sql-introduction[SQL reference] and the {arcadedb-docs-url}/reference/cypher/chapter[openCypher reference]; this guide does not repeat them.
+
+=== Write and read
+
 [source,python,subs="attributes+"]
 ----
 {import-stmt}
