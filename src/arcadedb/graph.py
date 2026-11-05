@@ -223,6 +223,11 @@ class Vertex(Document):
         definition, not by a per-call parameter. Use schema.create_edge_type() to
         control bidirectionality at the type level.
 
+        Both vertices are resolved by record id inside the active transaction,
+        so a vertex object read in an earlier transaction (or before an earlier
+        edge was committed) can still create edges; the object itself is not
+        refreshed.
+
         Args:
             label: Edge label (type)
             target: Target vertex (Python Vertex or Java vertex object)
@@ -239,6 +244,27 @@ class Vertex(Document):
         target_java = (
             target.get_java_document() if isinstance(target, Vertex) else target
         )
+        # A vertex object is the state it had when it was read. The first edge
+        # of a vertex rewrites its record (the head chunk of its edge list), so
+        # an object read before that commit would make the engine's update fail
+        # with ConcurrentModificationException. Resolve both ends by record id
+        # inside the active transaction, as the native build does: the source
+        # is looked up (one lookup), the target goes in as its id and the
+        # engine loads it.
+        source_java = self._java_document
+        source_rid = source_java.getIdentity()
+        if (
+            source_rid is not None
+            and source_rid.isValid()
+            and self._database is not None
+        ):
+            source_java = self._database._java_db.lookupByRID(
+                source_rid, True
+            ).asVertex()
+        if hasattr(target_java, "getIdentity"):
+            target_rid = target_java.getIdentity()
+            if target_rid is not None and target_rid.isValid():
+                target_java = target_rid
 
         # Convert kwargs to flat list of [key, value, key, value...]
         props = []
@@ -247,7 +273,7 @@ class Vertex(Document):
             props.append(convert_python_to_java(v))
 
         # bidirectional is determined by the EdgeType schema
-        java_edge = self._java_document.newEdge(label, target_java, *props)
+        java_edge = source_java.newEdge(label, target_java, *props)
         return Edge(java_edge, self._database)
 
     def get_out_edges(self, *labels: str) -> List["Edge"]:

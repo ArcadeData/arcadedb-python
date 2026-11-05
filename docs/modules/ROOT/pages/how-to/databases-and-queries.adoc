@@ -248,6 +248,8 @@ A record id inside a row value (`SELECT @rid AS r`, a `LINK` property, a list of
 
 On the native build the record wrappers send their record id to the engine as a parameter, not in the statement text. The engine keeps a parsed statement in a cache keyed by its text (`arcadedb.sqlStatementCache`, 300 entries by default) and leaves a record id written in a `FROM` target as part of that text, so each record would be a cache entry of its own. `get_out_edges()`, `get_in_edges()`, `get_both_edges()`, `new_edge()`, `Edge.get_in()`, `Edge.get_out()`, `save()` and `delete()` send the id as a parameter, so every record shares one text. `db.lookup_by_rid()` keeps the id in the statement text: measured, the parameter path was 2 % slower for a lookup, so it stays as it is.
 
+`Vertex.new_edge()` works on a vertex object that you read in an earlier transaction, on both builds. The first edge of a vertex rewrites its record, so an object read before that commit is out of date. The native build goes by record id. The JVM build looks up the current source vertex by its record id inside the active transaction and passes the target as its record id, so the engine loads that one too. The vertex object you hold is not refreshed: call `db.lookup_by_rid()` again to see its current properties.
+
 [source,python,subs="attributes+"]
 ----
 row = db.query("sql", "SELECT @rid AS r, name FROM User LIMIT 1").first()
