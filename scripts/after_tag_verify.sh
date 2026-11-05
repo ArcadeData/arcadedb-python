@@ -53,7 +53,7 @@ fail() {
 mkdir -p "$W"
 printf 'work dir: %s\n' "$W"
 
-# (a) the release workflow, and the publish JOB's own conclusion (not only the run's: read what the upload step did)
+# (a) the release workflow, and the publish JOB's own conclusion (not only the run's: read what the upload step did; release-jvm names the step "Publish to PyPI", release-native leaves it unnamed so GitHub shows "Run pypa/gh-action-pypi-publish@...")
 if [ -n "$RUN" ]; then
     gh run view "$RUN" -R "$R" --json status,conclusion,headBranch,headSha,createdAt,updatedAt > "$W/run.json" 2>&1 || true
     python3 - "$W/run.json" "$V" << 'EOF' || FAILS=$((FAILS + 1))
@@ -63,7 +63,7 @@ ok = d.get("status")=="completed" and d.get("conclusion")=="success" and d.get("
 print(("PASS" if ok else "FAIL"), " release run:", d.get("status"), d.get("conclusion"), "ref", d.get("headBranch"), "sha", (d.get("headSha") or "")[:12], d.get("createdAt"), "->", d.get("updatedAt"))
 sys.exit(0 if ok else 1)
 EOF
-    gh api "repos/$R/actions/runs/$RUN/jobs" --paginate --jq '.jobs[] | select(.name|startswith("Publish")) | [.name,.status,.conclusion,(.steps|map(select(.name=="Publish to PyPI"))|.[0].conclusion)]|@tsv' > "$W/publish-job.tsv" 2>&1
+    gh api "repos/$R/actions/runs/$RUN/jobs" --paginate --jq '.jobs[] | select(.name|startswith("Publish")) | [.name,.status,.conclusion,(.steps|map(select(.name=="Publish to PyPI" or (.name|startswith("Run pypa/gh-action-pypi-publish"))))|.[0].conclusion)]|@tsv' > "$W/publish-job.tsv" 2>&1
     cat "$W/publish-job.tsv"
     if awk -F'\t' '$2=="completed" && $3=="success" && $4=="success"{ok=1} END{exit ok?0:1}' "$W/publish-job.tsv"; then pass "publish job and its 'Publish to PyPI' step both succeeded"; else fail "publish job or its upload step did not succeed"; fi
 fi
