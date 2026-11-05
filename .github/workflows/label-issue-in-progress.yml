@@ -1,0 +1,81 @@
+# Marks an issue "in progress" the moment a pull request declares it will close it
+# (ported from ArcadeData/arcadedb, same trigger and same logic).
+#
+# Only closing references count ("Closes #12"), never a bare mention. GitHub's own
+# `closingIssuesReferences` answers "what does this pull request close", so the keyword list and
+# the same-repository rule cannot drift from what GitHub does on merge. `edited` is a trigger
+# because the reference is often added to the body after the pull request is opened.
+#
+# `pull_request_target` so a fork's pull request still gets a token that can label. Nothing from
+# the pull request head is checked out or run here: the job reads the event payload and calls the
+# GitHub API only.
+name: Label referenced issue as in progress
+
+on:
+  pull_request_target:
+    types: [opened, reopened, edited]
+
+permissions:
+  issues: write
+  pull-requests: read
+  contents: read
+
+concurrency:
+  group: label-in-progress-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  label:
+    name: Add "in progress" to issues this pull request closes
+    runs-on: ubuntu-latest
+    steps:
+      - name: Label the issues this pull request closes
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const LABEL = 'in progress';
+            const { owner, repo } = context.repo;
+            const number = context.payload.pull_request.number;
+
+            const query = `
+              query($owner: String!, $repo: String!, $number: Int!) {
+                repository(owner: $owner, name: $repo) {
+                  pullRequest(number: $number) {
+                    closingIssuesReferences(first: 50) {
+                      nodes {
+                        number
+                        state
+                        repository { nameWithOwner }
+                        labels(first: 100) { nodes { name } }
+                      }
+                    }
+                  }
+                }
+              }`;
+
+            const result = await github.graphql(query, { owner, repo, number });
+            const nodes = result.repository.pullRequest.closingIssuesReferences.nodes;
+            if (nodes.length === 0) {
+              core.info('No closing issue reference found in the body.');
+              return;
+            }
+
+            const here = `${owner}/${repo}`;
+            for (const issue of nodes.sort((a, b) => a.number - b.number)) {
+              if (issue.repository.nameWithOwner !== here) {
+                core.info(`${issue.repository.nameWithOwner}#${issue.number}: other repository, skipped.`);
+                continue;
+              }
+              if (issue.state !== 'OPEN') {
+                core.info(`#${issue.number}: closed, skipped.`);
+                continue;
+              }
+              if (issue.labels.nodes.some(l => l.name === LABEL)) {
+                core.info(`#${issue.number}: already labelled "${LABEL}".`);
+                continue;
+              }
+              await github.rest.issues.addLabels({
+                owner, repo, issue_number: issue.number, labels: [LABEL],
+              });
+              core.info(`#${issue.number}: added "${LABEL}".`);
+            }

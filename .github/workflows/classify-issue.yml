@@ -1,0 +1,83 @@
+# Labels a new issue from rules (adapted from ArcadeData/arcadedb's classify-issue.yml, minus
+# the model call: upstream asks Claude which labels fit, this repository has no API token, so a
+# keyword table does it). The package comes from the "Package" dropdown of the bug form; the topic
+# labels come from words in the title and body. Only labels that already exist in the repository
+# are applied, and only added, never removed, so a person's labels always win. A wrong guess is
+# fixed by hand like any label.
+#
+# Try the rules on a real issue without touching it: run the workflow by hand (dry run by default)
+# and read the log.
+name: Classify issue
+
+on:
+  issues:
+    types: [opened]
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: "Issue to classify"
+        required: true
+        type: number
+      dry_run:
+        description: "If true, log the labels without applying them"
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  classify:
+    # Bots (Dependabot, release automation) open issues that need no triage.
+    if: github.event_name == 'workflow_dispatch' || github.event.issue.user.type == 'User'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Choose labels from the title and body
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue_number }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run != false }}
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const { data: issue } = await github.rest.issues.get({
+              owner, repo, issue_number: Number(process.env.ISSUE_NUMBER),
+            });
+            const title = issue.title || '';
+            const body = issue.body || '';
+            const text = `${title}\n${body}`;
+
+            // The value under "### Package" in an issue form's body.
+            const pkg = (body.match(/### Package\s+([^\n]+)/) || [])[1] || '';
+
+            const wanted = new Set();
+            if (/arcadedb-jvm/i.test(pkg)) wanted.add('jvm');
+            if (/native/i.test(pkg)) wanted.add('native');
+
+            // label -> pattern over title and body
+            const rules = {
+              vector: /\b(vectors?|jvector|hnsw|embeddings?|find_nearest|knn)\b/i,
+              performance: /\b(slow|slower|performance|latency|throughput|benchmarks?|speed)\b/i,
+              concurrency: /\b(threads?|concurrent|concurrency|deadlocks?|race conditions?|locks?)\b/i,
+              timeseries: /\btime[- ]?series\b/i,
+            };
+            for (const [label, pattern] of Object.entries(rules)) {
+              if (pattern.test(text)) wanted.add(label);
+            }
+
+            // Never invent a label: keep only the ones the repository already has.
+            const existing = new Set(
+              (await github.paginate(github.rest.issues.listLabelsForRepo, { owner, repo, per_page: 100 }))
+                .map(l => l.name),
+            );
+            const labels = [...wanted].filter(l => existing.has(l)).sort();
+
+            core.info(`#${issue.number} "${title}": package="${pkg}", labels=[${labels.join(', ')}]`);
+            if (labels.length === 0) return;
+            if (process.env.DRY_RUN === 'true') {
+              core.info('dry run: no label applied.');
+              return;
+            }
+            await github.rest.issues.addLabels({ owner, repo, issue_number: issue.number, labels });

@@ -1,0 +1,87 @@
+# Puts a merged pull request, and the issues it closes, into the open release milestone.
+#
+# ArcadeData/arcadedb does this by hand: every merged pull request and closed issue sits in the
+# milestone of the release it ships in (one milestone per version, with a due date). Here a
+# workflow does the step that gets forgotten. The target is the open milestone with the earliest
+# due date (ties: the lower number), so closing a release milestone and opening the next one is
+# the only manual step. Anything that already has a milestone is left alone, and so are pull
+# requests opened by Dependabot (their updates are not release content). An issue closed as "not
+# planned" ships in no release and gets none.
+#
+# `pull_request_target` so a fork's pull request still gets a token that can edit it. Nothing from
+# the pull request head is checked out or run: the job calls the GitHub API only.
+name: Assign release milestone
+
+on:
+  pull_request_target:
+    types: [closed]
+  issues:
+    types: [closed]
+
+permissions:
+  issues: write
+  pull-requests: read
+  contents: read
+
+jobs:
+  assign:
+    name: Assign the open release milestone
+    if: >-
+      (github.event_name == 'pull_request_target' &&
+       github.event.pull_request.merged == true &&
+       github.event.pull_request.user.login != 'dependabot[bot]') ||
+      (github.event_name == 'issues' && github.event.issue.state_reason == 'completed')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set the milestone
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+
+            const open = await github.paginate(github.rest.issues.listMilestones, {
+              owner, repo, state: 'open', per_page: 100,
+            });
+            if (open.length === 0) {
+              core.info('No open milestone, nothing to assign.');
+              return;
+            }
+            const byDue = (a, b) =>
+              (a.due_on ? Date.parse(a.due_on) : Infinity) - (b.due_on ? Date.parse(b.due_on) : Infinity) ||
+              a.number - b.number;
+            const milestone = open.sort(byDue)[0];
+
+            const assign = async (number, current) => {
+              if (current) {
+                core.info(`#${number}: already in "${current.title}".`);
+                return;
+              }
+              await github.rest.issues.update({ owner, repo, issue_number: number, milestone: milestone.number });
+              core.info(`#${number}: milestone "${milestone.title}".`);
+            };
+
+            if (context.eventName === 'issues') {
+              await assign(context.payload.issue.number, context.payload.issue.milestone);
+              return;
+            }
+
+            const pr = context.payload.pull_request;
+            await assign(pr.number, pr.milestone);
+
+            // The issues the pull request closes, as GitHub itself resolves them.
+            const result = await github.graphql(
+              `query($owner: String!, $repo: String!, $number: Int!) {
+                 repository(owner: $owner, name: $repo) {
+                   pullRequest(number: $number) {
+                     closingIssuesReferences(first: 50) {
+                       nodes { number repository { nameWithOwner } milestone { title } }
+                     }
+                   }
+                 }
+               }`,
+              { owner, repo, number: pr.number },
+            );
+            for (const issue of result.repository.pullRequest.closingIssuesReferences.nodes) {
+              if (issue.repository.nameWithOwner !== `${owner}/${repo}`) continue;
+              await assign(issue.number, issue.milestone);
+            }

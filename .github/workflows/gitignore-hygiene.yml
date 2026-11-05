@@ -1,0 +1,41 @@
+# Fails when an ignore pattern matches a tracked file (ported from ArcadeData/arcadedb, first
+# check only). Such a file stays versioned only because it predates the pattern, while anything
+# new next to it is silently skipped by `git add`. Fix a failure by anchoring the pattern to where
+# it is meant to apply, or with a `!` negation. Do not untrack the file unless it is a generated
+# artifact.
+name: Gitignore hygiene
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  no-tracked-file-ignored:
+    name: No tracked file matches .gitignore
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Assert no tracked file is matched by an ignore pattern
+        run: |
+          # --no-index evaluates the patterns against tracked paths too. Exit status 1 means
+          # "nothing matched", which is the pass case, so test the output, not the status.
+          matched="$(git ls-files | git check-ignore --no-index --stdin || true)"
+          if [ -n "$matched" ]; then
+            echo "::error::Tracked files are matched by an ignore pattern (responsible line shown):"
+            printf '%s\n' "$matched" | git check-ignore --no-index --verbose --stdin || true
+            exit 1
+          fi
+          echo "No tracked file is matched by any .gitignore pattern."
