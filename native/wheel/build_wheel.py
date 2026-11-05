@@ -110,7 +110,7 @@ def main():
     )
     ap.add_argument(
         "--version",
-        default="26.11.1.dev0",
+        default="26.12.1.dev0",
         help="PEP 440: A.B.C.devN -> A.B.C -> A.B.C.postN (no aN/bN/rcN)",
     )
     ap.add_argument(

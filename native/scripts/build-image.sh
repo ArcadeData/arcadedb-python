@@ -13,7 +13,7 @@ WT=$(cd "$(dirname "$0")/../.." && pwd)
 G=${GRAALVM_HOME_P5:-$HOME/build-scratch/graalvm-dl-25.4.4.1.1/graalvm-community-25.4.4.1.1+1.1}
 OUT=${1:-$WT/native/target/lib}
 mkdir -p "$OUT"
-ENGINE=${ARCADEDB_ENGINE_VERSION:-26.10.2}
+ENGINE=${ARCADEDB_ENGINE_VERSION:-26.11.1}
 MARCH=${MARCH:-compatibility}
 XMX=${XMX:-12g}
 case "$(uname -s)" in
