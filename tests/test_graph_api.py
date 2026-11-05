@@ -542,6 +542,124 @@ def test_delete_via_wrapper_on_fresh_lookup(temp_db_path):
         assert len(items_after) == 0, "Item should be deleted via .delete()"
 
 
+def _create_doc_ab(db):
+    """A document type D with one record a=1, b=1; returns its RID."""
+    db.command("sql", "CREATE DOCUMENT TYPE D")
+    with db.transaction():
+        doc = db.new_document("D")
+        doc.set("a", 1)
+        doc.set("b", 1)
+        doc.save()
+        return str(doc.get_identity())
+
+
+def _bump_b_sql(rid):
+    """The statement that changes b of the record at ``rid`` (a RID the test read)."""
+    return f"UPDATE {rid} SET b = 2"  # nosec B608 - rid is a record id the test read
+
+
+def _stored_ab(db):
+    row = list(db.query("sql", "SELECT a, b FROM D"))[0]
+    return row.get("a"), row.get("b")
+
+
+def test_save_refuses_to_overwrite_a_record_changed_after_it_was_read(temp_db_path):
+    """A record object read before another transaction changed the stored record must not write its snapshot back (a lost update)."""
+    with arcadedb.create_database(temp_db_path) as db:
+        rid = _create_doc_ab(db)
+
+        mutable = db.lookup_by_rid(rid).modify()
+        with db.transaction():  # the stored record changes after the read
+            db.command("sql", _bump_b_sql(rid))
+
+        mutable.set("a", 10)
+        with pytest.raises(arcadedb.ArcadeDBError) as excinfo:
+            with db.transaction():
+                mutable.save()
+        message = str(excinfo.value)
+        assert "oncurrent" in message or rid in message
+
+        # nothing of the refused save is stored, and the other transaction's value is kept
+        assert _stored_ab(db) == (1, 2)
+
+
+def test_save_refuses_a_stale_record_from_a_query_result(temp_db_path):
+    """The same rule for a record that was born from a query row."""
+    with arcadedb.create_database(temp_db_path) as db:
+        rid = _create_doc_ab(db)
+
+        row = list(db.query("sql", "SELECT FROM D"))[0]
+        mutable = row.get_element().modify()
+        with db.transaction():
+            db.command("sql", _bump_b_sql(rid))
+
+        mutable.set("a", 10)
+        with pytest.raises(arcadedb.ArcadeDBError):
+            with db.transaction():
+                mutable.save()
+        assert _stored_ab(db) == (1, 2)
+
+        # a fresh read sees the new state and saves
+        fresh = db.lookup_by_rid(rid).modify()
+        fresh.set("a", 10)
+        with db.transaction():
+            fresh.save()
+        assert _stored_ab(db) == (10, 2)
+
+
+def test_save_of_an_existing_record_outside_a_transaction_is_refused(temp_db_path):
+    """Both builds: save() is a write, so it needs an active transaction (auto-transaction is off by default) and opens none of its own."""
+    with arcadedb.create_database(temp_db_path) as db:
+        rid = _create_doc_ab(db)
+
+        mutable = db.lookup_by_rid(rid).modify()
+        mutable.set("a", 10)
+        with pytest.raises(arcadedb.ArcadeDBError) as excinfo:
+            mutable.save()
+        assert "Transaction not begun" in str(excinfo.value)
+        assert not db.is_transaction_active()  # save() left no transaction behind
+        assert _stored_ab(db) == (1, 1)  # and wrote nothing
+
+        # the same object saves inside a transaction
+        with db.transaction():
+            mutable.save()
+        assert _stored_ab(db) == (10, 1)
+
+
+def test_two_saves_in_a_row_by_one_record_object_both_succeed(temp_db_path):
+    """The object's own earlier save is not another transaction's change: the second save, in the same and in a later transaction, goes through."""
+    with arcadedb.create_database(temp_db_path) as db:
+        rid = _create_doc_ab(db)
+
+        mutable = db.lookup_by_rid(rid).modify()
+        with db.transaction():
+            mutable.set("a", 2)
+            mutable.save()
+            mutable.set("b", 3)
+            mutable.save()
+        assert _stored_ab(db) == (2, 3)
+
+        with db.transaction():
+            mutable.set("a", 4)
+            mutable.save()
+        assert _stored_ab(db) == (4, 3)
+
+
+def test_record_saved_for_the_first_time_can_be_saved_again(temp_db_path):
+    """A record created by this object and saved, then changed and saved in a later transaction."""
+    with arcadedb.create_database(temp_db_path) as db:
+        db.command("sql", "CREATE DOCUMENT TYPE D")
+        with db.transaction():
+            created = db.new_document("D")
+            created.set("a", 7)
+            created.set("b", 7)
+            created.save()
+        with db.transaction():
+            created.set("a", 8)
+            created.save()
+        assert _stored_ab(db) == (8, 7)
+
+
 def _chain(db, count):
     """``count`` Person vertices linked a -> b -> c ... by Knows edges (``w`` = the position of the edge)."""
     db.command("sql", "CREATE VERTEX TYPE Person")
