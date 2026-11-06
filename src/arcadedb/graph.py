@@ -229,7 +229,7 @@ class Document:
     def get_type_name(self) -> str:
         """Get type name."""
         self._check_open()
-        return self._java_document.getTypeName()
+        return str(self._java_document.getTypeName())
 
     def __repr__(self) -> str:
         return (
