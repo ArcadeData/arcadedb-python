@@ -69,14 +69,17 @@ jobs:
             if (/arcadedb-jvm/i.test(pkg)) wanted.add('jvm');
             if (/native/i.test(pkg)) wanted.add('native');
 
-            // Without the dropdown: plain words. "native" alone in the title is enough (titles
-            // start with "Native:"); in the body only a phrase is, because the engine text
-            // mentions it in passing.
-            if (/\b(arcadedb-jvm|jvm (build|wheel|package)|jpype)\b/i.test(text) || /\bjvm\b/i.test(title)) {
-              wanted.add('jvm');
-            }
-            if (/\bnative (build|wheel|package)s?\b/i.test(text) || /\bnative\b/i.test(title)) {
-              wanted.add('native');
+            // Without the dropdown: plain words. A title that names a package decides alone ("Native:
+            // ..." says which build; the body then mentions the other one in passing). Otherwise the
+            // body counts, but only for a package name or a phrase ("native build", "JPype").
+            const titleJvm = /\bjvm\b/i.test(title) || /\barcadedb-jvm\b/i.test(title);
+            const titleNative = /\bnative\b/i.test(title);
+            if (titleJvm || titleNative) {
+              if (titleJvm) wanted.add('jvm');
+              if (titleNative) wanted.add('native');
+            } else {
+              if (/\b(arcadedb-jvm|jvm (build|wheel|package)|jpype)\b/i.test(text)) wanted.add('jvm');
+              if (/\bnative (build|wheel|package)s?\b/i.test(text)) wanted.add('native');
             }
 
             // label -> pattern over the title only (the type of the issue)
