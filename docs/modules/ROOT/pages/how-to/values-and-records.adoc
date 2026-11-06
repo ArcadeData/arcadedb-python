@@ -5,13 +5,18 @@
 
 This page covers what the Python bindings add to the statements: how a Python value becomes a stored value and back, what the objects you get from a query or a lookup are, and where the `Schema` API fits. The types, the date formats and the schema rules of the engine belong to the main manual: {arcadedb-docs-url}/reference/datatypes[Data types], {arcadedb-docs-url}/reference/managing-dates[Managing dates] and {arcadedb-docs-url}/concepts/schema[Schema].
 
-The statements stay SQL or openCypher, as on xref:how-to/databases-and-queries.adoc[Databases and queries]. Record objects and the `Schema` API are there for the cases where Python code, not a statement, drives the work.
+The short version:
 
-The blocks on this page run one after the other against one empty database, and a test in the repository runs them that way (`tests/test_docs_values_page.py`). Each block that prints something is followed by its output. Every block assumes that `db` is an open database. Both packages give the same output.
+* A Python value comes back as the same Python type, with these exceptions: a `datetime` has no time zone, `bytes` is a list of signed integers, a tuple is a list, a `set` is a list after the commit, and an embedded document is a Java object on `arcadedb-jvm` (read its members with a dotted path in the statement).
+* You read a query row with `get()`, not with brackets.
+* A record that you read is a copy and is read-only. To change it, call `modify()`, `set()` and `save()`.
+* Statements stay the main interface, as on xref:how-to/databases-and-queries.adoc[Databases and queries]. Use a record object or the `Schema` API only when Python code, not a statement, drives the work.
+
+The blocks on this page run one after the other against one empty database, and a test in the repository runs them that way (`tests/test_docs_values_page.py`). Each block that prints something is followed by its output. Every block assumes that `db` is an open database. The output is the same on `arcadedb` and `arcadedb-jvm`.
 
 [source,python]
 ----
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 from arcadedb import ArcadeDBError
@@ -70,7 +75,7 @@ A value you bind to a parameter, pass to `set()` or give to `new_edge()` is conv
 | The engine has no set type.
 |===
 
-A property that you declared keeps the declared type: `CREATE PROPERTY Event.day DATE` makes the property a date whatever Python type you send, and an undeclared property takes the kind of the value. Declare a property when you need a type that the Python value does not tell, such as the precision of a time. An embedded document (a property declared `EMBEDDED OF Type`) reads back as a `dict` through `to_dict()` and `to_list()`, and `em.q` reads one of its members inside a statement.
+A property that you declared keeps the declared type, and an undeclared property takes the kind of the value. Declare a property when you need a type that the Python value does not tell, such as the precision of a time. An embedded document (a property declared `EMBEDDED OF Type`) is the one value that differs between the packages when you read it whole: `arcadedb` gives a `dict` that holds its members and a `@type` member with the type name, and `arcadedb-jvm` gives the engine's own Java object, not a `dict`. That is what `to_dict()` and `to_list()` return. To read a member as a plain value on both packages, name it in the statement with a dotted path: for a property `em` of type `Holder`, `SELECT em.q AS q FROM Holder` returns the member `q` as a plain value.
 
 This block stores a decimal, a tuple, a dict and some bytes, and reads them back:
 
@@ -136,7 +141,7 @@ found by the aware value: 2
 
 Both values are the same instant, so they are stored as one value, and a lookup by either finds both records.
 
-The declared type of the property sets the precision that is kept. `DATETIME_SECOND` keeps whole seconds, `DATETIME` keeps milliseconds, and `DATETIME_MICROS` keeps microseconds, which is all that a Python `datetime` holds. A property that you do not declare takes the kind of the value, so declare the precision you need before you load.
+The declared type of the property sets the precision that is kept. `DATETIME_SECOND` keeps whole seconds, `DATETIME` keeps milliseconds, and `DATETIME_MICROS` keeps microseconds, which is all that a Python `datetime` holds. Declare the precision you need before you load.
 
 [source,python]
 ----
@@ -179,11 +184,11 @@ set
 list
 ----
 
-== Rows
+== Read a row
 
-`db.query(...)` gives rows. You read a row with methods. A row has no item access and no attributes: `row["name"]` raises `TypeError` and `row.name` raises `AttributeError`. `to_dict()` and `to_list()` give plain dicts, and a dict takes brackets.
+`db.query(...)` gives rows, and you read a row with methods. `row["name"]` raises `TypeError` and `row.name` raises `AttributeError`. `to_dict()` and `to_list()` give plain dicts, which take brackets.
 
-* `row.get("name")` is the value, or `None` when the row has no such property. `row.has_property("name")` tells a missing property from a value.
+* `row.get("name")` is the value, or `None` when the row has no such property. `row.has_property("name")` is `False` when the row has no such property.
 * `row.get_property_names()` (also the `row.property_names` property) lists the names, and `row.to_dict()` is the properties as a new dict each time. Changing that dict changes nothing in the row or in the database.
 * A row that is a record (`SELECT FROM Person`) has an identity: `row.get_rid()` is its record id as text, such as `"#12:0"`, and `row.get_element()` is the record as an object (see <<records>>). A projection row (`SELECT name FROM Person`) has neither: both return `None`.
 
@@ -220,13 +225,13 @@ Ada None None
 ----
 
 [[records]]
-== Records
+== Work with records
 
 A record object is a `Document`, a `Vertex` or an `Edge`. A vertex and an edge are documents too, so `isinstance(record, Document)` holds for all three. You get one from `db.new_document(type)`, `db.new_vertex(type)`, `vertex.new_edge(...)`, `db.lookup_by_rid(rid)`, `db.lookup_by_key(...)`, or from a row with `row.get_element()`, `row.get_vertex()` and `row.get_edge()`.
 
-A record has the same readers as a row (`get`, `has_property`, `get_property_names`, `to_dict`), and `to_dict()` holds the properties only. What a row does not hold, a record has by name: `get_rid()` and `get_type_name()`.
+A record has the same readers as a row (`get`, `has_property`, `get_property_names`, `to_dict`), and `to_dict()` holds the properties only. A record also has `get_type_name()`, and `get_rid()` gives its record id.
 
-Creating a record takes three steps: make the object, set its properties, save it. `set()` and `save()` return the record, so they chain. `save()` is a write, so it needs a transaction, as every write does (see xref:how-to/transactions.adoc[Transactions]). The record has its record id after `save()`.
+Creating a record takes three steps: make the object, set its properties, save it. `set()` and `save()` return the record, so they chain. `save()` is a write, so it needs a transaction, as every write does (see xref:how-to/transactions.adoc[Transactions]). The record has its record id after `save()`. `record.delete()` removes a record, also inside a transaction.
 
 [source,python]
 ----
@@ -270,9 +275,9 @@ print(record.get("age"), db.lookup_by_rid(rid).get("age"))
 45 46
 ----
 
-The reverse holds too. A record that you read is read-only: `set()` raises `AttributeError`, and the message names `modify()`. `modify()` returns a new, writable object for the same record, and `save()` on it writes the change. The object you read is not changed by that save, and a `set()` without a `save()` stores nothing.
+A record that you read is also read-only: `set()` raises `AttributeError`, and the message names `modify()`. `modify()` returns a new, writable object for the same record, and `save()` on it writes the change. The object you read is not changed by that save, and a `set()` without a `save()` stores nothing.
 
-A record that you read is the state of a moment, so a save of a changed copy would overwrite the change of another writer. The bindings refuse that. `save()` raises `ArcadeDBError`, with `ConcurrentModificationException` in the message, when the stored record is no longer the one the object was read from, and it writes nothing. It is the same error `run_in_transaction` retries (see xref:how-to/concurrency.adoc#retry-loop[Concurrency, processes and crashes]). Read the record again, make the change on the fresh object, and save that.
+A save of a copy that is out of date would overwrite the change of another writer, so the bindings refuse it. `save()` raises `ArcadeDBError`, with `ConcurrentModificationException` in the message, when the stored record is no longer the one the object was read from, and it writes nothing. It is the same error that `run_in_transaction` retries (see xref:how-to/concurrency.adoc#retry-loop[Concurrency, processes and crashes]). Read the record again, make the change on the fresh object, and save that.
 
 [source,python]
 ----
@@ -303,7 +308,7 @@ refused: the record changed after it was read
 47
 ----
 
-A list or a dict that `get()` returns is a Python value, not a window on the record. Changing it in place stores nothing: call `set()` and `save()`, or run a statement.
+To change a record, call `modify()`, `set()` and `save()`, or run a statement.
 
 === Identity
 
@@ -323,7 +328,7 @@ False False True
 
 === Lookups
 
-`db.lookup_by_rid(rid)` takes the text of a record id, or an RID object from a row (see xref:how-to/databases-and-queries.adoc#record-ids-in-rows[Record ids in rows]), and raises `ArcadeDBError` when no record has it. `db.lookup_by_key(type, keys, values)` finds a record through an index. It never scans: `keys` must be the properties of an existing index of that type, in the index's order, and a call without such an index raises `ArcadeDBError`. It returns the first match, or `None`.
+`db.lookup_by_rid(rid)` takes the text of a record id, or an RID object from a row (see xref:how-to/databases-and-queries.adoc#record-ids-in-rows[Record ids in rows]), and raises `ArcadeDBError` when no record has it. `db.lookup_by_key(type, keys, values)` finds a record through an index. It never scans: `keys` must be the properties of an existing index of that type, and a call without such an index raises `ArcadeDBError`. It returns a matching record, or `None`.
 
 [source,python]
 ----
@@ -342,9 +347,7 @@ no index on name yet
 47 None
 ----
 
-`record.delete()` removes a record, inside a transaction.
-
-=== Objects or statements
+=== Records or statements
 
 Statements are the main interface, and record objects wrap what Python control flow needs. Use a statement (`INSERT`, `UPDATE`, `DELETE`, `CREATE EDGE`) when the change is conditional, touches many records, or comes from a bulk load: it runs in the engine, takes no read of the record first, and cannot be refused as stale. Use a record object when your code reads one record, decides in Python and writes it back. For many records at once, see xref:how-to/bulk-loads.adoc[Bulk loads and commit size].
 
@@ -368,11 +371,14 @@ Statements are the main interface, and record objects wrap what Python control f
 | `exists_type(name)`, `exists_index("Type[name]")`
 | `SELECT FROM schema:types`, `SELECT FROM schema:indexes`
 
-| `get_or_create_*` and `drop_*`
-| `IF NOT EXISTS` and `DROP TYPE`, `DROP PROPERTY`, `DROP INDEX`
+| `get_or_create_*`
+| `IF NOT EXISTS`
+
+| `drop_type(name)`, `drop_property(type, name)`, `drop_index(name)`
+| `DROP TYPE Type UNSAFE`, `DROP PROPERTY Type.name`, `DROP INDEX name`
 |===
 
-The property type is a string or a `PropertyType`, and the index type is a string or an `IndexType`; both enums import from `arcadedb`. An index is named `Type[property]`, and `exists_index` takes that name. The create and get methods return a Java object on the JVM package and a placeholder on the native package, so do not use what they return: check with `exists_type`, `exists_index` or a statement.
+The property type is a string or a `PropertyType`, and the index type is a string or an `IndexType`; both enums import from `arcadedb`. An index is named `Type[property]`, and `exists_index` takes that name. The create and get methods return a Java object on the JVM package and a placeholder on the native package, so do not use what they return: check with `exists_type`, `exists_index` or a statement. `drop_type` drops a type together with its records. The plain statement `DROP TYPE` refuses a vertex or edge type that still holds records, and `DROP TYPE ... UNSAFE` does what `drop_type` does.
 
 [source,python]
 ----
@@ -387,6 +393,8 @@ print(db.schema.exists_type("Note"), db.schema.exists_index("Note[text]"), db.sc
 True True False
 ----
 
+The same schema as statements:
+
 [source,sql]
 ----
 CREATE DOCUMENT TYPE Note
@@ -396,7 +404,7 @@ CREATE INDEX ON Note (text) UNIQUE
 
 Creating a type that exists raises `ArcadeDBError`, from the method and from the statement alike. `get_or_create_document_type` and `CREATE DOCUMENT TYPE Note IF NOT EXISTS` do nothing when the type is there.
 
-What only a statement does: the settings of a property beyond its type. `mandatory`, `notnull` and the other constraints go in the parentheses of `CREATE PROPERTY`, and the `Schema` API has no argument for them.
+Only a statement sets the constraints of a property. `mandatory`, `notnull` and the others go in the parentheses of `CREATE PROPERTY`, and the `Schema` API has no argument for them.
 
 [source,python]
 ----

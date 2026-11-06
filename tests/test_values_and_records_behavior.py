@@ -15,6 +15,7 @@ from decimal import Decimal
 
 import pytest
 
+import arcadedb
 from arcadedb import ArcadeDBError, IndexType, PropertyType
 from arcadedb.graph import Document, Edge, Vertex
 
@@ -141,11 +142,12 @@ def test_a_date_is_a_date_and_an_undeclared_value_keeps_its_kind(temp_db):
     assert type(row.get("moment")) is datetime
 
 
-def test_bytes_come_back_as_a_list_of_signed_ints(temp_db):
+@pytest.mark.parametrize("kind", [bytes, bytearray])
+def test_bytes_come_back_as_a_list_of_signed_ints(temp_db, kind):
     payload = b"\xff\x00\xfe\x80Hello"
     temp_db.command("sql", "CREATE DOCUMENT TYPE Blob")
     with temp_db.transaction():
-        temp_db.command("sql", "INSERT INTO Blob SET data = ?", payload)
+        temp_db.command("sql", "INSERT INTO Blob SET data = ?", kind(payload))
     got = _first(temp_db, "SELECT data FROM Blob").get("data")
     assert got == list(struct.unpack(f"{len(payload)}b", payload))
     assert bytes(b & 0xFF for b in got) == payload
@@ -185,7 +187,7 @@ def test_a_set_is_a_set_until_the_commit_and_a_list_after_it(temp_db):
         assert type(got) is list and sorted(got) == ["admin", "user"]
 
 
-def test_an_embedded_document_reads_back_as_a_dict_through_to_dict(temp_db):
+def test_an_embedded_document_is_a_dict_on_native_and_a_java_object_on_jvm(temp_db):
     temp_db.command("sql", "CREATE DOCUMENT TYPE Emb")
     temp_db.command("sql", "CREATE DOCUMENT TYPE Holder")
     temp_db.command("sql", "CREATE PROPERTY Holder.em EMBEDDED OF Emb")
@@ -196,8 +198,16 @@ def test_an_embedded_document_reads_back_as_a_dict_through_to_dict(temp_db):
         row.to_dict()["em"],
         temp_db.query("sql", "SELECT FROM Holder").to_list()[0]["em"],
     ):
-        assert isinstance(value, dict) and value["q"] == 1
+        if arcadedb.__backend__ == "native":
+            # the native codec writes a nested document as a JSON object with its type name (NativeCodec.appendDocument)
+            assert isinstance(value, dict)
+            assert value["q"] == 1 and value["@type"] == "Emb"
+        else:
+            # the JVM build hands over the engine's own object, which is not a dict
+            assert not isinstance(value, dict)
+    # a path in the statement reads a member as a plain value on both builds
     assert _first(temp_db, "SELECT em.q AS q FROM Holder").get("q") == 1
+    assert temp_db.query("sql", "SELECT em.q AS q FROM Holder").to_list() == [{"q": 1}]
 
 
 def test_get_to_dict_and_to_list_give_the_same_values(temp_db):
@@ -457,6 +467,9 @@ def test_vertices_and_edges_are_created_saved_first_and_walked_by_method(people)
         assert [e.get_rid() for e in ada.get_out_edges("Knows")] == [edge.get_rid()]
         assert [e.get_rid() for e in bob.get_in_edges("Knows")] == [edge.get_rid()]
         assert ada.get_in_edges() == []
+        assert [e.get_rid() for e in ada.get_both_edges("Knows")] == [edge.get_rid()]
+        assert [e.get_rid() for e in bob.get_both_edges("Knows")] == [edge.get_rid()]
+        assert ada.get_both_edges("Nothing") == []
     stored = _first(people, "SELECT FROM Knows").get_edge()
     assert stored.get("since") == 2020
 
@@ -535,3 +548,43 @@ def test_drop_type_and_drop_index_by_the_api_and_by_sql(temp_db):
     temp_db.command("sql", "CREATE DOCUMENT TYPE B")
     temp_db.command("sql", "DROP TYPE B")
     assert schema.exists_type("B") is False
+
+
+def test_lookup_by_rid_takes_the_text_or_the_rid_object_of_a_row(temp_db):
+    temp_db.command("sql", "CREATE DOCUMENT TYPE Task")
+    with temp_db.transaction():
+        rid = temp_db.new_document("Task").set("n", 1).save().get_rid()
+    from_row = _first(temp_db, "SELECT @rid AS r FROM Task").get("r")
+    assert str(from_row) == rid
+    assert temp_db.lookup_by_rid(from_row).get("n") == 1
+    assert temp_db.lookup_by_rid(rid).get("n") == 1
+
+
+def test_lookup_by_key_takes_the_properties_of_a_composite_index(temp_db):
+    temp_db.command("sql", "CREATE DOCUMENT TYPE Pair")
+    temp_db.command("sql", "CREATE PROPERTY Pair.a INTEGER")
+    temp_db.command("sql", "CREATE PROPERTY Pair.b INTEGER")
+    temp_db.command("sql", "CREATE INDEX ON Pair (a, b) UNIQUE")
+    with temp_db.transaction():
+        temp_db.command("sql", "INSERT INTO Pair SET a = 1, b = 2, tag = 'x'")
+    assert temp_db.lookup_by_key("Pair", ["a", "b"], [1, 2]).get("tag") == "x"
+    assert temp_db.lookup_by_key("Pair", ["a", "b"], [1, 3]) is None
+
+
+def test_plain_drop_type_refuses_a_graph_type_with_records_and_unsafe_drops_it(temp_db):
+    schema = temp_db.schema
+    schema.create_vertex_type("Person")
+    with temp_db.transaction():
+        temp_db.command("sql", "CREATE VERTEX Person SET name = 'a'")
+    with pytest.raises(ArcadeDBError):
+        temp_db.command("sql", "DROP TYPE Person")
+    assert schema.exists_type("Person") is True
+    temp_db.command("sql", "DROP TYPE Person UNSAFE")
+    assert schema.exists_type("Person") is False
+
+    # drop_type drops a type with its records (also pinned in test_schema.py)
+    schema.create_vertex_type("Person")
+    with temp_db.transaction():
+        temp_db.command("sql", "CREATE VERTEX Person SET name = 'a'")
+    schema.drop_type("Person")
+    assert schema.exists_type("Person") is False
