@@ -89,10 +89,18 @@ on:
 
 # The group names the workflow literally: github.workflow is the CALLER's name in a workflow_call, and the group of release-native.yml
 # must differ from this one or the two would wait for each other.
+#
+# Per event: a pull request has one group per PR; a push to main and the nightly schedule each have their own group (a newer run
+# supersedes an older one); a workflow_dispatch has a group of its own per run, so a manual run and a push can never cancel each other
+# (they used to share the ref of main); a run for a tag (the release calls this workflow, and github.event_name is then the caller's
+# push) is never cancelled, a half-done release is worse than a queued one.
 concurrency:
-  group: test-native-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.ref }}
-  # A dry run is superseded by a newer one; a run for a tag is never cancelled (a half-done release is worse than a queued one).
-  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+  group: >-
+    ${{ github.event_name == 'pull_request' && format('test-native-{0}', github.event.pull_request.number)
+    || github.event_name == 'workflow_dispatch' && format('test-native-dispatch-{0}', github.run_id)
+    || github.event_name == 'schedule' && 'test-native-schedule'
+    || format('test-native-{0}', github.ref) }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' && github.event_name != 'workflow_dispatch' }}
 
 permissions:
   contents: read
