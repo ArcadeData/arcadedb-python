@@ -183,3 +183,4 @@ In the `{jvm-pkg-name}` wheels from 26.11.1 the server also serves the Studio we
 == Next steps
 
 * xref:how-to/databases-and-queries.adoc[Databases and queries]: open, drop and check databases, parameters, pagination, SQLScript and openCypher.
+* xref:how-to/values-and-records.adoc[Values and records]: which Python types go in and what comes back, datetimes, record objects and the `Schema` API.

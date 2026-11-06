@@ -3,7 +3,7 @@
 
 // Sources: bindings docs guide/core/database.md and guide/core/queries.md.
 
-This guide covers the life of a database directory and the two calls that talk to it. Prefer SQL or openCypher through `db.command(...)` and `db.query(...)` for schema, inserts and graph work. The bindings also expose wrapper objects for the rest of the Java API; they are not covered here.
+This guide covers the life of a database directory and the two calls that talk to it. Prefer SQL or openCypher through `db.command(...)` and `db.query(...)` for schema, inserts and graph work. The bindings also expose record objects and a `Schema` API; they are on xref:how-to/values-and-records.adoc[Values and records]. The wrappers for the rest of the Java API are not covered here.
 
 Every script on this page ran against the published `{jvm-pkg-name}` wheel. Run each one in an empty directory.
 
@@ -246,7 +246,7 @@ A query vector for `vectorNeighbors` can be a numpy array or a list. This sectio
 
 === Results
 
-`db.query` returns a result set you can iterate. Two methods cover the usual needs:
+`db.query` returns a result set you can iterate. What a row holds, how a Python value is converted and which rows are record objects is on xref:how-to/values-and-records.adoc[Values and records]. Two methods cover the usual needs:
 
 * `first()` returns the first row, or `None` when there is none, so `if db.query(...).first():` tests whether anything matched.
 * `to_list()` materialises the whole result as a list of dicts. Use it when you need the whole result in memory; iterate when you stop early or the result is large.
@@ -288,6 +288,7 @@ A result set is a lazy cursor, and you read it once. The engine computes the row
 
 Use `to_list()` when you need the rows twice. It reads the whole result into a list of dicts, which you can loop over as often as you like.
 
+[[record-ids-in-rows]]
 === Record ids in rows
 
 A record id inside a row value (`SELECT @rid AS r`, a `LINK` property, a list of links such as `out('Knows').@rid`) comes back as an RID object, not as text. `str(rid)` is the text (`"#10:5"`), so is an f-string, and `get_rid()` always returns text or `None`. Two RIDs of the same record are equal and hash alike, so they work in sets and as dict keys, and RIDs sort by bucket, then position. `getBucketId()`, `getPosition()`, `toString()` and `isValid()` work on the object. It goes back in as a query parameter (`WHERE @rid = ?`, or a list passed by name) and to `db.lookup_by_rid()`, as itself or as its text. `to_json_list()` is the exception: a record id in its rows is the text (`"#10:5"`), on both builds, and so is a map key that is not a string, because a JSON object has no other kind of key.
