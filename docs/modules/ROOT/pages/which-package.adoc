@@ -132,7 +132,7 @@ The packages had other names until 26.10.x. Search results and old tutorials may
 
 | `{jvm-pkg-name}`
 | Formerly `arcadedb-embedded`, imported as `arcadedb_embedded`
-| The same JVM build, with the import name `{import-name}`. The last release of the project formerly `arcadedb-embedded` (26.11.1) will be a deprecation shim that installs `{native-pkg-name}`, the native build, and warns. If you need the JVM build, install `{jvm-pkg-name}` yourself.
+| The same JVM build, with the import name `{import-name}`. The last release of the project formerly `arcadedb-embedded` (26.11.1) is a deprecation shim. It installs `{native-pkg-name}`, the native build, and warns once at import. If you need the JVM build, install `{jvm-pkg-name}` yourself.
 
 | `{native-pkg-name}`
 | Formerly `arcadedb-embedded-native`, imported as `arcadedb_native`
