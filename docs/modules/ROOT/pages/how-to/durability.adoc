@@ -1,0 +1,210 @@
+= Durability settings
+:description: What set_wal_flush, arcadedb.txWalFlush, arcadedb.txWalGroupCommit and arcadedb.fileSync do, what the engine documents about a crash at each level, how to set them from Python on both builds, and how the async executor and GraphBatch keep durability settings of their own.
+
+// Sources: src/arcadedb/core.py (set_wal_flush), graph_batch.py, async_executor.py, and ArcadeDB 26.11.1: GlobalConfiguration.java (TX_WAL_FLUSH, TX_WAL_GROUP_COMMIT, FILE_SYNC), WALFile.java (the flush), TransactionContext.java, LocalDatabase.java, GraphBatch.java, ArcadeDBServer.java. The statements about Python are pinned by tests/test_durability_behavior.py. What a crash loses is the engine's statement: no test here can lose power.
+
+You need this page if a commit that returned must survive a power loss or an operating system crash, or if you load data in bulk and want to know which durability it gets. The short version:
+
+* By default a commit that returned survives a crash of the process, but the engine does not flush its write-ahead log (WAL) at commit, so it can lose recent commits in a power loss.
+* `db.set_wal_flush("yes_nometadata")` or `db.set_wal_flush("yes_full")` makes every commit flush the WAL. It applies to the open `Database`, to every thread, and is not saved.
+* `ALTER DATABASE` with `arcadedb.txWalFlush` stores the same choice with the database, as the level `0`, `1` or `2`.
+* `GraphBatch` and the async executor do not follow either. Each has its own setting, which this page lists.
+* This page gives no timing. A flush waits for the disk, and what that costs on your storage is yours to measure. No default is recommended here.
+
+What the levels mean for the engine is in the main manual: {arcadedb-docs-url}/concepts/transactions#wal-flush-durability[WAL flush and durability], and the settings are listed in {arcadedb-docs-url}/reference/settings[Settings]. The crash probes on xref:how-to/concurrency.adoc#durability[Concurrency, processes and crashes] show what a killed process loses, which is nothing that had returned from a commit.
+
+The blocks on this page run one after the other against one empty database, and a test in the repository runs them that way (`tests/test_docs_durability_page.py`) on the JVM build and on the native build. Each block that prints something is followed by its output. Every block assumes that `db` is an open database.
+
+== The settings
+
+[cols="2,1,1,4"]
+|===
+| Setting | Scope | Default | What it does
+
+| `arcadedb.txWalFlush`
+| database
+| `0`
+| `0` does not flush the WAL at commit, `1` flushes the data of the WAL file, `2` flushes the data and the file metadata.
+
+| `arcadedb.txWalGroupCommit`
+| database
+| `true`
+| With `txWalFlush` at `1` or `2`, one flush covers the commits that wait for it at the same time.
+
+| `arcadedb.fileSync`
+| JVM process
+| `true`
+| For testing only. `false` skips every flush of files that the engine issues.
+|===
+
+Both builds start from the engine's defaults, and the bindings change none of them. A database reports the settings that belong to it, with their defaults, in `schema:database`:
+
+[source,python]
+----
+from arcadedb import ArcadeDBError
+
+
+def setting(key):
+    row = db.query("sql", "SELECT settings FROM schema:database").first()
+    return next(s for s in row.get("settings") if s["key"] == key)
+
+
+print(setting("arcadedb.txWalFlush")["default"])
+print(str(setting("arcadedb.txWalGroupCommit")["default"]).lower())
+----
+
+[source,text]
+----
+0
+true
+----
+
+The value that a database reports can differ from the default. A server that you start in the same process with `config={"mode": "production"}` sets `arcadedb.txWalFlush` to `1` for the databases opened after it, unless the setting was changed before (the engine does this in `ArcadeDBServer.java`, and the docstring of `set_wal_flush` says so).
+
+== What a crash can lose
+
+This is what the engine documents. No test on this page checks it, because a test cannot cut the power of the machine.
+
+[cols="1,4"]
+|===
+| Level | What the engine documents
+
+| `0` (`"no"`)
+| No flush at commit. The operating system still writes the log, so a commit survives a crash of the process, but not a power failure or an operating system crash.
+
+| `1` (`"yes_nometadata"`)
+| The commit returns after the data of the WAL file is flushed (`FileChannel.force(false)`, the `fdatasync` call).
+
+| `2` (`"yes_full"`)
+| The commit returns after the data and the metadata of the WAL file are flushed (`force(true)`, the `fsync` call).
+|===
+
+Two more statements come from the text of the settings in `GlobalConfiguration.java`:
+
+* With group commit on (the default) and `txWalFlush` at `1` or `2`, a commit still returns only once its WAL is on disk. The transaction becomes visible to other transactions a few milliseconds before that. A crash in that window loses a transaction that other clients may already have read, while the client that committed it has not been answered yet. `arcadedb.txWalGroupCommit` set to `false` makes a transaction visible only after its WAL is on disk.
+* `arcadedb.fileSync` set to `false` skips every flush, the flush of the WAL at levels `1` and `2` included. Data then survives a crash of the process but not a power failure. Only the exact text `false` turns it off. The engine marks it for testing only.
+
+== set_wal_flush
+
+`db.set_wal_flush(mode)` takes `"no"`, `"yes_nometadata"` or `"yes_full"`, which are the levels `0`, `1` and `2`. Any other value raises `ValueError` and names the three. The names are lower case, and a closed database raises `ArcadeDBError`.
+
+The call changes the open `Database` object and nothing is written to the database. The next block shows that the stored level stays as it was. Call it again after every open: a reopened database follows its configuration again.
+
+[source,python]
+----
+before = setting("arcadedb.txWalFlush")["value"]
+db.set_wal_flush("yes_nometadata")
+print("stored level changed:", setting("arcadedb.txWalFlush")["value"] != before)
+db.set_wal_flush("no")
+
+try:
+    db.set_wal_flush("fsync")
+except ValueError as error:
+    print(error)
+----
+
+[source,text]
+----
+stored level changed: False
+Invalid WAL flush mode: fsync. Must be one of: ['no', 'yes_nometadata', 'yes_full']
+----
+
+It applies to the transactions of every thread of that `Database`, also of a thread that never called it, and not to another database in the process. The JVM build has tests that read the flush type of a thread's next transaction from the engine: after the call, a second thread and the calling thread both use the chosen type, a second open database keeps its own, and a reopened database goes back to the configured one. The native build calls the same engine method. Python cannot read the effective flush type there, so the native tests check that the call is accepted, refused or stored as described above, and no more.
+
+== The settings of the engine
+
+`ALTER DATABASE` stores a database setting in the configuration of the database, so it is still there after a reopen. It is the same statement on both builds:
+
+[source,python]
+----
+db.command("sql", "ALTER DATABASE `arcadedb.txWalFlush` 1")
+print(setting("arcadedb.txWalFlush")["value"])
+db.command("sql", "ALTER DATABASE `arcadedb.txWalFlush` 0")
+----
+
+[source,text]
+----
+1
+----
+
+A test reopens a database after `ALTER DATABASE` and reads the level again on both builds. On the JVM build, a thread that starts after the statement commits with the stored level. The engine reads the configured level when a thread gets its first transaction context, so this page does not say what the statement does to a thread that has a transaction context already. To change the flush of the running process at once, use `set_wal_flush`.
+
+Group commit is a database setting too:
+
+[source,python]
+----
+db.command("sql", "ALTER DATABASE `arcadedb.txWalGroupCommit` false")
+print(str(setting("arcadedb.txWalGroupCommit")["value"]).lower())
+db.command("sql", "ALTER DATABASE `arcadedb.txWalGroupCommit` true")
+----
+
+[source,text]
+----
+false
+----
+
+`arcadedb.fileSync` has the scope of the JVM process, so it is not in the list of a database and `ALTER DATABASE` refuses it:
+
+[source,python]
+----
+keys = [s["key"] for s in db.query("sql", "SELECT settings FROM schema:database").first().get("settings")]
+print("arcadedb.fileSync" in keys)
+try:
+    db.command("sql", "ALTER DATABASE `arcadedb.fileSync` false")
+except ArcadeDBError as error:
+    print("refused:", "cannot be set per database" in str(error))
+----
+
+[source,text]
+----
+False
+refused: True
+----
+
+A setting with the scope of the process is a system property. Set it before the engine starts, because the engine reads it when it starts: for `arcadedb-jvm` as `-Darcadedb.fileSync=false` in `jvm_kwargs={"jvm_args": [...]}` or in `ARCADEDB_JVM_ARGS`, and for `arcadedb` in `ARCADEDB_NATIVE_ISOLATE_ARGS`. The same route sets the process default of `arcadedb.txWalFlush` for every database. The pages xref:how-to/logs.adoc[Where the logs go] and xref:how-to/concurrency.adoc#durability[Concurrency, processes and crashes] show both. This page has no test for the system property.
+
+== Bulk loads keep settings of their own
+
+The async executor and `GraphBatch` do not read `arcadedb.txWalFlush` and `set_wal_flush` does not change them. A fresh executor writes to the WAL and does not flush it. Its settings are shared by every `db.async_executor()` call of the database (see xref:how-to/async-executor.adoc[The async executor]):
+
+[source,python]
+----
+db.command("sql", "CREATE VERTEX TYPE City")
+executor = db.async_executor()
+print(executor.get_transaction_sync(), executor.is_transaction_use_wal())
+db.set_wal_flush("yes_full")
+print(executor.get_transaction_sync())
+db.set_wal_flush("no")
+----
+
+[source,text]
+----
+no True
+no
+----
+
+A `GraphBatch` builds with `use_wal=False` and `wal_flush="no"`, whatever the database says, and applies them to the shared executor for as long as it is open. It restores the executor's earlier settings when it closes, also when the `with` block raises. The engine logs the change at level INFO. A batch that you give `use_wal` or `wal_flush` uses those instead, and `wal_flush` takes the same three names as `set_wal_flush`:
+
+[source,python]
+----
+executor.set_transaction_sync("yes_nometadata")
+with db.graph_batch() as batch:
+    print(executor.get_transaction_sync(), executor.is_transaction_use_wal())
+    batch.create_vertices("City", 2)
+print(executor.get_transaction_sync(), executor.is_transaction_use_wal())
+
+with db.graph_batch(use_wal=True, wal_flush="yes_full") as batch:
+    print(executor.get_transaction_sync(), executor.is_transaction_use_wal())
+    batch.create_vertices("City", 2)
+print(executor.get_transaction_sync(), executor.is_transaction_use_wal())
+----
+
+[source,text]
+----
+no False
+yes_nometadata True
+yes_full True
+yes_nometadata True
+----
+
+An unknown `wal_flush` raises `ValueError` when you call `db.graph_batch()`. With the batch open, a transaction that you run yourself between its calls still uses your flush type, and it does after `close()`. The JVM build has a test for this, as it needs the engine's flush type of the thread. A batch cannot run inside a transaction that you opened: see xref:how-to/transactions.adoc#graph-batch[Transactions]. What an interrupted batch leaves behind is on xref:how-to/bulk-loads.adoc[Bulk loads and commit size].
