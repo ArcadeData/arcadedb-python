@@ -70,7 +70,9 @@ def _resource_path(name: str) -> Path:
 def _import_result_ok(result_set):
     assert result_set is not None
     row = result_set.one()
-    assert row.get("result") == "OK"
+    assert (
+        row.get("result") == "OK"
+    ), row.to_dict()  # the whole row: the importer says why on a FAIL
     return row
 
 
