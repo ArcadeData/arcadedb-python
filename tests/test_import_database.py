@@ -67,6 +67,32 @@ def _resource_path(name: str) -> Path:
     return Path(__file__).resolve().parent / "fixtures" / name
 
 
+# `parallel` is a reserved word in the SQL grammar, so an IMPORT DATABASE setting of that name can only be written in backticks. Since the engine
+# change that refuses unknown importer names (ArcadeData/arcadedb#11363) the quoted name reaches the importer with its backticks and is refused
+# (ArcadeData/arcadedb#11367). The two tests below pin the behaviour of each engine; when #11367 is fixed they go back to the plain form.
+QUOTED_PARALLEL_REFUSED_SINCE = (26, 12, 1)
+
+
+def _engine_version(db):
+    """The engine's x.y.z through SQL `SELECT version()`; a SNAPSHOT or a build suffix is dropped."""
+    raw = str(db.query("sql", "SELECT version() AS v").first().get("v"))
+    parts = [
+        int(p) if p.isdigit() else 0
+        for p in raw.split()[0].split("-")[0].split(".")[:3]
+    ]
+    return tuple(parts + [0] * (3 - len(parts)))
+
+
+def _quoted_parallel_refused(db, result_set):
+    """True, after checking the importer's reason, on an engine that refuses a quoted `parallel`."""
+    if _engine_version(db) < QUOTED_PARALLEL_REFUSED_SINCE:
+        return False
+    row = result_set.one()
+    assert row.get("result") == "FAIL", row.to_dict()
+    assert "Unknown importer setting" in str(row.get("reason")), row.to_dict()
+    return True
+
+
 def _import_result_ok(result_set):
     assert result_set is not None
     row = result_set.one()
@@ -99,6 +125,8 @@ def test_import_database_csv_documents_with_quoted_parallel_setting(
                 "`parallel` = 1"
             ),
         )
+        if _quoted_parallel_refused(db, result):
+            return
         _import_result_ok(result)
 
         count = db.query("sql", "SELECT count(*) as c FROM `Document`").one().get("c")
@@ -172,6 +200,8 @@ def test_import_database_csv_graph_vertices_and_edges_with_quoted_parallel(
                 "`parallel` = 1"
             ),
         )
+        if _quoted_parallel_refused(db, result):
+            return
         _import_result_ok(result)
 
         vertices_count = (
