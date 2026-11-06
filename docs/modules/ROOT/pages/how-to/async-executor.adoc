@@ -1,0 +1,195 @@
+= The async executor
+:description: What db.async_executor() returns, how to submit SQL and transaction blocks without waiting, how to wait for them, how errors and callbacks reach you, what close() does to every caller, and what is thread-safe, on both builds.
+
+// Sources: src/arcadedb/async_executor.py (the JVM build), src/arcadedb/_native/extras.py (NativeAsyncExecutor, the native build), core.py (async_executor), and ArcadeDB 26.11.1 DatabaseAsyncExecutorImpl.java. Pinned by tests/test_async_executor.py, tests/test_async_transaction.py and tests/test_async_executor_behavior.py.
+
+You need this page if you want to hand statements to the engine and carry on, and learn about the result in a callback. The short version:
+
+* `executor = db.async_executor()` returns a wrapper of the one executor of the database. Every call returns another wrapper of the same executor, with the same settings.
+* `executor.command(...)`, `executor.query(...)` and `executor.transaction(...)` queue work and return at once. `executor.wait_completion()` blocks until everything queued before it is stored.
+* A callback runs on a thread of the engine, not on yours.
+* `executor.close()` shuts the executor down for every caller. Do it once, at the end.
+* Do not use it to load many rows. Use `db.insert_many(...)` for documents and `db.graph_batch()` for graphs: see xref:how-to/bulk-loads.adoc[Bulk loads and commit size].
+
+The statements are SQL or openCypher, as on xref:how-to/databases-and-queries.adoc[Databases and queries]. The executor, its worker threads and its queue belong to the engine. This page covers what the Python wrappers add.
+
+The blocks on this page run one after the other against one empty database, and a test in the repository runs them that way (`tests/test_docs_async_page.py`) on the JVM build and on the native build. Each block that prints something is followed by its output. Every block assumes that `db` is an open database. The last block closes the executor, so nothing can follow it.
+
+== Submit and wait
+
+Each worker of the executor opens a transaction of its own and commits it after `commit_every` operations, and at `wait_completion()`. You open no transaction for it. At parallel level 1 there is one worker, and every statement of the next block is stored once `wait_completion()` returns.
+
+[source,python]
+----
+db.command("sql", "CREATE DOCUMENT TYPE Item")
+
+
+def count():
+    return db.query("sql", "SELECT count(*) AS c FROM Item").first().get("c")
+
+
+executor = db.async_executor().set_parallel_level(1).set_commit_every(1000)
+for n in range(50):
+    executor.command("sql", "INSERT INTO Item SET n = ?", args=[n])
+executor.wait_completion()
+print(count())
+----
+
+[source,text]
+----
+50
+----
+
+The setters return the executor, so they chain. `wait_completion(timeout_ms)` raises `TimeoutError` when the queue is not done in time, and `wait_completion(0)` raises it at once if work is left. A negative timeout raises `ValueError`. Returning from the wait does not make `is_pending()` `False` at the same instant: poll it until it is, if you need an idle executor.
+
+[source,python]
+----
+try:
+    executor.wait_completion(-1)
+except ValueError as error:
+    print(error)
+----
+
+[source,text]
+----
+timeout_ms must be None or >= 0, got -1
+----
+
+`command` takes the parameters as `args=[...]` for `?`, or as named keywords, and not both: the call raises `ValueError` before it queues anything.
+
+== One executor for the database
+
+The engine has one executor for each database. `db.async_executor()` does not make a new one: it returns a new wrapper of the same executor, and the settings (parallel level, commit size and flush type, among others) are the executor's, not the wrapper's.
+
+[source,python]
+----
+other = db.async_executor()
+print(other is executor, other.get_commit_every(), other.get_parallel_level())
+----
+
+[source,text]
+----
+False 1000 1
+----
+
+So a library that sets the commit size changes it for your code too. Set what you need right after you get the executor, and do not share an executor with code you do not control. The durability settings of the executor are on xref:how-to/durability.adoc[Durability settings].
+
+== Callbacks and errors
+
+A result callback gets one row at a time. It runs on a thread of the engine, so it must be thread-safe, and anything it shares with your thread needs a lock or a queue.
+
+[source,python]
+----
+import threading
+
+me = threading.get_ident()
+rows = []
+on_my_thread = []
+
+
+def on_row(row):
+    rows.append(row.get("n"))
+    on_my_thread.append(threading.get_ident() == me)
+
+
+executor.query("sql", "SELECT n FROM Item WHERE n < 3 ORDER BY n", on_row)
+executor.wait_completion()
+print(rows, set(on_my_thread))
+----
+
+[source,text]
+----
+[0, 1, 2] {False}
+----
+
+A statement that fails does not raise in your thread. It goes to the `error_callback` of that call. A statement without one fails silently: `wait_completion()` returns normally and the statement stored nothing. Statements queued after a failed one still run.
+
+[source,python]
+----
+errors = []
+executor.command("sql", "INSERT INTO Missing SET n = 1", error_callback=errors.append)
+executor.command("sql", "INSERT INTO Item SET n = 100")
+executor.wait_completion()
+print(len(errors), count())
+
+executor.command("sql", "INSERT INTO Missing SET n = 1")
+executor.wait_completion()
+print("no error raised", count())
+----
+
+[source,text]
+----
+1 51
+no error raised 51
+----
+
+Give every call whose result you need an `error_callback`. `executor.on_error(callback)` sets one handler for the whole executor, and `executor.on_ok(callback)` one that runs after each batch commit; see their docstrings for what each receives. A per-record callback of `create_record` runs when the record is applied to the batch, before the commit, and `on_ok` runs after it (`tests/test_async_executor.py` pins this order).
+
+== Blocks in a transaction
+
+`executor.transaction(block)` runs `block` on a worker inside a transaction: the engine begins it, commits it, and rolls it back when the block raises. Inside the block, use `db` as you do in your own thread. `retries`, `ok_callback` and `error_callback` are optional, and `slot=n` sends the block to the worker with that number. Blocks sent to the same slot run in the order you submitted them, and the tests pin no other order, so do not depend on the order of `command` calls.
+
+[source,python]
+----
+executor.transaction(lambda: db.command("sql", "INSERT INTO Item SET n = 200"))
+executor.wait_completion()
+print(count())
+----
+
+[source,text]
+----
+52
+----
+
+== Threads
+
+Any thread can submit to one executor. Four threads that submit ten statements each, at parallel level 1, give forty rows:
+
+[source,python]
+----
+def submit(worker):
+    for _ in range(10):
+        executor.command("sql", "INSERT INTO Item SET worker = ?", args=[worker])
+
+
+threads = [threading.Thread(target=submit, args=(w,)) for w in range(4)]
+for thread in threads:
+    thread.start()
+for thread in threads:
+    thread.join()
+executor.wait_completion()
+print(count())
+----
+
+[source,text]
+----
+92
+----
+
+== Close
+
+`executor.close()` shuts down the worker threads of the executor, and the executor is the one that every wrapper shares. After it, another wrapper still answers `is_closed()` with `False`, but submitting work to it raises an error that says the executor has been shut down. `with db.async_executor() as executor:` closes at the end of the block. `db.close()` closes every executor that the database handed out, and `close()` of a wrapper is safe to call twice.
+
+The class of the error that a submit raises after a close is not part of the Python API, so the block catches `Exception` and reads the text:
+
+[source,python]
+----
+with db.async_executor() as closing:
+    closing.command("sql", "INSERT INTO Item SET n = 300")
+    closing.wait_completion()
+print(closing.is_closed(), executor.is_closed())
+try:
+    executor.transaction(lambda: None)
+except Exception as error:
+    print("shut down" in str(error))
+print(count())
+----
+
+[source,text]
+----
+True False
+True
+93
+----
+
+Call `wait_completion()` before `close()`, as the block does.

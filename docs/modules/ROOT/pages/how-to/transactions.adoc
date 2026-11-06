@@ -238,7 +238,7 @@ added
 [[graph-batch]]
 == GraphBatch inside a transaction
 
-`GraphBatch` (`db.graph_batch()`) manages its own transactions. From engine 26.10.1 on, its `create_vertices`, `flush` and `close`, and `new_edge` and `new_edges` when the buffer is full, refuse to run inside a transaction that you opened. They raise `ArcadeDBError` and leave your transaction as it was. Engines before 26.10.1 committed your transaction instead. Commit or roll back your own work, then call the batch. The commit sizes of a batch are on xref:how-to/bulk-loads.adoc[Bulk loads and commit size].
+`GraphBatch` (`db.graph_batch()`) manages its own transactions. From engine 26.10.1 on, its `create_vertices`, `flush` and `close`, and `new_edge` and `new_edges` when the buffer is full, refuse to run inside a transaction that you opened. They raise `ArcadeDBError` and leave your transaction as it was. Engines before 26.10.1 committed your transaction instead. Commit or roll back your own work, then call the batch. The commit sizes of a batch are on xref:how-to/bulk-loads.adoc[Bulk loads and commit size]. What a batch does with the durability settings of the database is on xref:how-to/durability.adoc[Durability settings].
 
 [source,python]
 ----

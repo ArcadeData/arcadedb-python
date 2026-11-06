@@ -24,7 +24,7 @@
 
 The JVM defaults are the same as before. They stay until someone measures them on the JVM build.
 
-An explicit value always wins. `commit_every=0` gives one transaction for `insert_many` and one commit for each flush for `graph_batch`, on both packages. In a transaction that you open yourself, `insert_many` commits nothing. `graph_batch` refuses to run in one: see xref:how-to/transactions.adoc#graph-batch[GraphBatch inside a transaction].
+An explicit value always wins. `commit_every=0` gives one transaction for `insert_many` and one commit for each flush for `graph_batch`, on both packages. In a transaction that you open yourself, `insert_many` commits nothing. `graph_batch` refuses to run in one: see xref:how-to/transactions.adoc#graph-batch[GraphBatch inside a transaction]. The durability that a load gets is on xref:how-to/durability.adoc[Durability settings], and the async executor on xref:how-to/async-executor.adoc[The async executor].
 
 == Why the native defaults are smaller
 

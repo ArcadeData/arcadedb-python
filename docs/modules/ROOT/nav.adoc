@@ -7,6 +7,8 @@
 ** xref:how-to/transactions.adoc[Transactions]
 ** xref:how-to/values-and-records.adoc[Values and records]
 ** xref:how-to/concurrency.adoc[Concurrency, processes and crashes]
+** xref:how-to/durability.adoc[Durability settings]
+** xref:how-to/async-executor.adoc[The async executor]
 ** xref:how-to/logs.adoc[Where the logs go]
 ** xref:how-to/bulk-loads.adoc[Bulk loads and commit size]
 ** xref:how-to/import-export.adoc[Importing and exporting data]

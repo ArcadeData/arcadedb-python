@@ -306,6 +306,8 @@ If a process must stop and it does not react to a signal, `SIGKILL` cost no ackn
 
 By default the engine does not flush its write-ahead log at commit: `arcadedb.txWalFlush` is `0`. A commit that returned then survives a crash of the process, as the kill probe above shows, but not a power loss or an operating system crash. Setting `arcadedb.txWalFlush` to `1` flushes the log data to stable storage at every commit, and `2` flushes the file metadata as well. What each level guarantees is in the main ArcadeDB docs: see {arcadedb-docs-url}/concepts/transactions#wal-flush-durability[WAL flush and durability]. The setting is described in {arcadedb-docs-url}/reference/settings[Settings].
 
+The call `db.set_wal_flush(...)`, the group commit and file sync settings, and what a bulk load does with them are on xref:how-to/durability.adoc[Durability settings].
+
 The setting belongs to the database. The same SQL turns it on for `arcadedb` (native) and `arcadedb-jvm`, and the value is stored with the database, so it is still in force after a reopen:
 
 [source,python,subs="attributes+"]
