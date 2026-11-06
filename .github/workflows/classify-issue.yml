@@ -14,6 +14,10 @@
 #   CI        github_actions: CI, workflow and runner words in the title or body.
 # `dependencies` is left to Dependabot.
 #
+# Milestone: a newly opened issue with no milestone gets the open release milestone, chosen as in
+# assign-milestone.yml (earliest due date, ties the lower number; no open milestone, nothing is
+# set). An existing milestone is never replaced. A dry run logs the milestone it would set.
+#
 # Try the rules on a real issue without touching it: run the workflow by hand (dry run by default)
 # and read the log.
 name: Classify issue
@@ -106,9 +110,32 @@ jobs:
             const labels = [...wanted].filter(l => existing.has(l)).sort();
 
             core.info(`#${issue.number} "${title}": package="${pkg}", labels=[${labels.join(', ')}]`);
-            if (labels.length === 0) return;
+
+            // The open milestone with the earliest due date (ties: the lower number), as in
+            // assign-milestone.yml. Only when the issue has none.
+            let milestone = null;
+            if (issue.milestone) {
+              core.info(`#${issue.number}: already in milestone "${issue.milestone.title}".`);
+            } else {
+              const open = await github.paginate(github.rest.issues.listMilestones, {
+                owner, repo, state: 'open', per_page: 100,
+              });
+              const byDue = (a, b) =>
+                (a.due_on ? Date.parse(a.due_on) : Infinity) - (b.due_on ? Date.parse(b.due_on) : Infinity) ||
+                a.number - b.number;
+              milestone = open.sort(byDue)[0] || null;
+              core.info(milestone
+                ? `#${issue.number}: milestone would be "${milestone.title}".`
+                : 'No open milestone, nothing to assign.');
+            }
+
             if (process.env.DRY_RUN === 'true') {
-              core.info('dry run: no label applied.');
+              core.info('dry run: no label or milestone applied.');
               return;
             }
-            await github.rest.issues.addLabels({ owner, repo, issue_number: issue.number, labels });
+            if (labels.length > 0) {
+              await github.rest.issues.addLabels({ owner, repo, issue_number: issue.number, labels });
+            }
+            if (milestone) {
+              await github.rest.issues.update({ owner, repo, issue_number: issue.number, milestone: milestone.number });
+            }
