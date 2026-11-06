@@ -465,3 +465,30 @@ def test_the_event_of_an_async_write_runs_on_an_engine_thread(db):
     executor.wait_completion()
     assert len(idents) == 1 and idents[0] != threading.get_ident()
     assert _names(db) == ["async"]
+
+
+def test_the_type_name_of_a_record_is_a_python_str_on_the_native_build_and_a_java_string_on_the_jvm_build(
+    db,
+):
+    seen = {}
+
+    def look(record):
+        seen["type_name"] = record.get_type_name()
+        seen["name"] = record.get("name")
+        seen["dict_name"] = record.to_dict()["name"]
+        seen["rid"] = record.get_rid()
+
+    db.on("after_create", look, "Person")
+    _insert(db, "x")
+    # a property, a to_dict value and the RID are Python str on both builds
+    for key in ("name", "dict_name", "rid"):
+        assert type(seen[key]) is str, key
+    assert seen["name"] == "x" and seen["dict_name"] == "x"
+    # the type name is a Java string on the JVM build: it compares equal, and str() makes it a Python str
+    value = seen["type_name"]
+    assert value == "Person" and type(str(value)) is str
+    assert (type(value) is str) == (arcadedb.__backend__ != "jvm")
+    # the same holds for a record that is not in a callback
+    outside = db.query("sql", "SELECT FROM Person").first().get_element()
+    assert outside.get_type_name() == "Person"
+    assert (type(outside.get_type_name()) is str) == (arcadedb.__backend__ != "jvm")

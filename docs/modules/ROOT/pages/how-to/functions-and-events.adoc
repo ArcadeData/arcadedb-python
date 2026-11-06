@@ -3,7 +3,7 @@
 
 // Sources: src/arcadedb/callbacks.py and core.py (register_function, unregister_function, on), _native/extras.py (the native build). Every statement below is pinned by tests/test_functions_and_events_behavior.py. The basics are pinned by tests/test_python_callbacks.py (names, argument counts, replace, return types, record events, veto), the native upcall by tests/test_native_udf.py, and a real Ctrl-C by tests/test_python_function_interrupt.py and tests/test_transaction_context_interrupt.py.
 
-Use `register_function` when a statement needs something that SQL and openCypher cannot compute, such as a slug, a hash or a call into your own library. Use `db.on` when Python code must run each time a record is written, for an audit trail or a rule that can refuse a write. Both are part of the Python bindings, not of the engine, and both work the same on `arcadedb` and `arcadedb-jvm`, with one difference that is called out below.
+Use `register_function` when a statement needs something that SQL and openCypher cannot compute, such as a slug, a hash or a call into your own library. Use `db.on` when Python code must run each time a record is written, for an audit trail or a rule that can refuse a write. Both are part of the Python bindings, not of the engine, and both work the same on `arcadedb` and `arcadedb-jvm`, with two differences that are called out below.
 
 The short version:
 
@@ -322,6 +322,7 @@ A callback runs inside the operation that fired it, on the thread that runs it. 
 * *Read.* A callback can run `db.query`. A `before_create` callback does not see the new record in a query. An `after_create` callback does.
 * *Write.* A callback can run `db.command`. The write joins the transaction of the operation that fired the event: it commits with it and rolls back with it.
 * *Fire more events.* The write of a callback fires events too. A callback registered without `type_name` fires for its own writes. Guard against that, or it never ends.
+* *Read the type name with `str(...)`.* On `arcadedb-jvm`, `record.get_type_name()` returns a Java string, not a Python `str`. It compares equal to a `str`, but adding it to a `str`, as in `"created " + record.get_type_name()`, raises `TypeError`. Write `str(record.get_type_name())`. On `arcadedb` it is already a `str`. A property read with `record.get(...)`, a value of `to_dict()` and `get_rid()` are Python `str` on both.
 * *Change the record.* Do not rely on it. On `arcadedb-jvm` a `before_create` callback can call `record.set(...)`, and the value is stored. On `arcadedb` the change is lost. Put the value in the statement instead.
 * *Wait.* Keep it quick, and do not wait in it for another thread's transaction.
 
@@ -332,7 +333,7 @@ db.command("sql", "CREATE DOCUMENT TYPE Journal")
 
 def note_creation(record):
     if record.get_type_name() != "Journal":
-        note = "created " + record.get_type_name()
+        note = "created " + str(record.get_type_name())
         db.command("sql", "INSERT INTO Journal SET note = ?", note)
 
 
