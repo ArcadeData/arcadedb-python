@@ -643,6 +643,26 @@
    "type": "com.arcadedb.postgres.PostgresProtocolPlugin"
   },
   {
+   "type": "com.arcadedb.query.facet.DistinctValue",
+   "allPublicMethods": true
+  },
+  {
+   "type": "com.arcadedb.query.facet.FacetBucket",
+   "allPublicMethods": true
+  },
+  {
+   "type": "com.arcadedb.query.facet.FacetResult",
+   "allPublicMethods": true
+  },
+  {
+   "type": "com.arcadedb.query.facet.FacetResults",
+   "allPublicMethods": true
+  },
+  {
+   "type": "com.arcadedb.query.facet.FacetStats",
+   "allPublicMethods": true
+  },
+  {
    "type": "com.arcadedb.query.opencypher.query.OpenCypherQueryEngineFactory",
    "methods": [
     {
@@ -4887,6 +4907,10 @@
    "allDeclaredFields": true
   },
   {
+   "type": "com.arcadedb.query.sql.executor.ResultSet",
+   "allPublicMethods": true
+  },
+  {
    "type": "com.arcadedb.query.sql.parser.Alias",
    "allDeclaredFields": true
   },
@@ -5236,6 +5260,18 @@
   },
   {
    "type": "com.arcadedb.query.sql.parser.ExpressionStatement",
+   "allDeclaredFields": true
+  },
+  {
+   "type": "com.arcadedb.query.sql.parser.FacetItem",
+   "allDeclaredFields": true
+  },
+  {
+   "type": "com.arcadedb.query.sql.parser.FacetRangeItem",
+   "allDeclaredFields": true
+  },
+  {
+   "type": "com.arcadedb.query.sql.parser.FacetsClause",
    "allDeclaredFields": true
   },
   {

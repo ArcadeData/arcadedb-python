@@ -137,6 +137,90 @@ def _bridge_class(name):
     return cls
 
 
+def _facet_values(java_object, names):
+    """``{name: value}`` of the named accessors of a facet object, each value as a row's value (None stays None)."""
+    return {
+        name: convert_java_to_python(getattr(java_object, name)()) for name in names
+    }
+
+
+def _facet_bucket(java_bucket) -> Dict[str, Any]:
+    """One bucket of a facet as the dict ``ResultSet.facets`` documents."""
+    key = java_bucket.key()
+    bucket: Dict[str, Any] = {}
+    if key is not None:
+        bucket["key"] = str(key)
+        if bool(java_bucket.isDefault()):
+            bucket["default"] = True
+        else:
+            # JPype renames a Java method called like a Python keyword: from() is from_()
+            java_from = getattr(java_bucket, "from_", None) or getattr(
+                java_bucket, "from"
+            )
+            for name, java_value in (("from", java_from()), ("to", java_bucket.to())):
+                if java_value is not None:
+                    bucket[name] = convert_java_to_python(java_value)
+    elif bool(java_bucket.isMissing()):
+        bucket["value"] = None
+        bucket["missing"] = True
+    else:
+        bucket["value"] = convert_java_to_python(java_bucket.value())
+    bucket["count"] = int(java_bucket.count())
+    # the extra members of a hierarchy bucket (parent, depth, orphan): the text of a JSON object
+    extra = json.loads(str(java_bucket.attributes().toString()))
+    for name, value in extra.items():
+        bucket.setdefault(name, value)
+    return bucket
+
+
+def _facet_result(java_result) -> Dict[str, Any]:
+    """One facet (``FacetResult``) as the dict ``ResultSet.facets`` documents."""
+    kind = str(java_result.kind())
+    source = str(java_result.source())
+    out: Dict[str, Any] = {"type": kind, "source": source}
+    reason = java_result.reason()
+    if reason is not None:
+        out["reason"] = str(reason)
+    if source == "unavailable":
+        return out  # no buckets, no counts and no cursor, only the reason
+    stats = java_result.stats()
+    if stats is not None:
+        out["count"] = int(stats.count())
+        out["missing"] = int(stats.missing())
+        out.update(_facet_values(stats, ("min", "max", "sum", "avg")))
+    else:
+        distinct = java_result.distinct()
+        if distinct is not None:
+            out["value"] = int(distinct.value())
+            out["exact"] = bool(distinct.exact())
+        else:
+            out["buckets"] = [_facet_bucket(b) for b in java_result.buckets()]
+            if kind not in ("range", "histogram"):
+                out["other_count"] = int(java_result.otherCount())
+        out["missing"] = int(java_result.missing())
+    if bool(java_result.hasAfter()):
+        out["after"] = convert_java_to_python(java_result.after())
+    return out
+
+
+def _facets_to_python(java_facets) -> Dict[str, Any]:
+    """The engine's ``FacetResults`` as the dict ``ResultSet.facets`` documents.
+
+    Read through the engine's own accessors, not through the bridge jar: the bridge is compiled against the engine jars of
+    each build, and an engine before 26.12.1 has no ``FacetResults`` class to compile against.
+    """
+    out: Dict[str, Any] = {
+        "meta": {
+            "exact": bool(java_facets.exact()),
+            "patched": int(java_facets.patched()),
+            "lag_ms": int(java_facets.lagMs()),
+        }
+    }
+    for alias in java_facets.aliases():
+        out[str(alias)] = _facet_result(java_facets.get(alias))
+    return out
+
+
 def _read_error(exc: BaseException) -> ArcadeDBError:
     """The ArcadeDBError for a Java exception raised while rows were read.
 
@@ -345,6 +429,8 @@ class ResultSet:
         self._database = database  # strong reference, see the class docstring
         self._closed = False
         self._exhausted = False
+        self._facets = None
+        self._facets_read = False
 
     def __iter__(self) -> Iterator["Result"]:
         return self
@@ -373,6 +459,50 @@ class ResultSet:
             "first(), one(), close(), or leaving its with block), so the rows "
             "it had not returned are gone. Run the query again to read them."
         )
+
+    @property
+    def facets(self) -> Optional[Dict[str, Any]]:
+        """The facets of a ``SELECT ... FACETS`` query, or None for a statement without a ``FACETS`` clause.
+
+        A plain dict. ``meta`` holds ``exact`` (False when the counts may lag the committed data), ``patched`` (records read from
+        the record itself to correct the projection) and ``lag_ms``. Every other key is a facet, by its alias (the property name
+        when none is written), in the order of the clause. A facet has ``type`` (``terms``, ``range``, ``histogram``,
+        ``hierarchy``, ``distinct`` or ``stats``) and ``source`` (``index``, ``scan`` or ``unavailable``). An unavailable facet
+        (for example one that needed a fallback scan the database refused) has a ``reason`` and nothing else, it is not dropped.
+        Terms, hierarchy, range and histogram facets have ``buckets``, a list of dicts with ``count`` and ``value`` (terms), or
+        ``key`` with ``from`` and ``to`` (an unbounded end is left out), or ``key`` with ``default`` (the values in no range); the
+        bucket of the records without a value has ``value`` None and ``missing`` True. Terms and hierarchy facets add
+        ``other_count`` (the records of the values not returned); every facet but a stats one has ``missing`` (the records
+        without a value). A stats facet has ``count``, ``missing``, ``min``, ``max``, ``sum`` and ``avg``, a distinct facet
+        ``value`` and ``exact``, and a facet with an ``AFTER`` cursor has ``after``. Values are the Python values a row holds, so
+        NaN and the infinities are floats.
+
+        The facets cover every record the ``WHERE`` clause matched, whatever ``SKIP`` and ``LIMIT`` kept. The engine computes them
+        when the rows are exhausted, so read the rows first. Asking for the facets before the rows are read computes them at once
+        and ends the rows: the result set then reads as empty. The facets stay available after that.
+
+        Raises ArcadeDBError for a result set closed before its end, and for one whose database was closed before its end.
+        """
+        if self._facets_read:
+            return self._facets
+        readable = self._readable()
+        try:
+            java_facets = self._java_result_set.getFacets()
+        except AttributeError:
+            return None  # an engine before 26.12.1 has no facets
+        except JException as exc:
+            raise _read_error(exc) from exc
+        if java_facets is None:
+            return None  # no FACETS clause: the rows are untouched
+        try:
+            self._facets = _facets_to_python(java_facets)
+        except JException as exc:
+            raise _read_error(exc) from exc
+        self._facets_read = True
+        if readable:
+            # the engine computed the facets over every match and ended the rows
+            self._finish()
+        return self._facets
 
     def _finish(self) -> None:
         self._exhausted = True

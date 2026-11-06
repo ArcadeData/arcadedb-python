@@ -215,6 +215,10 @@ class NativeResultSet:
         # the engine computes lazily: an error met while the first rows were read is raised when the rows before it
         # have been consumed, as it is on the JPype path (the cursor is already finished on the Java side)
         self._pending_error = reply.get("rerr")
+        # the facets of a FACETS query ride on the reply that drains the cursor (the engine computes them when its rows end, and the
+        # cursor is closed with that reply); ferr is the error of computing them, raised when they are read
+        self._facets = reply.get("facets")
+        self._facets_error = reply.get("ferr")
 
     @classmethod
     def _lazy(cls, database, rs_id: int) -> "NativeResultSet":
@@ -228,6 +232,8 @@ class NativeResultSet:
         self._closed = False
         self._exhausted = False
         self._pending_error = None
+        self._facets = None
+        self._facets_error = None
         return self
 
     # -- state
@@ -282,7 +288,63 @@ class NativeResultSet:
         self._buf.extend(zip(reply["rows"], reply["meta"]))
         self._more = not reply["drained"]
         self._pending_error = reply.get("rerr")
+        if "facets" in reply:
+            self._facets = reply["facets"]
+        if "ferr" in reply:
+            self._facets_error = reply["ferr"]
         return bool(self._buf) or self._pending_error is not None
+
+    @property
+    def facets(self) -> Optional[Dict[str, Any]]:
+        """The facets of a ``SELECT ... FACETS`` query, or None for a statement without a ``FACETS`` clause.
+
+        A plain dict. ``meta`` holds ``exact`` (False when the counts may lag the committed data), ``patched`` (records read from
+        the record itself to correct the projection) and ``lag_ms``. Every other key is a facet, by its alias (the property name
+        when none is written), in the order of the clause. A facet has ``type`` (``terms``, ``range``, ``histogram``,
+        ``hierarchy``, ``distinct`` or ``stats``) and ``source`` (``index``, ``scan`` or ``unavailable``). An unavailable facet
+        (for example one that needed a fallback scan the database refused) has a ``reason`` and nothing else, it is not dropped.
+        Terms, hierarchy, range and histogram facets have ``buckets``, a list of dicts with ``count`` and ``value`` (terms), or
+        ``key`` with ``from`` and ``to`` (an unbounded end is left out), or ``key`` with ``default`` (the values in no range); the
+        bucket of the records without a value has ``value`` None and ``missing`` True. Terms and hierarchy facets add
+        ``other_count`` (the records of the values not returned); every facet but a stats one has ``missing`` (the records
+        without a value). A stats facet has ``count``, ``missing``, ``min``, ``max``, ``sum`` and ``avg``, a distinct facet
+        ``value`` and ``exact``, and a facet with an ``AFTER`` cursor has ``after``. Values are the Python values a row holds, so
+        NaN and the infinities are floats.
+
+        The facets cover every record the ``WHERE`` clause matched, whatever ``SKIP`` and ``LIMIT`` kept. The engine computes them
+        when the rows are exhausted, so read the rows first. Asking for the facets before the rows are read computes them at once
+        and ends the rows: the result set then reads as empty. The facets stay available after that.
+
+        Raises ArcadeDBError for a result set closed before its end, and for one whose database was closed before its end.
+        """
+        if self._facets_error is not None:
+            raise _read_error(self._facets_error)
+        if self._facets is not None:
+            return self._facets
+        if not self._readable():
+            return None  # read to the end: the last reply carried the facets, and a statement without them has none
+        if not (self._more and self._rs):
+            return None  # every row is fetched and no cursor is left to ask
+        reply, _ = loads_tagged(lib.call("arcadedb_n_facets", self._rs))
+        if not reply.get("ok"):
+            # the cursor is gone on the Java side
+            self._more = False
+            self._rs = 0
+            self._closed = True
+            self._exhausted = True
+            self._buf.clear()
+            raise _read_error(reply)
+        facets = reply.get("facets")
+        if facets is None:
+            return (
+                None  # no FACETS clause: the cursor stays open, the rows are untouched
+            )
+        # the facets are computed and the engine ended the rows: the cursor was closed with the call
+        self._facets = facets
+        self._more = False
+        self._rs = 0
+        self._finish()
+        return facets
 
     def _finish(self) -> None:
         self._exhausted = True
