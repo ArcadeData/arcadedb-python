@@ -594,3 +594,18 @@ def test_a_missing_library_returns_none_or_raises_import_error(readings, monkeyp
         for_frame.to_dataframe()
     # the JVM build adds the install hint to the message, the native build raises the plain ImportError
     assert ("uv add" in str(error.value)) == (arcadedb.__backend__ != "native")
+
+
+def test_a_vertex_frame_inside_your_transaction_is_refused_and_leaves_it_alone(
+    temp_db,
+):
+    """The graph batch behind a vertex load refuses to run inside a transaction of yours (test_transactions_behavior.py)."""
+    temp_db.command("sql", "CREATE VERTEX TYPE Town")
+    temp_db.begin()
+    try:
+        with pytest.raises(ArcadeDBError):
+            temp_db.insert_dataframe("Town", pd.DataFrame({"name": ["a", "b"]}))
+        assert temp_db.is_transaction_active() is True
+    finally:
+        temp_db.rollback()
+    assert _count(temp_db, "Town") == 0

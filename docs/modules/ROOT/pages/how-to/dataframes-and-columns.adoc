@@ -1,9 +1,9 @@
 = DataFrames, Arrow and columns
 :description: Load a pandas or Polars frame, an Arrow table or whole columns with insert_dataframe, insert_arrow and insert_columns, what each Arrow type becomes, how nulls and NaN are stored, what a declared property accepts, how many rows are converted at a time, what a failed load leaves, and what to_columns, to_arrow, to_dataframe and to_polars return, including the difference between the two builds.
 
-// Sources: src/arcadedb/core.py (insert_columns, insert_dataframe, insert_arrow), dataframe.py, results.py and _native/columns.py (to_columns, to_arrow, to_dataframe, to_polars). Every statement below is pinned by tests/test_dataframe_columns_behavior.py.
+// Sources: src/arcadedb/core.py (insert_columns, insert_dataframe, insert_arrow), dataframe.py, results.py and _native/columns.py (to_columns, to_arrow, to_dataframe, to_polars). The statements below are pinned by tests/test_dataframe_columns_behavior.py, and for the Arrow types, the declared types, the column checks, the readers and the dates also by tests/test_dataframe_ingest.py, tests/test_insert_columns.py, tests/test_resultset_arrow.py, tests/test_columnar_readers.py and tests/test_resultset.py.
 
-This page covers column-shaped data in and out of a database: the three calls that load it and the four readers that return it. For a list of Python dicts use `insert_many`, and for a file use the importer: xref:how-to/bulk-loads.adoc[Bulk loads and commit size] and xref:how-to/import-export.adoc[Importing and exporting data]. The calls here are bindings calls and have no statement in SQL, so the main manual has nothing to say about them. The types that a stored value can have are the engine's: {arcadedb-docs-url}/reference/datatypes[Data types].
+This page covers column-shaped data in and out of a database. Load it with `insert_dataframe` (a pandas or Polars frame), `insert_arrow` (an Arrow table) or `insert_columns` (numpy arrays and lists). Read a result as columns with `to_columns`, `to_arrow`, `to_dataframe` or `to_polars`. For a list of Python dicts use `insert_many`, and for a file use the importer: xref:how-to/bulk-loads.adoc[Bulk loads and commit size] and xref:how-to/import-export.adoc[Importing and exporting data]. The calls here are bindings calls and have no statement in SQL, so the main manual has nothing to say about them. The types that a stored value can have are the engine's: {arcadedb-docs-url}/reference/datatypes[Data types].
 
 The libraries are optional extras. A pandas frame needs pandas and pyarrow, a Polars frame needs Polars, and the readers need numpy, pyarrow, pandas or Polars as their names say:
 
@@ -13,7 +13,9 @@ uv add 'arcadedb[arrow,pandas]'
 uv add 'arcadedb[polars]'
 ----
 
-For the JVM package the name is `arcadedb-jvm`, with the same extras. The blocks on this page run one after the other against one empty database, and a test in the repository runs them that way on both packages (`tests/test_docs_data_exchange_pages.py`). A block that prints something is followed by its output. Every block assumes that `db` is an open database.
+`arcadedb-jvm` has the same extras: `uv add 'arcadedb-jvm[arrow,pandas]'`.
+
+The blocks on this page run one after the other against one empty database, and a test in the repository runs them that way on both packages (`tests/test_docs_data_exchange_pages.py`). A block that prints something is followed by its output. Every block assumes that `db` is an open database.
 
 [source,python]
 ----
@@ -22,7 +24,6 @@ import datetime as dt
 import numpy as np
 import pandas as pd
 import polars as pl
-import pyarrow as pa
 
 from arcadedb import ArcadeDBError
 
@@ -31,7 +32,7 @@ def rows(sql):
     return db.query("sql", sql).to_list()
 ----
 
-== Which call
+== Choose a call
 
 [cols="3,3,3"]
 |===
@@ -58,7 +59,7 @@ def rows(sql):
 
 == Load a frame
 
-A column becomes a property of the same name. The pandas index is not loaded: call `frame.reset_index()` to make it a column. Column names must be strings and must be different from each other, and a Polars `LazyFrame` must be collected first. The type may exist with or without declared properties; it must exist.
+A column becomes a property of the same name. The pandas index is not loaded: call `frame.reset_index()` to make it a column. Column names must be strings and must be different from each other, and a Polars `LazyFrame` must be collected first. The type must exist. It can declare its properties or not.
 
 A missing value is a property that is not there. A pandas `NaN` in a float column is pandas' missing value, so it loads as missing. A Polars `NaN` is a number that Polars keeps apart from null, so it loads as a `NaN`, and only a Polars null loads as missing.
 
@@ -100,7 +101,7 @@ for row in rows("SELECT FROM Reading ORDER BY k"):
 
 == What an Arrow type becomes
 
-A frame is read as an Arrow table, so the table below holds for a frame, for `insert_arrow` and, for the same Python values, for what you read back with `Result.get`. It is the mapping for a property that the type does not declare. A date-time is a UTC wall clock: a timestamp without a time zone is stored as the clock shows, and a timestamp with a time zone is converted to UTC first. Reading it back gives a naive `datetime`.
+A frame is read as an Arrow table first, so the table below holds for a frame and for `insert_arrow`. It is the mapping for a property that the type does not declare. "Read back as" is the Python type that `Result.get` returns. A date-time is a UTC wall clock: a timestamp without a time zone is stored as the clock shows, and a timestamp with a time zone is converted to UTC first. Reading it back gives a naive `datetime`. The same rule for Python `datetime` values is on xref:how-to/values-and-records.adoc#datetimes[Values and records].
 
 [cols="3,3"]
 |===
@@ -142,7 +143,7 @@ A frame is read as an Arrow table, so the table below holds for a frame, for `in
 
 An Arrow type with no mapping, which is time of day, duration or map, raises `TypeError` before a row is written. A `uint64` column with a value above 2^63^ - 1 raises `ValueError`.
 
-== A declared property
+== Load into a declared property
 
 When the type declares a property, the column is checked against it before anything is written. A column loads when the engine can convert it without guessing:
 
@@ -207,7 +208,7 @@ A load inside a transaction of yours joins it, as `insert_columns` and `import_d
 
 `parallel=True` hands the batches of a document type to the asynchronous writers. A vertex type raises `ValueError` with it.
 
-== insert_columns
+== Load whole columns
 
 `db.insert_columns(type_name, columns, commit_every=10_000, parallel=False)` takes a dict of property name to column. A column is a numpy array or any sequence of Python values. All columns have the same length. `None` in a sequence is a missing value, and a `NaN` in a numpy float column is stored as a `NaN`, not as missing. A 2-D `float32` array is a column of vectors: each row of it becomes the `ARRAY_OF_FLOATS` property of one record.
 
@@ -265,12 +266,12 @@ refused: True
 
 `insert_columns` does not check a column against a declared property the way `insert_dataframe` does. The values go to the engine, which converts them: a float column into an `INTEGER` property is stored without its fraction, so `1.5` becomes `1`. Use `insert_dataframe` when you want that refused.
 
-`commit_every` is the transaction size. A failure rolls back the transaction in flight and keeps the ones before it: 30 rows with `commit_every=10` and a duplicate key in the third group leave 20 rows. A transaction of yours is not committed, as above.
+`commit_every` is the transaction size. Its default is 10,000 rows on both packages. The native default of 1000 on xref:how-to/bulk-loads.adoc[Bulk loads and commit size] is the default of `insert_many` when you do not pass a value, and `insert_columns` and `insert_dataframe` always pass their own value to it (10,000 for `commit_every` and for `batch_size`), so a native `insert_columns` load commits in groups of 10,000 unless you say otherwise. A failure rolls back the transaction in flight and keeps the ones before it: 30 rows with `commit_every=10` and a duplicate key in the third group leave 20 rows. A transaction of yours is not committed, as above.
 
 [[reading]]
 == Reading columns
 
-The four readers take the whole result, so they hold every row in memory. For a result that is larger than memory read the rows one by one (xref:how-to/databases-and-queries.adoc[Databases and queries]) or write it with `export_to_csv`. A result set is read once, so call one reader for each query.
+The four readers take the whole result, so they hold every row in memory. For a result that is larger than memory read the rows one by one (xref:how-to/databases-and-queries.adoc[Databases and queries]) or write it with `export_to_csv`. A result set is read once (xref:how-to/databases-and-queries.adoc#a-result-set-is-read-once[A result set is read once]), so call one reader for each query.
 
 The next block stores one record with every value and one record with none, then reads them with each reader. The records are the same for all of them, and the readers differ in what they do with the gap:
 
@@ -310,7 +311,7 @@ Int64 [7, None]
 float64
 ----
 
-A column without a gap is one typed array: `int64`, `float64` or `bool`. The columns of the result are the names of all rows, in the order they first appear, because a document has no fixed set of properties. `columns=["n", "other"]` reads exactly those names, and a row that lacks one reads as missing. An empty result gives `{}` from `to_columns()`. The result does not depend on `batch_size`.
+A column without a gap is one numpy array of one type, such as `int64` for integers and `float64` for floats. The columns of the result are the names of all rows, because a document has no fixed set of properties. `columns=["n", "other"]` reads exactly those names, and a row that lacks one reads as missing. An empty result gives `{}` from `to_columns()`. The result does not depend on `batch_size`.
 
 Dates differ by reader. `to_columns()` and `to_arrow()` carry milliseconds: `datetime64[ms]` and `timestamp[ms]`, and a `DATE` is its midnight. `to_dataframe()` keeps the microseconds that `Result.get` returns.
 
@@ -334,14 +335,14 @@ datetime64[ms] timestamp[ms]
 
 A missing library does not fail the same way everywhere. `to_columns()` returns `None` when numpy is missing and `to_arrow()` returns `None` when pyarrow is missing, so that a caller can fall back to another reader. `to_polars()` and `to_dataframe()` raise `ImportError`. Check for `None` before you use the result of the first two.
 
-== The two builds
+== Differences between the two builds
 
-The calls above, the types and the messages are the same on `arcadedb` and `arcadedb-jvm`. The way the readers get the rows is not:
+The calls above, the types and the results are the same on `arcadedb` and `arcadedb-jvm`. Two things differ. The first is how the readers get the rows:
 
 * On `arcadedb-jvm`, `to_columns()` and `to_arrow()` read the result from the engine in batches of `batch_size` rows, as packed columns, so `batch_size` sets how many rows cross at a time.
 * On `arcadedb` (native), they read every row into Python dicts first and build the columns from them. `batch_size` is accepted and not used, and the rows exist as Python objects while the columns are built.
 
-The loads are the same code on both packages up to the last step. The error messages of a missing pandas differ: the JVM package adds the `uv add` hint to the `ImportError` of `to_dataframe()`, and the native package raises the plain `ImportError`.
+The second is the message of a missing pandas: the JVM package adds the `uv add` hint to the `ImportError` of `to_dataframe()`, and the native package raises the plain `ImportError`.
 
 == Related pages
 

@@ -1,9 +1,11 @@
 = Importing and exporting data
 :description: Which call loads a file, a list of rows or a frame, what import_documents and the SQL IMPORT DATABASE do and leave behind when a row fails, how to export a database to a JSONL archive, with the SQL EXPORT DATABASE, or a query to CSV, and what the two builds share.
 
-// Sources: src/arcadedb/core.py (import_documents, export_database, export_to_csv), importer.py, exporter.py, and the engine importer and exporter (CSVImporterFormat, ImportDatabaseStatement, ExportDatabaseStatement). Every statement below is pinned by tests/test_import_export_behavior.py.
+// Sources: src/arcadedb/core.py (import_documents, export_database, export_to_csv), importer.py, exporter.py, and the engine importer and exporter (CSVImporterFormat, ImportDatabaseStatement, ExportDatabaseStatement). The statements below are pinned by tests/test_import_export_behavior.py, and for the importer, the exporter and the CSV export also by tests/test_importer_api.py, tests/test_import_database.py and tests/test_exporter.py.
 
-This page covers the calls of the Python bindings that move data between files and a database: `import_documents`, the SQL `IMPORT DATABASE`, `export_database`, the SQL `EXPORT DATABASE` and `export_to_csv`. The importer and the exporter are the engine's own, so the file formats, the importer settings and the SQL syntax belong to the main manual: {arcadedb-docs-url}/how-to/migration/importer[Importer], {arcadedb-docs-url}/reference/sql/sql-database-admin#sql-import-database[`IMPORT DATABASE`] and {arcadedb-docs-url}/reference/sql/sql-database-admin#sql-export-database[`EXPORT DATABASE`]. The blocks on this page are tested on both packages, `arcadedb` and `arcadedb-jvm`.
+This page covers the calls of the Python bindings that move data between files and a database: `import_documents`, the SQL `IMPORT DATABASE`, `export_database`, the SQL `EXPORT DATABASE` and `export_to_csv`. The importer and the exporter are the engine's own, so the file formats, the importer settings and the SQL syntax belong to the main manual: {arcadedb-docs-url}/how-to/migration/importer[Importer], {arcadedb-docs-url}/reference/sql/sql-database-admin#sql-import-database[`IMPORT DATABASE`] and {arcadedb-docs-url}/reference/sql/sql-database-admin#sql-export-database[`EXPORT DATABASE`].
+
+The short version: `db.import_documents(path, document_type=...)` loads a file of documents, and when one row fails it leaves none of the rows of that file. `db.export_database(path)` writes a JSONL archive that `IMPORT DATABASE` reads back. `db.export_to_csv(query, path)` writes the rows of a query to a CSV file.
 
 == Which call for which data
 
@@ -19,7 +21,7 @@ This page covers the calls of the Python bindings that move data between files a
 | `db.insert_columns`, `db.insert_dataframe`, `db.insert_arrow`
 | xref:how-to/dataframes-and-columns.adoc[DataFrames, Arrow and columns]
 
-| A file on disk: CSV, XML, a Neo4j export, RDF and the other formats of the importer
+| A file on disk: CSV, or another format of the engine importer
 | `db.import_documents(path, ...)` for a file of documents, or `IMPORT DATABASE` for any of them
 | This page
 
@@ -36,9 +38,9 @@ This page covers the calls of the Python bindings that move data between files a
 | xref:how-to/dataframes-and-columns.adoc#reading[Reading columns]
 |===
 
-For a file, the call hands the engine the file name and the settings and nothing else, so no row of the file is ever a Python object. That is the difference from the rows and frames above, which cross the bridge as values. The tests of this repository pin the results below, not the speed of one path against another. Commit sizes, which decide how much a failed load keeps for `insert_many` and `graph_batch`, are measured on xref:how-to/bulk-loads.adoc[Bulk loads and commit size]; a file import has its own rules, in <<failed-import>>.
+For a file, the call gives the engine the file name and the settings, and the engine reads the file. The rows and frames above are Python values that you build first. The commit sizes of `insert_many` and `graph_batch` are on xref:how-to/bulk-loads.adoc[Bulk loads and commit size]; a file import has its own rules, in <<failed-import>>.
 
-The blocks on this page run one after the other against one empty database, and a test in the repository runs them that way (`tests/test_docs_data_exchange_pages.py`). A block that prints something is followed by its output. Every block assumes that `db` is an open database and that `workdir` is a `pathlib.Path` of an empty folder you may write in.
+The blocks on this page run one after the other against one empty database, and a test in the repository runs them that way on both packages, `arcadedb` and `arcadedb-jvm` (`tests/test_docs_data_exchange_pages.py`). A block that prints something is followed by its output. Every block assumes that `db` is an open database and that `workdir` is a `pathlib.Path` of an empty folder you may write in.
 
 [source,python]
 ----
@@ -77,7 +79,57 @@ OK import documents
 3
 ----
 
-The keyword arguments are the settings of the SQL statement under other names: `file_type` is `documentsFileType`, `delimiter` is `documentsDelimiter`, `header` is `documentsHeader`, `skip_entries` is `documentsSkipEntries`, `properties_include` is `documentPropertiesInclude`, and `commit_every`, `parallel`, `wal`, `verbose_level`, `probe_only`, `force_database_create`, `trim_text` and `on_row_error` are `commitEvery`, `parallel`, `wal`, `verboseLevel`, `probeOnly`, `forceDatabaseCreate`, `trimText` and `onRowError`. An argument that you leave out is not sent, so the engine default applies. `extra_settings`, a dict, passes any other setting of the importer, such as `typeIdProperty`, and wins over the arguments when both name the same one.
+The keyword arguments are the settings of the SQL statement under other names. An argument that you leave out is not sent, so the engine default applies. `extra_settings`, a dict, passes any other setting of the importer, such as `typeIdProperty`, and wins over the arguments when both name the same one.
+
+[cols="1,1"]
+|===
+| Argument | Setting of the statement
+
+| `source`
+| `documents`
+
+| `document_type`
+| `documentType`
+
+| `file_type`
+| `documentsFileType`
+
+| `delimiter`
+| `documentsDelimiter`
+
+| `header`
+| `documentsHeader`
+
+| `skip_entries`
+| `documentsSkipEntries`
+
+| `properties_include`
+| `documentPropertiesInclude`
+
+| `commit_every`
+| `commitEvery`
+
+| `parallel`
+| `parallel`
+
+| `wal`
+| `wal`
+
+| `verbose_level`
+| `verboseLevel`
+
+| `probe_only`
+| `probeOnly`
+
+| `force_database_create`
+| `forceDatabaseCreate`
+
+| `trim_text`
+| `trimText`
+
+| `on_row_error`
+| `onRowError`
+|===
 
 `probe_only=True` reads the file but writes nothing. The result is `"PROBE_ONLY"`.
 
@@ -128,7 +180,7 @@ failed: True
 [] False
 ----
 
-`on_row_error="skip"` changes the rule. Each row commits on its own, a row that fails is logged and dropped, and the import goes on. The rows that loaded stay, and the first of two rows with one key wins. Any other value than `"abort"` or `"skip"` raises `ValueError` before the import starts, because the engine would read it as `"abort"` without a word.
+`on_row_error="skip"` changes the rule. Each row commits on its own, a row that fails is dropped, and the import goes on. The rows that loaded stay, and the first of two rows with one key wins. Any other value than `"abort"` or `"skip"` raises `ValueError` before the import starts, because the engine would read it as `"abort"` without a word.
 
 [source,python]
 ----
@@ -160,11 +212,13 @@ True 6
 3
 ----
 
-NOTE: This section is about one file of documents. The rules for vertices and edges differ, because the engine imports them through asynchronous writers. No test of this repository covers a failed graph import, so read the main manual before you rely on what one leaves.
+NOTE: This section is about one file of documents. A file of vertices and edges follows other rules. No test of this repository covers a failed graph import, so read the main manual before you rely on what one leaves.
 
 == The SQL statement
 
-`IMPORT DATABASE` runs the same importer from SQL. `IMPORT DATABASE <url>` reads one file, and `IMPORT DATABASE WITH name = value, ...` takes the settings by name. A file of documents loads into the type `Document` unless `documentType` says another. The URL is a `file://` URL: `path.resolve().as_uri()` makes one. It writes a space as `%20`, and the engine opens the text after `file://` as a plain path without decoding it, so for a folder with a space or another special character in its name use `import_documents`, which handles that. The statement returns one row with `result` and `operation` (`"import database"`).
+`IMPORT DATABASE` runs the same importer from SQL. `IMPORT DATABASE <url>` reads one file, and `IMPORT DATABASE WITH name = value, ...` takes the settings by name. A file of documents loads into the type `Document` unless `documentType` says another. The statement returns one row with `result` and `operation` (`"import database"`).
+
+The URL is a `file://` URL: `path.resolve().as_uri()` makes one. `as_uri()` writes a space as `%20`, and the engine opens the text after `file://` as a plain path without decoding it. For a folder with a space or another special character in its name, use `import_documents`, which builds the URL without the escaping.
 
 [source,python]
 ----
@@ -205,7 +259,11 @@ FAIL True
 
 == Exporting a database
 
-`db.export_database(file_path, format="jsonl", overwrite=False, include_types=None, exclude_types=None, verbose=1)` writes a JSONL archive and returns a dictionary of statistics with `totalRecords`, `documents`, `vertices` and `edges`. Name the file `something.jsonl.tgz`. An absolute `file_path` is used as it is. A relative one is placed in the folder `exports` of the working directory; a name that already starts with `exports/` is not prefixed again. `include_types` and `exclude_types` take type names, and an edge type is exported when you list it.
+`db.export_database(file_path, format="jsonl", overwrite=False, include_types=None, exclude_types=None, verbose=1)` writes a JSONL archive and returns a dictionary of statistics: `totalRecords`, and a count for each kind of record that it wrote, `vertices`, `edges` and `documents`. A kind that was not written may have no entry, so read a count with `stats.get(name, 0)`. Name the file `something.jsonl.tgz`.
+
+* An absolute `file_path` is used as it is.
+* A relative one goes into the folder `exports` of the working directory. A name that already starts with `exports/` is not prefixed again.
+* `include_types` and `exclude_types` take type names. When you give `include_types`, an edge type is exported only if you list it.
 
 An existing file is not replaced: the call raises `ArcadeDBError` that names `overwrite=True`. GraphML and GraphSON need the engine module `arcadedb-gremlin`, which neither package bundles, so `format="graphml"` and `format="graphson"` raise `ArcadeDBError`, and the message names `jsonl`.
 
@@ -267,14 +325,14 @@ OK
 
 == The SQL EXPORT DATABASE
 
-`EXPORT DATABASE file://<name>` does the same from SQL, with the settings in the main manual. It takes a file name and no folder: the file is always written to `exports/<name>` below the working directory of the process, and a name with a slash in it raises `ArcadeDBError`. The row it returns has `operation` set to `"export database"`.
+`EXPORT DATABASE file://<name>` does the same from SQL, with the settings in the main manual. It takes a file name and no folder: the file is always written to `exports/<name>` below the working directory of the process, and a name that contains `..` raises `ArcadeDBError`. So does a name that contains the folder separator of the operating system: `/` on Linux and macOS, `\` on Windows. On Windows a forward slash is not refused, so do not rely on the statement to reject a folder there. The row it returns has `operation` set to `"export database"`.
 
 [source,sql]
 ----
 EXPORT DATABASE file://nightly.jsonl.tgz
 ----
 
-An open transaction does not survive this statement. The engine rolls back every transaction of your thread before it exports, so rows that you wrote in it and did not commit are gone, and `db.is_transaction_active()` is `False` afterwards. Commit first. `db.export_database(...)` is a different call and does not share the statement's rules about folders, which is why the Python call accepts an absolute path.
+An open transaction does not survive this statement. The engine rolls back every transaction of your thread before it exports, so rows that you wrote in it and did not commit are gone, and `db.is_transaction_active()` is `False` afterwards. Commit before you export, with this statement and with `db.export_database(...)`. The Python call does not share the folder rule of the statement: it accepts an absolute path.
 
 == Exporting a query to CSV
 

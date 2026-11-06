@@ -9,6 +9,7 @@ named next to each test. The tests use SQL and the public calls only, so they ru
 
 import csv
 import os
+import shutil
 import uuid
 from pathlib import Path
 
@@ -404,8 +405,21 @@ def test_sql_export_database_writes_into_exports(graph_db):
 
 
 def test_sql_export_database_takes_a_name_and_no_directory(graph_db):
+    """``ExportDatabaseStatement`` refuses a name that contains ``..`` or ``File.separator``: the second is ``/`` on Linux and macOS and
+    ``\\`` on Windows, where a forward slash is not refused (the first CI run of this test showed it).
+    """
     with pytest.raises(ArcadeDBError):
-        graph_db.command("sql", "EXPORT DATABASE file://sub/dir.jsonl.tgz")
+        graph_db.command("sql", "EXPORT DATABASE file://..up.jsonl.tgz")
+    if os.name != "nt":
+        with pytest.raises(ArcadeDBError):
+            graph_db.command("sql", "EXPORT DATABASE file://sub/dir.jsonl.tgz")
+    else:
+        folder = f"adb-test-{uuid.uuid4().hex}"
+        os.makedirs("exports", exist_ok=True)
+        try:
+            graph_db.command("sql", f"EXPORT DATABASE file://{folder}/dir.jsonl.tgz")
+        finally:
+            shutil.rmtree(Path("exports") / folder, ignore_errors=True)
 
 
 def test_sql_export_database_rolls_back_your_open_transaction(graph_db):
