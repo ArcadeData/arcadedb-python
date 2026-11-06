@@ -484,11 +484,8 @@ def test_the_type_name_of_a_record_is_a_python_str_on_the_native_build_and_a_jav
     for key in ("name", "dict_name", "rid"):
         assert type(seen[key]) is str, key
     assert seen["name"] == "x" and seen["dict_name"] == "x"
-    # the type name is a Java string on the JVM build: it compares equal, and str() makes it a Python str
+    # the type name is a Python str on both builds, in a callback and outside one
     value = seen["type_name"]
-    assert value == "Person" and type(str(value)) is str
-    assert (type(value) is str) == (arcadedb.__backend__ != "jvm")
-    # the same holds for a record that is not in a callback
+    assert value == "Person" and type(value) is str
     outside = db.query("sql", "SELECT FROM Person").first().get_element()
-    assert outside.get_type_name() == "Person"
-    assert (type(outside.get_type_name()) is str) == (arcadedb.__backend__ != "jvm")
+    assert outside.get_type_name() == "Person" and type(outside.get_type_name()) is str
