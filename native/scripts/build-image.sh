@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build the native image (the shared library the `arcadedb` wheel ships): GraalVM CE 25.4.4.1.1, -O3, FFM unbound Highway
 # handle (fastops.mode 1), -H:-VectorAPISupport (CE crash oracle/graal#14751), engine jars of the pinned RELEASE (arcadedb.version, from
-# Maven Central, never a local SNAPSHOT), local symbols deleted (the default: a smaller image than the phase 7/8 profiling builds).
+# Maven Central; a manual dev run may pass A.B.C-SNAPSHOT, which native/pom.xml resolves from the Sonatype snapshot repository; never a local SNAPSHOT), local symbols deleted (the default: a smaller image than the phase 7/8 profiling builds).
 # MARCH (default compatibility = baseline x86-64, what a manylinux wheel promises, PEP 600; x86-64-v3 is the GraalVM CE 25.4 default and the faster reference).
 # usage: [MARCH=x86-64-v3] [XMX=12g] [NI_EXTRA="-H:NumberOfThreads=2"] build-image.sh [OUTDIR]     A laptop with other jobs runs it through its job gate; the CI calls it directly.
 # Platforms: Linux (libarcadedb.so; also jvector's Highway library, libjvector-x86_64.so or libjvector-aarch64.so, both are in the jvector 4.0.2 jar), macOS

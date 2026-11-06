@@ -82,10 +82,16 @@ on:
         default: "26.12.1.dev0"
         type: string
       engine:
-        description: "Engine release (Maven Central) the image links; empty = the release segment of a final version, else the newest release"
+        description: "Engine the image links: a release (Maven Central), or for a devN version A.B.C-SNAPSHOT (Sonatype snapshot repository); empty = the release segment of a final version, else DEV_ENGINE"
         required: false
         default: ""
         type: string
+      legs:
+        description: "full = all four platforms, Python 3.12 and 3.14; pull-request = linux-x86_64 and Python 3.12 only (what a pull request runs)"
+        required: false
+        default: "full"
+        type: choice
+        options: [full, pull-request]
 
 # The group names the workflow literally: github.workflow is the CALLER's name in a workflow_call, and the group of release-native.yml
 # must differ from this one or the two would wait for each other.
@@ -142,6 +148,7 @@ jobs:
         env:
           INPUT_VERSION: ${{ inputs.version }}
           INPUT_ENGINE: ${{ inputs.engine }}
+          INPUT_RELEASE: ${{ inputs.release }}
         run: |
           set -euo pipefail
           version="${INPUT_VERSION:-$DEFAULT_VERSION}"
@@ -157,6 +164,13 @@ jobs:
             # a final or post wheel links exactly the engine release it is named after
             [ "$engine" = "$base" ] || { echo "::error::Version $version links engine $base, not $engine" >&2; exit 1; }
           fi
+          # A SNAPSHOT engine is for a manual devN run only: a final or post version is refused above (it links exactly its release), and a release
+          # run (release-native.yml passes `release: true`) never builds from a snapshot, so nothing it publishes can depend on one.
+          if [[ "$engine" == *-SNAPSHOT ]]; then
+            [[ "$engine" =~ ^[0-9]+\.[0-9]+\.[0-9]+-SNAPSHOT$ ]] || { echo "::error::Engine '$engine' is not A.B.C or A.B.C-SNAPSHOT" >&2; exit 1; }
+            [ "$final" = false ] || { echo "::error::A SNAPSHOT engine is for a devN version only" >&2; exit 1; }
+            [ "${INPUT_RELEASE:-}" != true ] || { echo "::error::A release never links a SNAPSHOT engine ($engine)" >&2; exit 1; }
+          fi
           { echo "version=$version"; echo "engine=$engine"; echo "final=$final"; } >> "$GITHUB_OUTPUT"
           echo "wheel version $version, engine $engine, final=$final"
 
@@ -165,11 +179,14 @@ jobs:
         env:
           EVENT: ${{ github.event_name }}
           RELEASE: ${{ inputs.release }}
+          LEGS: ${{ inputs.legs }}
         run: |
           set -euo pipefail
           run=true
           event="$EVENT"
           if [ "$RELEASE" = true ]; then event=release; fi
+          # a manual run may ask for the legs of a pull request (one platform, one Python): the runner cap is shared with upstream
+          if [ "$EVENT" = workflow_dispatch ] && [ "${LEGS:-full}" = pull-request ]; then event=pull_request; fi
           if [ "$EVENT" = "schedule" ]; then
             changed="$(git log --since='25 hours ago' --format=%h -- src native tests scripts examples pyproject.toml .github/workflows/test-native.yml | wc -l)"
             monday="$(date -u +%u)"
@@ -372,9 +389,13 @@ jobs:
             *) m2="$HOME/.m2/repository" ;;
           esac
           mkdir -p "$T/record"
+          # THIRD_PARTY_NOTICES.md names the engine release and its jars, so it cannot match a SNAPSHOT build (timestamped jars, no tag):
+          # a SNAPSHOT run skips that comparison. Such a wheel is never published (see the plan job).
+          extra=()
+          if [[ "$ENGINE" == *-SNAPSHOT ]]; then extra=(--skip-notices-check); fi
           uv run --no-project --python 3.12 python native/wheel/build_wheel.py --lib-dir "$T/lib" --version "$VERSION" --engine "$ENGINE" \
             --graalvm-home "$GRAALVM_HOME_P5" --m2-repo "$m2" \
-            --notices-out "$T/record/THIRD_PARTY_NOTICES.generated.md" --modules-out "$T/record/jdk-modules.txt" --out "$T/wheel"
+            --notices-out "$T/record/THIRD_PARTY_NOTICES.generated.md" --modules-out "$T/record/jdk-modules.txt" --out "$T/wheel" ${extra[@]+"${extra[@]}"}
           ls -l "$T/wheel/dist"
           shopt -s nullglob
           wheels=("$T"/wheel/dist/*.whl)

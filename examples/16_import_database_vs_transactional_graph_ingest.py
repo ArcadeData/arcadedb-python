@@ -788,6 +788,33 @@ def run_graph_batch_graph_load(
     }
 
 
+_PARALLEL_NOTE_SHOWN = False
+
+
+def _parallel_setting(db, parallel) -> str:
+    """The `parallel` setting of IMPORT DATABASE, as ", `parallel` = N" or "".
+
+    `parallel` is a reserved word of the SQL grammar, so it can only be written in backticks. The 26.12.1 engine refuses
+    the quoted name as an unknown importer setting (ArcadeData/arcadedb#11367), so from that version on the setting is
+    left out and the importer uses its default.
+    """
+    global _PARALLEL_NOTE_SHOWN
+    raw = str(db.query("sql", "SELECT version() AS v").first().get("v"))
+    version = tuple(
+        int(p) if p.isdigit() else 0
+        for p in raw.split()[0].split("-")[0].split(".")[:3]
+    )
+    if version < (26, 12, 1):
+        return f", `parallel` = {parallel}"
+    if not _PARALLEL_NOTE_SHOWN:
+        _PARALLEL_NOTE_SHOWN = True
+        print(
+            "  note: this engine refuses a quoted `parallel` importer setting "
+            "(ArcadeData/arcadedb#11367); the importer's default is used"
+        )
+    return ""
+
+
 def run_import_database_graph_load(
     db_path: Path,
     vertices_csv_path: Path,
@@ -830,8 +857,8 @@ def run_import_database_graph_load(
                 "typeIdUnique = true, "
                 "edgeFromField = 'From', "
                 "edgeToField = 'To', "
-                f"commitEvery = {batch_size}, "
-                f"`parallel` = {parallel}"
+                f"commitEvery = {batch_size}"
+                f"{_parallel_setting(db, parallel)}"
             ),
         ).one()
 
