@@ -27,7 +27,7 @@ uv add arcadedb-jvm   # JVM, for heavy long-running loads
 > The first release of this layout is 26.11.1, and both packages have a final release on PyPI. A plain `uv add arcadedb` installs the final, and a later pre-release (`A.B.C.devN`) needs `uv add --prerelease allow arcadedb`. The same holds for `arcadedb-jvm`.
 
 <!-- REMOVE WHEN: the old arcadedb-embedded* shims are retired and two releases have shipped with the two-package layout allow-old-name -->
-> Old names: `arcadedb-jvm` was formerly `arcadedb-embedded`, and `arcadedb` was formerly `arcadedb-embedded-native` (archived on PyPI). A last `arcadedb-embedded` release will be a deprecation shim that installs `arcadedb`, the native build.
+> Old names: `arcadedb-jvm` was formerly `arcadedb-embedded`, and `arcadedb` was formerly `arcadedb-embedded-native` (archived on PyPI). The last `arcadedb-embedded` release, 26.11.1, is a deprecation shim: it installs `arcadedb`, the native build, and warns once at import. It does not install `arcadedb-jvm`.
 
 - Python: `arcadedb` (native) is tested on 3.11 to 3.14 and also installs on 3.15 (`requires-python` is `>=3.11` with no upper bound; the CI runs a subset of the tests on 3.15). `arcadedb-jvm` needs 3.11 to 3.14 (`requires-python` is `>=3.11,<3.15`; its dependency JPype has no 3.15 wheel yet). Each release builds and tests both packages on Python 3.11 to 3.14 on all four platforms below. Between releases, `main` and the nightly run test `arcadedb` on 3.12 and 3.14 on every platform (with a short subset on 3.11, 3.13 and 3.15), and `arcadedb-jvm` on 3.11 to 3.14 on Linux x86-64 and on 3.11 and 3.14 on the other three. A pull request runs a smaller selection.
 - Linux x86_64 and ARM64, macOS on Apple Silicon, Windows x86_64, for both packages. The Windows wheel of `arcadedb` is the newest.
@@ -76,7 +76,7 @@ For several processes, other languages, HA or replication, run the official Dock
 | [`arcadedb-jvm`](https://pypi.org/project/arcadedb-jvm/) | The JVM build: the Java engine on a bundled JVM, through JPype. The package this README described before the two-package layout | First release from this repository: 26.11.1 |
 
 <!-- REMOVE WHEN: the old arcadedb-embedded* shims are retired and two releases have shipped with the two-package layout allow-old-name -->
-Formerly `arcadedb-embedded` (now `arcadedb-jvm`, the same build) and formerly `arcadedb-embedded-native` (now `arcadedb`). They imported as `arcadedb_embedded` and `arcadedb_native`, and they are deprecated: `arcadedb-embedded-native` is archived, and `arcadedb-embedded` will get a last release that installs `arcadedb`.
+Formerly `arcadedb-embedded` (now `arcadedb-jvm`, the same build) and formerly `arcadedb-embedded-native` (now `arcadedb`). They imported as `arcadedb_embedded` and `arcadedb_native`, and they are deprecated: `arcadedb-embedded-native` is archived, and the last `arcadedb-embedded` release, 26.11.1, is a shim that installs `arcadedb` and warns once at import.
 
 Releases from this repository start with 26.11.1. The 26.10.x wheels were built and published from [humemai/arcadedb-embedded-python](https://github.com/humemai/arcadedb-embedded-python). <!-- allow-old-name -->
 
