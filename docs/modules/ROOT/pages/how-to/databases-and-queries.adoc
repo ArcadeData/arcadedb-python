@@ -335,4 +335,6 @@ The key is backquoted because it contains dots. The change applies to that datab
 == Next steps
 
 * xref:quickstart.adoc[Quickstart]
+* xref:how-to/import-export.adoc[Importing and exporting data]
+* xref:how-to/dataframes-and-columns.adoc[DataFrames, Arrow and columns]
 * xref:index.adoc[ArcadeDB Python]

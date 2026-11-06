@@ -9,6 +9,8 @@
 ** xref:how-to/concurrency.adoc[Concurrency, processes and crashes]
 ** xref:how-to/logs.adoc[Where the logs go]
 ** xref:how-to/bulk-loads.adoc[Bulk loads and commit size]
+** xref:how-to/import-export.adoc[Importing and exporting data]
+** xref:how-to/dataframes-and-columns.adoc[DataFrames, Arrow and columns]
 ** xref:how-to/vectors.adoc[Vectors]
 * Development
 ** xref:development/ci.adoc[Continuous integration]
