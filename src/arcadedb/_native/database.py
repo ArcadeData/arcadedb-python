@@ -1615,13 +1615,14 @@ class NativeSchema:
         return self.get_index_by_name(name) or _JavaObject()
 
     def _vector_rows(self):
-        # the type-level rows (named Type[prop]); the per-bucket rows carry a file id
+        # the type-level rows, whatever their name (Type[prop] for SQL, the given name for openCypher); the per-bucket rows
+        # carry a file id
         return [
             r
             for r in self._db.query(
                 "sql", "SELECT FROM schema:indexes WHERE indexType = 'LSM_VECTOR'"
             ).to_list()
-            if "[" in r["name"] and "fileId" not in r
+            if "fileId" not in r
         ]
 
     def get_vector_index(self, vertex_type, vector_property):

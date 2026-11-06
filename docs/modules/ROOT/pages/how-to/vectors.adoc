@@ -1,7 +1,7 @@
 = Vectors
-:description: Create an LSM_VECTOR index, load vectors from lists and NumPy arrays, search with SQL, openCypher and find_nearest, and read the index counters, with what the arcadedb and arcadedb-jvm packages add.
+:description: Create an LSM_VECTOR index with SQL, a method or openCypher, load vectors from lists and NumPy arrays, search with SQL, openCypher (the SEARCH clause) and find_nearest, and read the index counters, with what the arcadedb and arcadedb-jvm packages add.
 
-// Sources: bindings docs guide/vectors.md (the Python-specific parts), and src/arcadedb/vector.py and core.py.
+// Sources: bindings docs guide/vectors.md (the Python-specific parts), and src/arcadedb/vector.py and core.py. The openCypher SEARCH and CREATE VECTOR INDEX statements (ArcadeDB 26.11.1) are pinned by tests/test_cypher_vector_behavior.py.
 
 This page covers vector search from Python. Prefer SQL and openCypher through `db.command(...)` and `db.query(...)` for creating an index and for searching, because a search then composes with filters, projections and graph traversal. The Python wrappers (`create_vector_index`, `find_nearest`, `get_stats`, `build_graph_now`, `warm_up`) are covered where no statement does the job, or where Python adds something: NumPy arrays and lists as vectors, and the index counters.
 
@@ -159,7 +159,126 @@ print([row["name"] for row in rows])
 ['python-ish', 'python']
 ----
 
-On ArcadeDB 26.11.1 and later, openCypher also creates and searches vector indexes: `CREATE VECTOR INDEX ... FOR (n:Label) ON n.property OPTIONS {...}` creates an `LSM_VECTOR` index, and `SEARCH ... IN (VECTOR INDEX ...)` queries it. The syntax is in the main manual: {arcadedb-docs-url}/reference/cypher/cypher-clauses#cypher-create-vector-index[CREATE VECTOR INDEX] and {arcadedb-docs-url}/reference/cypher/cypher-clauses#cypher-search[SEARCH].
+=== openCypher: SEARCH and CREATE VECTOR INDEX
+
+From ArcadeDB 26.11.1, the engine of both packages, openCypher has the two vector statements that Neo4j users know: the `SEARCH` subclause of `MATCH` searches a vector index, and `CREATE VECTOR INDEX` makes one. They are ordinary statements for `db.query` and `db.command`, and both packages give the same results. The full syntax is in the main manual: {arcadedb-docs-url}/reference/cypher/cypher-clauses#cypher-search[SEARCH] and {arcadedb-docs-url}/reference/cypher/cypher-clauses#cypher-create-vector-index[CREATE VECTOR INDEX]. This section shows what you meet from Python.
+
+==== SEARCH
+
+`SEARCH` follows a `MATCH`. It binds the node variable of the `MATCH` to the `k` records nearest to a query vector, and `SCORE AS` names their score. It returns the rows and the scores of `db.index.vector.queryNodes` above, so a higher score is closer. The block searches the index `Doc[embedding]` that the SQL statement made, and writes its name in backticks because of the brackets.
+
+[source,python]
+----
+rows = db.query(
+    "opencypher",
+    "MATCH (d:Doc) "
+    "SEARCH d IN (VECTOR INDEX `Doc[embedding]` FOR $vec LIMIT 2) SCORE AS score "
+    "RETURN d.name AS name, score ORDER BY score DESC",
+    {"vec": [0.9, 0.1, 0.0]},
+).to_list()
+print([row["name"] for row in rows])
+----
+
+[source,text]
+----
+['python-ish', 'python']
+----
+
+`FOR` takes the query vector and `LIMIT` takes `k`. Both can be parameters, and the vector can be a list or a NumPy array (`float32` or `float64`). The index name can be a string parameter too: `VECTOR INDEX $index`.
+
+A `WHERE` inside the parentheses is tested on each candidate while the search runs, so the search still finds two rows when the index holds them. A `WHERE` after the closing parenthesis filters the `k` rows that the search returned, and can leave fewer.
+
+[source,python]
+----
+inside = (
+    "MATCH (d:Doc) "
+    "SEARCH d IN (VECTOR INDEX `Doc[embedding]` FOR $vec "
+    "WHERE d.name <> 'python-ish' LIMIT 2) SCORE AS score "
+    "RETURN d.name AS name ORDER BY score DESC"
+)
+after = (
+    "MATCH (d:Doc) "
+    "SEARCH d IN (VECTOR INDEX `Doc[embedding]` FOR $vec LIMIT 2) "
+    "WHERE d.name <> 'python-ish' RETURN d.name AS name"
+)
+for statement in (inside, after):
+    rows = db.query("opencypher", statement, {"vec": [0.9, 0.1, 0.0]}).to_list()
+    print([row["name"] for row in rows])
+----
+
+[source,text]
+----
+['python', 'graph']
+['python']
+----
+
+Three mistakes raise `ArcadeDBError`: a binding variable that is not a node variable of the `MATCH` pattern, `OPTIONAL MATCH` before `SEARCH`, and an index that does not exist. The last one surfaces while you read the rows, as any error of a lazy result does (see xref:how-to/databases-and-queries.adoc#_a_result_set_is_read_once[A result set is read once]).
+
+==== CREATE VECTOR INDEX
+
+The statement keeps the name you give it and makes an `LSM_VECTOR` index, the kind that `CREATE INDEX ... LSM_VECTOR` makes. A label that does not exist yet becomes a vertex type, and a vector property that is not declared yet is declared `ARRAY_OF_FLOATS`. The index covers the records that exist when the statement runs, and then the records written later. `IF NOT EXISTS` makes a second run do nothing; without it, a second run raises `ArcadeDBError`.
+
+The settings go in `OPTIONS {indexConfig: {...}}`, with the Neo4j names:
+
+* `vector.dimensions`: the number of dimensions, a whole number above 0. You may leave it out. The index then takes the length of the first vector that it receives, and refuses a later vector of another length with `ArcadeDBError`.
+* `vector.similarity_function`: `cosine` (the default) or `euclidean`.
+* `vector.quantization.type`: `none` (the default, the exact vectors, as in the SQL statement), `scalar` or `binary`.
+
+Any other setting of the index goes into the same map under its own name, the name that `METADATA` takes in the SQL statement, for example `efSearch`. A name that is not known, or a setting given under two names, raises `ArcadeDBError`, and the statement creates nothing: no index and no type.
+
+The block creates an index, loads the `docs` from above with `CREATE`, and reads the statement that `SHOW INDEXES` lists for the index. That statement names every setting that differs from the default, and always the quantization. After `DROP INDEX`, running it makes the same index again.
+
+[source,python]
+----
+db.command(
+    "opencypher",
+    """
+    CREATE VECTOR INDEX article_embedding IF NOT EXISTS
+    FOR (n:Article) ON n.embedding
+    OPTIONS {indexConfig: {`vector.dimensions`: 3, `vector.similarity_function`: 'cosine'}}
+    """,
+)
+with db.transaction():
+    for title, vector in docs:
+        db.command(
+            "opencypher",
+            "CREATE (:Article {title: $title, embedding: $vec})",
+            {"title": title, "vec": vector},
+        )
+shown = db.query(
+    "opencypher",
+    "SHOW INDEXES YIELD name, createStatement WHERE name = 'article_embedding'",
+).first()
+print(shown.get("createStatement"))
+----
+
+[source,text]
+----
+CREATE VECTOR INDEX `article_embedding` FOR (n:`Article`) ON n.`embedding` OPTIONS {indexConfig: {`vector.dimensions`: 3, `vector.similarity_function`: 'cosine', `vector.quantization.type`: 'none'}}
+----
+
+`SEARCH` finds the index by the name you gave it:
+
+[source,python]
+----
+rows = db.query(
+    "opencypher",
+    "MATCH (n:Article) "
+    "SEARCH n IN (VECTOR INDEX article_embedding FOR $vec LIMIT 2) SCORE AS score "
+    "RETURN n.title AS title ORDER BY score DESC",
+    {"vec": [0.9, 0.1, 0.0]},
+).to_list()
+print([row["title"] for row in rows])
+----
+
+[source,text]
+----
+['python-ish', 'python']
+----
+
+`DROP INDEX article_embedding` drops it. `DROP INDEX article_embedding IF EXISTS` does not raise when it is already gone.
+
+The `VectorIndex` object of this page (`find_nearest`, `get_metadata`, `get_stats`, `warm_up`) is a different matter. `db.schema.get_vector_index("Article", "embedding")` returns it for an index made by `CREATE VECTOR INDEX`, whatever the name you gave it, and `db.schema.list_vector_indexes()` lists it. Both packages do this since the fix of https://github.com/ArcadeData/arcadedb-python/issues/288[ArcadeData/arcadedb-python#288].
 
 [[find-nearest]]
 === find_nearest
