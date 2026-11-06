@@ -3,7 +3,7 @@
 
 // Sources: bindings docs guide/core/database.md and guide/core/queries.md.
 
-This guide covers the life of a database directory and the two calls that talk to it. Prefer SQL or openCypher through `db.command(...)` and `db.query(...)` for schema, inserts and graph work. The bindings also expose record objects and a `Schema` API; they are on xref:how-to/values-and-records.adoc[Values and records]. The wrappers for the rest of the Java API are not covered here.
+This guide covers the life of a database directory and the two calls that talk to it. Prefer SQL or openCypher through `db.command(...)` and `db.query(...)` for schema, inserts and graph work. The bindings also expose record objects and a `Schema` API; they are on xref:how-to/values-and-records.adoc[Values and records]. A Python function that a statement calls, and a callback on record events, are on xref:how-to/functions-and-events.adoc[Python functions and record events]. The wrappers for the rest of the Java API are not covered here.
 
 Every script on this page ran against the published `{jvm-pkg-name}` wheel. Run each one in an empty directory.
 
