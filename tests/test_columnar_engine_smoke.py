@@ -91,6 +91,13 @@ class TestColumnarEngineSmoke:
             return
 
         test_db.command("sql", "CREATE INDEX ON FacetDoc (category) COLUMNAR")
+        # the rows of schema:indexes are the same on both builds; the message names them if the index is not listed as expected
+        rows = test_db.query("sql", "SELECT FROM schema:indexes").to_list()
+        names = sorted(
+            (r.get("name"), r.get("indexType"), r.get("typeName")) for r in rows
+        )
+        assert any(r.get("typeName") == "FacetDoc" for r in rows), names
+        assert "FacetDoc[category]" in [r.get("name") for r in rows], names
         assert test_db.schema.exists_index("FacetDoc[category]")
 
         test_db.command("sql", "DROP INDEX `FacetDoc[category]`")
