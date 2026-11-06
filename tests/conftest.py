@@ -87,7 +87,7 @@ if not os.path.isfile(
     os.path.join(os.path.dirname(os.path.dirname(__file__)), "docs", "index.md")
 ):
     # the user documentation site (docs/index.md and its pages) is not in this repository;
-    # docs/ alone is not enough, it also holds design notes (docs/superpowers)
+    # docs/ holds the Antora component (docs/modules/ROOT), not that site
     collect_ignore.append("test_docs_examples.py")
 
 
