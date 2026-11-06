@@ -65,6 +65,8 @@ The two packages get their engine from different places, so between releases the
 * `test-jvm.yml` and `test-python-examples.yml` take the engine jars from the `arcadedata/arcadedb` image tag, `latest` by default. `latest` is upstream's newest snapshot and moves nightly, which is why both workflows also run every night.
 * `test-native.yml` links `DEV_ENGINE`, the newest release on Maven Central, unless the tag is a final or post version (then it links the release the tag is named after) or the `engine` input of a manual run says otherwise.
 
+A manual run of `test-native.yml` with a `devN` version may set `engine` to `A.B.C-SNAPSHOT`: `native/pom.xml` then resolves the engine jars from the Sonatype snapshot repository (snapshots on, releases off, so a release version still comes from Maven Central alone). The notices comparison of `build_wheel.py` is skipped for such a run, because `THIRD_PARTY_NOTICES.md` names a release and its jars. The plan job refuses a SNAPSHOT engine for a final or post version and for a release run, so nothing that is published depends on one. The `legs` input of a manual run chooses all four platforms (`full`, the default) or the one platform and one Python of a pull request (`pull-request`).
+
 The dev-engine bump after each release, described in xref:development/release.adoc[Release], moves `DEV_ENGINE` to the new release and closes the gap until upstream publishes the next one.
 
 == Other rules

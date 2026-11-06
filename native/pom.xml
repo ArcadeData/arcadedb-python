@@ -34,6 +34,18 @@
     </dependencies>
   </dependencyManagement>
 
+  <!-- Only a manual dev run links a SNAPSHOT engine (test-native.yml, input `engine`, e.g. 26.12.1-SNAPSHOT): Maven Central has no
+       snapshots, so this repository (snapshots on, releases off) is where `-Darcadedb.version=A.B.C-SNAPSHOT` resolves. Releases are
+       never asked of it, so a release version (the default, and every release build) still comes from Maven Central alone. -->
+  <repositories>
+    <repository>
+      <id>central-snapshots</id>
+      <url>https://central.sonatype.com/repository/maven-snapshots/</url>
+      <releases><enabled>false</enabled></releases>
+      <snapshots><enabled>true</enabled></snapshots>
+    </repository>
+  </repositories>
+
   <dependencies>
     <dependency>
       <groupId>com.arcadedb</groupId>
