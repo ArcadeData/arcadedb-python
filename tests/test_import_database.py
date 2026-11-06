@@ -190,7 +190,7 @@ def test_import_database_xml_vertices(temp_db_path, sample_xml_path):
             "sql",
             (
                 f"IMPORT DATABASE {_file_url(sample_xml_path)} "
-                "WITH objectNestLevel = 1, entityType = 'VERTEX'"
+                "WITH objectNestLevel = 1"
             ),
         )
         _import_result_ok(result)
