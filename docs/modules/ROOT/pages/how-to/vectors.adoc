@@ -278,7 +278,7 @@ print([row["title"] for row in rows])
 
 `DROP INDEX article_embedding` drops it. `DROP INDEX article_embedding IF EXISTS` does not raise when it is already gone.
 
-The `VectorIndex` object of this page (`find_nearest`, `get_metadata`, `get_stats`, `warm_up`) is a different matter. `db.schema.get_vector_index("Article", "embedding")` returns it on `{jvm-pkg-name}` for an index made by `CREATE VECTOR INDEX`, but on `{native-pkg-name}` it returns `None` for any index whose name is not `Type[property]`, which includes every index you name in openCypher (https://github.com/ArcadeData/arcadedb-python/issues/288[ArcadeData/arcadedb-python#288]). On `{native-pkg-name}`, search such an index with `SEARCH` or `db.index.vector.queryNodes`, whose first argument is the index name.
+The `VectorIndex` object of this page (`find_nearest`, `get_metadata`, `get_stats`, `warm_up`) is a different matter. `db.schema.get_vector_index("Article", "embedding")` returns it for an index made by `CREATE VECTOR INDEX`, whatever the name you gave it, and `db.schema.list_vector_indexes()` lists it. Both packages do this since the fix of https://github.com/ArcadeData/arcadedb-python/issues/288[ArcadeData/arcadedb-python#288].
 
 [[find-nearest]]
 === find_nearest

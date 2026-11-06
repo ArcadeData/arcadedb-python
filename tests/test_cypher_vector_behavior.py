@@ -6,15 +6,14 @@ forms of its query vector, the three mistakes it refuses, what ``CREATE VECTOR I
 the property, the records it covers), the settings it takes and lists back, what a refused statement leaves behind, an index that
 takes its dimensions from its first vector, and ``DROP INDEX``. The statements are the engine's (ArcadeDB 26.11.1: #10776, #10678,
 #10893, #10915), and both builds run them in the same engine, so the tests use SQL, openCypher and the wrapper objects only, no Java
-object, and run on the JVM build and the native build alike. The one difference between the builds is
-``db.schema.get_vector_index`` for an index whose name is not ``Type[property]``: the native build returns ``None``
-(ArcadeData/arcadedb-python#288), pinned by the last test as a strict ``xfail`` on the native build.
+object, and run on the JVM build and the native build alike. The last test pins
+``db.schema.get_vector_index`` and ``db.schema.list_vector_indexes`` for an index whose name is not ``Type[property]``:
+the native build used to miss it (ArcadeData/arcadedb-python#288), both builds find it now.
 """
 
 import numpy as np
 import pytest
 
-import arcadedb
 from arcadedb import ArcadeDBError
 
 DOCS = [
@@ -383,15 +382,11 @@ def test_drop_index_drops_it_and_if_exists_does_not_raise_when_it_is_gone(temp_d
 # --- the Python VectorIndex object
 
 
-@pytest.mark.xfail(
-    arcadedb.__backend__ == "native",
-    strict=True,
-    reason="ArcadeData/arcadedb-python#288: the native get_vector_index finds only an index named Type[property]",
-)
 def test_get_vector_index_returns_an_index_made_by_create_vector_index(temp_db):
     _create_article_index(temp_db)
     _load_articles(temp_db)
 
+    assert "article_embedding" in temp_db.schema.list_vector_indexes()
     index = temp_db.schema.get_vector_index("Article", "embedding")
     assert index is not None
     meta = index.get_metadata()
