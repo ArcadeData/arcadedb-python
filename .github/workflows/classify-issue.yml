@@ -1,9 +1,18 @@
 # Labels a new issue from rules (adapted from ArcadeData/arcadedb's classify-issue.yml, minus
 # the model call: upstream asks Claude which labels fit, this repository has no API token, so a
-# keyword table does it). The package comes from the "Package" dropdown of the bug form; the topic
-# labels come from words in the title and body. Only labels that already exist in the repository
-# are applied, and only added, never removed, so a person's labels always win. A wrong guess is
-# fixed by hand like any label.
+# keyword table does it). Only labels that already exist in the repository are applied, and only
+# added, never removed, so a person's labels always win. A wrong guess is fixed by hand like any
+# label. One issue may get several labels. The groups:
+#   package   jvm, native: the "Package" dropdown of the bug form, else plain words in the title
+#             or body ("arcadedb-jvm", "JPype", "native build"); an issue opened with
+#             `gh issue create` or by hand has no dropdown.
+#   topic     vector, performance, concurrency, timeseries: words in the title and body.
+#   type      bug, documentation, enhancement: words in the TITLE only (a body mentions "error"
+#             or "example" too often to say what the issue is). The issue forms set bug and
+#             enhancement themselves; this covers the issues they do not.
+#   language  python: Python words in the title or body.
+#   CI        github_actions: CI, workflow and runner words in the title or body.
+# `dependencies` is left to Dependabot.
 #
 # Try the rules on a real issue without touching it: run the workflow by hand (dry run by default)
 # and read the log.
@@ -56,8 +65,30 @@ jobs:
             if (/arcadedb-jvm/i.test(pkg)) wanted.add('jvm');
             if (/native/i.test(pkg)) wanted.add('native');
 
+            // Without the dropdown: plain words. "native" alone in the title is enough (titles
+            // start with "Native:"); in the body only a phrase is, because the engine text
+            // mentions it in passing.
+            if (/\b(arcadedb-jvm|jvm (build|wheel|package)|jpype)\b/i.test(text) || /\bjvm\b/i.test(title)) {
+              wanted.add('jvm');
+            }
+            if (/\bnative (build|wheel|package)s?\b/i.test(text) || /\bnative\b/i.test(title)) {
+              wanted.add('native');
+            }
+
+            // label -> pattern over the title only (the type of the issue)
+            const titleRules = {
+              bug: /\b(crash(es|ed)?|died|dies|fail(s|ed|ure|ures)?|errors?|raises?|wrong|regression|returns None|TypeError|exceptions?|hangs?)\b/i,
+              documentation: /\b(docs?|documentation|pages?|user guide|README|examples?)\b/i,
+              enhancement: /\b(support for|expose|feature|columnar|facets?|proposal|request)\b|\badd\b.*\boption\b/i,
+            };
+            for (const [label, pattern] of Object.entries(titleRules)) {
+              if (pattern.test(title)) wanted.add(label);
+            }
+
             // label -> pattern over title and body
             const rules = {
+              python: /\b(python|wheels?|pip|uv add|import arcadedb|pytest|jpype)\b/i,
+              github_actions: /\b(ci|workflows?|github actions|runners?)\b/i,
               vector: /\b(vectors?|jvector|hnsw|embeddings?|find_nearest|knn)\b/i,
               performance: /\b(slow|slower|performance|latency|throughput|benchmarks?|speed)\b/i,
               concurrency: /\b(threads?|concurrent|concurrency|deadlocks?|race conditions?|locks?)\b/i,
