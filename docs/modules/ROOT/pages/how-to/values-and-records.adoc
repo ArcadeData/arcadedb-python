@@ -1,0 +1,430 @@
+= Values and records
+:description: Which Python types go into a database and what comes back (datetime, date, Decimal, bytes, lists, maps, sets), what a query row and a record object give you and which of them is a copy, and the Schema API next to plain SQL.
+
+// Sources: src/arcadedb/type_conversion.py and _native/codec.py (values), results.py and graph.py with _native/records.py (rows and records), schema.py and _native/database.py (Schema). Every statement below is pinned by tests/test_values_and_records_behavior.py.
+
+This page covers what the Python bindings add to the statements: how a Python value becomes a stored value and back, what the objects you get from a query or a lookup are, and where the `Schema` API fits. The types, the date formats and the schema rules of the engine belong to the main manual: {arcadedb-docs-url}/reference/datatypes[Data types], {arcadedb-docs-url}/reference/managing-dates[Managing dates] and {arcadedb-docs-url}/concepts/schema[Schema].
+
+The short version:
+
+* A Python value comes back as the same Python type, with these exceptions: a `datetime` has no time zone, `bytes` is a list of signed integers, a tuple is a list, a `set` is a list after the commit, and an embedded document is a Java object on `arcadedb-jvm` (read its members with a dotted path in the statement).
+* You read a query row with `get()`, not with brackets.
+* A record that you read is a copy and is read-only. To change it, call `modify()`, `set()` and `save()`.
+* Statements stay the main interface, as on xref:how-to/databases-and-queries.adoc[Databases and queries]. Use a record object or the `Schema` API only when Python code, not a statement, drives the work.
+
+The blocks on this page run one after the other against one empty database, and a test in the repository runs them that way (`tests/test_docs_values_page.py`). Each block that prints something is followed by its output. Every block assumes that `db` is an open database. The output is the same on `arcadedb` and `arcadedb-jvm`.
+
+[source,python]
+----
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal
+
+from arcadedb import ArcadeDBError
+
+db.command("sql", "CREATE DOCUMENT TYPE Event")
+db.command("sql", "CREATE PROPERTY Event.at DATETIME_MICROS")
+db.command("sql", "CREATE PROPERTY Event.day DATE")
+----
+
+== Python values in, Python values out
+
+A value you bind to a parameter, pass to `set()` or give to `new_edge()` is converted for the engine, and a value you read is converted back. The conversion is the same for `get()`, `to_dict()` and `to_list()`: for one record, the three give the same Python type and the same value.
+
+[cols="2,2,3"]
+|===
+| You give | You get back | Notes
+
+| `str`, `bool`, `None`
+| the same
+|
+
+| `int`
+| `int`
+| The engine stores 64 bits. A property declared `INTEGER` stores an `int` as that type.
+
+| `float`
+| `float`
+| A property declared `DOUBLE` turns an `int` into a `float`: `3` reads back as `3.0`.
+
+| `Decimal`
+| `Decimal`
+| Every digit is kept, so a lookup by the same `Decimal` finds the record.
+
+| `datetime`
+| `datetime` without a time zone
+| A naive value is a UTC wall clock. An aware value is converted to UTC first.
+
+| `date`
+| `date`
+| A `datetime` is not a `date`: it stays a `datetime`.
+
+| `bytes`, `bytearray`
+| a `list` of signed `int` (-128 to 127)
+| Every byte is kept. It does not come back as `bytes`.
+
+| `list`, `tuple`
+| `list`
+| To any depth. A tuple comes back as a list.
+
+| `dict`
+| `dict`
+| To any depth, with lists and dicts inside.
+
+| `set`
+| `set` inside the transaction, `list` after the commit
+| The engine has no set type.
+|===
+
+A property that you declared keeps the declared type, and an undeclared property takes the kind of the value. Declare a property when you need a type that the Python value does not tell, such as the precision of a time. An embedded document (a property declared `EMBEDDED OF Type`) is the one value that differs between the packages when you read it whole: `arcadedb` gives a `dict` that holds its members and a `@type` member with the type name, and `arcadedb-jvm` gives the engine's own Java object, not a `dict`. That is what `to_dict()` and `to_list()` return. To read a member as a plain value on both packages, name it in the statement with a dotted path: for a property `em` of type `Holder`, `SELECT em.q AS q FROM Holder` returns the member `q` as a plain value.
+
+This block stores a decimal, a tuple, a dict and some bytes, and reads them back:
+
+[source,python]
+----
+with db.transaction():
+    db.command(
+        "sql",
+        "INSERT INTO Event SET name = ?, price = ?, tags = ?, meta = ?, raw = ?",
+        "launch",
+        Decimal("19.99"),
+        ("a", "b"),
+        {"city": "Seoul", "seats": 40},
+        b"\xff\x00",
+    )
+row = db.query("sql", "SELECT FROM Event").first()
+print(repr(row.get("name")))
+print(repr(row.get("price")))
+print(repr(row.get("tags")))
+print(sorted(row.get("meta").items()))
+print(repr(row.get("raw")))
+----
+
+[source,text]
+----
+'launch'
+Decimal('19.99')
+['a', 'b']
+[('city', 'Seoul'), ('seats', 40)]
+[-1, 0]
+----
+
+=== Datetimes
+
+The engine stores a `DATETIME` as a UTC wall clock. The bindings follow that: a naive `datetime` is taken as the UTC time it shows, and an aware `datetime` is converted to UTC. What you read back has no time zone, so a value you wrote at 21:34 in UTC+9 reads back as 12:34. If you want an aware value, put the zone back yourself with `value.replace(tzinfo=timezone.utc)`.
+
+[source,python]
+----
+naive = datetime(2026, 10, 1, 12, 34, 56, 789123)
+aware = datetime(2026, 10, 1, 21, 34, 56, 789123, tzinfo=timezone(timedelta(hours=9)))
+with db.transaction():
+    for label, value in (("naive", naive), ("aware", aware)):
+        db.command(
+            "sql",
+            "INSERT INTO Event SET label = ?, at = ?, day = ?",
+            label,
+            value,
+            value.date(),
+        )
+rows = db.query("sql", "SELECT label, at, day FROM Event WHERE label IS NOT NULL ORDER BY label")
+for row in rows:
+    print(row.get("label"), row.get("at"), row.get("at").tzinfo, row.get("day"))
+count = db.query("sql", "SELECT count(*) AS n FROM Event WHERE at = ?", aware).first()
+print("found by the aware value:", count.get("n"))
+----
+
+[source,text]
+----
+aware 2026-10-01 12:34:56.789123 None 2026-10-01
+naive 2026-10-01 12:34:56.789123 None 2026-10-01
+found by the aware value: 2
+----
+
+Both values are the same instant, so they are stored as one value, and a lookup by either finds both records.
+
+The declared type of the property sets the precision that is kept. `DATETIME_SECOND` keeps whole seconds, `DATETIME` keeps milliseconds, and `DATETIME_MICROS` keeps microseconds, which is all that a Python `datetime` holds. Declare the precision you need before you load.
+
+[source,python]
+----
+db.command("sql", "CREATE DOCUMENT TYPE Stamp")
+for name, kind in (("sec", "DATETIME_SECOND"), ("ms", "DATETIME"), ("us", "DATETIME_MICROS")):
+    db.command("sql", f"CREATE PROPERTY Stamp.{name} {kind}")
+with db.transaction():
+    db.command(
+        "sql",
+        "INSERT INTO Stamp SET sec = :t, ms = :t, us = :t",
+        {"t": datetime(2021, 2, 3, 4, 5, 6, 123456)},
+    )
+stamp = db.query("sql", "SELECT FROM Stamp").first()
+for name in ("sec", "ms", "us"):
+    print(name, stamp.get(name))
+----
+
+[source,text]
+----
+sec 2021-02-03 04:05:06
+ms 2021-02-03 04:05:06.123000
+us 2021-02-03 04:05:06.123456
+----
+
+=== Sets
+
+A `set` is a set only until the commit. This is the engine's rule: it has no set type, so it stores the elements as a list.
+
+[source,python]
+----
+with db.transaction():
+    roles = db.new_document("Event").set("roles", {"admin", "user"}).save()
+    print(type(roles.get("roles")).__name__)
+print(type(db.lookup_by_rid(roles.get_rid()).get("roles")).__name__)
+----
+
+[source,text]
+----
+set
+list
+----
+
+== Read a row
+
+`db.query(...)` gives rows, and you read a row with methods. `row["name"]` raises `TypeError` and `row.name` raises `AttributeError`. `to_dict()` and `to_list()` give plain dicts, which take brackets.
+
+* `row.get("name")` is the value, or `None` when the row has no such property. `row.has_property("name")` is `False` when the row has no such property.
+* `row.get_property_names()` (also the `row.property_names` property) lists the names, and `row.to_dict()` is the properties as a new dict each time. Changing that dict changes nothing in the row or in the database.
+* A row that is a record (`SELECT FROM Person`) has an identity: `row.get_rid()` is its record id as text, such as `"#12:0"`, and `row.get_element()` is the record as an object (see <<records>>). A projection row (`SELECT name FROM Person`) has neither: both return `None`.
+
+[source,python]
+----
+db.command("sql", "CREATE VERTEX TYPE Person")
+db.command("sql", "CREATE PROPERTY Person.name STRING")
+db.command("sql", "CREATE EDGE TYPE Knows")
+with db.transaction():
+    db.command("sql", "INSERT INTO Person SET name = 'Ada', age = 36")
+
+row = db.query("sql", "SELECT FROM Person").first()
+print(row.get("name"), row.get("nothing"), row.has_property("nothing"))
+print(sorted(row.get_property_names()))
+print(sorted(row.to_dict().items()))
+try:
+    row["name"]
+except TypeError:
+    print("no brackets on a row")
+print(row.get_rid().startswith("#"), type(row.get_element()).__name__)
+
+projection = db.query("sql", "SELECT name FROM Person").first()
+print(projection.get("name"), projection.get_rid(), projection.get_element())
+----
+
+[source,text]
+----
+Ada None False
+['age', 'name']
+[('age', 36), ('name', 'Ada')]
+no brackets on a row
+True Vertex
+Ada None None
+----
+
+[[records]]
+== Work with records
+
+A record object is a `Document`, a `Vertex` or an `Edge`. A vertex and an edge are documents too, so `isinstance(record, Document)` holds for all three. You get one from `db.new_document(type)`, `db.new_vertex(type)`, `vertex.new_edge(...)`, `db.lookup_by_rid(rid)`, `db.lookup_by_key(...)`, or from a row with `row.get_element()`, `row.get_vertex()` and `row.get_edge()`.
+
+A record has the same readers as a row (`get`, `has_property`, `get_property_names`, `to_dict`), and `to_dict()` holds the properties only. A record also has `get_type_name()`, and `get_rid()` gives its record id.
+
+Creating a record takes three steps: make the object, set its properties, save it. `set()` and `save()` return the record, so they chain. `save()` is a write, so it needs a transaction, as every write does (see xref:how-to/transactions.adoc[Transactions]). The record has its record id after `save()`. `record.delete()` removes a record, also inside a transaction.
+
+[source,python]
+----
+with db.transaction():
+    grace = db.new_vertex("Person").set("name", "Grace").set("age", 45).save()
+    bob = db.new_vertex("Person").set("name", "Bob").save()
+    knows = grace.new_edge("Knows", bob, since=2020)
+print(type(grace).__name__, grace.get_type_name(), grace.get_rid().startswith("#"))
+print(type(knows).__name__, knows.get("since"))
+print(knows.get_out().get_rid() == grace.get_rid(), knows.get_in().get_rid() == bob.get_rid())
+print([edge.get_rid() == knows.get_rid() for edge in grace.get_out_edges("Knows")])
+print(bob.get_in_edges("Knows")[0].get_out().get("name"))
+----
+
+[source,text]
+----
+Vertex Person True
+Edge 2020
+True True
+[True]
+Grace
+----
+
+Save both vertices before you call `new_edge()`. `new_edge()` creates the edge, so you do not call `save()` on it. `get_out_edges()`, `get_in_edges()` and `get_both_edges()` take edge labels to narrow the list.
+
+=== A record is a copy
+
+A record object, and a row, holds the record as it was when you read it. A later change to the stored record, through a statement or through another object, does not reach it. Read the record again to see the change.
+
+[source,python]
+----
+rid = grace.get_rid()
+record = db.lookup_by_rid(rid)
+with db.transaction():
+    db.command("sql", "UPDATE Person SET age = 46 WHERE name = 'Grace'")
+print(record.get("age"), db.lookup_by_rid(rid).get("age"))
+----
+
+[source,text]
+----
+45 46
+----
+
+A record that you read is also read-only: `set()` raises `AttributeError`, and the message names `modify()`. `modify()` returns a new, writable object for the same record, and `save()` on it writes the change. The object you read is not changed by that save, and a `set()` without a `save()` stores nothing.
+
+A save of a copy that is out of date would overwrite the change of another writer, so the bindings refuse it. `save()` raises `ArcadeDBError`, with `ConcurrentModificationException` in the message, when the stored record is no longer the one the object was read from, and it writes nothing. It is the same error that `run_in_transaction` retries (see xref:how-to/concurrency.adoc#retry-loop[Concurrency, processes and crashes]). Read the record again, make the change on the fresh object, and save that.
+
+[source,python]
+----
+try:
+    record.set("age", 50)
+except AttributeError as error:
+    print("read-only:", "modify()" in str(error))
+
+stale = record.modify().set("age", 99)
+try:
+    with db.transaction():
+        stale.save()
+except ArcadeDBError:
+    print("refused: the record changed after it was read")
+print(db.lookup_by_rid(rid).get("age"))
+
+fresh = db.lookup_by_rid(rid).modify().set("age", 47)
+with db.transaction():
+    fresh.save()
+print(db.lookup_by_rid(rid).get("age"))
+----
+
+[source,text]
+----
+read-only: True
+refused: the record changed after it was read
+46
+47
+----
+
+To change a record, call `modify()`, `set()` and `save()`, or run a statement.
+
+=== Identity
+
+Two reads of one record are two objects. They are not equal to each other, because a record object is equal only to itself. Compare records by `get_rid()`.
+
+[source,python]
+----
+first = db.lookup_by_rid(rid)
+second = db.lookup_by_rid(rid)
+print(first is second, first == second, first.get_rid() == second.get_rid())
+----
+
+[source,text]
+----
+False False True
+----
+
+=== Lookups
+
+`db.lookup_by_rid(rid)` takes the text of a record id, or an RID object from a row (see xref:how-to/databases-and-queries.adoc#record-ids-in-rows[Record ids in rows]), and raises `ArcadeDBError` when no record has it. `db.lookup_by_key(type, keys, values)` finds a record through an index. It never scans: `keys` must be the properties of an existing index of that type, and a call without such an index raises `ArcadeDBError`. It returns a matching record, or `None`.
+
+[source,python]
+----
+try:
+    db.lookup_by_key("Person", ["name"], ["Grace"])
+except ArcadeDBError:
+    print("no index on name yet")
+db.command("sql", "CREATE INDEX ON Person (name) UNIQUE")
+grace = db.lookup_by_key("Person", ["name"], ["Grace"])
+print(grace.get("age"), db.lookup_by_key("Person", ["name"], ["Nobody"]))
+----
+
+[source,text]
+----
+no index on name yet
+47 None
+----
+
+=== Records or statements
+
+Statements are the main interface, and record objects wrap what Python control flow needs. Use a statement (`INSERT`, `UPDATE`, `DELETE`, `CREATE EDGE`) when the change is conditional, touches many records, or comes from a bulk load: it runs in the engine, takes no read of the record first, and cannot be refused as stale. Use a record object when your code reads one record, decides in Python and writes it back. For many records at once, see xref:how-to/bulk-loads.adoc[Bulk loads and commit size].
+
+== The Schema API
+
+`db.schema` holds methods that make and drop types, properties and indexes without writing the statement. They do the same as the statements: a type made by one is a type for the other, schema changes apply at once, and they need no transaction. The statements are the main interface and cover more, so use them unless you build a schema from Python values and want the quoting of names done for you.
+
+[cols="2,3"]
+|===
+| Method | Statement
+
+| `create_document_type(name)`, `create_vertex_type(name)`, `create_edge_type(name)`
+| `CREATE DOCUMENT TYPE`, `CREATE VERTEX TYPE`, `CREATE EDGE TYPE`
+
+| `create_property(type, name, "STRING")`, with `of_type=` for a list or a map
+| `CREATE PROPERTY Type.name STRING`
+
+| `create_index(type, [names], unique=True, index_type=IndexType.HASH)`
+| `CREATE INDEX ON Type (name) UNIQUE_HASH`
+
+| `exists_type(name)`, `exists_index("Type[name]")`
+| `SELECT FROM schema:types`, `SELECT FROM schema:indexes`
+
+| `get_or_create_*`
+| `IF NOT EXISTS`
+
+| `drop_type(name)`, `drop_property(type, name)`, `drop_index(name)`
+| `DROP TYPE Type UNSAFE`, `DROP PROPERTY Type.name`, `DROP INDEX name`
+|===
+
+The property type is a string or a `PropertyType`, and the index type is a string or an `IndexType`; both enums import from `arcadedb`. An index is named `Type[property]`, and `exists_index` takes that name. The create and get methods return a Java object on the JVM package and a placeholder on the native package, so do not use what they return: check with `exists_type`, `exists_index` or a statement. `drop_type` drops a type together with its records. The plain statement `DROP TYPE` refuses a vertex or edge type that still holds records, and `DROP TYPE ... UNSAFE` does what `drop_type` does.
+
+[source,python]
+----
+db.schema.create_document_type("Note")
+db.schema.create_property("Note", "text", "STRING")
+db.schema.create_index("Note", ["text"], unique=True)
+print(db.schema.exists_type("Note"), db.schema.exists_index("Note[text]"), db.schema.exists_type("Missing"))
+----
+
+[source,text]
+----
+True True False
+----
+
+The same schema as statements:
+
+[source,sql]
+----
+CREATE DOCUMENT TYPE Note
+CREATE PROPERTY Note.text STRING
+CREATE INDEX ON Note (text) UNIQUE
+----
+
+Creating a type that exists raises `ArcadeDBError`, from the method and from the statement alike. `get_or_create_document_type` and `CREATE DOCUMENT TYPE Note IF NOT EXISTS` do nothing when the type is there.
+
+Only a statement sets the constraints of a property. `mandatory`, `notnull` and the others go in the parentheses of `CREATE PROPERTY`, and the `Schema` API has no argument for them.
+
+[source,python]
+----
+db.command("sql", "CREATE DOCUMENT TYPE Note IF NOT EXISTS")
+db.schema.get_or_create_document_type("Note")
+try:
+    db.schema.create_document_type("Note")
+except ArcadeDBError:
+    print("Note exists")
+
+db.command("sql", "CREATE PROPERTY Note.title STRING (mandatory true, notnull true)")
+try:
+    with db.transaction():
+        db.command("sql", "INSERT INTO Note SET text = 'x'")
+except ArcadeDBError:
+    print("refused: title is mandatory")
+----
+
+[source,text]
+----
+Note exists
+refused: title is mandatory
+----
