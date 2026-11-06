@@ -33,7 +33,7 @@ The database runs in your Python process. You use SQL for the schema and for CRU
 Two rules cover most first mistakes:
 
 * Use a `with` block. It closes the database when the block ends, also when an exception leaves it.
-* *Writes need a transaction.* `INSERT`, `UPDATE` and `DELETE` go inside `with db.transaction():`. Schema statements apply immediately. Reads need no transaction.
+* *Writes need a transaction.* `INSERT`, `UPDATE` and `DELETE` go inside `with db.transaction():`. Schema statements apply immediately. Reads need no transaction. What a transaction does on an error, and how to roll back by hand, is on xref:how-to/transactions.adoc[Transactions].
 
 == A complete example
 

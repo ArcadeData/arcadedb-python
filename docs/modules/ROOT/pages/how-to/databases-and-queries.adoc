@@ -74,7 +74,7 @@ Notes on the script:
 * `open_database(path)` opens an existing database. `database_exists(path)` tells the two cases apart.
 * `with` closes the database when the block ends, also when an exception leaves it. On close, active transactions roll back. You can call `db.close()` yourself, inside `try`/`finally`, but the context manager is the recommended way.
 * `db.drop()` deletes all files of the database. It cannot be undone.
-* `db.is_transaction_active()` is `True` only inside `with db.transaction():`.
+* `db.is_transaction_active()` is `True` only inside `with db.transaction():` (or between `begin()` and `commit()` or `rollback()`). The other ways to end a transaction, and what an error does to it, are on xref:how-to/transactions.adoc[Transactions].
 
 === Read-only open
 

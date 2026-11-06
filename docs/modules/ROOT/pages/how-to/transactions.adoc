@@ -1,0 +1,258 @@
+= Transactions
+:description: Commit and roll back with the context manager or with begin, commit and rollback, what an exception, a failed statement and a second begin do, what other threads see before a commit, auto-transaction, run_in_transaction, and the GraphBatch rule.
+
+// Sources: src/arcadedb/core.py (begin, commit, rollback, transaction, run_in_transaction, set_auto_transaction), transactions.py and graph_batch.py. Every statement below is pinned by tests/test_transactions_behavior.py.
+
+This page covers what the Python bindings add to transactions: the context manager, the explicit calls, and what each does when something goes wrong. A transaction is a transaction of the engine, so what it guarantees (atomicity, isolation levels, when two writers conflict) belongs to the main manual: {arcadedb-docs-url}/concepts/transactions[Transactions].
+
+A transaction is not a Python object that you pass around. It belongs to the thread that began it, and every call of that thread on the database, `db.command(...)` and `db.query(...)` included, runs in it. The statements stay SQL or openCypher, as on xref:how-to/databases-and-queries.adoc[Databases and queries].
+
+The blocks on this page run one after the other against one empty database, and a test in the repository runs them that way (`tests/test_docs_transactions_page.py`). Each block that prints something is followed by its output. Every block assumes that `db` is an open database. The first block creates a type with a unique index, which later blocks use to make a statement fail.
+
+[source,python]
+----
+from arcadedb import ArcadeDBError
+
+db.command("sql", "CREATE DOCUMENT TYPE Account")
+db.command("sql", "CREATE PROPERTY Account.name STRING")
+db.command("sql", "CREATE INDEX ON Account (name) UNIQUE")
+
+
+def names():
+    rows = db.query("sql", "SELECT name FROM Account ORDER BY name").to_list()
+    return [row["name"] for row in rows]
+----
+
+== The context manager
+
+`with db.transaction():` begins a transaction, commits it when the block ends, and rolls it back when an exception leaves the block. The exception is raised again unchanged, so your own `except` clause sees the error you raised, not a wrapper.
+
+[source,python]
+----
+with db.transaction():
+    db.command("sql", "INSERT INTO Account SET name = 'alice'")
+print(names())
+
+try:
+    with db.transaction():
+        db.command("sql", "INSERT INTO Account SET name = 'bob'")
+        raise ValueError("stop")
+except ValueError as error:
+    print("raised", error)
+print(names(), db.is_transaction_active())
+----
+
+[source,text]
+----
+['alice']
+raised stop
+['alice'] False
+----
+
+`db.is_transaction_active()` is `True` inside the block and `False` after it. A write outside a transaction does not run; see <<outside>>.
+
+== begin, commit and rollback
+
+`db.begin()`, `db.commit()` and `db.rollback()` do the same by hand. Use them when the start and the end of the transaction are not in one block, and put the rollback in a `finally` or an `except` clause, because nothing rolls back for you.
+
+[source,python]
+----
+db.begin()
+db.command("sql", "INSERT INTO Account SET name = 'bob'")
+print(db.is_transaction_active())
+db.rollback()
+print(names())
+
+db.begin()
+db.command("sql", "INSERT INTO Account SET name = 'bob'")
+db.commit()
+print(names())
+----
+
+[source,text]
+----
+True
+['alice']
+['alice', 'bob']
+----
+
+[[outside]]
+== Outside a transaction
+
+A write outside a transaction raises `ArcadeDBError` with "Transaction not begun" in the message, and writes nothing. So does `commit()` when no transaction is active. `rollback()` with nothing to roll back does nothing and raises nothing.
+
+[source,python]
+----
+try:
+    db.command("sql", "INSERT INTO Account SET name = 'carol'")
+except ArcadeDBError as error:
+    print("write:", "Transaction not begun" in str(error))
+try:
+    db.commit()
+except ArcadeDBError as error:
+    print("commit:", "Transaction not begun" in str(error))
+db.rollback()
+print("rollback: no error")
+----
+
+[source,text]
+----
+write: True
+commit: True
+rollback: no error
+----
+
+The same holds for the context manager. If the block calls `db.commit()` itself, no transaction is left when the block ends, and the commit at the end raises `ArcadeDBError` ("Transaction not begun"). The rows of the first commit stay. Leave the commit to the `with` statement.
+
+Schema statements such as `CREATE TYPE` apply at once and need no transaction, as on xref:quickstart.adoc[Quickstart].
+
+== Auto-transaction
+
+`db.set_auto_transaction(True)` makes each statement outside a transaction run in a transaction of its own, which commits when the statement ends. It is off by default and is not stored: a reopened database starts with it off. Prefer an explicit transaction when several statements belong together, because with auto-transaction each one commits alone.
+
+[source,python]
+----
+db.set_auto_transaction(True)
+db.command("sql", "INSERT INTO Account SET name = 'carol'")
+print("carol" in names(), db.is_transaction_active())
+db.set_auto_transaction(False)
+----
+
+[source,text]
+----
+True False
+----
+
+== What a transaction sees
+
+A transaction sees its own rows at once. Another thread sees them only after the commit. This block starts a thread for each count:
+
+[source,python]
+----
+import threading
+
+
+def count_in_other_thread():
+    seen = []
+
+    def read():
+        seen.append(len(db.query("sql", "SELECT FROM Account").to_list()))
+
+    thread = threading.Thread(target=read)
+    thread.start()
+    thread.join()
+    return seen[0]
+
+
+with db.transaction():
+    db.command("sql", "INSERT INTO Account SET name = 'dave'")
+    print("this thread:", len(names()), "other thread:", count_in_other_thread())
+print("after the commit, other thread:", count_in_other_thread())
+----
+
+[source,text]
+----
+this thread: 4 other thread: 3
+after the commit, other thread: 4
+----
+
+Share one `Database` between threads, as on xref:how-to/concurrency.adoc#threads[Concurrency, processes and crashes]. That page also covers what happens when two transactions change the same record.
+
+== A failed statement inside a transaction
+
+A statement that fails inside your transaction is undone on its own, and the transaction goes on. This is the behavior of ArcadeDB 26.11.1 and later. Before it, a statement that had written part of its rows left them in the transaction, and the transaction could no longer be committed.
+
+[source,python]
+----
+with db.transaction():
+    db.command("sql", "INSERT INTO Account SET name = 'erin'")
+    try:
+        db.command("sql", "INSERT INTO Account (name) VALUES ('frank'), ('frank')")
+    except ArcadeDBError as error:
+        print("refused:", "DuplicatedKeyException" in str(error))
+    print("still active:", db.is_transaction_active())
+    db.command("sql", "INSERT INTO Account SET name = 'grace'")
+print(names())
+----
+
+[source,text]
+----
+refused: True
+still active: True
+['alice', 'bob', 'carol', 'dave', 'erin', 'grace']
+----
+
+The second statement writes `frank` once, and then the unique index refuses the second `frank`. The first `frank` is gone with it, while `erin` from the statement before and `grace` from the statement after are committed. The engine keeps a journal of what each statement changes in order to undo it. When a statement changes more entries than `arcadedb.txStatementSavepointMaxEntries` (100,000 by default), the engine does not undo it, and the transaction can no longer be committed: roll it back. The setting is listed in the main manual: {arcadedb-docs-url}/reference/settings[Settings].
+
+A failed statement is one thing, and an exception that you let leave the `with` block is another: that one rolls the whole transaction back, as above.
+
+== A second begin
+
+`db.begin()` while a transaction is active does not join it. It opens a nested transaction of its own, and the next `commit()` or `rollback()` ends that nested one only. The two do not share their uncommitted rows:
+
+* The nested transaction does not see the rows that the outer one has not committed.
+* Committing the nested transaction makes its rows durable at once. A later rollback of the outer transaction does not take them back.
+* The outer transaction sees what the nested one committed, because it is committed data.
+
+[source,python]
+----
+db.begin()
+db.command("sql", "INSERT INTO Account SET name = 'outer'")
+db.begin()
+print("nested sees outer:", "outer" in names())
+db.command("sql", "INSERT INTO Account SET name = 'inner'")
+db.commit()
+print("still active:", db.is_transaction_active())
+db.rollback()
+print("outer kept:", "outer" in names(), "inner kept:", "inner" in names())
+----
+
+[source,text]
+----
+nested sees outer: False
+still active: True
+outer kept: False inner kept: True
+----
+
+Nested `with db.transaction():` blocks behave the same way, one transaction for each block. An exception in the inner block rolls back the inner one, and if you catch it inside the outer block, the outer transaction goes on. Because the nested transaction commits on its own, it is not a way to make one part of the work undoable: use one transaction for work that has to succeed or fail together.
+
+== run_in_transaction
+
+`db.run_in_transaction(fn, retries=12, backoff_s=0.005)` calls `fn` in a transaction, commits, and returns what `fn` returned. When `fn` or the commit loses a conflict with another writer, it rolls back and calls `fn` again, up to `retries` more times, with a wait that grows by `backoff_s` each time. `fn` takes no arguments and must do all of its reading and writing itself, so that a repeat starts from the committed state. The loop, and what it cannot repeat, are on xref:how-to/concurrency.adoc#retry-loop[Concurrency, processes and crashes].
+
+[source,python]
+----
+def add_account():
+    db.command("sql", "INSERT INTO Account SET name = 'heidi'")
+    return "added"
+
+
+print(db.run_in_transaction(add_account))
+----
+
+[source,text]
+----
+added
+----
+
+[[graph-batch]]
+== GraphBatch inside a transaction
+
+`GraphBatch` (`db.graph_batch()`) manages its own transactions. From engine 26.10.1 on, its `create_vertices`, `flush` and `close`, and `new_edge` and `new_edges` when the buffer is full, refuse to run inside a transaction that you opened. They raise `ArcadeDBError` and leave your transaction as it was. Engines before 26.10.1 committed your transaction instead. Commit or roll back your own work, then call the batch. The commit sizes of a batch are on xref:how-to/bulk-loads.adoc[Bulk loads and commit size].
+
+[source,python]
+----
+db.command("sql", "CREATE VERTEX TYPE City")
+with db.graph_batch(parallel_flush=False) as batch:
+    db.begin()
+    try:
+        batch.create_vertices("City", 2)
+    except ArcadeDBError:
+        print("refused, transaction still active:", db.is_transaction_active())
+    db.rollback()
+----
+
+[source,text]
+----
+refused, transaction still active: True
+----
