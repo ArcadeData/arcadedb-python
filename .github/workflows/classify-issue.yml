@@ -1,9 +1,22 @@
 # Labels a new issue from rules (adapted from ArcadeData/arcadedb's classify-issue.yml, minus
 # the model call: upstream asks Claude which labels fit, this repository has no API token, so a
-# keyword table does it). The package comes from the "Package" dropdown of the bug form; the topic
-# labels come from words in the title and body. Only labels that already exist in the repository
-# are applied, and only added, never removed, so a person's labels always win. A wrong guess is
-# fixed by hand like any label.
+# keyword table does it). Only labels that already exist in the repository are applied, and only
+# added, never removed, so a person's labels always win. A wrong guess is fixed by hand like any
+# label. One issue may get several labels. The groups:
+#   package   jvm, native: the "Package" dropdown of the bug form, else plain words in the title
+#             or body ("arcadedb-jvm", "JPype", "native build"); an issue opened with
+#             `gh issue create` or by hand has no dropdown.
+#   topic     vector, performance, concurrency, timeseries: words in the title and body.
+#   type      bug, documentation, enhancement: words in the TITLE only (a body mentions "error"
+#             or "example" too often to say what the issue is). The issue forms set bug and
+#             enhancement themselves; this covers the issues they do not.
+#   language  python: Python words in the title or body.
+#   CI        github_actions: CI, workflow and runner words in the title or body.
+# `dependencies` is left to Dependabot.
+#
+# Milestone: a newly opened issue with no milestone gets the open release milestone, chosen as in
+# assign-milestone.yml (earliest due date, ties the lower number; no open milestone, nothing is
+# set). An existing milestone is never replaced. A dry run logs the milestone it would set.
 #
 # Try the rules on a real issue without touching it: run the workflow by hand (dry run by default)
 # and read the log.
@@ -56,8 +69,33 @@ jobs:
             if (/arcadedb-jvm/i.test(pkg)) wanted.add('jvm');
             if (/native/i.test(pkg)) wanted.add('native');
 
+            // Without the dropdown: plain words. A title that names a package decides alone ("Native:
+            // ..." says which build; the body then mentions the other one in passing). Otherwise the
+            // body counts, but only for a package name or a phrase ("native build", "JPype").
+            const titleJvm = /\bjvm\b/i.test(title) || /\barcadedb-jvm\b/i.test(title);
+            const titleNative = /\bnative\b/i.test(title);
+            if (titleJvm || titleNative) {
+              if (titleJvm) wanted.add('jvm');
+              if (titleNative) wanted.add('native');
+            } else {
+              if (/\b(arcadedb-jvm|jvm (build|wheel|package)|jpype)\b/i.test(text)) wanted.add('jvm');
+              if (/\bnative (build|wheel|package)s?\b/i.test(text)) wanted.add('native');
+            }
+
+            // label -> pattern over the title only (the type of the issue)
+            const titleRules = {
+              bug: /\b(crash(es|ed)?|died|dies|fail(s|ed|ure|ures)?|errors?|raises?|wrong|regression|returns None|TypeError|exceptions?|hangs?)\b/i,
+              documentation: /\b(docs?|documentation|pages?|user guide|README|examples?)\b/i,
+              enhancement: /\b(support for|expose|feature|columnar|facets?|proposal|request)\b|\badd\b.*\boption\b/i,
+            };
+            for (const [label, pattern] of Object.entries(titleRules)) {
+              if (pattern.test(title)) wanted.add(label);
+            }
+
             // label -> pattern over title and body
             const rules = {
+              python: /\b(python|wheels?|pip|uv add|import arcadedb|pytest|jpype)\b/i,
+              github_actions: /\b(ci|workflows?|github actions|runners?)\b/i,
               vector: /\b(vectors?|jvector|hnsw|embeddings?|find_nearest|knn)\b/i,
               performance: /\b(slow|slower|performance|latency|throughput|benchmarks?|speed)\b/i,
               concurrency: /\b(threads?|concurrent|concurrency|deadlocks?|race conditions?|locks?)\b/i,
@@ -75,9 +113,32 @@ jobs:
             const labels = [...wanted].filter(l => existing.has(l)).sort();
 
             core.info(`#${issue.number} "${title}": package="${pkg}", labels=[${labels.join(', ')}]`);
-            if (labels.length === 0) return;
+
+            // The open milestone with the earliest due date (ties: the lower number), as in
+            // assign-milestone.yml. Only when the issue has none.
+            let milestone = null;
+            if (issue.milestone) {
+              core.info(`#${issue.number}: already in milestone "${issue.milestone.title}".`);
+            } else {
+              const open = await github.paginate(github.rest.issues.listMilestones, {
+                owner, repo, state: 'open', per_page: 100,
+              });
+              const byDue = (a, b) =>
+                (a.due_on ? Date.parse(a.due_on) : Infinity) - (b.due_on ? Date.parse(b.due_on) : Infinity) ||
+                a.number - b.number;
+              milestone = open.sort(byDue)[0] || null;
+              core.info(milestone
+                ? `#${issue.number}: milestone would be "${milestone.title}".`
+                : 'No open milestone, nothing to assign.');
+            }
+
             if (process.env.DRY_RUN === 'true') {
-              core.info('dry run: no label applied.');
+              core.info('dry run: no label or milestone applied.');
               return;
             }
-            await github.rest.issues.addLabels({ owner, repo, issue_number: issue.number, labels });
+            if (labels.length > 0) {
+              await github.rest.issues.addLabels({ owner, repo, issue_number: issue.number, labels });
+            }
+            if (milestone) {
+              await github.rest.issues.update({ owner, repo, issue_number: issue.number, milestone: milestone.number });
+            }
