@@ -1,0 +1,305 @@
+= Importing and exporting data
+:description: Which call loads a file, a list of rows or a frame, what import_documents and the SQL IMPORT DATABASE do and leave behind when a row fails, how to export a database to a JSONL archive, with the SQL EXPORT DATABASE, or a query to CSV, and what the two builds share.
+
+// Sources: src/arcadedb/core.py (import_documents, export_database, export_to_csv), importer.py, exporter.py, and the engine importer and exporter (CSVImporterFormat, ImportDatabaseStatement, ExportDatabaseStatement). Every statement below is pinned by tests/test_import_export_behavior.py.
+
+This page covers the calls of the Python bindings that move data between files and a database: `import_documents`, the SQL `IMPORT DATABASE`, `export_database`, the SQL `EXPORT DATABASE` and `export_to_csv`. The importer and the exporter are the engine's own, so the file formats, the importer settings and the SQL syntax belong to the main manual: {arcadedb-docs-url}/how-to/migration/importer[Importer], {arcadedb-docs-url}/reference/sql/sql-database-admin#sql-import-database[`IMPORT DATABASE`] and {arcadedb-docs-url}/reference/sql/sql-database-admin#sql-export-database[`EXPORT DATABASE`]. The blocks on this page are tested on both packages, `arcadedb` and `arcadedb-jvm`.
+
+== Which call for which data
+
+[cols="3,3,3"]
+|===
+| Your data is | Use | Where it is explained
+
+| A list of Python dicts
+| `db.insert_many(type_name, rows)`
+| xref:how-to/bulk-loads.adoc[Bulk loads and commit size]
+
+| Columns: numpy arrays, lists, a pandas or Polars frame, an Arrow table
+| `db.insert_columns`, `db.insert_dataframe`, `db.insert_arrow`
+| xref:how-to/dataframes-and-columns.adoc[DataFrames, Arrow and columns]
+
+| A file on disk: CSV, XML, a Neo4j export, RDF and the other formats of the importer
+| `db.import_documents(path, ...)` for a file of documents, or `IMPORT DATABASE` for any of them
+| This page
+
+| A whole database that you want to copy or keep
+| `db.export_database(path)`, then `IMPORT DATABASE` into another database
+| This page
+
+| The rows of a query, for a spreadsheet or another tool
+| `db.export_to_csv(query, path)`
+| This page
+
+| The rows of a query, for pandas, Polars or numpy
+| `to_dataframe()`, `to_polars()`, `to_arrow()`, `to_columns()` of the result
+| xref:how-to/dataframes-and-columns.adoc#reading[Reading columns]
+|===
+
+For a file, the call hands the engine the file name and the settings and nothing else, so no row of the file is ever a Python object. That is the difference from the rows and frames above, which cross the bridge as values. The tests of this repository pin the results below, not the speed of one path against another. Commit sizes, which decide how much a failed load keeps for `insert_many` and `graph_batch`, are measured on xref:how-to/bulk-loads.adoc[Bulk loads and commit size]; a file import has its own rules, in <<failed-import>>.
+
+The blocks on this page run one after the other against one empty database, and a test in the repository runs them that way (`tests/test_docs_data_exchange_pages.py`). A block that prints something is followed by its output. Every block assumes that `db` is an open database and that `workdir` is a `pathlib.Path` of an empty folder you may write in.
+
+[source,python]
+----
+import arcadedb
+from arcadedb import ArcadeDBError
+
+people = workdir / "people.csv"
+people.write_text(
+    "name,age,city\nAlice,30,New York\nBob,25,London\nCharlie,35,Paris\n",
+    encoding="utf-8",
+)
+
+
+def count(type_name):
+    query = f"SELECT count(*) AS n FROM {type_name}"
+    return db.query("sql", query).one().get("n")
+----
+
+== Importing a file of documents
+
+`db.import_documents(source, document_type="Document", ...)` loads a file into a document type. `source` is a path or an importer URL. The call returns an `ImportResult` with `result` (`"OK"`), `operation`, the `source_url` that the engine was given, and a `statistics` dictionary that the importer fills; `result.get(name, default)` reads one statistic.
+
+The type does not have to exist: the importer creates it from the file when it is missing. Create it first when you want declared properties, a unique index or another bucket count, as on xref:how-to/databases-and-queries.adoc[Databases and queries].
+
+[source,python]
+----
+db.command("sql", "CREATE DOCUMENT TYPE Person")
+result = db.import_documents(people, document_type="Person")
+print(result.result, result.operation)
+print(count("Person"))
+----
+
+[source,text]
+----
+OK import documents
+3
+----
+
+The keyword arguments are the settings of the SQL statement under other names: `file_type` is `documentsFileType`, `delimiter` is `documentsDelimiter`, `header` is `documentsHeader`, `skip_entries` is `documentsSkipEntries`, `properties_include` is `documentPropertiesInclude`, and `commit_every`, `parallel`, `wal`, `verbose_level`, `probe_only`, `force_database_create`, `trim_text` and `on_row_error` are `commitEvery`, `parallel`, `wal`, `verboseLevel`, `probeOnly`, `forceDatabaseCreate`, `trimText` and `onRowError`. An argument that you leave out is not sent, so the engine default applies. `extra_settings`, a dict, passes any other setting of the importer, such as `typeIdProperty`, and wins over the arguments when both name the same one.
+
+`probe_only=True` reads the file but writes nothing. The result is `"PROBE_ONLY"`.
+
+[source,python]
+----
+probe = db.import_documents(people, document_type="Person", probe_only=True)
+print(probe.result, count("Person"))
+----
+
+[source,text]
+----
+PROBE_ONLY 3
+----
+
+[[failed-import]]
+== When a row fails
+
+The importer loads the rows of one file of documents in one transaction that it owns, and commits it after the last row. By default (`on_row_error="abort"`) the first row that fails stops the import with an `ArcadeDBError` that starts with "Document import failed", and the transaction is rolled back. No row of that file is left, however many rows were read before the bad one.
+
+A duplicate key shows the rule. The next blocks load a file whose second row repeats the unique key of the first:
+
+[source,python]
+----
+db.command("sql", "CREATE DOCUMENT TYPE Product")
+db.command("sql", "CREATE PROPERTY Product.sku STRING")
+db.command("sql", "CREATE INDEX ON Product (sku) UNIQUE")
+products = workdir / "products.csv"
+products.write_text(
+    "sku,name\nA-1,first\nA-1,duplicate\nB-2,third\n", encoding="utf-8"
+)
+
+
+def skus():
+    rows = db.query("sql", "SELECT sku FROM Product").to_list()
+    return sorted(row["sku"] for row in rows)
+
+
+try:
+    db.import_documents(products, document_type="Product")
+except ArcadeDBError as error:
+    print("failed:", str(error).startswith("Document import failed"))
+print(skus(), db.is_transaction_active())
+----
+
+[source,text]
+----
+failed: True
+[] False
+----
+
+`on_row_error="skip"` changes the rule. Each row commits on its own, a row that fails is logged and dropped, and the import goes on. The rows that loaded stay, and the first of two rows with one key wins. Any other value than `"abort"` or `"skip"` raises `ValueError` before the import starts, because the engine would read it as `"abort"` without a word.
+
+[source,python]
+----
+db.import_documents(products, document_type="Product", on_row_error="skip")
+print(skus())
+----
+
+[source,text]
+----
+['A-1', 'B-2']
+----
+
+Skip mode commits for every row, so it needs the transaction for itself: with a transaction of yours open, it raises `ArcadeDBError` and loads nothing.
+
+The default mode does not touch a transaction that you opened. The rows join it, the import commits nothing, and your `commit()` or `rollback()` decides whether they stay. This is the same rule as for `insert_dataframe` and `insert_columns`, and different from a graph batch, which refuses to run in a transaction: xref:how-to/transactions.adoc#graph-batch[GraphBatch inside a transaction].
+
+[source,python]
+----
+db.begin()
+db.import_documents(people, document_type="Person")
+print(db.is_transaction_active(), count("Person"))
+db.rollback()
+print(count("Person"))
+----
+
+[source,text]
+----
+True 6
+3
+----
+
+NOTE: This section is about one file of documents. The rules for vertices and edges differ, because the engine imports them through asynchronous writers. No test of this repository covers a failed graph import, so read the main manual before you rely on what one leaves.
+
+== The SQL statement
+
+`IMPORT DATABASE` runs the same importer from SQL. `IMPORT DATABASE <url>` reads one file, and `IMPORT DATABASE WITH name = value, ...` takes the settings by name. A file of documents loads into the type `Document` unless `documentType` says another. The URL is a `file://` URL: `path.resolve().as_uri()` makes one. It writes a space as `%20`, and the engine opens the text after `file://` as a plain path without decoding it, so for a folder with a space or another special character in its name use `import_documents`, which handles that. The statement returns one row with `result` and `operation` (`"import database"`).
+
+[source,python]
+----
+url = people.resolve().as_uri()
+row = db.command("sql", f"IMPORT DATABASE {url}").one()
+print(row.get("result"), row.get("operation"))
+print(count("`Document`"))
+
+row = db.command(
+    "sql",
+    f"IMPORT DATABASE WITH documents = '{url}', documentType = 'Visitor', commitEvery = 2",
+).one()
+print(row.get("result"), count("Visitor"))
+----
+
+[source,text]
+----
+OK import database
+3
+OK 3
+----
+
+A missing file and a failed row raise `ArcadeDBError`, and a failed file of documents leaves no row, as above. One failure comes back as a row instead: a setting value that the importer cannot read, such as a text for `commitEvery`, gives `result` `"FAIL"` and the message in `reason`. The Python call raises for the same mistake, so check `result` when you use the statement.
+
+[source,python]
+----
+row = db.command(
+    "sql",
+    f"IMPORT DATABASE WITH documents = '{url}', documentType = 'Visitor', commitEvery = 'many'",
+).one()
+print(row.get("result"), bool(row.get("reason")))
+----
+
+[source,text]
+----
+FAIL True
+----
+
+== Exporting a database
+
+`db.export_database(file_path, format="jsonl", overwrite=False, include_types=None, exclude_types=None, verbose=1)` writes a JSONL archive and returns a dictionary of statistics with `totalRecords`, `documents`, `vertices` and `edges`. Name the file `something.jsonl.tgz`. An absolute `file_path` is used as it is. A relative one is placed in the folder `exports` of the working directory; a name that already starts with `exports/` is not prefixed again. `include_types` and `exclude_types` take type names, and an edge type is exported when you list it.
+
+An existing file is not replaced: the call raises `ArcadeDBError` that names `overwrite=True`. GraphML and GraphSON need the engine module `arcadedb-gremlin`, which neither package bundles, so `format="graphml"` and `format="graphson"` raise `ArcadeDBError`, and the message names `jsonl`.
+
+[source,python]
+----
+db.command("sql", "CREATE VERTEX TYPE City")
+db.command("sql", "CREATE EDGE TYPE Road")
+with db.transaction():
+    db.command("sql", "CREATE VERTEX City SET name = 'Oslo'")
+    db.command("sql", "CREATE VERTEX City SET name = 'Rome'")
+    db.command(
+        "sql",
+        "CREATE EDGE Road FROM (SELECT FROM City WHERE name = 'Oslo') "
+        "TO (SELECT FROM City WHERE name = 'Rome')",
+    )
+
+backup = workdir / "backup.jsonl.tgz"
+stats = db.export_database(str(backup), include_types=["City", "Road"])
+print(int(stats["vertices"]), int(stats["edges"]), backup.exists())
+
+try:
+    db.export_database(str(backup))
+except ArcadeDBError as error:
+    print("exists:", "overwrite=True" in str(error))
+
+try:
+    db.export_database(str(workdir / "backup.graphml.tgz"), format="graphml")
+except ArcadeDBError as error:
+    print("graphml:", "jsonl" in str(error))
+----
+
+[source,text]
+----
+2 1 True
+exists: True
+graphml: True
+----
+
+A JSONL archive goes back in with `IMPORT DATABASE`. The new database gets the types, the records and the edges of what was exported.
+
+[source,python]
+----
+with arcadedb.create_database(str(workdir / "copy_db")) as copy:
+    url = backup.resolve().as_uri()
+    print(copy.command("sql", f"IMPORT DATABASE {url}").one().get("result"))
+    print(copy.query("sql", "SELECT count(*) AS n FROM City").one().get("n"))
+    friends = copy.query(
+        "sql", "SELECT out('Road').name AS dest FROM City WHERE name = 'Oslo'"
+    ).to_list()
+    print(list(friends[0]["dest"]))
+----
+
+[source,text]
+----
+OK
+2
+['Rome']
+----
+
+== The SQL EXPORT DATABASE
+
+`EXPORT DATABASE file://<name>` does the same from SQL, with the settings in the main manual. It takes a file name and no folder: the file is always written to `exports/<name>` below the working directory of the process, and a name with a slash in it raises `ArcadeDBError`. The row it returns has `operation` set to `"export database"`.
+
+[source,sql]
+----
+EXPORT DATABASE file://nightly.jsonl.tgz
+----
+
+An open transaction does not survive this statement. The engine rolls back every transaction of your thread before it exports, so rows that you wrote in it and did not commit are gone, and `db.is_transaction_active()` is `False` afterwards. Commit first. `db.export_database(...)` is a different call and does not share the statement's rules about folders, which is why the Python call accepts an absolute path.
+
+== Exporting a query to CSV
+
+`db.export_to_csv(query, file_path, language="sql", fieldnames=None)` runs a query and writes the rows to a CSV file. The header is the column names of the rows. `fieldnames` chooses the order of the columns; it cannot rename them, and it must name every column that the rows have, or the call raises `ArcadeDBError`. To rename a column, give it an alias in the query. A query without rows writes an empty file, or only the header when you pass `fieldnames`.
+
+[source,python]
+----
+csv_path = workdir / "people_out.csv"
+db.export_to_csv(
+    "SELECT name AS who, city AS town FROM Person ORDER BY name",
+    str(csv_path),
+    fieldnames=["who", "town"],
+)
+print(csv_path.read_text(encoding="utf-8").splitlines()[:2])
+----
+
+[source,text]
+----
+['who,town', 'Alice,New York']
+----
+
+`arcadedb.exporter.export_to_csv(rows, file_path, fieldnames=None)` takes a list of dicts the same way, for data that did not come from a query. It creates the folders of `file_path` when they are missing.
+
+== Related pages
+
+* xref:how-to/bulk-loads.adoc[Bulk loads and commit size], the commit size of `insert_many` and `graph_batch`.
+* xref:how-to/dataframes-and-columns.adoc[DataFrames, Arrow and columns], frames and columns in and out.
+* xref:how-to/transactions.adoc[Transactions], what a transaction of yours does to the calls above.

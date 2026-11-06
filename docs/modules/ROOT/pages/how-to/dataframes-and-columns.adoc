@@ -1,0 +1,350 @@
+= DataFrames, Arrow and columns
+:description: Load a pandas or Polars frame, an Arrow table or whole columns with insert_dataframe, insert_arrow and insert_columns, what each Arrow type becomes, how nulls and NaN are stored, what a declared property accepts, how many rows are converted at a time, what a failed load leaves, and what to_columns, to_arrow, to_dataframe and to_polars return, including the difference between the two builds.
+
+// Sources: src/arcadedb/core.py (insert_columns, insert_dataframe, insert_arrow), dataframe.py, results.py and _native/columns.py (to_columns, to_arrow, to_dataframe, to_polars). Every statement below is pinned by tests/test_dataframe_columns_behavior.py.
+
+This page covers column-shaped data in and out of a database: the three calls that load it and the four readers that return it. For a list of Python dicts use `insert_many`, and for a file use the importer: xref:how-to/bulk-loads.adoc[Bulk loads and commit size] and xref:how-to/import-export.adoc[Importing and exporting data]. The calls here are bindings calls and have no statement in SQL, so the main manual has nothing to say about them. The types that a stored value can have are the engine's: {arcadedb-docs-url}/reference/datatypes[Data types].
+
+The libraries are optional extras. A pandas frame needs pandas and pyarrow, a Polars frame needs Polars, and the readers need numpy, pyarrow, pandas or Polars as their names say:
+
+[source,shell]
+----
+uv add 'arcadedb[arrow,pandas]'
+uv add 'arcadedb[polars]'
+----
+
+For the JVM package the name is `arcadedb-jvm`, with the same extras. The blocks on this page run one after the other against one empty database, and a test in the repository runs them that way on both packages (`tests/test_docs_data_exchange_pages.py`). A block that prints something is followed by its output. Every block assumes that `db` is an open database.
+
+[source,python]
+----
+import datetime as dt
+
+import numpy as np
+import pandas as pd
+import polars as pl
+import pyarrow as pa
+
+from arcadedb import ArcadeDBError
+
+
+def rows(sql):
+    return db.query("sql", sql).to_list()
+----
+
+== Which call
+
+[cols="3,3,3"]
+|===
+| Your data is | Load it with | Notes
+
+| A pandas or Polars `DataFrame`
+| `db.insert_dataframe(type_name, frame)`
+| Checks every column against the declared properties before it writes a row.
+
+| A `pyarrow` `Table`, `RecordBatch` or `RecordBatchReader`
+| `db.insert_arrow(type_name, table)`
+| The same rules as a frame. Any object that speaks the Arrow PyCapsule interface also loads.
+
+| A dict of numpy arrays or lists, or a pandas frame
+| `db.insert_columns(type_name, columns)`
+| No check against declared properties: the engine converts the values.
+
+| A list of dicts
+| `db.insert_many(type_name, rows)`
+| xref:how-to/bulk-loads.adoc[Bulk loads and commit size].
+|===
+
+`insert_dataframe` and `insert_arrow` load a document type or a vertex type and refuse an edge type, which is loaded with `graph_batch().new_edges()`. All three return the number of records written. A frame with no rows writes nothing and returns `0`.
+
+== Load a frame
+
+A column becomes a property of the same name. The pandas index is not loaded: call `frame.reset_index()` to make it a column. Column names must be strings and must be different from each other, and a Polars `LazyFrame` must be collected first. The type may exist with or without declared properties; it must exist.
+
+A missing value is a property that is not there. A pandas `NaN` in a float column is pandas' missing value, so it loads as missing. A Polars `NaN` is a number that Polars keeps apart from null, so it loads as a `NaN`, and only a Polars null loads as missing.
+
+[source,python]
+----
+db.command("sql", "CREATE DOCUMENT TYPE Trip")
+frame = pd.DataFrame(
+    {
+        "id": np.array([1, 2, 3], dtype=np.int64),
+        "fare": [12.5, float("nan"), 7.25],
+        "city": ["Oslo", "Rome", None],
+        "at": pd.to_datetime(
+            ["2026-01-02 03:04:05", "2026-01-03 00:00:00", "2026-01-04 12:00:00"]
+        ),
+    }
+)
+print(db.insert_dataframe("Trip", frame))
+for row in rows("SELECT FROM Trip ORDER BY id"):
+    print(row["id"], row.get("fare"), row.get("city"), row["at"])
+
+db.command("sql", "CREATE DOCUMENT TYPE Reading")
+db.insert_dataframe(
+    "Reading", pl.DataFrame({"k": [0, 1, 2], "x": [1.5, float("nan"), None]})
+)
+for row in rows("SELECT FROM Reading ORDER BY k"):
+    print(row["k"], row.get("x"))
+----
+
+[source,text]
+----
+3
+1 12.5 Oslo 2026-01-02 03:04:05
+2 None Rome 2026-01-03 00:00:00
+3 7.25 None 2026-01-04 12:00:00
+0 1.5
+1 nan
+2 None
+----
+
+== What an Arrow type becomes
+
+A frame is read as an Arrow table, so the table below holds for a frame, for `insert_arrow` and, for the same Python values, for what you read back with `Result.get`. It is the mapping for a property that the type does not declare. A date-time is a UTC wall clock: a timestamp without a time zone is stored as the clock shows, and a timestamp with a time zone is converted to UTC first. Reading it back gives a naive `datetime`.
+
+[cols="3,3"]
+|===
+| Arrow type | Read back as
+
+| `int8` to `int64`, `uint8` to `uint32`
+| `int`
+
+| `float16`, `float32`, `float64`
+| `float`
+
+| `bool`
+| `bool`
+
+| `string`, `large_string`
+| `str`
+
+| `timestamp`, with or without a time zone, any unit
+| `datetime`
+
+| `date32`, `date64`
+| `date`
+
+| `decimal128`, `decimal256`
+| `Decimal`, with every digit
+
+| `list`, `large_list`, `fixed_size_list`
+| `list`
+
+| `struct`
+| `dict`
+
+| `dictionary` (a pandas categorical, a Polars `Categorical`)
+| the type of its values
+
+| a column of only nulls
+| no property
+|===
+
+An Arrow type with no mapping, which is time of day, duration or map, raises `TypeError` before a row is written. A `uint64` column with a value above 2^63^ - 1 raises `ValueError`.
+
+== A declared property
+
+When the type declares a property, the column is checked against it before anything is written. A column loads when the engine can convert it without guessing:
+
+* Integers load into `BYTE`, `SHORT`, `INTEGER`, `LONG`, `FLOAT`, `DOUBLE`, `DECIMAL` and `STRING`.
+* Floats load into `FLOAT`, `DOUBLE`, `DECIMAL` and `STRING`, and never into an integer property, because that would cut the fraction.
+* Booleans load into `BOOLEAN` and `STRING`, strings into `STRING` and `LINK`, timestamps into any `DATETIME` precision and `STRING`, and dates into `DATE`, any `DATETIME` precision and `STRING`.
+
+Any other pair raises `TypeError` that names the column, the Arrow type and the declared type, and nothing is written. A declared property of a parent type counts. A value that the declared type cannot hold, such as an integer beyond the range of `INTEGER`, passes this check and fails when it is written: the load raises `ArcadeDBError` and the batch is rolled back. A column that the type does not declare is stored as its own type.
+
+[source,python]
+----
+db.command("sql", "CREATE DOCUMENT TYPE Item")
+db.command("sql", "CREATE PROPERTY Item.qty INTEGER")
+db.command("sql", "CREATE PROPERTY Item.label STRING")
+try:
+    db.insert_dataframe("Item", pd.DataFrame({"qty": [1.5, 2.5]}))
+except TypeError as error:
+    print("refused:", "is declared INTEGER" in str(error))
+print(rows("SELECT count(*) AS n FROM Item")[0]["n"])
+
+fixed = pd.DataFrame({"qty": [1.5, 2.5]}).astype("int64")
+print(db.insert_dataframe("Item", fixed))
+print(db.insert_dataframe("Item", pd.DataFrame({"qty": [3], "label": [7]})))
+print([r["label"] for r in rows("SELECT label FROM Item WHERE label IS NOT NULL")])
+----
+
+[source,text]
+----
+refused: True
+0
+2
+1
+['7']
+----
+
+== Batches, memory and a failed load
+
+The frame becomes one Arrow table first. After that only one batch of `batch_size` rows (10,000 by default) is converted to columns at a time, written, and committed. A table that already comes in chunks keeps its chunks, and a chunk larger than `batch_size` is split. So the frame and its Arrow table are in memory together while the rows are written, one batch at a time. For a source larger than memory, read it in pieces and call the load once for each piece.
+
+A failure rolls back the batch in flight and leaves the batches before it committed. The message says how many rows that is.
+
+[source,python]
+----
+db.command("sql", "CREATE DOCUMENT TYPE Dup")
+db.command("sql", "CREATE PROPERTY Dup.id LONG")
+db.command("sql", "CREATE INDEX ON Dup (id) UNIQUE")
+repeated = pd.DataFrame({"id": list(range(10)) + [3]})
+try:
+    db.insert_dataframe("Dup", repeated, batch_size=10)
+except ArcadeDBError as error:
+    print(str(error).endswith("were committed"))
+print(rows("SELECT count(*) AS n FROM Dup")[0]["n"])
+----
+
+[source,text]
+----
+True
+10
+----
+
+A load inside a transaction of yours joins it, as `insert_columns` and `import_documents` do: the batches are written and nothing is committed, and the message of a failure says that the earlier rows were written in your transaction, not committed. Your `rollback()` removes them. A vertex type is the exception: it loads through a graph batch, which refuses to run inside your transaction (xref:how-to/transactions.adoc#graph-batch[GraphBatch inside a transaction]).
+
+`parallel=True` hands the batches of a document type to the asynchronous writers. A vertex type raises `ValueError` with it.
+
+== insert_columns
+
+`db.insert_columns(type_name, columns, commit_every=10_000, parallel=False)` takes a dict of property name to column. A column is a numpy array or any sequence of Python values. All columns have the same length. `None` in a sequence is a missing value, and a `NaN` in a numpy float column is stored as a `NaN`, not as missing. A 2-D `float32` array is a column of vectors: each row of it becomes the `ARRAY_OF_FLOATS` property of one record.
+
+[source,python]
+----
+db.command("sql", "CREATE DOCUMENT TYPE Col")
+db.command("sql", "CREATE PROPERTY Col.qty INTEGER")
+written = db.insert_columns(
+    "Col",
+    {
+        "id": np.arange(3),
+        "qty": np.array([10, 20, 30], dtype=np.int32),
+        "label": ["a", None, "c"],
+        "score": np.array([0.5, float("nan"), 2.5]),
+    },
+)
+print(written)
+for row in rows("SELECT FROM Col ORDER BY id"):
+    print(row["id"], row["qty"], row.get("label"), row["score"])
+----
+
+[source,text]
+----
+3
+0 10 a 0.5
+1 20 None nan
+2 30 c 2.5
+----
+
+Bad input is refused before anything is written: columns of different lengths, no column, a name that is not a string, a column that is one `str` or `bytes` value (which would otherwise become one row for each character), a column that is not one-dimensional (a 2-D `float32` array excepted), and a `uint64` value above 2^63^ - 1.
+
+A numpy array of dates, `datetime64`, raises `TypeError` that points to `insert_many`, on both packages. A list of Python `datetime` objects loads, and so does a `datetime64` column in a frame, through `insert_dataframe`, which reads it as an Arrow timestamp.
+
+[source,python]
+----
+try:
+    db.insert_columns(
+        "Col",
+        {
+            "id": np.arange(2),
+            "when": np.array(["2026-01-01", "2026-01-02"], dtype="datetime64[D]"),
+        },
+    )
+except TypeError as error:
+    print("refused:", "insert_many" in str(error))
+stamps = [dt.datetime(2026, 1, 2, 3, 4, 5), dt.datetime(2026, 1, 3)]
+print(db.insert_columns("Col", {"id": np.array([10, 11]), "when": stamps}))
+----
+
+[source,text]
+----
+refused: True
+2
+----
+
+`insert_columns` does not check a column against a declared property the way `insert_dataframe` does. The values go to the engine, which converts them: a float column into an `INTEGER` property is stored without its fraction, so `1.5` becomes `1`. Use `insert_dataframe` when you want that refused.
+
+`commit_every` is the transaction size. A failure rolls back the transaction in flight and keeps the ones before it: 30 rows with `commit_every=10` and a duplicate key in the third group leave 20 rows. A transaction of yours is not committed, as above.
+
+[[reading]]
+== Reading columns
+
+The four readers take the whole result, so they hold every row in memory. For a result that is larger than memory read the rows one by one (xref:how-to/databases-and-queries.adoc[Databases and queries]) or write it with `export_to_csv`. A result set is read once, so call one reader for each query.
+
+The next block stores one record with every value and one record with none, then reads them with each reader. The records are the same for all of them, and the readers differ in what they do with the gap:
+
+* `to_columns()` returns a dict of numpy arrays, and a list for text. It follows pandas: an integer column with a gap becomes `float64` with `NaN`, a boolean column with a gap becomes a list with `None`, and a text column uses `None`.
+* `to_arrow()` returns a `pyarrow.Table` that keeps the type: an integer column with a gap stays `int64`, with a null. That is the reader to use when the value must survive exactly, such as an id above 2^53^.
+* `to_polars()` goes through Arrow, so it keeps the type too.
+* `to_dataframe()` returns a pandas frame with the pandas types, `NaN` for a gap in a number and `NaT` in a date-time.
+
+[source,python]
+----
+db.command("sql", "CREATE DOCUMENT TYPE Rec")
+with db.transaction():
+    db.command("sql", "INSERT INTO Rec SET k = 'a', n = 7, ok = true, s = 'x'")
+    db.command("sql", "INSERT INTO Rec SET k = 'b'")
+query = "SELECT k, n, ok, s FROM Rec ORDER BY k"
+
+columns = db.query("sql", query).to_columns()
+print(columns["n"].dtype, columns["n"].tolist())
+print(columns["ok"], columns["s"])
+
+table = db.query("sql", query).to_arrow()
+print(table.schema.field("n").type, table.column("n").to_pylist())
+
+polars_frame = db.query("sql", query).to_polars()
+print(polars_frame["n"].dtype, polars_frame["n"].to_list())
+
+pandas_frame = db.query("sql", query).to_dataframe()
+print(pandas_frame["n"].dtype)
+----
+
+[source,text]
+----
+float64 [7.0, nan]
+[True, None] ['x', None]
+int64 [7, None]
+Int64 [7, None]
+float64
+----
+
+A column without a gap is one typed array: `int64`, `float64` or `bool`. The columns of the result are the names of all rows, in the order they first appear, because a document has no fixed set of properties. `columns=["n", "other"]` reads exactly those names, and a row that lacks one reads as missing. An empty result gives `{}` from `to_columns()`. The result does not depend on `batch_size`.
+
+Dates differ by reader. `to_columns()` and `to_arrow()` carry milliseconds: `datetime64[ms]` and `timestamp[ms]`, and a `DATE` is its midnight. `to_dataframe()` keeps the microseconds that `Result.get` returns.
+
+[source,python]
+----
+db.command("sql", "CREATE DOCUMENT TYPE Stamp")
+db.insert_many("Stamp", [{"t": dt.datetime(2026, 10, 3, 12, 34, 56, 123456)}])
+stamp_query = "SELECT t FROM Stamp"
+print(
+    db.query("sql", stamp_query).to_columns()["t"].dtype,
+    db.query("sql", stamp_query).to_arrow().schema.field("t").type,
+)
+print(db.query("sql", stamp_query).to_dataframe()["t"].iloc[0].to_pydatetime())
+----
+
+[source,text]
+----
+datetime64[ms] timestamp[ms]
+2026-10-03 12:34:56.123456
+----
+
+A missing library does not fail the same way everywhere. `to_columns()` returns `None` when numpy is missing and `to_arrow()` returns `None` when pyarrow is missing, so that a caller can fall back to another reader. `to_polars()` and `to_dataframe()` raise `ImportError`. Check for `None` before you use the result of the first two.
+
+== The two builds
+
+The calls above, the types and the messages are the same on `arcadedb` and `arcadedb-jvm`. The way the readers get the rows is not:
+
+* On `arcadedb-jvm`, `to_columns()` and `to_arrow()` read the result from the engine in batches of `batch_size` rows, as packed columns, so `batch_size` sets how many rows cross at a time.
+* On `arcadedb` (native), they read every row into Python dicts first and build the columns from them. `batch_size` is accepted and not used, and the rows exist as Python objects while the columns are built.
+
+The loads are the same code on both packages up to the last step. The error messages of a missing pandas differ: the JVM package adds the `uv add` hint to the `ImportError` of `to_dataframe()`, and the native package raises the plain `ImportError`.
+
+== Related pages
+
+* xref:how-to/bulk-loads.adoc[Bulk loads and commit size], the commit size and the failed-load rules of `insert_many` and `graph_batch`.
+* xref:how-to/import-export.adoc[Importing and exporting data], files in and out.
+* xref:how-to/transactions.adoc[Transactions], what a transaction of yours does to a load.

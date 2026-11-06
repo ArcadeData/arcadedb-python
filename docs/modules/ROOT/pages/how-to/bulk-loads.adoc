@@ -1,7 +1,7 @@
 = Bulk loads and commit size
 :description: The default commit size of insert_many, graph_batch and create_vertices on the arcadedb (native) and arcadedb-jvm packages, what it means for a failed load, what to do after an interrupted graph batch, how to change it, how insert_many treats Python's cyclic garbage collector on arcadedb-jvm, which property shapes a graph batch loads in bulk on the JVM build, how to pass time-series columns to append_samples (the address path is native only), and a known limitation: a graph batch does not reuse the space of deleted edges.
 
-`insert_many`, `graph_batch` and `GraphBatch.create_vertices` load data in transactions. The commit size is the number of rows in one transaction. It decides how much work the engine holds in memory before it commits, and how many rows stay in the database when a load fails.
+`insert_many`, `graph_batch` and `GraphBatch.create_vertices` load data in transactions. The commit size is the number of rows in one transaction. It decides how much work the engine holds in memory before it commits, and how many rows stay in the database when a load fails. Data that comes as a file, a DataFrame or an Arrow table has its own pages: xref:how-to/import-export.adoc[Importing and exporting data] and xref:how-to/dataframes-and-columns.adoc[DataFrames, Arrow and columns].
 
 == Defaults
 
