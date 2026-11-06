@@ -1,0 +1,357 @@
+= Python functions and record events
+:description: Call a Python function from SQL and openCypher with register_function, what crosses in and out, what the caller sees when it raises, which thread runs it, and run Python when a record is created, updated or deleted with db.on.
+
+// Sources: src/arcadedb/callbacks.py and core.py (register_function, unregister_function, on), _native/extras.py (the native build). Every statement below is pinned by tests/test_functions_and_events_behavior.py. The basics are pinned by tests/test_python_callbacks.py (names, argument counts, replace, return types, record events, veto), the native upcall by tests/test_native_udf.py, and a real Ctrl-C by tests/test_python_function_interrupt.py and tests/test_transaction_context_interrupt.py.
+
+Use `register_function` when a statement needs something that SQL and openCypher cannot compute, such as a slug, a hash or a call into your own library. Use `db.on` when Python code must run each time a record is written, for an audit trail or a rule that can refuse a write. Both are part of the Python bindings, not of the engine, and both work the same on `arcadedb` and `arcadedb-jvm`, with one difference that is called out below.
+
+The short version:
+
+* `db.register_function("slugify", fn)` makes `slugify(...)` a function of SQL and openCypher. The function runs once per row, inside the statement.
+* A function belongs to the process, not to one database. It lasts until `unregister_function` or until the `Database` that registered it closes.
+* If your function raises, the statement fails with an `ArcadeDBError` that names the function and the Python exception. Inside a transaction the statement is undone and the transaction goes on.
+* `db.on("after_create", fn, "Person")` calls `fn(record)` when a `Person` is created. An event belongs to one database.
+* A `before_*` callback that returns `False` refuses the write. An `after_*` callback runs before the commit, so a rollback does not take its call back.
+
+The statements stay SQL and openCypher, as on xref:how-to/databases-and-queries.adoc[Databases and queries]. What a transaction guarantees is in the main manual: {arcadedb-docs-url}/concepts/transactions[Transactions].
+
+The blocks on this page run one after the other against one empty database, and a test in the repository runs them that way (`tests/test_docs_functions_page.py`). Each block that prints something is followed by its output. Every block assumes that `db` is an open database. The first block creates the types that the rest use.
+
+[source,python]
+----
+import re
+
+from arcadedb import ArcadeDBError
+
+db.command("sql", "CREATE DOCUMENT TYPE Person")
+db.command("sql", "CREATE DOCUMENT TYPE Audit")
+db.command("sql", "CREATE VERTEX TYPE City")
+with db.transaction():
+    for name in ("Ann Lee", "Bob Ray", None):
+        db.command("sql", "INSERT INTO Person SET name = ?", name)
+    db.command("sql", "CREATE VERTEX City SET name = 'New York'")
+----
+
+== Python functions in statements
+
+`register_function(name, fn)` takes a name and a callable. After that, a statement calls the function by name, in a projection or in a `WHERE` clause. SQL passes `NULL` as `None`, so a function that may see a `NULL` has to check for it.
+
+openCypher accepts a function name only when it has a namespace, such as `py.slugify`. Register the function under that name for openCypher. A bare name such as `slugify` is refused with `Unknown function`. Register the same callable under both names when you need both languages. Names are case-insensitive in SQL.
+
+[source,python]
+----
+def slugify(text):
+    if text is None:
+        return None
+    return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+
+
+db.register_function("slugify", slugify)
+db.register_function("py.slugify", slugify)
+
+rows = db.query("sql", "SELECT name, slugify(name) AS slug FROM Person").to_list()
+for row in sorted(rows, key=lambda r: r["name"] or ""):
+    print(row["name"], row["slug"])
+
+hits = db.query("sql", "SELECT name FROM Person WHERE slugify(name) = 'bob-ray'")
+print([row["name"] for row in hits.to_list()])
+
+cypher = "MATCH (c:City) RETURN py.slugify(c.name) AS slug"
+print(db.query("opencypher", cypher).to_list())
+----
+
+[source,text]
+----
+None None
+Ann Lee ann-lee
+Bob Ray bob-ray
+['Bob Ray']
+[{'slug': 'new-york'}]
+----
+
+The function is called once for each row that the statement reads. Two things that `register_function` checks for you: the name must be letters, digits and underscores (dots are allowed between parts), and a name that is already a function of the engine, such as `abs` or `count`, is refused. The number of arguments comes from the signature of your function. Pass `min_args` and `max_args` to set it by hand. A function cannot be an aggregate: it returns one value per call, not one per group.
+
+=== What crosses
+
+An argument reaches your function as a Python value, and the return value is converted back. The conversion is the one on xref:how-to/values-and-records.adoc[Values and records].
+
+[cols="2,3"]
+|===
+| Argument in the statement | What your function gets
+
+| a number, a string, `true`, `null`
+| `int` or `float`, `str`, `bool`, `None`
+
+| a list or a map
+| `list` or `dict`
+
+| a stored `DATETIME` or `DATE` property
+| `datetime` without a time zone, or `date`
+
+| a stored `DECIMAL` property
+| `Decimal`
+
+| a record, such as `@this`
+| a `Document`, `Vertex` or `Edge`, the same objects as on xref:how-to/values-and-records.adoc#records[Values and records]
+|===
+
+You can return `None`, a number, a string, a `bool`, a `Decimal`, a `datetime`, a `list`, a `tuple` (it comes back as a list) or a `dict`. A value that cannot be stored, such as an `int` beyond 64 bits or a plain `object()`, fails the statement with the Python error name in the message.
+
+[source,python]
+----
+from datetime import date, datetime
+from decimal import Decimal
+
+db.register_function("kinds", lambda *args: [type(a).__name__ for a in args])
+row = db.query(
+    "sql", "SELECT kinds(1, 2.5, 'a', true, null, [1, 2], {'k': 'v'}) AS k"
+).first()
+print(row.get("k"))
+
+db.command("sql", "CREATE DOCUMENT TYPE Booking")
+db.command("sql", "CREATE PROPERTY Booking.at DATETIME_MICROS")
+db.command("sql", "CREATE PROPERTY Booking.day DATE")
+db.command("sql", "CREATE PROPERTY Booking.price DECIMAL")
+with db.transaction():
+    db.command(
+        "sql",
+        "INSERT INTO Booking SET at = ?, day = ?, price = ?",
+        datetime(2026, 10, 1, 12, 34, 56, 789123),
+        date(2026, 10, 1),
+        Decimal("19.99"),
+    )
+row = db.query("sql", "SELECT kinds(at, day, price) AS k FROM Booking").first()
+print(row.get("k"))
+----
+
+[source,text]
+----
+['int', 'float', 'str', 'bool', 'NoneType', 'list', 'dict']
+['datetime', 'date', 'Decimal']
+----
+
+A function can read the database it runs in with `db.query`.
+
+[[raises]]
+=== When the function raises
+
+Any exception that leaves your function, `SystemExit` included, fails the statement with an `ArcadeDBError`. The message names the function and the Python exception, as `ValueError: cannot handle Ann Lee`. The database and the other functions work as before.
+
+[source,python]
+----
+def explode(value):
+    raise ValueError(f"cannot handle {value}")
+
+
+db.register_function("explode", explode)
+try:
+    db.query("sql", "SELECT explode(name) AS x FROM Person LIMIT 1").to_list()
+except ArcadeDBError as error:
+    print("explode" in str(error), "ValueError: cannot handle" in str(error))
+----
+
+[source,text]
+----
+True True
+----
+
+Inside a transaction, the failed statement is undone and the transaction goes on. This is the engine behavior of 26.11.1 and later, described on xref:how-to/transactions.adoc#failed-statement[Transactions]. An `UPDATE` that changed rows before the function raised leaves none of them changed.
+
+[source,python]
+----
+def refuse_bob(name):
+    if name == "Bob Ray":
+        raise ValueError("no Bob")
+    return name.upper()
+
+
+db.register_function("refuse_bob", refuse_bob)
+with db.transaction():
+    db.command("sql", "INSERT INTO Audit SET note = 'before'")
+    try:
+        db.command(
+            "sql", "UPDATE Person SET shout = refuse_bob(name) WHERE name IS NOT NULL"
+        )
+    except ArcadeDBError:
+        print("refused, still active:", db.is_transaction_active())
+    db.command("sql", "INSERT INTO Audit SET note = 'after'")
+
+changed = db.query("sql", "SELECT FROM Person WHERE shout IS NOT NULL").to_list()
+notes = db.query("sql", "SELECT note FROM Audit").to_list()
+print(len(changed), sorted(row["note"] for row in notes))
+----
+
+[source,text]
+----
+refused, still active: True
+0 ['after', 'before']
+----
+
+A `KeyboardInterrupt` raised in your function is the one exception that does not become a plain `ArcadeDBError`. The statement stops, and the caller gets the `KeyboardInterrupt`, with the `ArcadeDBError` as its `+__cause__+`. A real Ctrl-C during such a statement reaches the caller the same way, wherever the signal lands. The tests that send the signal do not run on Windows, which cannot signal its own process like this.
+
+=== Scope and lifetime
+
+The engine keeps functions for the whole process. A function that one `Database` registered is visible to every open database in the process, and a second `register_function` with the same name from another database is refused unless you pass `replace=True`. Only the `Database` that registered a function can call `unregister_function` for it. When that `Database` closes, the function goes with it, and a statement that calls it fails from then on. A statement that names an unregistered function fails with an unknown-function error that names it.
+
+Register your functions once, at start-up, before other threads run statements.
+
+=== Threads
+
+A statement that you run in a `threading.Thread` calls your function on that thread. A write that you send through `db.async_executor()` runs in an engine thread, so a function that the statement calls runs there too, not on the thread that queued the write.
+
+A function that waits, for a lock, a socket or an `Event`, blocks only its own statement. Other threads go on running statements on the same `Database`. Write the function as if two threads could call it at once: the GIL does not protect it on a free-threaded build of Python, and a function that waits gives up the GIL anyway.
+
+== Record events
+
+`db.on(event, fn, type_name=None)` registers `fn`. The engine calls `fn(record)` with the record as a `Document`, `Vertex` or `Edge` when a record of that kind changes. It returns an `EventHandle`; `handle.remove()` stops the callback, and the handle is a context manager that removes the callback when the block ends.
+
+[cols="2,3"]
+|===
+| Event | When it fires
+
+| `before_create`, `before_update`, `before_delete`
+| Before the engine writes the record. The callback can refuse the write.
+
+| `after_create`, `after_update`, `after_delete`
+| Right after the write, inside the transaction and before the commit.
+|===
+
+A `before_update` callback gets the record with its new values. An `after_delete` callback gets the record that was deleted, and its properties are readable. A statement, the record API (`save()`, `delete()`) and an openCypher write fire the same events. An edge fires the events of its own type, with an `Edge`.
+
+The block registers one callback for three events on `Person`, then creates, updates and deletes a person:
+
+[source,python]
+----
+audit = []
+
+
+def record_event(event):
+    def callback(record):
+        audit.append((event, record.get_type_name(), record.get("name")))
+
+    return callback
+
+
+handles = [
+    db.on(event, record_event(event), "Person")
+    for event in ("after_create", "after_update", "after_delete")
+]
+with db.transaction():
+    db.command("sql", "INSERT INTO Person SET name = 'Cy Dunn'")
+with db.transaction():
+    db.command("sql", "UPDATE Person SET name = 'Cy Dunne' WHERE name = 'Cy Dunn'")
+with db.transaction():
+    db.command("sql", "DELETE FROM Person WHERE name = 'Cy Dunne'")
+for entry in audit:
+    print(entry)
+for handle in handles:
+    handle.remove()
+----
+
+[source,text]
+----
+('after_create', 'Person', 'Cy Dunn')
+('after_update', 'Person', 'Cy Dunne')
+('after_delete', 'Person', 'Cy Dunne')
+----
+
+=== Type, database and scope
+
+`type_name` limits the callback to records of exactly that type. The records of a subtype do not fire it. Leave `type_name` out and the callback fires for every record of the database. An event belongs to the database object that registered it. Another open database does not fire it, and it is gone when the database closes, so register it again after you reopen. `type_name` must exist, or `db.on` raises `ArcadeDBError`.
+
+=== Events and the transaction
+
+An `after_*` event fires before the commit. Another thread cannot see the record yet, and when the transaction rolls back, the callback has already run. If the callback sent a message or called a service, a rollback does not take that back. Do that work after the commit instead, from the code that owns the `with db.transaction():` block.
+
+[source,python]
+----
+db.command("sql", "CREATE DOCUMENT TYPE Ticket")
+log = []
+log_handles = [
+    db.on(event, lambda record, event=event: log.append(event), "Ticket")
+    for event in ("before_create", "after_create")
+]
+try:
+    with db.transaction():
+        db.command("sql", "INSERT INTO Ticket SET name = 'x'")
+        print("inside:", log)
+        raise RuntimeError("stop")
+except RuntimeError:
+    pass
+print("after the rollback:", log, db.count_type("Ticket"))
+for handle in log_handles:
+    handle.remove()
+----
+
+[source,text]
+----
+inside: ['before_create', 'after_create']
+after the rollback: ['before_create', 'after_create'] 0
+----
+
+=== Refusing a write
+
+A `before_*` callback that returns `False` refuses the write. The record is not written, and a statement or `save()` skips it without an error. Only the value `False` refuses: `None`, `True`, `0` and an empty string let the write go on. The result of an `after_*` callback is ignored.
+
+[source,python]
+----
+veto = db.on(
+    "before_create", lambda record: record.get("name") != "blocked", "Ticket"
+)
+with db.transaction():
+    db.command("sql", "INSERT INTO Ticket SET name = 'ok'")
+    db.command("sql", "INSERT INTO Ticket SET name = 'blocked'")
+rows = db.query("sql", "SELECT name FROM Ticket").to_list()
+print(sorted(row["name"] for row in rows))
+veto.remove()
+----
+
+[source,text]
+----
+['ok']
+----
+
+=== When a callback raises
+
+An exception in a callback fails the statement or the `save()` that fired the event, with an `ArcadeDBError` that names the event and the Python exception. As for a function, a statement that fails this way is undone and the transaction goes on, so the other statements of the transaction commit. If you let the error leave the `with` block, the whole transaction rolls back. A `KeyboardInterrupt` in a callback reaches the caller as a `KeyboardInterrupt` chained from that `ArcadeDBError`.
+
+=== What a callback may do
+
+A callback runs inside the operation that fired it, on the thread that runs it. For a write that goes through `db.async_executor()`, that is an engine thread.
+
+* *Read.* A callback can run `db.query`. A `before_create` callback does not see the new record in a query. An `after_create` callback does.
+* *Write.* A callback can run `db.command`. The write joins the transaction of the operation that fired the event: it commits with it and rolls back with it.
+* *Fire more events.* The write of a callback fires events too. A callback registered without `type_name` fires for its own writes. Guard against that, or it never ends.
+* *Change the record.* Do not rely on it. On `arcadedb-jvm` a `before_create` callback can call `record.set(...)`, and the value is stored. On `arcadedb` the change is lost. Put the value in the statement instead.
+* *Wait.* Keep it quick, and do not wait in it for another thread's transaction.
+
+[source,python]
+----
+db.command("sql", "CREATE DOCUMENT TYPE Journal")
+
+
+def note_creation(record):
+    if record.get_type_name() != "Journal":
+        note = "created " + record.get_type_name()
+        db.command("sql", "INSERT INTO Journal SET note = ?", note)
+
+
+with db.on("after_create", note_creation):
+    with db.transaction():
+        db.command("sql", "INSERT INTO Ticket SET name = 'third'")
+rows = db.query("sql", "SELECT note FROM Journal").to_list()
+print(sorted(row["note"] for row in rows))
+----
+
+[source,text]
+----
+['created Ticket']
+----
+
+The guard `!= "Journal"` is the one that stops the callback from answering its own write. Without it, every `Journal` row would fire the callback again.
+
+== Where to go next
+
+* xref:how-to/transactions.adoc[Transactions]: what a failed statement and a rollback do.
+* xref:how-to/values-and-records.adoc[Values and records]: the conversion of values and the record objects that a function or a callback receives.
+* `examples/28_python_functions_and_record_events.py` in the repository runs both features end to end and measures the cost of one call.

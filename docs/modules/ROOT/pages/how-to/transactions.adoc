@@ -158,6 +158,7 @@ after the commit, other thread: 4
 
 Share one `Database` between threads, as on xref:how-to/concurrency.adoc#threads[Concurrency, processes and crashes]. That page also covers what happens when two transactions change the same record.
 
+[[failed-statement]]
 == A failed statement inside a transaction
 
 A statement that fails inside your transaction is undone on its own, and the transaction goes on. This is the behavior of ArcadeDB 26.11.1 and later. Before it, a statement that had written part of its rows left them in the transaction, and the transaction could no longer be committed.
@@ -184,7 +185,7 @@ still active: True
 
 The second statement writes `frank` once, and then the unique index refuses the second `frank`. The first `frank` is gone with it, while `erin` from the statement before and `grace` from the statement after are committed. The engine keeps a journal of what each statement changes in order to undo it. When a statement changes more entries than `arcadedb.txStatementSavepointMaxEntries` (100,000 by default), the engine does not undo it, and the transaction can no longer be committed: roll it back. The setting is listed in the main manual: {arcadedb-docs-url}/reference/settings[Settings].
 
-A failed statement is one thing, and an exception that you let leave the `with` block is another: that one rolls the whole transaction back, as above.
+A failed statement is one thing, and an exception that you let leave the `with` block is another: that one rolls the whole transaction back, as above. A Python function or a record event callback that raises fails its statement the same way, see xref:how-to/functions-and-events.adoc#raises[Python functions and record events].
 
 == A second begin
 

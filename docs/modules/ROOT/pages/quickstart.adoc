@@ -186,3 +186,4 @@ In the `{jvm-pkg-name}` wheels from 26.11.1 the server also serves the Studio we
 * xref:how-to/values-and-records.adoc[Values and records]: which Python types go in and what comes back, datetimes, record objects and the `Schema` API.
 * xref:how-to/import-export.adoc[Importing and exporting data]: load a file, export a database or a query.
 * xref:how-to/dataframes-and-columns.adoc[DataFrames, Arrow and columns]: load and read pandas, Polars, Arrow and numpy data.
+* xref:how-to/functions-and-events.adoc[Python functions and record events]: call a Python function from SQL and openCypher, and run Python when a record is written.
