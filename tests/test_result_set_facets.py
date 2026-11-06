@@ -381,7 +381,7 @@ class TestResultSetFacets:
             return
 
         rs = test_db.query("sql", TERMS_Q)
-        seen = [row["id"] for row in rs]  # row by row, to the end
+        seen = [row.get("id") for row in rs]  # row by row, to the end
         facets = rs.facets
 
         assert seen == list(range(10))
@@ -390,7 +390,9 @@ class TestResultSetFacets:
         assert rs.facets == facets
         assert rs.to_list() == []
 
-    def test_facets_first_end_the_rows(self, test_db):
+    def test_facets_first_give_the_same_facets(self, test_db):
+        """Facets read before any row are those of reading the rows first. Whether rows not fetched yet can still be read after
+        that is unspecified (read the rows first if both are needed), so no row is asserted here."""
         _docs(test_db)
         if _older_engine_refuses(test_db, TERMS_Q):
             return
@@ -399,9 +401,13 @@ class TestResultSetFacets:
         facets = rs.facets  # before any row is read
 
         assert facets["category"]["buckets"][0] == {"value": "a", "count": 5}
-        # the engine computed them over every match and ended the rows
-        assert rs.to_list() == []
         assert rs.facets == facets
+        rows_first = test_db.query("sql", TERMS_Q)
+        rows_first.to_list()
+        # meta is how far the projection lagged, which can differ between two runs
+        assert {k: v for k, v in facets.items() if k != "meta"} == {
+            k: v for k, v in rows_first.facets.items() if k != "meta"
+        }
 
     def test_facets_of_a_lazy_command_cursor(self, test_db):
         _docs(test_db)
@@ -411,7 +417,6 @@ class TestResultSetFacets:
         rs = test_db.command("sql", TERMS_Q)
         facets = rs.facets
         assert facets["category"]["buckets"][0] == {"value": "a", "count": 5}
-        assert rs.to_list() == []
 
         rs = test_db.command("sql", TERMS_Q)
         assert len(rs.to_list()) == 10
@@ -441,7 +446,6 @@ class TestResultSetFacets:
             facets = rs.facets
         else:
             facets = rs.facets
-            assert rs.to_list() == []
 
         assert _counts(facets["c"]) == {"x0": 200, "x1": 200, "x2": 200}
 

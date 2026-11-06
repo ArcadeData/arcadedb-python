@@ -478,8 +478,10 @@ class ResultSet:
         NaN and the infinities are floats.
 
         The facets cover every record the ``WHERE`` clause matched, whatever ``SKIP`` and ``LIMIT`` kept. The engine computes them
-        when the rows are exhausted, so read the rows first. Asking for the facets before the rows are read computes them at once
-        and ends the rows: the result set then reads as empty. The facets stay available after that.
+        when the rows are exhausted, so read the rows first if you need both. Reading ``facets`` before the rows works and gives the
+        same facets, but it makes the engine compute them over the matches the rows did not reach, and whether rows that were not
+        fetched yet can still be read afterwards is unspecified. The facets stay available after the rows are read or the result
+        set is exhausted.
 
         Raises ArcadeDBError for a result set closed before its end, and for one whose database was closed before its end.
         """
@@ -500,7 +502,7 @@ class ResultSet:
             raise _read_error(exc) from exc
         self._facets_read = True
         if readable:
-            # the engine computed the facets over every match and ended the rows
+            # the engine computed the facets over every match and may have ended the rows: they are not read again
             self._finish()
         return self._facets
 

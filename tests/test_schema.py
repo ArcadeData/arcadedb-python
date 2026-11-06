@@ -461,7 +461,8 @@ class TestIndexDeletion:
         indexes = schema.get_indexes()
         index_name = None
         for idx in indexes:
-            if "User" in idx.getTypeName() and "temp" in idx.getName():
+            # the type-level index: a per-bucket index (`User_0_<id>`) cannot be dropped alone
+            if idx.getName() == "User[temp]":
                 index_name = idx.getName()
                 break
 
@@ -491,8 +492,9 @@ class TestIndexDeletion:
         schema.create_vertex_type("User")
         schema.create_property("User", "temp", PropertyType.STRING)
         schema.create_index("User", ["temp"])
+        # the type-level index `User[temp]`: the engine refuses to drop one of its per-bucket indexes (`User_0_<id>`) alone
         name = next(
-            i.getName() for i in schema.get_indexes() if i.getTypeName() == "User"
+            i.getName() for i in schema.get_indexes() if i.getName() == "User[temp]"
         )
 
         schema.drop_index(name, force=True)
