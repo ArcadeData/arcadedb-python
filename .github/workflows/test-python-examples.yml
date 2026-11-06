@@ -80,22 +80,34 @@ on:
 
 # SUPERSEDE, do not race (same rule in test-jvm.yml).
 #
-# A force-push to a PR branch left the OLD run going alongside the new one: on
-# #6889 both 118b347ce and 75293c7a2 ran at once, and the stale one reported a
-# failure that the newer commit had already fixed. Anyone reading the PR sees a
-# red check against work that is done. The stale run also holds macOS/Windows
-# runners the organisation shares with ArcadeData/arcadedb.
+# A force-push to a PR branch left the OLD run going alongside the new one: the
+# stale run reports a failure that the newer commit already fixed, and it holds
+# macOS/Windows runners the organisation shares with ArcadeData/arcadedb. A push
+# run of main used to get a group of its own (run_id), so eight merges in a day
+# queued 21 runs and about 70 macOS jobs behind each other (#271).
 #
-# cancel-in-progress is scoped to pull_request ONLY. On a push to a long-lived
-# branch a superseded run is often the one you still want -- it is the record
-# for that commit -- so those are left to finish, and they get a group of their
-# own (run_id) so a queued push or nightly run is not replaced by a newer one
-# either. The group names the workflow literally: github.workflow is the
-# CALLER's name in a workflow_call, which would put this workflow and its
-# sibling in one group.
+# Per event:
+# * pull_request: one group per PR, a newer push cancels the older run.
+# * push to main: one group for the workflow, cancel-in-progress false. GitHub
+#   keeps at most one running and one pending run per group and lets a newer
+#   pending run replace the older pending one, so the queue never grows beyond
+#   two and the pending run is always the newest commit. Each merge was already
+#   gated green on its pull request.
+# * schedule (nightly): its own group, a stuck old nightly is cancelled.
+# * workflow_dispatch and workflow_call (the release): a group of their own per
+#   run, never cancelled. In a workflow_call github.event_name is the CALLER's
+#   (a tag push), which is why the push case also checks that the ref is main:
+#   a release run must never share a group with, or be replaced by, a push to main.
+#
+# The group names the workflow literally: github.workflow is the CALLER's name in
+# a workflow_call, which would put this workflow and its sibling in one group.
 concurrency:
-  group: test-python-examples-${{ github.event.pull_request.number || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: >-
+    ${{ github.event_name == 'pull_request' && format('test-python-examples-pr-{0}', github.event.pull_request.number)
+    || github.event_name == 'push' && github.ref == 'refs/heads/main' && 'test-python-examples-main'
+    || github.event_name == 'schedule' && 'test-python-examples-schedule'
+    || format('test-python-examples-run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'schedule' }}
 
 env:
   # The image download-jars takes the jars from. Unset (push, pull_request, schedule)

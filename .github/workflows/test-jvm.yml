@@ -78,16 +78,32 @@ on:
 #
 # A force-push to a PR branch left the OLD run going alongside the new one: the
 # stale run reports a failure that the newer commit already fixed, and it holds
-# macOS/Windows runners the organisation shares with ArcadeData/arcadedb.
+# macOS/Windows runners the organisation shares with ArcadeData/arcadedb. A push
+# run of main used to get a group of its own (run_id), so eight merges in a day
+# queued 21 runs and about 70 macOS jobs behind each other (#271).
 #
-# cancel-in-progress is scoped to pull_request ONLY. Every other event gets a
-# group of its own (run_id), so a push to main or a nightly run is never
-# cancelled and never replaced while queued behind another run. The group names
-# the workflow literally: github.workflow is the CALLER's name in a
-# workflow_call, which would put this workflow and its sibling in one group.
+# Per event:
+# * pull_request: one group per PR, a newer push cancels the older run.
+# * push to main: one group for the workflow, cancel-in-progress false. GitHub
+#   keeps at most one running and one pending run per group and lets a newer
+#   pending run replace the older pending one, so the queue never grows beyond
+#   two and the pending run is always the newest commit. Each merge was already
+#   gated green on its pull request.
+# * schedule (nightly): its own group, a stuck old nightly is cancelled.
+# * workflow_dispatch and workflow_call (the release): a group of their own per
+#   run, never cancelled. In a workflow_call github.event_name is the CALLER's
+#   (a tag push), which is why the push case also checks that the ref is main:
+#   a release run must never share a group with, or be replaced by, a push to main.
+#
+# The group names the workflow literally: github.workflow is the CALLER's name in
+# a workflow_call, which would put this workflow and its sibling in one group.
 concurrency:
-  group: test-jvm-${{ github.event.pull_request.number || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: >-
+    ${{ github.event_name == 'pull_request' && format('test-jvm-pr-{0}', github.event.pull_request.number)
+    || github.event_name == 'push' && github.ref == 'refs/heads/main' && 'test-jvm-main'
+    || github.event_name == 'schedule' && 'test-jvm-schedule'
+    || format('test-jvm-run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'schedule' }}
 
 env:
   # The image download-jars takes the jars from. Unset (push, pull_request, schedule)
