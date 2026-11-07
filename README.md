@@ -61,6 +61,7 @@ This prints `Name: Alice` (the engine also logs to standard error). `create_data
 - Graph, document, key/value, vector (JVector HNSW) and time series models; ACID transactions.
 - Import from CSV, XML and ArcadeDB JSONL; export to JSONL.
 - Columnar results with `to_columns()`, `to_arrow()` and `to_dataframe()`.
+- Faceted queries: the `FACETS` clause of a `SELECT` with a `COLUMNAR` index, and the counts as a dict in `ResultSet.facets` (needs engine 26.12.1 or later).
 - An optional in-process HTTP server (`create_server()`), off until you call it, for other processes that need the same data.
 
 <!-- REMOVE WHEN: the old arcadedb-embedded* shims are retired and two releases have shipped with the two-package layout allow-old-name -->
@@ -82,13 +83,13 @@ Releases from this repository start with 26.11.1. The 26.10.x wheels were built 
 
 ## Documentation
 
-- Here: [`docs/`](https://github.com/ArcadeData/arcadedb-python/tree/main/docs/modules/ROOT/pages) is an Antora component (AsciiDoc) with Installation, [Which package?](https://github.com/ArcadeData/arcadedb-python/blob/main/docs/modules/ROOT/pages/which-package.adoc), Quickstart, Databases and queries, Vectors, and Concurrency, processes and crashes. It covers only what is specific to the Python bindings.
+- Here: [`docs/`](https://github.com/ArcadeData/arcadedb-python/tree/main/docs/modules/ROOT/pages) is an Antora component (AsciiDoc) with Installation, [Which package?](https://github.com/ArcadeData/arcadedb-python/blob/main/docs/modules/ROOT/pages/which-package.adoc), Quickstart, Databases and queries, Vectors, Faceted queries, and Concurrency, processes and crashes. It covers only what is specific to the Python bindings.
 - Published at [docs.arcadedb.com/arcadedb-python](https://docs.arcadedb.com/arcadedb-python/), the same site as the main ArcadeDB manual, rebuilt daily from `main` (ArcadeData/arcadedb-docs#505). The `Docs` workflow builds it as a site of its own on every change under `docs/` and attaches it as the `docs-site` artifact. To build it locally, run `npx -p @antora/cli@3.2.1 -p @antora/site-generator@3.2.1 antora docs/antora-playbook.yml` and open `docs/build/site/index.html`.
 - ArcadeDB itself (SQL, openCypher, schema, server): [docs.arcadedb.com](https://docs.arcadedb.com). It is not repeated here.
 
 ## Examples
 
-[`examples/`](https://github.com/ArcadeData/arcadedb-python/tree/main/examples) holds 29 runnable scripts, from a first document store to vector search, time series, graph algorithms and server mode. CI runs them ([`test-python-examples.yml`](https://github.com/ArcadeData/arcadedb-python/blob/main/.github/workflows/test-python-examples.yml)).
+[`examples/`](https://github.com/ArcadeData/arcadedb-python/tree/main/examples) holds 30 runnable scripts, from a first document store to vector search, time series, graph algorithms and server mode. CI runs them ([`test-python-examples.yml`](https://github.com/ArcadeData/arcadedb-python/blob/main/.github/workflows/test-python-examples.yml)).
 
 ## Build and test from source
 

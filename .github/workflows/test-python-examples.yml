@@ -60,7 +60,7 @@ on:
         description: "Glob pattern(s) for examples to run (space-separated, relative to examples)."
         required: false
         type: string
-        default: "0[1-9]_*.py 1[0-9]_*.py 2[0-9]_*.py"
+        default: "0[1-9]_*.py 1[0-9]_*.py 2[0-9]_*.py 3[0-9]_*.py"
       build-version:
         description: "Override package version (PEP 440) for build.sh"
         required: false
@@ -76,7 +76,7 @@ on:
       examples:
         description: "Glob pattern(s) for examples to run (space-separated, relative to examples)."
         required: false
-        default: "0[1-9]_*.py 1[0-9]_*.py 2[0-9]_*.py"
+        default: "0[1-9]_*.py 1[0-9]_*.py 2[0-9]_*.py 3[0-9]_*.py"
 
 # SUPERSEDE, do not race (same rule in test-jvm.yml).
 #
@@ -113,7 +113,7 @@ env:
   # The image download-jars takes the jars from. Unset (push, pull_request, schedule)
   # means latest; a release build passes its tag.
   ARCADEDB_IMAGE_TAG: ${{ inputs.arcadedb-tag || 'latest' }}
-  EXAMPLES: ${{ inputs.examples || '0[1-9]_*.py 1[0-9]_*.py 2[0-9]_*.py' }}
+  EXAMPLES: ${{ inputs.examples || '0[1-9]_*.py 1[0-9]_*.py 2[0-9]_*.py 3[0-9]_*.py' }}
 
 # Note: Example 21 runs in CI at reduced scale; its arguments and 15-minute
 # limit are set in the per-example case in scripts/run_examples.sh, which the

@@ -441,6 +441,24 @@ full-text and graph context in a single query
 
 ---
 
+### 🔎 [30_columnar_facets.py](./30_columnar_facets.py)
+**Faceted Queries | COLUMNAR Index | `FACETS` Clause | `result_set.facets`**
+
+The counts of a search sidebar next to the rows of a query:
+- `CREATE INDEX ... COLUMNAR` on the properties that the facets count
+- one query with a `TERMS` facet (the 3 biggest categories) and a `RANGES` facet (price
+  bands) next to a page of 5 rows, then `STATS` with `DISTINCT`, then a calendar `HISTOGRAM`
+- the facets cover all the matches of the `WHERE`, not only the rows of the page
+- checks every count against the same count made in Python over the inserted rows
+- needs engine 26.12.1 or later: on an older engine it prints one line and exits with
+  status 0
+- generated data, no download; flags: `--rows` (default 1,200) and `--db-path`
+
+**Learn:** How to ask for counts per value, range and month in the same statement as the
+rows, and how to read them from the result set as a dict
+
+---
+
 ## 💡 Tips
 
 - **Run from examples/ directory** - Always execute examples from `examples/` for correct file paths
