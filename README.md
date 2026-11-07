@@ -25,7 +25,7 @@ This repository is the embedded bindings: the engine runs inside your Python pro
 | What it is | The ArcadeDB engine, inside your Python process | Python clients of an ArcadeDB server, HTTP (sync and async) or gRPC. They contain no engine |
 | Needs a server? | No. An in-process HTTP server and Studio are optional | Yes: the Docker image `arcadedata/arcadedb` or any ArcadeDB server. The gRPC driver also needs the server's gRPC plugin |
 | Package and import | `arcadedb` or `arcadedb-jvm`, `import arcadedb` | [`arcadedb-driver`](https://pypi.org/project/arcadedb-driver/), `import arcadedb_driver` (HTTP); [`arcadedb-driver-grpc`](https://pypi.org/project/arcadedb-driver-grpc/), `import arcadedb_driver_grpc` (gRPC) |
-| Use it when | One process, no server: tests, notebooks, scripts, an agent that owns its data | Several clients, an existing server, a service boundary, or clients that are not Python |
+| Use it when | One process, no server: tests, notebooks, scripts, an agent that owns its data | Several clients, an existing server, a service boundary, HA or replication, or clients that are not Python |
 
 You can also use both, for example the bindings for a job and the HTTP driver for a shared server. Driver docs: [HTTP](https://docs.arcadedb.com/arcadedb/how-to/connectivity/drivers/python-http), [gRPC](https://docs.arcadedb.com/arcadedb/how-to/connectivity/drivers/python-grpc). More in [Which package?](https://github.com/ArcadeData/arcadedb-python/blob/main/docs/modules/ROOT/pages/which-package.adoc#embedded-or-driver).
 

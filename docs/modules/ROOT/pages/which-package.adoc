@@ -32,7 +32,7 @@ Python reaches ArcadeDB in two different ways, and the names look alike. The emb
 A rule of thumb:
 
 * No server and one process (tests, notebooks, scripts, an agent that owns its data): use the embedded bindings.
-* Several clients, an existing server, a service boundary or clients in other languages: use a driver.
+* Several clients, an existing server, a service boundary, HA or replication, or clients in other languages: use a driver.
 * You can use both. For example, run a job with the embedded bindings, and let other programs reach a shared server through the HTTP driver.
 
 The name `{import-name}` on PyPI is the embedded package, and the driver is `{driver-pkg-name}`. So `uv add {native-pkg-name}` gives you the engine, and `uv add {driver-pkg-name}` gives you a client that needs a server.
