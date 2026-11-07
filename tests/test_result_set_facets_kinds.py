@@ -83,8 +83,13 @@ DISTINCT_Q = (
     "SELECT id FROM FacetKind ORDER BY id "
     "FACETS n: name DISTINCT, q: qty DISTINCT, g: tags DISTINCT"
 )
+# PRECISION n keeps the exact set of a numeric column while it holds at most n values and switches to a HyperLogLog (exact False)
+# at the (n + 1)th (DistinctFacetCollector: exactSize() > precisionThreshold): price has ten values
 APPROXIMATE_Q = (
-    "SELECT id FROM FacetKind ORDER BY id FACETS q: qty DISTINCT PRECISION 10"
+    "SELECT id FROM FacetKind ORDER BY id FACETS q: price DISTINCT PRECISION 5"
+)
+BELOW_THRESHOLD_Q = (
+    "SELECT id FROM FacetKind ORDER BY id FACETS q: price DISTINCT PRECISION 10"
 )
 # the filter of the STATS facet narrows the rows and the DISTINCT facet, the filter of the DISTINCT facet the rows and the STATS one
 STATS_FILTER_NAMED_Q = (
@@ -596,7 +601,18 @@ class TestDistinct:
         assert distinct["type"] == "distinct"
         assert distinct["exact"] is False
         assert facets["meta"]["exact"] is False
-        assert abs(distinct["value"] - 10) <= 1
+        assert abs(distinct["value"] - 10) <= 2
+
+    def test_precision_at_or_above_the_cardinality_stays_exact(self, test_db):
+        _kind(test_db)
+        if _older_engine_refuses(test_db, BELOW_THRESHOLD_Q):
+            return
+
+        _, facets = _facets(test_db, BELOW_THRESHOLD_Q)
+
+        # ten values do not exceed PRECISION 10: the exact set is kept
+        distinct = facets["q"]
+        assert (distinct["value"], distinct["exact"]) == (10, True)
 
     def test_distinct_filter_parameter_with_no_match(self, test_db):
         _kind(test_db)
