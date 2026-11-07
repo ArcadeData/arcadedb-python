@@ -742,7 +742,7 @@ class Schema:
 
                 # Check for LSM Vector (direct)
                 if "LSMVectorIndex" in index_class_name:
-                    indexes.append(java_index.getName())
+                    indexes.append(str(java_index.getName()))
 
                 # Check for TypeIndex (wrapper)
                 elif "TypeIndex" in index_class_name:
@@ -751,7 +751,7 @@ class Schema:
                         if sub_indexes and not sub_indexes.isEmpty():
                             first_sub = sub_indexes.get(0)
                             if "LSMVectorIndex" in first_sub.getClass().getName():
-                                indexes.append(java_index.getName())
+                                indexes.append(str(java_index.getName()))
                     except Exception:
                         log_swallowed_exception(_LOGGER, "while listing vector indexes")
 

@@ -1400,7 +1400,7 @@ class Database:
         """Get the database name."""
         self._check_not_closed()
         try:
-            return self._java_db.getName()
+            return str(self._java_db.getName())
         except Exception as e:
             raise ArcadeDBError(f"Failed to get database name: {e}") from e
 
@@ -1422,7 +1422,7 @@ class Database:
         """Get the database path."""
         self._check_not_closed()
         try:
-            return self._java_db.getDatabasePath()
+            return str(self._java_db.getDatabasePath())
         except Exception as e:
             raise ArcadeDBError(f"Failed to get database path: {e}") from e
 
