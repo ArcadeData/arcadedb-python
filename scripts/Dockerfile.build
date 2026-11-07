@@ -211,6 +211,7 @@ COPY setup.py .
 COPY scripts/setup_jars.py ./scripts/
 COPY scripts/extract_version.py ./scripts/
 COPY scripts/write_version.py ./scripts/
+COPY scripts/dev_engine_pin.py scripts/dev_engine_pin.json ./scripts/
 COPY scripts/verify_wheel_platform_tag.py ./scripts/
 COPY pyproject.toml ./
 COPY README.md ./

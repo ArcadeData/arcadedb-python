@@ -12,7 +12,7 @@ The tag is the bare version, with no `v`. The tag, the wheel version and the PyP
 | Version | Meaning
 
 | `A.B.C.dev0`, `A.B.C.dev1`, ...
-| A preview of engine release `A.B.C`, built from the upstream snapshot jars. `devN` starts at 0.
+| A development pre-release of engine release `A.B.C`, built from ONE pinned upstream snapshot (<<_the_dev_engine_snapshot,below>>). `devN` starts at 0.
 
 | `A.B.C`
 | The release. The wheels ship the `A.B.C` engine jar.
@@ -30,6 +30,17 @@ The rule has five parts:
 * A `devN` of a released base is refused, because it would sort before the release. A `postN` of a base that is not released is refused.
 
 The base is the version of the engine. The workflow compares the tag with the version of the engine jar in the wheels, and it refuses a `devN` tag for a release jar and a release tag for a snapshot jar.
+
+[[_the_dev_engine_snapshot]]
+== The engine snapshot of a dev release
+
+Upstream publishes the snapshot engine by the day: the Docker image tags `latest` and `A.B.C-SNAPSHOT` move, and so does the Sonatype snapshot repository that the native build resolves. A `.devN` release therefore pins one snapshot for both packages in `scripts/dev_engine_pin.json`: the image by index digest, the timestamped snapshot version, and the sha256 of every `arcadedb-*.jar` in the image.
+
+* `scripts/dev_engine_pin.py check --tag <VERSION>` proves that the image (amd64 and arm64) and the Sonatype jars hold exactly the pinned jars. Both release workflows run it before anything is built, `release-native.yml` runs it again after the native build, and the JVM jobs download the image by digest and run `dev_engine_pin.py verify-jars` on the jars. A difference stops the release (exit 1); a source it cannot read stops it too (exit 2).
+* Only `A.B.C.devN` of the pinned base gets a snapshot. A final or `.postN` release refuses it, and a snapshot other than the pinned one is refused for a dev release (`tests/test_dev_engine_pin.py` runs the real step code).
+* Each wheel states what it embeds: `arcadedb.ENGINE_SNAPSHOT` (the timestamped version) and `arcadedb.ENGINE_IMAGE_DIGEST`.
+* To re-pin, run `uv run --no-project python -I scripts/dev_engine_pin.py capture <image-index-digest>` and replace the file in a pull request, before the tag.
+* The native notices comparison is skipped for a snapshot engine (`THIRD_PARTY_NOTICES.md` names a release), so a dev wheel is not checked against it.
 
 == How the rule is enforced
 

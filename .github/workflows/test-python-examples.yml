@@ -185,9 +185,15 @@ jobs:
           echo "📌 ArcadeDB version: $ARCADEDB_TAG"
           # The build jobs pull arcadedata/arcadedb:<jar version> as their base image,
           # so a pinned tag must name that version exactly (26.10.2, not an alias).
-          if [ "$ARCADEDB_IMAGE_TAG" != "latest" ] && [ "$ARCADEDB_IMAGE_TAG" != "$ARCADEDB_TAG" ]; then
+          IMAGE_TAG_NAME="${ARCADEDB_IMAGE_TAG%%@*}"
+          if [ "$IMAGE_TAG_NAME" != "latest" ] && [ "$IMAGE_TAG_NAME" != "$ARCADEDB_TAG" ]; then
             echo "❌ arcadedb-tag '$ARCADEDB_IMAGE_TAG' holds engine $ARCADEDB_TAG; pass the exact version tag"
             exit 1
+          fi
+          # A tag with a digest (<A.B.C-SNAPSHOT>@sha256:...) is the pinned snapshot of a .devN release (scripts/dev_engine_pin.json):
+          # the jars just downloaded must be byte for byte the pinned ones, the same ones the native build links.
+          if [[ "$ARCADEDB_IMAGE_TAG" == *@sha256:* ]]; then
+            python3 -I scripts/dev_engine_pin.py verify-jars src/arcadedb/jars
           fi
           echo "arcadedb-tag=$ARCADEDB_TAG" >> "$GITHUB_OUTPUT"
 

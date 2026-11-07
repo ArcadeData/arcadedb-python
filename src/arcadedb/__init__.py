@@ -96,9 +96,17 @@ from .vector import (
     to_python_array,
 )
 
+try:
+    from ._version import ENGINE_IMAGE_DIGEST, ENGINE_SNAPSHOT
+except ImportError:  # a source checkout without a generated _version.py, or an older build
+    ENGINE_SNAPSHOT = None
+    ENGINE_IMAGE_DIGEST = None
+
 __all__ = [
     "__version__",
     "__backend__",
+    "ENGINE_SNAPSHOT",
+    "ENGINE_IMAGE_DIGEST",
     # Exceptions
     "ArcadeDBError",
     # Core classes

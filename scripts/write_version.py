@@ -13,13 +13,17 @@ if sys.platform == "win32":
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
 
-def write_version_file(ver, out_path):
+def write_version_file(ver, out_path, pin=None):
     """Write version to _version.py"""
     version_file_content = f'''"""Version information for arcadedb package.
 Generated automatically during build from the bundled ArcadeDB engine jar.
 """
 
 __version__ = "{ver}"
+
+# The exact upstream snapshot a .devN wheel embeds (scripts/dev_engine_pin.json); None for a release or an unpinned build.
+ENGINE_SNAPSHOT = {pin["snapshot"] if pin else None!r}
+ENGINE_IMAGE_DIGEST = {pin["image_digest"] if pin else None!r}
 '''
 
     with open(out_path, "w", encoding="utf-8") as f:
@@ -43,7 +47,9 @@ if __name__ == "__main__":
 
         # Write to src/arcadedb/_version.py
         output_path = bindings_dir / "src/arcadedb/_version.py"
-        write_version_file(version, output_path)
+        from dev_engine_pin import pinned_snapshot
+
+        write_version_file(version, output_path, pinned_snapshot(jars_dir))
 
     except (ValueError, FileNotFoundError, OSError) as e:
         print(f"Error: {e}", file=sys.stderr)

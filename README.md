@@ -38,6 +38,8 @@ uv add arcadedb-jvm   # JVM, for heavy long-running loads
 
 <!-- REMOVE WHEN: the old arcadedb-embedded* shims are retired and two releases have shipped with the two-package layout allow-old-name -->
 > The first release of this layout is 26.11.1, and both packages have a final release on PyPI. A plain `uv add arcadedb` installs the final, and a later pre-release (`A.B.C.devN`) needs `uv add --prerelease allow arcadedb`. The same holds for `arcadedb-jvm`.
+>
+> A `.devN` version (for example `26.12.1.dev0`, when one is published) is a development pre-release. It embeds a snapshot of the upstream engine, the same snapshot in both packages, pinned by image digest and jar checksums in `scripts/dev_engine_pin.json`, and the wheel states it (`arcadedb.ENGINE_SNAPSHOT`, `arcadedb.ENGINE_IMAGE_DIGEST`). Install it with `uv add --prerelease allow arcadedb==26.12.1.dev0` (or `arcadedb-jvm==26.12.1.dev0`).
 
 <!-- REMOVE WHEN: the old arcadedb-embedded* shims are retired and two releases have shipped with the two-package layout allow-old-name -->
 > Old names: `arcadedb-jvm` was formerly `arcadedb-embedded`, and `arcadedb` was formerly `arcadedb-embedded-native` (archived on PyPI). The last `arcadedb-embedded` release, 26.11.1, is a deprecation shim: it installs `arcadedb`, the native build, and warns once at import. It does not install `arcadedb-jvm`.
