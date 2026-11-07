@@ -337,11 +337,55 @@ public final class ArcadeNative {
     sb.append(id).append(',');
     final boolean drained = NativeCodec.appendBatch(sb, rs, max);
     if (drained) {
+      // before the close: the facets of a FACETS query are computed when its rows end, and the reply is the only place Python can read
+      // them from once the cursor is gone
+      appendFacets(sb, rs);
       RESULT_SETS.remove(id);
       closeQuietly(rs);
       sb.replace(mark, mark + String.valueOf(id).length(), "0");
     }
     return sb.append('}').toString();
+  }
+
+  /**
+   * Appends ,"facets":{..} (see FacetsReply) for a drained FACETS query, nothing for any other statement. A failure to compute them is
+   * the member "ferr" (the usual error object), raised by Python when the facets are read, not when the rows are.
+   */
+  private static void appendFacets(final StringBuilder sb, final ResultSet rs) {
+    final int mark = sb.length();
+    try {
+      sb.append(",\"facets\":");
+      if (!FacetsReply.append(sb, rs))
+        sb.setLength(mark);
+    } catch (final Throwable t) {
+      sb.setLength(mark);
+      sb.append(",\"ferr\":").append(errorJson(t));
+    }
+  }
+
+  /**
+   * The facets of an open cursor whose rows were not all read: {"ok":true,"facets":{..}} and the cursor is closed (the engine reads the
+   * matches the rows did not reach and ends the rows), or {"ok":true,"facets":null} and the cursor stays open when the statement has
+   * no FACETS clause.
+   */
+  @CEntryPoint(name = "arcadedb_n_facets")
+  public static CCharPointer facets(final IsolateThread thread, final long rsId) {
+    ResultSet rs = null;
+    try {
+      rs = RESULT_SETS.get(rsId);
+      if (rs == null)
+        throw new IllegalArgumentException("unknown result set " + rsId);
+      final StringBuilder sb = new StringBuilder("{\"ok\":true,\"facets\":");
+      if (!FacetsReply.append(sb, rs))
+        return out("{\"ok\":true,\"facets\":null}");
+      RESULT_SETS.remove(rsId);
+      closeQuietly(rs);
+      return out(sb.append('}').toString());
+    } catch (final Throwable t) {
+      RESULT_SETS.remove(rsId);
+      closeQuietly(rs);
+      return err(t);
+    }
   }
 
   private static void closeQuietly(final ResultSet rs) {

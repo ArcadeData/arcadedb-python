@@ -233,6 +233,7 @@ def _load():
             "arcadedb_n_next": [P, L, I],
             "arcadedb_n_next_bin": [P, L, I],
             "arcadedb_n_rs_close": [P, L],
+            "arcadedb_n_facets": [P, L],
             "arcadedb_n_cmd": [P, L, I, S, S, S, S, L, I],
             "arcadedb_n_last_error": [P],
             "arcadedb_n_rs_close_many": [P, P, I],

@@ -54,4 +54,12 @@ final class Prefetched implements ResultSet {
   public void close() {
     tail.close();
   }
+
+  /**
+   * The engine's result set behind the rows pulled so far: its getFacets() answers for this cursor (FacetsReply reads it there). It is
+   * not overridden here because the interface method does not exist on engines before 26.12.1, which this class must compile against.
+   */
+  ResultSet tail() {
+    return tail;
+  }
 }
