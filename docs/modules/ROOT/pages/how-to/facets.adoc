@@ -554,15 +554,17 @@ facets = rs.facets
 tree = facets["t"]
 print(len(rows), tree["type"], tree["source"], sorted(tree))
 print("Media.tags" in tree["reason"])
-print(counts(facets["n"]))
+print(facets["n"]["type"], facets["n"]["source"] in ("index", "scan"))
 ----
 
 [source,text]
 ----
 6 hierarchy unavailable ['reason', 'source', 'type']
 True
-{'t0/t1': 6}
+terms True
 ----
+
+The block checks that the other facet is answered (`type`, and a `source` of `index` or `scan`), not its counts. A count is read together with its `source` and with `meta` (`exact`, `patched`, `lag_ms`), as the table of the result describes.
 
 == Parameters
 

@@ -23,6 +23,16 @@
 
   <dependencyManagement>
     <dependencies>
+      <!-- every arcadedb module at arcadedb.version, whoever pulls it in: engine and server pom list their sibling modules at their own
+           (floating) -SNAPSHOT version, which would mix builds with a timestamped arcadedb.version (a .devN release, scripts/dev_engine_pin.json) -->
+      <dependency><groupId>com.arcadedb</groupId><artifactId>arcadedb-bolt</artifactId><version>${arcadedb.version}</version></dependency>
+      <dependency><groupId>com.arcadedb</groupId><artifactId>arcadedb-console</artifactId><version>${arcadedb.version}</version></dependency>
+      <dependency><groupId>com.arcadedb</groupId><artifactId>arcadedb-graphql</artifactId><version>${arcadedb.version}</version></dependency>
+      <dependency><groupId>com.arcadedb</groupId><artifactId>arcadedb-grpc</artifactId><version>${arcadedb.version}</version></dependency>
+      <dependency><groupId>com.arcadedb</groupId><artifactId>arcadedb-integration</artifactId><version>${arcadedb.version}</version></dependency>
+      <dependency><groupId>com.arcadedb</groupId><artifactId>arcadedb-mcp</artifactId><version>${arcadedb.version}</version></dependency>
+      <dependency><groupId>com.arcadedb</groupId><artifactId>arcadedb-postgresw</artifactId><version>${arcadedb.version}</version></dependency>
+      <dependency><groupId>com.arcadedb</groupId><artifactId>arcadedb-redisw</artifactId><version>${arcadedb.version}</version></dependency>
       <!-- phase 3: jvector 4.0.2 carries the Highway (FFM) provider and libjvector-*.so; the engine pins 4.0.1 -->
       <dependency><groupId>io.github.jbellis</groupId><artifactId>jvector</artifactId><version>4.0.2</version></dependency>
       <!-- the versions the wheel ships (the Docker image lib/), not what the parent pom resolves -->
