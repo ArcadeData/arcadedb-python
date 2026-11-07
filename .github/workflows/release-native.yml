@@ -169,6 +169,13 @@ jobs:
           ls -l dist
           echo "ok=true" >> "$GITHUB_OUTPUT"
 
+      # A published wheel states what it embeds: a .devN wheel records the pinned snapshot and image digest (scripts/dev_engine_pin.json),
+      # a final or .postN wheel records none. The wheel that was built and tested is the one checked; a mismatch stops the release here.
+      - name: Every wheel states the engine it embeds
+        env:
+          VERSION: ${{ needs.validate-version.outputs.version }}
+        run: python3 -I scripts/verify_wheel_engine_pin.py "$VERSION" dist/*.whl
+
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: native-release-dist
