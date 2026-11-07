@@ -672,7 +672,7 @@ jobs:
     env:
       KEY: ${{ matrix.key }}
       PY: ${{ matrix.python }}
-      EXAMPLES: "0[1-9]_*.py 1[0-9]_*.py 2[0-9]_*.py"
+      EXAMPLES: "0[1-9]_*.py 1[0-9]_*.py 2[0-9]_*.py 3[0-9]_*.py"
       EXAMPLES_SKIP_FILE: scripts/native_examples_skip.txt
       # The Hugging Face cache inside the workspace, as in test-python-examples.yml: one path on every platform, cacheable.
       HF_HOME: ${{ github.workspace }}/.hf-cache

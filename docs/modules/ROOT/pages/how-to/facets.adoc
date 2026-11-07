@@ -1,0 +1,662 @@
+= Faceted queries
+:description: Count the values of a property next to the rows of a SQL query with the FACETS clause, and read the counts from Python as the dict ResultSet.facets, on both packages.
+
+// Sources: ArcadeDB 26.12.1: the FACETS clause, the COLUMNAR index and facet.searchValues (query/facet). The statements about Python are pinned by tests/test_result_set_facets.py, tests/test_result_set_facets_kinds.py and tests/test_columnar_index.py, which run on arcadedb-jvm and on the native arcadedb. Every block on this page is run by tests/test_docs_facets_page.py, and examples/30_columnar_facets.py is the same on a larger data set.
+
+A facet is the count of the records for each value of a property, next to the rows of the query. A search page shows them as the numbers in a sidebar: 5 records in category `a`, 2 in category `b`. The `FACETS` clause of a `SELECT` asks for them, and `ResultSet.facets` returns them as a plain dict. They cover all the records the `WHERE` clause matched, whatever `SKIP` and `LIMIT` kept for the rows, and a terms facet gives the same counts as a `GROUP BY` on the property.
+
+The clause belongs to the engine. This page shows what is specific to Python: a small data set, one statement for each kind of facet, and the dict that comes back. The kinds are `TERMS`, `RANGES`, `HISTOGRAM`, `HIERARCHY`, `DISTINCT` and `STATS`.
+
+== What you need
+
+* Engine 26.12.1 or later. An older engine refuses the clause with `SQL syntax error`, because it reads `FACETS` as a table alias, and it refuses `CREATE INDEX ... COLUMNAR` with `Index type 'COLUMNAR' is not supported`. On such an engine no facet statement can run. See <<older-engine,An older engine>> for the check to make first.
+* A `COLUMNAR` index on each property that a facet counts. Creating one, what a close or a crash does to it and its settings are on xref:how-to/columnar-index.adoc[The COLUMNAR index and its settings].
+
+The blocks on this page run one after the other against one empty database, and a test in the repository runs them that way (`tests/test_docs_facets_page.py`). Each block that prints something is followed by its output. Every block assumes that `db` is an open database, as on xref:how-to/databases-and-queries.adoc[Databases and queries]. A block with the title "Needs engine 26.12.1 or later" runs `CREATE INDEX ... COLUMNAR` or a `FACETS` query, so an older engine refuses it. The test checks that refusal on an older engine, and it runs and checks the output of the block on a newer one. The other blocks run on any engine.
+
+== The data
+
+Ten records with a string, two numbers, a timestamp and a list of strings. The last four records have no `tags`.
+
+[source,python]
+----
+from datetime import datetime
+
+categories = ["a", "b", "a", "c", "a", "b", "a", "d", "a", "c"]
+months = [1, 1, 1, 1, 2, 2, 2, 4, 4, 4]
+tags = [["run", "rum"], ["runner"], ["running", "run"], ["rum"], ["run"], ["other"]]
+tags += [None] * 4
+
+db.command("sql", "CREATE DOCUMENT TYPE FacetDoc")
+db.command("sql", "CREATE PROPERTY FacetDoc.id INTEGER")
+db.command("sql", "CREATE PROPERTY FacetDoc.category STRING")
+db.command("sql", "CREATE PROPERTY FacetDoc.score INTEGER")
+db.command("sql", "CREATE PROPERTY FacetDoc.price DOUBLE")
+db.command("sql", "CREATE PROPERTY FacetDoc.ts DATETIME")
+db.command("sql", "CREATE PROPERTY FacetDoc.tags LIST OF STRING")
+with db.transaction():
+    for i, category in enumerate(categories):
+        sql = "INSERT INTO FacetDoc SET id = ?, category = ?, score = ?, price = ?, ts = ?"
+        args = [i, category, 10 * (i + 1), 0.5 * (i + 1)]
+        args.append(datetime(2024, months[i], 10 + i, 12, 0, 0))
+        if tags[i] is not None:
+            sql += ", tags = ?"
+            args.append(tags[i])
+        db.command("sql", sql, *args)
+print(db.query("sql", "SELECT count(*) AS n FROM FacetDoc").first().get("n"))
+----
+
+[source,text]
+----
+10
+----
+
+The index comes after the data here, and it is built over the records that exist. A list needs `BY ITEM`, so that each item of the list is a value.
+
+.Needs engine 26.12.1 or later
+[source,python,role=needs-engine]
+----
+for prop in ("category", "score", "price", "ts"):
+    db.command("sql", f"CREATE INDEX ON FacetDoc ({prop}) COLUMNAR")
+db.command("sql", "CREATE INDEX ON FacetDoc (tags BY ITEM) COLUMNAR")
+print(db.schema.exists_index("FacetDoc[category]_columnar"))
+----
+
+[source,text]
+----
+True
+----
+
+One helper turns a terms facet into `{value: count}`, without the bucket of the records that have no value:
+
+[source,python]
+----
+def counts(facet):
+    return {b["value"]: b["count"] for b in facet["buckets"] if not b.get("missing")}
+----
+
+== Terms: the most frequent values
+
+`TERMS TOP n` returns the `n` values with the most records. A facet has an alias before its property (`s: score`), and when there is none, the alias is the property name. The records of the values left out are counted in `other_count`.
+
+.Needs engine 26.12.1 or later
+[source,python,role=needs-engine]
+----
+rs = db.query(
+    "sql", "SELECT id, category FROM FacetDoc ORDER BY id FACETS category TERMS TOP 2"
+)
+rows = rs.to_list()  # the rows first, then the facets
+facets = rs.facets
+print(len(rows), list(facets))
+category = facets["category"]
+print(
+    category["type"],
+    len(category["buckets"]),
+    category["buckets"][0],
+    category["other_count"],
+    category["missing"],
+)
+----
+
+[source,text]
+----
+10 ['meta', 'category']
+terms 2 {'value': 'a', 'count': 5} 3 0
+----
+
+Category `a` has 5 records. The second bucket has 2 records, and `b` and `c` both have 2, so which of the two comes second is not fixed. The 3 records of the other values are in `other_count`, and none has a null category (`missing`).
+
+`SKIP` and `LIMIT` belong to the rows. The facets still count every match:
+
+.Needs engine 26.12.1 or later
+[source,python,role=needs-engine]
+----
+rs = db.query(
+    "sql",
+    "SELECT id FROM FacetDoc ORDER BY id FACETS category TERMS TOP 10 SKIP 2 LIMIT 3",
+)
+rows = rs.to_list()
+print([r["id"] for r in rows])
+print(sorted(counts(rs.facets["category"]).items()))
+----
+
+[source,text]
+----
+[2, 3, 4]
+[('a', 5), ('b', 2), ('c', 2), ('d', 1)]
+----
+
+== Ranges
+
+`RANGES` counts the records in intervals that you write. `[` includes an end, `)` leaves it out, and `*` is an open end. A bucket has its `key` (the name after `AS`), `from`, `to` and `count`. An open end has no `from` or `to` key. `DEFAULT 'name'` adds a bucket for the records in no interval, and its `default` is `True`. A range facet returns every interval, so it has no `other_count`.
+
+.Needs engine 26.12.1 or later
+[source,python,role=needs-engine]
+----
+rs = db.query(
+    "sql",
+    "SELECT id FROM FacetDoc ORDER BY id "
+    "FACETS s: score RANGES ([0, 50) AS 'low', [50, *) AS 'high')",
+)
+rs.to_list()
+score = rs.facets["s"]
+print(score["type"], [(b["key"], b["count"]) for b in score["buckets"]])
+print("other_count" in score, "to" in score["buckets"][1])
+
+rs = db.query(
+    "sql",
+    "SELECT id FROM FacetDoc ORDER BY id "
+    "FACETS s: score RANGES ([0, 30) AS 'low') DEFAULT 'rest'",
+)
+rs.to_list()
+buckets = rs.facets["s"]["buckets"]
+print([(b["key"], b["count"], b.get("default", False)) for b in buckets])
+----
+
+[source,text]
+----
+range [('low', 4), ('high', 6)]
+False False
+[('low', 2, False), ('rest', 8, True)]
+----
+
+== Histogram by calendar
+
+`HISTOGRAM CALENDAR '1M'` makes one bucket for each calendar month of a temporal property. `TIMEZONE` names the time zone of the calendar. The buckets are in time order, and a month with no record (March here) may or may not be listed, so read the buckets with a count.
+
+.Needs engine 26.12.1 or later
+[source,python,role=needs-engine]
+----
+rs = db.query(
+    "sql",
+    "SELECT id FROM FacetDoc ORDER BY id "
+    "FACETS h: ts HISTOGRAM CALENDAR '1M' TIMEZONE 'UTC'",
+)
+rs.to_list()
+hist = rs.facets["h"]
+print(hist["type"], [b["count"] for b in hist["buckets"] if b["count"]])
+----
+
+[source,text]
+----
+histogram [4, 3, 3]
+----
+
+== Filter: a facet that ignores its own selection
+
+A `FILTER` on a facet narrows the rows and the other facets, and the facet that owns the filter ignores it. That is the disjunctive behaviour of a faceted search: after you pick category `a`, the list of categories still shows every category with its count, while the other facets count only what category `a` leaves.
+
+.Needs engine 26.12.1 or later
+[source,python,role=needs-engine]
+----
+rs = db.query(
+    "sql",
+    "SELECT id, category FROM FacetDoc ORDER BY id "
+    "FACETS c: category TERMS TOP 10 FILTER category = 'a', "
+    "s: score RANGES ([0, 50) AS 'low', [50, *) AS 'high')",
+)
+rows = rs.to_list()
+facets = rs.facets
+print([r["id"] for r in rows])
+print(sorted(counts(facets["c"]).items()))
+print([(b["key"], b["count"]) for b in facets["s"]["buckets"]])
+----
+
+[source,text]
+----
+[0, 2, 4, 6, 8]
+[('a', 5), ('b', 2), ('c', 2), ('d', 1)]
+[('low', 2), ('high', 3)]
+----
+
+== Stats and distinct counts
+
+`STATS` returns `count`, `missing`, `min`, `max`, `sum` and `avg` of a numeric property, and `DISTINCT` the number of different values.
+
+.Needs engine 26.12.1 or later
+[source,python,role=needs-engine]
+----
+rs = db.query(
+    "sql",
+    "SELECT id FROM FacetDoc ORDER BY id FACETS s: score STATS, p: price STATS",
+)
+rs.to_list()
+score, price = rs.facets["s"], rs.facets["p"]
+print(score["type"], score["count"], score["missing"], score["min"], score["max"], score["sum"])
+print(score["avg"] == 55)
+print(price["min"], price["max"], price["sum"], price["avg"])
+
+rs = db.query(
+    "sql",
+    "SELECT id FROM FacetDoc ORDER BY id "
+    "FACETS c: category DISTINCT, g: tags DISTINCT",
+)
+rs.to_list()
+facets = rs.facets
+print(facets["c"]["value"], facets["c"]["exact"])
+print(facets["g"]["value"], facets["g"]["exact"], facets["g"]["missing"])
+----
+
+[source,text]
+----
+stats 10 0 10 100 550
+True
+0.5 5.0 27.5 2.75
+4 True
+5 True 4
+----
+
+The `min` and `max` of a temporal property are the `datetime` or `date` that a row holds, and its `sum` and `avg` are `None`. When no record has a value, `min`, `max` and `avg` are `None`. The tags have 5 different values, counted by item, and the 4 records without tags are in `missing`.
+
+`DISTINCT PRECISION p` keeps the exact set of values of a numeric property while it holds at most `p` values, and switches to an estimate (a sketch) above that. The result then has `exact` set to `False`, and so has `meta["exact"]`. `price` has 10 values:
+
+.Needs engine 26.12.1 or later
+[source,python,role=needs-engine]
+----
+rs = db.query(
+    "sql",
+    "SELECT id FROM FacetDoc ORDER BY id FACETS q: price DISTINCT PRECISION 5",
+)
+rs.to_list()
+q = rs.facets["q"]
+print(q["exact"], abs(q["value"] - 10) <= 2, rs.facets["meta"]["exact"])
+
+rs = db.query(
+    "sql",
+    "SELECT id FROM FacetDoc ORDER BY id FACETS q: price DISTINCT PRECISION 10",
+)
+rs.to_list()
+q = rs.facets["q"]
+print(q["value"], q["exact"])
+----
+
+[source,text]
+----
+False True False
+10 True
+----
+
+With `PRECISION 5` the answer is within 2 of the true 10, and it is flagged as an estimate. With `PRECISION 10` the ten values do not exceed the limit, so the count is exact. A `DISTINCT` without `PRECISION` is exact in the blocks above.
+
+== Hierarchy
+
+A `HIERARCHY` facet counts the values of a tag property under their ancestors in a tree of vertices. The index names the tree in its `METADATA`: the vertex type, the property that holds the path of a tag, and the edge type from a parent to a child. The tree here has `t0`, with `t0/a` and `t0/b` under it, and `t0/a/x` under `t0/a`.
+
+[source,python]
+----
+db.command("sql", "CREATE VERTEX TYPE Tag")
+db.command("sql", "CREATE PROPERTY Tag.path STRING")
+db.command("sql", "CREATE INDEX ON Tag (path) NOTUNIQUE")
+db.command("sql", "CREATE EDGE TYPE ParentOf")
+db.command("sql", "CREATE DOCUMENT TYPE Tagged")
+db.command("sql", "CREATE PROPERTY Tagged.id INTEGER")
+db.command("sql", "CREATE PROPERTY Tagged.tags LIST OF STRING")
+----
+
+.Needs engine 26.12.1 or later
+[source,python,role=needs-engine]
+----
+db.command(
+    "sql",
+    "CREATE INDEX ON Tagged (tags BY ITEM) COLUMNAR METADATA "
+    '{"hierarchy": {"vertexType": "Tag", "key": "path", "parentEdge": "ParentOf"}}',
+)
+with db.transaction():
+    for path in ("t0", "t0/a", "t0/a/x", "t0/b"):
+        db.command("sql", "CREATE VERTEX Tag SET path = ?", path)
+    for parent, child in (("t0", "t0/a"), ("t0", "t0/b"), ("t0/a", "t0/a/x")):
+        db.command(
+            "sql",
+            "CREATE EDGE ParentOf FROM (SELECT FROM Tag WHERE path = ?) "
+            "TO (SELECT FROM Tag WHERE path = ?)",
+            parent,
+            child,
+        )
+    records = [
+        (1, ["t0/a/x"]),
+        (2, ["t0/a"]),
+        (3, ["t0/b", "t0/a/x"]),
+        (4, ["orphan"]),  # a value no Tag vertex has
+        (5, None),  # no value at all
+    ]
+    for record_id, record_tags in records:
+        if record_tags is None:
+            db.command("sql", "INSERT INTO Tagged SET id = ?", record_id)
+        else:
+            db.command(
+                "sql",
+                "INSERT INTO Tagged SET id = ?, tags = ?",
+                record_id,
+                record_tags,
+            )
+
+rs = db.query(
+    "sql", "SELECT id FROM Tagged ORDER BY id FACETS t: tags HIERARCHY TOP 100"
+)
+rs.to_list()
+tree = rs.facets["t"]
+print(tree["type"], tree["other_count"], tree["missing"])
+by_value = {b["value"]: b for b in tree["buckets"] if not b.get("missing")}
+for value, b in sorted(by_value.items()):
+    print(value, b["count"], b.get("parent"), b["depth"], b.get("orphan", False))
+----
+
+[source,text]
+----
+hierarchy 0 1
+orphan 1 None 0 True
+t0 3 None 0 False
+t0/a 3 t0 1 False
+t0/a/x 2 t0/a 2 False
+t0/b 1 t0 1 False
+----
+
+The buckets are a flat list, not a nested one. A bucket has the `value` (the path of the tag), `count`, `parent` (the value of its first parent, `None` for a root) and `depth`. Each record counts once under each ancestor of its tags: record 3 has `t0/b` and `t0/a/x`, which share `t0`, and it adds one to `t0`. A value that no vertex of the tree has, here `orphan`, is its own root, and its `orphan` is `True`. With `TOP n`, `other_count` is the sum of the counts of the buckets left out, and those counts overlap, so it can exceed the number of matches.
+
+== Paging through the values
+
+A terms facet sorted by value pages with a cursor. The first page says `ORDER BY VALUE`. Every later page says `AFTER` and the `after` of the page before, until `after` is `None`. `after` is the last value of a full page, as a row holds it, so it can be a string, a number or a datetime. A facet that is not sorted by value has no `after`. The records without a value come once, on the last page, as a bucket with `MISSING` after `TOP n`. The cursor can be named, as here, or positional (`AFTER ?`).
+
+.Needs engine 26.12.1 or later
+[source,python,role=needs-engine]
+----
+cursor = None
+page = 0
+while True:
+    page += 1
+    if cursor is None:
+        sql = "SELECT id FROM FacetDoc FACETS f: category TERMS TOP 2 ORDER BY VALUE"
+        rs = db.query("sql", sql)
+    else:
+        sql = "SELECT id FROM FacetDoc FACETS f: category TERMS TOP 2 AFTER :c"
+        rs = db.query("sql", sql, {"c": cursor})
+    rs.to_list()
+    facet = rs.facets["f"]
+    print(page, [(b["value"], b["count"]) for b in facet["buckets"]], facet["after"])
+    cursor = facet["after"]
+    if cursor is None:
+        break
+----
+
+[source,text]
+----
+1 [('a', 5), ('b', 2)] b
+2 [('c', 2), ('d', 1)] None
+----
+
+`ORDER BY COUNT` cannot be paged: the engine refuses `AFTER` with it (`AFTER pages in value order`).
+
+== Typeahead: facet.searchValues
+
+`facet.searchValues(type, property, prefix, limit)` is an ordinary SQL function. It returns the values of a `COLUMNAR` string property (or a list of strings indexed `BY ITEM`) that start with a prefix, in value order, as rows with a `value` and the `count` of the live records that carry it. The prefix is literal, never a pattern. A value that no record holds any more is not suggested.
+
+The function reads the values that the projection has applied, and the engine applies them in the background. Right after a load it can return fewer values, so the block below first counts the tags with a terms facet, which needs no wait, and then tries the search again until it gets what it expects. The limit of 120 seconds is only there so that a stuck engine cannot hang the block.
+
+.Needs engine 26.12.1 or later
+[source,python,role=needs-engine]
+----
+import time
+
+rs = db.query(
+    "sql", "SELECT id FROM FacetDoc ORDER BY id FACETS g: tags TERMS TOP 10"
+)
+rs.to_list()
+print(sorted(counts(rs.facets["g"]).items()))
+
+
+def suggest(prefix, limit):
+    rows = db.query(
+        "sql",
+        "SELECT expand(facet.searchValues(?, ?, ?, ?))",
+        "FacetDoc",
+        "tags",
+        prefix,
+        limit,
+    ).to_list()
+    return [(r["value"], r["count"]) for r in rows]
+
+
+def suggest_when_ready(prefix, limit, expected, seconds=120):
+    deadline = time.monotonic() + seconds
+    while True:
+        try:
+            found = suggest(prefix, limit)
+            if found == expected or time.monotonic() > deadline:
+                return found
+        except Exception:  # the engine asks for a retry while a column builds
+            if time.monotonic() > deadline:
+                raise
+        time.sleep(0.05)
+
+
+print(suggest_when_ready("run", 20, [("run", 3), ("runner", 1), ("running", 1)]))
+print(suggest("ru", 2))
+print(suggest("zzz", 20))
+----
+
+[source,text]
+----
+[('other', 1), ('rum', 2), ('run', 3), ('runner', 1), ('running', 1)]
+[('run', 3), ('runner', 1), ('running', 1)]
+[('rum', 2), ('run', 3)]
+[]
+----
+
+== Reading facets in Python
+
+`ResultSet.facets` is a plain dict, the same on `arcadedb-jvm` and on the native `arcadedb`. It is `None` for a statement without a `FACETS` clause. It works on the result of `db.query(...)` and of `db.command(...)`. Reading it from a result set that was closed before its end raises `ArcadeDBError`.
+
+`meta` comes first. Every other key is a facet, by its alias, in the order of the clause.
+
+[cols="2,5"]
+|===
+| Key | Meaning
+
+| `meta`
+| `exact` (`False` when the counts may lag the committed data, and for an estimate), `patched` (records that were read from the record itself to correct the projection) and `lag_ms`. The counts cover the records that the projection has not applied yet, by patching them, so a facet query needs no wait.
+
+| `type`
+| `terms`, `range`, `histogram`, `hierarchy`, `distinct` or `stats`.
+
+| `source`
+| `index` (answered from the COLUMNAR index), `scan` (from the records) or `unavailable`.
+
+| `reason`
+| Why a facet is unavailable. A facet that the engine answered has none.
+
+| `buckets`
+| Terms, hierarchy, range and histogram facets. A terms bucket has `value` and `count`. A range or histogram bucket has `key`, `from`, `to` and `count`, and an open end has no `from` or `to`. A bucket of the values in no range has `key` and `default`. The bucket of the records without a value has `value` `None` and `missing` `True`.
+
+| `other_count`
+| Terms and hierarchy facets: the records of the values that `TOP` left out.
+
+| `missing`
+| Every facet except `stats`: the records without a value.
+
+| `count`, `min`, `max`, `sum`, `avg`
+| A stats facet, with `missing`. The values are the Python values a row holds, so NaN and the infinities are floats.
+
+| `value`, `exact`
+| A distinct facet.
+
+| `after`
+| A terms facet sorted by value: the cursor of the next page, or `None` on the last page.
+
+| `parent`, `depth`, `orphan`
+| The extra keys of a hierarchy bucket.
+|===
+
+=== The rows first
+
+The engine computes the facets when the rows are exhausted, so read the rows first, as in every block above, and the facets after. Reading `facets` before the rows gives the same facets, but it makes the engine count the matches that the rows did not reach, and whether the rows that were not fetched yet can still be read after that is not specified. The facets stay available after the rows are read.
+
+.Needs engine 26.12.1 or later
+[source,python,role=needs-engine]
+----
+rs = db.query(
+    "sql", "SELECT id FROM FacetDoc ORDER BY id FACETS category TERMS TOP 2"
+)
+seen = [row.get("id") for row in rs]
+facets = rs.facets
+print(seen == list(range(10)), facets["category"]["buckets"][0]["count"])
+print(rs.facets == facets, rs.to_list())
+print(db.query("sql", "SELECT FROM FacetDoc").facets is None)
+----
+
+[source,text]
+----
+True 5
+True []
+True
+----
+
+=== Unavailable facets
+
+A facet that the engine cannot answer is kept, with its `type`, its `source` set to `unavailable` and a `reason`, and nothing else. The rows and the other facets of the same query are answered. The example is a `HIERARCHY` facet on a type whose subtype alone has the hierarchy: the records of `Media` have none.
+
+[source,python]
+----
+db.command("sql", "CREATE VERTEX TYPE Label")
+db.command("sql", "CREATE PROPERTY Label.path STRING")
+db.command("sql", "CREATE INDEX ON Label (path) NOTUNIQUE")
+db.command("sql", "CREATE EDGE TYPE LabelParent")
+db.command("sql", "CREATE DOCUMENT TYPE Media")
+db.command("sql", "CREATE PROPERTY Media.tags LIST OF STRING")
+db.command("sql", "CREATE DOCUMENT TYPE Photo EXTENDS Media")
+----
+
+.Needs engine 26.12.1 or later
+[source,python,role=needs-engine]
+----
+db.command(
+    "sql",
+    "CREATE INDEX ON Photo (tags BY ITEM) COLUMNAR METADATA "
+    '{"hierarchy": {"vertexType": "Label", "key": "path", "parentEdge": "LabelParent"}}',
+)
+with db.transaction():
+    db.command("sql", "CREATE VERTEX Label SET path = 't0'")
+    db.command("sql", "CREATE VERTEX Label SET path = 't0/t1'")
+    db.command(
+        "sql",
+        "CREATE EDGE LabelParent FROM (SELECT FROM Label WHERE path = 't0') "
+        "TO (SELECT FROM Label WHERE path = 't0/t1')",
+    )
+    for _ in range(3):
+        db.command("sql", "INSERT INTO Media SET tags = ['t0/t1']")
+        db.command("sql", "INSERT INTO Photo SET tags = ['t0/t1']")
+
+rs = db.query(
+    "sql",
+    "SELECT FROM Media FACETS t: tags HIERARCHY TOP 100, n: tags TERMS TOP 5",
+)
+rows = rs.to_list()
+facets = rs.facets
+tree = facets["t"]
+print(len(rows), tree["type"], tree["source"], sorted(tree))
+print("Media.tags" in tree["reason"])
+print(counts(facets["n"]))
+----
+
+[source,text]
+----
+6 hierarchy unavailable ['reason', 'source', 'type']
+True
+{'t0/t1': 6}
+----
+
+== Parameters
+
+The bounds of `RANGES` and `HISTOGRAM`, the values of `INCLUDE`, the cursor of `AFTER` and the condition of `FILTER` take parameters, named (`:lo`) or positional (`?`), through `db.query` and `db.command`. `TOP` and `PRECISION` take an integer literal, not a parameter.
+
+.Needs engine 26.12.1 or later
+[source,python,role=needs-engine]
+----
+named = db.query(
+    "sql",
+    "SELECT id FROM FacetDoc ORDER BY id FACETS s: score RANGES ([:lo, :hi) AS 'mid')",
+    {"lo": 30, "hi": 70},
+)
+named.to_list()
+positional = db.query(
+    "sql",
+    "SELECT id FROM FacetDoc ORDER BY id FACETS s: score RANGES ([?, ?) AS 'mid')",
+    30,
+    70,
+)
+positional.to_list()
+for rs in (named, positional):
+    (mid,) = rs.facets["s"]["buckets"]
+    print(mid["key"], mid["count"])
+
+rs = db.query(
+    "sql",
+    "SELECT id FROM FacetDoc ORDER BY id FACETS c: category TERMS INCLUDE [:x, :y]",
+    {"x": "a", "y": "c"},
+)
+rs.to_list()
+print(sorted(counts(rs.facets["c"]).items()))
+rs = db.query(
+    "sql",
+    "SELECT id FROM FacetDoc ORDER BY id FACETS c: category TERMS INCLUDE [?, ?]",
+    "a",
+    "c",
+)
+rs.to_list()
+print(sorted(counts(rs.facets["c"]).items()))
+
+rs = db.query(
+    "sql",
+    "SELECT id FROM FacetDoc ORDER BY id "
+    "FACETS c: category DISTINCT, s: score STATS FILTER score >= :lo",
+    {"lo": 60},
+)
+rows = rs.to_list()
+print([r["id"] for r in rows])
+print(rs.facets["c"]["value"], rs.facets["c"]["exact"])
+----
+
+[source,text]
+----
+mid 4
+mid 4
+[('a', 5), ('c', 2)]
+[('a', 5), ('c', 2)]
+[5, 6, 7, 8, 9]
+4 True
+----
+
+The `[30, 70)` interval holds the scores 30, 40, 50 and 60. The last query shows that the filter of the `STATS` facet narrows the rows, and the `DISTINCT` facet counts the 4 categories of the records that pass.
+
+[[older-engine]]
+== An older engine
+
+An engine before 26.12.1 refuses the `COLUMNAR` index and the `FACETS` clause, as described at the top. The engine tells its version through SQL, so check it before you run a facet statement, on either package:
+
+[source,python]
+----
+def engine_version(db):
+    raw = str(db.query("sql", "SELECT version() AS v").first().get("v"))
+    parts = [
+        int(p) if p.isdigit() else 0
+        for p in raw.split()[0].split("-")[0].split(".")[:3]
+    ]
+    return tuple(parts + [0] * (3 - len(parts)))
+
+
+has_facets = engine_version(db) >= (26, 12, 1)
+----
+
+A snapshot or a build suffix of the version is dropped, so `26.12.1-SNAPSHOT` counts as 26.12.1. The https://github.com/ArcadeData/arcadedb-python/blob/main/examples/30_columnar_facets.py[example] makes this check, and prints one line and stops when the engine is too old.
+
+== Known limits
+
+* The extremes of a negative zero come back as `0.0`, and `0.0 == -0.0` in Python, so a `MIN` or `MAX` facet cannot tell them apart. A `DISTINCT` counts `-0.0` and `0.0` as one value.
+* A `DISTINCT` with `PRECISION p` is an estimate once the property has more than `p` values, and it says so with `exact` set to `False`.
+* `facet.searchValues` can lag right after a load, as described above.
+* Facets count properties that have a `COLUMNAR` index. After the index is dropped, `FACETS` answers from a scan of the records (`source` is `scan`). A facet that the engine cannot answer at all is `unavailable`, with its reason.
+
+== Where to go next
+
+* xref:how-to/columnar-index.adoc[The COLUMNAR index and its settings]: creating and dropping the index, what a close or a crash does to it, the `arcadedb.columnar.*` settings and the acceleration of `GROUP BY`.
+* xref:how-to/databases-and-queries.adoc[Databases and queries]: `db.query`, `db.command`, parameters and result sets.
+* `examples/30_columnar_facets.py` in the repository runs a faceted query over a larger data set and checks every count against Python.
