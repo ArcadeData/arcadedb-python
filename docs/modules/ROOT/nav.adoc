@@ -15,6 +15,7 @@
 ** xref:how-to/dataframes-and-columns.adoc[DataFrames, Arrow and columns]
 ** xref:how-to/functions-and-events.adoc[Python functions and record events]
 ** xref:how-to/vectors.adoc[Vectors]
+** xref:how-to/columnar-index.adoc[The COLUMNAR index and its settings]
 * Development
 ** xref:development/ci.adoc[Continuous integration]
 ** xref:development/release.adoc[Release]
