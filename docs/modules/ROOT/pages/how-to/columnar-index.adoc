@@ -1,0 +1,66 @@
+= The COLUMNAR index and its settings
+:description: Create and drop a COLUMNAR index from Python on both builds, what a close or a crash does to it, and how to set the arcadedb.columnar.* settings, including the GROUP BY acceleration.
+
+// Sources: ArcadeDB 26.12.1: GlobalConfiguration.java (COLUMNAR_*), AlterDatabaseStatement.java, ColumnarGroupByStep.java, ColumnarCrashRecoveryTest.java. The statements about Python are pinned by tests/test_columnar_index.py, which runs on arcadedb-jvm and on the native arcadedb.
+
+A `COLUMNAR` index keeps a column projection of a type next to its records. The engine applies, flushes and merges it in threads of its own, and the `FACETS` clause and `GROUP BY` read it. It needs engine 26.12.1 or later: an older engine refuses `CREATE INDEX ... COLUMNAR` with `Index type 'COLUMNAR' is not supported`. The facets themselves are read with `ResultSet.facets`.
+
+The index is a statement, so it is the same on both builds:
+
+[source,python]
+----
+db.command("sql", "CREATE DOCUMENT TYPE Item")
+db.command("sql", "CREATE PROPERTY Item.category STRING")
+db.command("sql", "CREATE PROPERTY Item.score INTEGER")
+db.command("sql", "CREATE PROPERTY Item.tags LIST OF STRING")
+db.command("sql", "CREATE INDEX ON Item (category) COLUMNAR")
+db.command("sql", "CREATE INDEX ON Item (score) COLUMNAR")
+db.command("sql", "CREATE INDEX ON Item (tags BY ITEM) COLUMNAR")  # a LIST needs BY ITEM
+----
+
+A COLUMNAR index is listed in `schema:indexes` as `Item[category]_columnar`, with one more row per bucket of the type (`Item_0_<id>`). Drop it by the name of the type-level row. The engine refuses to drop a per-bucket row alone. After the drop, `FACETS` answers from a scan of the records and `GROUP BY` runs its normal plan.
+
+[source,python]
+----
+db.command("sql", "DROP INDEX `Item[category]_columnar`")
+----
+
+== Close, reopen and crash
+
+The projection survives a close. After a clean close, and after a process that ended without closing the database (the lock file `database.lck` is left behind and the next open replays the write-ahead log), the facets of the reopened database are exact. They come from the projection, patched with the records it has not applied yet, or from a scan while the engine rebuilds the projection by itself, and `source` in each facet says which. A test ends a child process with `os._exit` after committing, once with the commits still in the write-ahead log and once with part of them already in published segments, and checks the facets and `GROUP BY` of the reopened database against what Python inserted. That is a crash of the process. It is not a power loss, which no test here can make (see xref:how-to/durability.adoc[Durability settings]).
+
+== The settings
+
+The engine reads the settings of the projection from `arcadedb.columnar.*`. Which route sets one depends on its scope in `GlobalConfiguration`, and there is no setter of its own in Python: the routes that exist already are enough.
+
+* Scope database (`flushInterval`, `flushMaxRows`, `flushMinRows`, `flushMaxAge`, `mergeDeadRatio`, `mergeMaxSegments`, `maxCardinality`, `segmentBlockRows`, `applyInterval`, `applyMaxLag`, `dictionaryCompactRatio`, `maxFallbackScans` and `groupByAcceleration`): `ALTER DATABASE`. It takes effect at once, is stored with the database and is still there after a reopen. `SELECT settings FROM schema:database` lists the value and the default of each.
+* Scope JVM (`applyThreads`, `maintenanceThreads`, `rebuildConcurrency`, `queryMemoryBudget`) and scope server (`patchBudget`, `patchBudgetRatio`, `queryBudgetWait`, `parallelCountTasks`, `parallelMinMatches`, `topMax`): `ALTER DATABASE` refuses them with `cannot be set per database`. Set them as system properties before the engine starts, as for `arcadedb.fileSync` on xref:how-to/durability.adoc[Durability settings]: `-Darcadedb.columnar.applyThreads=4` in `jvm_kwargs={"jvm_args": [...]}` or in `ARCADEDB_JVM_ARGS` for `arcadedb-jvm`, and in `ARCADEDB_NATIVE_ISOLATE_ARGS` for `arcadedb`. The pool settings are read once, when the pool starts. No test here sets a system property.
+
+[source,python]
+----
+db.command("sql", "ALTER DATABASE `arcadedb.columnar.flushInterval` 50")
+db.command("sql", "ALTER DATABASE `arcadedb.columnar.mergeDeadRatio` 0.5")
+----
+
+=== GROUP BY acceleration
+
+`GROUP BY` over a type with a COLUMNAR index on the key, and on each aggregated property, is answered from the projection. `arcadedb.columnar.groupByAcceleration` is on by default. The engine checks it each time a statement runs, so `ALTER DATABASE` changes the next statement:
+
+[source,python]
+----
+sql = "SELECT category, count(*) AS n FROM Item GROUP BY category ORDER BY category"
+db.command("sql", "ALTER DATABASE `arcadedb.columnar.groupByAcceleration` false")
+off = db.query("sql", sql).to_list()
+db.command("sql", "ALTER DATABASE `arcadedb.columnar.groupByAcceleration` true")
+on = db.query("sql", sql).to_list()
+print(on == off)
+print("path: columnar" in db.query("sql", f"PROFILE {sql}").first().get("executionPlanAsString"))
+----
+
+[source,text]
+----
+True
+True
+----
+
+Both paths return the same rows. `PROFILE` runs the statement and its plan names the path: `path: columnar` for the projection, or `path: normal (reason: ...)` with the reason, such as `disabled by arcadedb.columnar.groupByAcceleration`. A statement that the projection cannot answer, for example one inside a transaction that already changed the type, runs the normal plan and returns the same rows.
