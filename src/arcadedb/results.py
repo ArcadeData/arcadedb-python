@@ -477,6 +477,26 @@ class ResultSet:
         ``value`` and ``exact``, and a facet with an ``AFTER`` cursor has ``after``. Values are the Python values a row holds, so
         NaN and the infinities are floats.
 
+        The shape of each kind:
+
+        - ``hierarchy``: a flat list of buckets, not a nested one. A bucket has ``value`` (the path of the tag), ``count`` (the
+          records under it, a record counted once however many of its tags share the ancestor), ``parent`` (the value of its first
+          parent, None for a root) and ``depth``; a value no vertex of the hierarchy has is its own root with ``orphan`` True.
+          ``other_count`` is the sum of the counts of the buckets ``TOP`` left out, so it can exceed the matches.
+        - ``distinct``: ``value`` (an int) and ``exact`` (False for ``PRECISION n``, which also sets ``meta["exact"]`` False), and
+          ``missing``.
+        - ``stats``: ``min`` and ``max`` are values of the column as a row holds them (a datetime or a date for a temporal column,
+          where ``sum`` and ``avg`` are None; a float for a FLOAT or DOUBLE column, NaN and the infinities included); ``min``,
+          ``max`` and ``avg`` are None when no record has a value. The extremes of a negative zero come back as 0.0.
+        - ``after``: a terms facet ordered by value (``ORDER BY VALUE``) or with ``AFTER`` has the key ``after``, the cursor of the
+          next page: the last value of the page as a row holds it, to pass back as ``AFTER :c`` or ``AFTER ?``, or None on the last
+          page (where the bucket of ``MISSING`` comes, once, outside ``TOP``). A facet not ordered by value has no ``after``.
+
+        Parameters (named ``:x`` or positional ``?``) are taken by the bounds of ``RANGES`` and ``HISTOGRAM``, the values of
+        ``INCLUDE``, the cursor of ``AFTER`` and the condition of ``FILTER``; ``TOP``, ``MIN_COUNT`` and ``PRECISION`` take an
+        integer literal. The typeahead function ``facet.searchValues(type, property, prefix, limit)`` is an ordinary SQL function
+        (``SELECT expand(facet.searchValues(?, ?, ?, ?))``) whose rows are ``{value, count}``.
+
         The facets cover every record the ``WHERE`` clause matched, whatever ``SKIP`` and ``LIMIT`` kept. The engine computes them
         when the rows are exhausted, so read the rows first if you need both. Reading ``facets`` before the rows works and gives the
         same facets, but it makes the engine compute them over the matches the rows did not reach, and whether rows that were not
