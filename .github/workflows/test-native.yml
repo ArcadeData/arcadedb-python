@@ -69,6 +69,11 @@ on:
         required: false
         default: ""
         type: string
+      maven-engine:
+        description: "Timestamped snapshot (A.B.C-YYYYMMDD.HHMMSS-N) Maven resolves for the A.B.C-SNAPSHOT engine, so the build cannot move with later deploys; empty = the engine itself (floating); a .devN release always uses the pinned one"
+        required: false
+        default: ""
+        type: string
       release:
         description: "The release legs: all four platforms and Python 3.11 to 3.14 (otherwise the small main/nightly legs)"
         required: false
@@ -83,6 +88,11 @@ on:
         type: string
       engine:
         description: "Engine the image links: a release (Maven Central), or for a devN version A.B.C-SNAPSHOT (Sonatype snapshot repository); empty = the release segment of a final version, else DEV_ENGINE"
+        required: false
+        default: ""
+        type: string
+      maven-engine:
+        description: "Timestamped snapshot (A.B.C-YYYYMMDD.HHMMSS-N) Maven resolves for the A.B.C-SNAPSHOT engine, so the build cannot move with later deploys; empty = the engine itself (floating); a .devN release always uses the pinned one"
         required: false
         default: ""
         type: string
@@ -132,6 +142,7 @@ jobs:
       run: ${{ steps.plan.outputs.run }}
       version: ${{ steps.ver.outputs.version }}
       engine: ${{ steps.ver.outputs.engine }}
+      maven-engine: ${{ steps.ver.outputs.maven-engine }}
       final: ${{ steps.ver.outputs.final }}
       build: ${{ steps.plan.outputs.build }}
       test: ${{ steps.plan.outputs.test }}
@@ -148,6 +159,7 @@ jobs:
         env:
           INPUT_VERSION: ${{ inputs.version }}
           INPUT_ENGINE: ${{ inputs.engine }}
+          INPUT_MAVEN_ENGINE: ${{ inputs.maven-engine }}
           INPUT_RELEASE: ${{ inputs.release }}
         run: |
           set -euo pipefail
@@ -158,6 +170,7 @@ jobs:
           if [[ "$version" == *.dev* ]]; then
             final=false
             pin_engine=""
+            pin_snapshot=""
             if [ "${INPUT_RELEASE:-}" = true ]; then
               # a .devN RELEASE links the pinned snapshot, the one arcadedb-jvm embeds (scripts/dev_engine_pin.json), and nothing else
               pin_env="$(python3 -I scripts/dev_engine_pin.py shell-env "$version")"
@@ -166,6 +179,9 @@ jobs:
               [ -z "$INPUT_ENGINE" ] || [ "$INPUT_ENGINE" = "$pin_engine" ] || { echo "::error::A dev release links the pinned engine $pin_engine, not $INPUT_ENGINE" >&2; exit 1; }
               python3 -I scripts/dev_engine_pin.py check --tag "$version"
               engine="$pin_engine"
+              # Maven resolves the pinned TIMESTAMPED snapshot, not the floating A.B.C-SNAPSHOT: upstream deploys a new snapshot most days
+              pin_snapshot="$(printf '%s\n' "$pin_env" | sed -n 's/^SNAPSHOT=//p')"
+              [ -n "$pin_snapshot" ] || { echo "::error::no snapshot in the pin" >&2; exit 1; }
             else
               engine="${INPUT_ENGINE:-$DEV_ENGINE}"
             fi
@@ -175,6 +191,15 @@ jobs:
             # a final or post wheel links exactly the engine release it is named after
             [ "$engine" = "$base" ] || { echo "::error::Version $version links engine $base, not $engine" >&2; exit 1; }
           fi
+          # the version Maven resolves: the timestamped snapshot of a dev release (the pin), or of a manual run that names one, else the engine
+          maven_engine="${pin_snapshot:-}"
+          if [ -n "${INPUT_MAVEN_ENGINE:-}" ]; then
+            [[ "$engine" == *-SNAPSHOT ]] || { echo "::error::maven-engine needs a SNAPSHOT engine, not $engine" >&2; exit 1; }
+            [[ "$INPUT_MAVEN_ENGINE" =~ ^${engine%-SNAPSHOT}-[0-9]{8}\.[0-9]{6}-[0-9]+$ ]] || { echo "::error::maven-engine '$INPUT_MAVEN_ENGINE' is not a timestamped snapshot of $engine" >&2; exit 1; }
+            [ -z "$maven_engine" ] || [ "$maven_engine" = "$INPUT_MAVEN_ENGINE" ] || { echo "::error::A dev release links the pinned snapshot $maven_engine, not $INPUT_MAVEN_ENGINE" >&2; exit 1; }
+            maven_engine="$INPUT_MAVEN_ENGINE"
+          fi
+          maven_engine="${maven_engine:-$engine}"
           # A SNAPSHOT engine is for a devN version only: a final or post version is refused above (it links exactly its release). A release run
           # (release-native.yml passes `release: true`) links a snapshot only for a .devN tag, and only the pinned one (scripts/dev_engine_pin.json,
           # proven above); any other snapshot, and every snapshot of a final or post release, is refused. tests/test_dev_engine_pin.py runs this step.
@@ -183,8 +208,8 @@ jobs:
             [ "$final" = false ] || { echo "::error::A SNAPSHOT engine is for a devN version only" >&2; exit 1; }
             [ "${INPUT_RELEASE:-}" != true ] || [ "$engine" = "${pin_engine:-}" ] || { echo "::error::A release never links a SNAPSHOT engine ($engine) except the pinned one of a .devN tag" >&2; exit 1; }
           fi
-          { echo "version=$version"; echo "engine=$engine"; echo "final=$final"; } >> "$GITHUB_OUTPUT"
-          echo "wheel version $version, engine $engine, final=$final"
+          { echo "version=$version"; echo "engine=$engine"; echo "maven-engine=$maven_engine"; echo "final=$final"; } >> "$GITHUB_OUTPUT"
+          echo "wheel version $version, engine $engine (Maven resolves $maven_engine), final=$final"
 
       - name: Choose the legs
         id: plan
@@ -331,7 +356,7 @@ jobs:
       - name: Build the native image in manylinux_2_28
         if: ${{ matrix.kind == 'linux' }}
         env:
-          ENGINE: ${{ needs.plan.outputs.engine }}
+          ENGINE: ${{ needs.plan.outputs.maven-engine }}
           MANYLINUX_IMAGE: ${{ matrix.container }}
           XMX: ${{ matrix.xmx }}
           NI_EXTRA: ${{ matrix.ni_extra }}
@@ -365,7 +390,7 @@ jobs:
       - name: Build the native image on the runner
         if: ${{ matrix.kind != 'linux' }}
         env:
-          ARCADEDB_ENGINE_VERSION: ${{ needs.plan.outputs.engine }}
+          ARCADEDB_ENGINE_VERSION: ${{ needs.plan.outputs.maven-engine }}
           MARCH: compatibility
           XMX: ${{ matrix.xmx }}
           NI_EXTRA: ${{ matrix.ni_extra }}
@@ -392,6 +417,7 @@ jobs:
         env:
           VERSION: ${{ needs.plan.outputs.version }}
           ENGINE: ${{ needs.plan.outputs.engine }}
+          MAVEN_ENGINE: ${{ needs.plan.outputs.maven-engine }}
           RELEASE: ${{ inputs.release }}
         run: |
           set -euo pipefail
@@ -413,6 +439,14 @@ jobs:
               uv run --no-project --python 3.12 python -I scripts/dev_engine_pin.py check --tag "$VERSION"
               extra+=(--engine-pin)
             fi
+          fi
+          if [[ "$MAVEN_ENGINE" != "$ENGINE" ]]; then
+            # the build log lists the jars of the native-image classpath: the engine is the pinned timestamped snapshot, and no arcadedb
+            # module came in as another version (a floating SNAPSHOT, or a transitive module Maven resolved on its own)
+            snap="$MAVEN_ENGINE"
+            grep -a -q -F "arcadedb-engine-${snap}.jar" "$T/lib/build.log" || { echo "::error::build.log has no arcadedb-engine-${snap}.jar: the build did not link the pinned snapshot" >&2; exit 1; }
+            stray="$(grep -a -o -E 'arcadedb-[a-z0-9-]+-[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)*\.jar' "$T/lib/build.log" | sort -u | grep -v -F -e 'arcadedb-native-lib-' -e "-${snap}.jar" || true)"
+            [ -z "$stray" ] || { printf '::error::arcadedb jars of the build that are not the pinned snapshot %s:\n%s\n' "$snap" "$stray" >&2; exit 1; }
           fi
           uv run --no-project --python 3.12 python native/wheel/build_wheel.py --lib-dir "$T/lib" --version "$VERSION" --engine "$ENGINE" \
             --graalvm-home "$GRAALVM_HOME_P5" --m2-repo "$m2" \

@@ -35,7 +35,9 @@ AUTH = "https://auth.docker.io/token?service=registry.docker.io&scope=repository
 SNAPSHOTS = "https://central.sonatype.com/repository/maven-snapshots/com/arcadedb"
 INDEX_TYPES = "application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json"
 MANIFEST_TYPES = "application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json"
-LIB = re.compile(r"^(?:\./)?home/arcadedb/lib/(arcadedb-[^/]+)-(\d+\.\d+\.\d+)-SNAPSHOT\.jar$")
+LIB = re.compile(
+    r"^(?:\./)?home/arcadedb/lib/(arcadedb-[^/]+)-(\d+\.\d+\.\d+)-SNAPSHOT\.jar$"
+)
 DEV_TAG = re.compile(r"^\d+\.\d+\.\d+\.dev\d+$")
 ARCHES = ("amd64", "arm64")
 TIMEOUT = 60
@@ -59,7 +61,9 @@ _OPENER = urllib.request.build_opener(_NoAuthRedirect)
 
 
 def _open(url: str, headers: dict[str, str] | None = None):
-    req = urllib.request.Request(url, headers=headers or {})  # noqa: S310 - fixed https hosts
+    req = urllib.request.Request(
+        url, headers=headers or {}
+    )  # noqa: S310 - fixed https hosts
     try:
         return _OPENER.open(req, timeout=TIMEOUT)  # nosec B310
     except (urllib.error.URLError, TimeoutError) as e:
@@ -72,20 +76,29 @@ def _token() -> str:
 
 
 def _registry_json(ref: str, accept: str, token: str) -> dict:
-    with _open(f"{REGISTRY}/manifests/{ref}", {"Authorization": f"Bearer {token}", "Accept": accept}) as r:
+    with _open(
+        f"{REGISTRY}/manifests/{ref}",
+        {"Authorization": f"Bearer {token}", "Accept": accept},
+    ) as r:
         return json.load(r)
 
 
 def image_jars(index_digest: str, arch: str, token: str) -> dict[str, str]:
     """{module: sha256} of the arcadedb-*-SNAPSHOT.jar files in /home/arcadedb/lib of one platform of the image."""
     index = _registry_json(index_digest, INDEX_TYPES, token)
-    entries = [m for m in index.get("manifests", []) if m.get("platform", {}).get("architecture") == arch]
+    entries = [
+        m
+        for m in index.get("manifests", [])
+        if m.get("platform", {}).get("architecture") == arch
+    ]
     if len(entries) != 1:
         raise Unreadable(f"image {index_digest}: {len(entries)} manifests for {arch}")
     manifest = _registry_json(entries[0]["digest"], MANIFEST_TYPES, token)
     found: dict[str, str] = {}
     for layer in reversed(manifest["layers"]):  # a later layer wins over an earlier one
-        with _open(f"{REGISTRY}/blobs/{layer['digest']}", {"Authorization": f"Bearer {token}"}) as blob:
+        with _open(
+            f"{REGISTRY}/blobs/{layer['digest']}", {"Authorization": f"Bearer {token}"}
+        ) as blob:
             with tarfile.open(fileobj=blob, mode="r|gz") as tar:
                 for member in tar:
                     m = LIB.match(member.name)
@@ -96,12 +109,28 @@ def image_jars(index_digest: str, arch: str, token: str) -> dict[str, str]:
                             h.update(chunk)
                         found[m.group(1)] = h.hexdigest()
     if "arcadedb-engine" not in found:
-        raise Unreadable(f"image {index_digest} ({arch}): no arcadedb-engine jar in /home/arcadedb/lib")
+        raise Unreadable(
+            f"image {index_digest} ({arch}): no arcadedb-engine jar in /home/arcadedb/lib"
+        )
     return found
 
 
-def snapshot_jar(module: str, version: str) -> tuple[str, str | None]:
-    """(timestamped version, sha256) of the newest snapshot jar of a module; sha256 None when the repository has no such module."""
+def snapshot_jar(
+    module: str, version: str, stamp: str | None = None
+) -> tuple[str, str | None]:
+    """(timestamped version, sha256) of a snapshot jar of a module: the newest one, or the one STAMP names; sha256 None when the
+    repository has no such module (or no such stamp)."""
+    if stamp:
+        try:
+            h = hashlib.sha256()
+            with _open(f"{SNAPSHOTS}/{module}/{version}/{module}-{stamp}.jar") as r:
+                for chunk in iter(lambda: r.read(1 << 20), b""):
+                    h.update(chunk)
+            return stamp, h.hexdigest()
+        except Unreadable as e:
+            if "404" in str(e):
+                return stamp, None
+            raise
     try:
         with _open(f"{SNAPSHOTS}/{module}/{version}/maven-metadata.xml") as r:
             root = ET.fromstring(r.read())  # nosec B314
@@ -152,9 +181,13 @@ def pinned_snapshot(directory: Path, pin_path: Path = PIN_FILE) -> dict | None:
 def verify_jars(directory: Path) -> int:
     pin = load_pin()
     if not jars_are_pinned(jar_hashes(directory), pin, strict=True):
-        print(f"FAIL the jars in {directory} are not the pinned snapshot {pin['snapshot']} (image {pin['image_digest']})")
+        print(
+            f"FAIL the jars in {directory} are not the pinned snapshot {pin['snapshot']} (image {pin['image_digest']})"
+        )
         return 1
-    print(f"PASS the jars in {directory} are the pinned snapshot {pin['snapshot']}, same sha256")
+    print(
+        f"PASS the jars in {directory} are the pinned snapshot {pin['snapshot']}, same sha256"
+    )
     return 0
 
 
@@ -179,14 +212,18 @@ def tag_problem(tag: str, pin: dict) -> str | None:
     return None
 
 
-def compare(pin: dict, image: dict[str, dict[str, str]], maven: dict[str, str | None]) -> list[str]:
+def compare(
+    pin: dict, image: dict[str, dict[str, str]], maven: dict[str, str | None]
+) -> list[str]:
     """Every difference between the pin and the two channels; an empty list is a pass."""
     bad = []
     for arch, jars in image.items():
         if jars != pin["jars"]:
             for mod in sorted(set(jars) | set(pin["jars"])):
                 if jars.get(mod) != pin["jars"].get(mod):
-                    bad.append(f"image {arch}: {mod} is {jars.get(mod)}, the pin says {pin['jars'].get(mod)}")
+                    bad.append(
+                        f"image {arch}: {mod} is {jars.get(mod)}, the pin says {pin['jars'].get(mod)}"
+                    )
     for mod, sha in maven.items():
         if sha is not None and sha != pin["jars"].get(mod):
             bad.append(f"Sonatype: {mod} is {sha}, the pin says {pin['jars'].get(mod)}")
@@ -205,14 +242,21 @@ def check(tag: str | None, pin_path: Path) -> int:
             return 1
     token = _token()
     image = {arch: image_jars(pin["image_digest"], arch, token) for arch in ARCHES}
-    maven = {mod: snapshot_jar(mod, pin["engine"])[1] for mod in pin["jars"]}
+    # the pinned TIMESTAMPED jars, not the newest snapshot: the native build resolves exactly these, so a later upstream deploy changes nothing
+    maven = {
+        mod: snapshot_jar(mod, pin["engine"], pin["snapshot"])[1] for mod in pin["jars"]
+    }
     bad = compare(pin, image, maven)
     for line in bad:
         print(f"FAIL {line}")
     if bad:
-        print(f"FAIL the JVM image and the native engine are not the pinned snapshot {pin['snapshot']}; re-pin (scripts/dev_engine_pin.py capture)")
+        print(
+            f"FAIL the JVM image and the Sonatype jars are not the pinned snapshot {pin['snapshot']} (a purged or changed jar?); re-pin (scripts/dev_engine_pin.py capture)"
+        )
         return 1
-    print(f"PASS image {pin['image_digest']} (amd64, arm64) and Sonatype hold the pinned snapshot {pin['snapshot']}: {len(pin['jars'])} jars, same sha256")
+    print(
+        f"PASS image {pin['image_digest']} (amd64, arm64) and Sonatype hold the pinned snapshot {pin['snapshot']}: {len(pin['jars'])} jars, same sha256"
+    )
     return 0
 
 
@@ -224,7 +268,17 @@ def capture(digest: str) -> int:
     base = re.fullmatch(r"(\d+\.\d+\.\d+)-\d{8}\.\d{6}-\d+", engine_stamp)
     if not base:
         raise Unreadable(f"unexpected snapshot version {engine_stamp!r}")
-    print(json.dumps({"engine": f"{base.group(1)}-SNAPSHOT", "snapshot": engine_stamp, "image_digest": digest, "jars": dict(sorted(jars.items()))}, indent=2))
+    print(
+        json.dumps(
+            {
+                "engine": f"{base.group(1)}-SNAPSHOT",
+                "snapshot": engine_stamp,
+                "image_digest": digest,
+                "jars": dict(sorted(jars.items())),
+            },
+            indent=2,
+        )
+    )
     return 0
 
 
@@ -235,14 +289,16 @@ def shell_env(tag: str) -> int:
         print(f"::error::{problem}", file=sys.stderr)
         return 1
     print(f"ENGINE={pin['engine']}")
-    print(f"SNAPSHOT={pin['snapshot']}")
+    print(f"SNAPSHOT={pin['snapshot']}")  # the timestamped version Maven resolves
     print(f"IMAGE_REF=arcadedata/arcadedb:{pin['engine']}@{pin['image_digest']}")
     print(f"IMAGE_DIGEST={pin['image_digest']}")
     return 0
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     sub = ap.add_subparsers(dest="cmd", required=True)
     c = sub.add_parser("check")
     c.add_argument("--tag")
