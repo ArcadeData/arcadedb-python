@@ -10,6 +10,7 @@ and move by the day. `scripts/dev_engine_pin.json` names one snapshot: the image
     dev_engine_pin.py check [--tag TAG] [--pin FILE]   # image (amd64 and arm64) and Sonatype jars against the pin
     dev_engine_pin.py capture IMAGE_DIGEST             # print a pin for an image digest (the Sonatype jars must agree)
     dev_engine_pin.py verify-jars DIR                  # the jars in DIR (a download of the image) are exactly the pinned ones
+    dev_engine_pin.py verify-build-log LOG M2           # the arcadedb jars on the native-image classpath (read from M2) are the pinned bytes
     dev_engine_pin.py shell-env TAG                    # print JVM image reference / snapshot facts a workflow needs (dev tags only)
 
 `check --tag` applies the pin ONLY to a `.devN` tag: a final or `.postN` tag exits 1, because such a release links exactly
@@ -191,6 +192,47 @@ def verify_jars(directory: Path) -> int:
     return 0
 
 
+CP_JAR = re.compile(
+    r"repository[\\/]com[\\/]arcadedb[\\/](arcadedb-[a-z0-9-]+)[\\/]([^\\/]+)[\\/](arcadedb-[a-z0-9-]+-[^\\/:;\s]+\.jar)"
+)
+
+
+def verify_build_log(log: Path, m2: Path, pin_path: Path = PIN_FILE) -> int:
+    """The arcadedb jars on the native-image classpath of BUILD.LOG, read from the Maven repository M2, are the pinned jars, byte for byte.
+
+    Maven names every jar of a snapshot with its base version (arcadedb-engine-26.12.1-SNAPSHOT.jar) whichever timestamp it resolved,
+    so the names prove nothing: the bytes do. A module that is not in the pin (jars of the image plus native_extra_jars) fails too.
+    """
+    pin = load_pin(pin_path)
+    expected = {**pin["jars"], **pin.get("native_extra_jars", {})}
+    found = {}
+    for m in CP_JAR.finditer(Path(log).read_text(encoding="utf-8", errors="replace")):
+        found[m.group(1)] = (m.group(2), m.group(3))
+    if "arcadedb-engine" not in found:
+        print(f"FAIL {log}: no arcadedb-engine jar on the classpath")
+        return 1
+    bad = []
+    for mod, (version, name) in sorted(found.items()):
+        jar = Path(m2) / "com" / "arcadedb" / mod / version / name
+        if not jar.is_file():
+            bad.append(f"{mod}: {jar} does not exist")
+        elif mod not in expected:
+            bad.append(f"{mod}: not a module of the pin")
+        elif hashlib.sha256(jar.read_bytes()).hexdigest() != expected[mod]:
+            bad.append(f"{mod}: {name} is not the pinned jar (sha256 differs)")
+    for line in bad:
+        print(f"FAIL {line}")
+    if bad:
+        print(
+            f"FAIL the native build did not link the pinned snapshot {pin['snapshot']}"
+        )
+        return 1
+    print(
+        f"PASS the {len(found)} arcadedb jars of the native build are the pinned snapshot {pin['snapshot']}, same sha256"
+    )
+    return 0
+
+
 def load_pin(path: Path = PIN_FILE) -> dict:
     pin = json.loads(path.read_text(encoding="utf-8"))
     for key in ("engine", "snapshot", "image_digest", "jars"):
@@ -247,6 +289,12 @@ def check(tag: str | None, pin_path: Path) -> int:
         mod: snapshot_jar(mod, pin["engine"], pin["snapshot"])[1] for mod in pin["jars"]
     }
     bad = compare(pin, image, maven)
+    for mod, sha in pin.get(
+        "native_extra_jars", {}
+    ).items():  # modules the native build links and the image does not hold
+        got = snapshot_jar(mod, pin["engine"], pin["snapshot"])[1]
+        if got != sha:
+            bad.append(f"Sonatype: {mod} is {got}, the pin says {sha}")
     for line in bad:
         print(f"FAIL {line}")
     if bad:
@@ -306,6 +354,9 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("capture").add_argument("digest")
     sub.add_parser("shell-env").add_argument("tag")
     sub.add_parser("verify-jars").add_argument("directory", type=Path)
+    vb = sub.add_parser("verify-build-log")
+    vb.add_argument("log", type=Path)
+    vb.add_argument("m2", type=Path)
     a = ap.parse_args(argv)
     try:
         if a.cmd == "check":
@@ -314,6 +365,8 @@ def main(argv: list[str] | None = None) -> int:
             return capture(a.digest)
         if a.cmd == "verify-jars":
             return verify_jars(a.directory)
+        if a.cmd == "verify-build-log":
+            return verify_build_log(a.log, a.m2)
         return shell_env(a.tag)
     except (Unreadable, ValueError, OSError, tarfile.TarError, KeyError) as e:
         print(f"FAIL cannot read a source: {e}", file=sys.stderr)

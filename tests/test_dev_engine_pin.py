@@ -263,3 +263,62 @@ def test_a_timestamp_needs_a_snapshot_engine_of_its_own_base(tmp_path):
 def test_a_final_release_refuses_a_timestamped_snapshot(tmp_path):
     r, _ = _run_plan(tmp_path, "26.12.1", maven_engine=STAMP)
     assert r.returncode != 0 and "needs a SNAPSHOT engine" in r.stderr
+
+
+def _build_log_and_m2(tmp_path, jars):
+    """A build.log naming the jars (as Maven does: base-version file names) and a Maven repository holding their content."""
+    m2 = tmp_path / "m2"
+    names = []
+    for mod, content in jars.items():
+        jar = (
+            m2
+            / "com"
+            / "arcadedb"
+            / mod
+            / "26.12.1-SNAPSHOT"
+            / f"{mod}-26.12.1-SNAPSHOT.jar"
+        )
+        jar.parent.mkdir(parents=True)
+        jar.write_bytes(content)
+        names.append(
+            f"/root/.m2/repository/com/arcadedb/{mod}/26.12.1-SNAPSHOT/{mod}-26.12.1-SNAPSHOT.jar"
+        )
+    log = tmp_path / "build.log"
+    log.write_text(
+        "[INFO] Executing: /graalvm/bin/native-image -cp /work/native/target/arcadedb-native-lib-0.0.1.jar:"
+        + ":".join(names)
+        + "\n"
+    )
+    return log, m2
+
+
+def test_the_build_log_check_passes_for_the_pinned_bytes_and_names_one_that_differs(
+    tmp_path, capsys
+):
+    jars = {
+        "arcadedb-engine": b"engine",
+        "arcadedb-server": b"server",
+        "arcadedb-bolt": b"bolt",
+    }
+    pin = _pin_for(
+        tmp_path, {"arcadedb-engine": b"engine", "arcadedb-server": b"server"}
+    )
+    data = json.loads(pin.read_text())
+    data["native_extra_jars"] = {"arcadedb-bolt": hashlib.sha256(b"bolt").hexdigest()}
+    pin.write_text(json.dumps(data))
+    log, m2 = _build_log_and_m2(tmp_path, jars)
+    assert pin_mod.verify_build_log(log, m2, pin) == 0
+    (
+        m2
+        / "com/arcadedb/arcadedb-server/26.12.1-SNAPSHOT/arcadedb-server-26.12.1-SNAPSHOT.jar"
+    ).write_bytes(b"a newer server")
+    assert pin_mod.verify_build_log(log, m2, pin) == 1
+    assert "arcadedb-server" in capsys.readouterr().out
+
+
+def test_the_build_log_check_refuses_a_module_that_is_not_in_the_pin(tmp_path):
+    pin = _pin_for(tmp_path, {"arcadedb-engine": b"engine"})
+    log, m2 = _build_log_and_m2(
+        tmp_path, {"arcadedb-engine": b"engine", "arcadedb-new": b"new"}
+    )
+    assert pin_mod.verify_build_log(log, m2, pin) == 1

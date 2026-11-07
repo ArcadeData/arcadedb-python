@@ -11,5 +11,10 @@
     "arcadedb-network": "b23403fbdd585395717796d9943f20a12473cba3df1bf082e7ceb83e6de6a082",
     "arcadedb-server": "0c1430856817df018135c30c1df9fc730a3a401a378309553f1ba4c5f8bb25ef",
     "arcadedb-studio": "351a767ede7affd7921b2c4b820a6eba63ef0326c3737ed329c82474f3baecc1"
+  },
+  "native_extra_jars": {
+    "arcadedb-bolt": "f9c93b60abae0164f8921116c2a94dbfaba5a8c72c5ad525f77903d75c9419ac",
+    "arcadedb-postgresw": "397a3afc51e647da7eea6701dcf549ae0cffe0dd6f7d6cc3fc4cc8346ec4f4dd",
+    "arcadedb-redisw": "17b9fbbac032a40903f994b10515f1c00305e7d6ec5128a52066fd3b287d112d"
   }
 }

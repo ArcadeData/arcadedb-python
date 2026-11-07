@@ -441,12 +441,10 @@ jobs:
             fi
           fi
           if [[ "$MAVEN_ENGINE" != "$ENGINE" ]]; then
-            # the build log lists the jars of the native-image classpath: the engine is the pinned timestamped snapshot, and no arcadedb
-            # module came in as another version (a floating SNAPSHOT, or a transitive module Maven resolved on its own)
-            snap="$MAVEN_ENGINE"
-            grep -a -q -F "arcadedb-engine-${snap}.jar" "$T/lib/build.log" || { echo "::error::build.log has no arcadedb-engine-${snap}.jar: the build did not link the pinned snapshot" >&2; exit 1; }
-            stray="$(grep -a -o -E 'arcadedb-[a-z0-9-]+-[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)*\.jar' "$T/lib/build.log" | sort -u | grep -v -F -e 'arcadedb-native-lib-' -e "-${snap}.jar" || true)"
-            [ -z "$stray" ] || { printf '::error::arcadedb jars of the build that are not the pinned snapshot %s:\n%s\n' "$snap" "$stray" >&2; exit 1; }
+            # the arcadedb jars of the native-image classpath (build.log), read from the Maven repository, are the pinned jars byte for byte: a
+            # floating SNAPSHOT or a sibling module that Maven resolved on its own differs here (the file names cannot tell: Maven names a
+            # resolved snapshot jar with its base version)
+            uv run --no-project --python 3.12 python -I scripts/dev_engine_pin.py verify-build-log "$T/lib/build.log" "$m2"
           fi
           uv run --no-project --python 3.12 python native/wheel/build_wheel.py --lib-dir "$T/lib" --version "$VERSION" --engine "$ENGINE" \
             --graalvm-home "$GRAALVM_HOME_P5" --m2-repo "$m2" \
