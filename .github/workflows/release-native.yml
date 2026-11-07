@@ -83,6 +83,14 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: python3 -I scripts/check_version.py "$TAG" --git-remote origin --pypi "$DIST_NAME"
 
+      # A .devN tag links the pinned upstream snapshot (scripts/dev_engine_pin.json), the same one as arcadedb-jvm: the check proves that the
+      # JVM image and the Sonatype jars hold the pinned jars, byte for byte. test-native.yml checks again after the build.
+      - name: The dev engine snapshot is the pinned one
+        if: ${{ contains(github.ref_name, '.dev') }}
+        env:
+          TAG: ${{ github.ref_name }}
+        run: python3 -I scripts/dev_engine_pin.py check --tag "$TAG"
+
   # Builds a wheel per platform, runs the parity suite on every Python and uploads the wheels (native-wheel-<platform>) and one marker per
   # passed leg (native-passed-<platform>-py<version>).
   test:

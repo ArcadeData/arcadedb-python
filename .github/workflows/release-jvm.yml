@@ -47,7 +47,7 @@ jobs:
     outputs:
       version: ${{ steps.validate.outputs.version }}
       base-version: ${{ steps.validate.outputs.base-version }}
-      arcadedb-tag: ${{ steps.validate.outputs.arcadedb-tag }}
+      arcadedb-tag: ${{ steps.pin.outputs.arcadedb-tag || steps.validate.outputs.arcadedb-tag }}
     steps:
       - name: Validate tag
         id: validate
@@ -91,6 +91,22 @@ jobs:
         env:
           TAG: ${{ github.ref_name }}
         run: python3 -I scripts/check_version.py "$TAG" --git-remote origin --pypi "$DIST_NAME"
+
+      # A .devN tag embeds ONE upstream snapshot, the same one in both packages (scripts/dev_engine_pin.json): the image is named by digest
+      # (the tags `latest` and A.B.C-SNAPSHOT move on every upstream deploy), and the check proves that the image (amd64 and arm64) and the
+      # Sonatype jars the native build links hold the pinned jars, byte for byte. A final or .postN tag never gets here: it names its release.
+      - name: Pin the dev engine snapshot
+        id: pin
+        if: ${{ contains(github.ref_name, '.dev') }}
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          python3 -I scripts/dev_engine_pin.py check --tag "$TAG"
+          env_out="$(python3 -I scripts/dev_engine_pin.py shell-env "$TAG")"
+          ref="$(printf '%s\n' "$env_out" | sed -n 's|^IMAGE_REF=arcadedata/arcadedb:||p')"
+          [ -n "$ref" ] || { echo "::error::no image reference in the pin"; exit 1; }
+          echo "arcadedb-tag=$ref" >> "$GITHUB_OUTPUT"
+          echo "Engine snapshot pinned: $ref"
 
   # Builds one wheel for each platform (py3-none-<platform tag>, the same file for every Python) and
   # runs the unit tests on it, on the Pythons scripts/select_matrix.py picks. The called workflow

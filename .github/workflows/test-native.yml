@@ -157,19 +157,31 @@ jobs:
           base="${base%%.post*}"
           if [[ "$version" == *.dev* ]]; then
             final=false
-            engine="${INPUT_ENGINE:-$DEV_ENGINE}"
+            pin_engine=""
+            if [ "${INPUT_RELEASE:-}" = true ]; then
+              # a .devN RELEASE links the pinned snapshot, the one arcadedb-jvm embeds (scripts/dev_engine_pin.json), and nothing else
+              pin_env="$(python3 -I scripts/dev_engine_pin.py shell-env "$version")"
+              pin_engine="$(printf '%s\n' "$pin_env" | sed -n 's/^ENGINE=//p')"
+              [ -n "$pin_engine" ] || { echo "::error::no engine in the pin" >&2; exit 1; }
+              [ -z "$INPUT_ENGINE" ] || [ "$INPUT_ENGINE" = "$pin_engine" ] || { echo "::error::A dev release links the pinned engine $pin_engine, not $INPUT_ENGINE" >&2; exit 1; }
+              python3 -I scripts/dev_engine_pin.py check --tag "$version"
+              engine="$pin_engine"
+            else
+              engine="${INPUT_ENGINE:-$DEV_ENGINE}"
+            fi
           else
             final=true
             engine="${INPUT_ENGINE:-$base}"
             # a final or post wheel links exactly the engine release it is named after
             [ "$engine" = "$base" ] || { echo "::error::Version $version links engine $base, not $engine" >&2; exit 1; }
           fi
-          # A SNAPSHOT engine is for a manual devN run only: a final or post version is refused above (it links exactly its release), and a release
-          # run (release-native.yml passes `release: true`) never builds from a snapshot, so nothing it publishes can depend on one.
+          # A SNAPSHOT engine is for a devN version only: a final or post version is refused above (it links exactly its release). A release run
+          # (release-native.yml passes `release: true`) links a snapshot only for a .devN tag, and only the pinned one (scripts/dev_engine_pin.json,
+          # proven above); any other snapshot, and every snapshot of a final or post release, is refused. tests/test_dev_engine_pin.py runs this step.
           if [[ "$engine" == *-SNAPSHOT ]]; then
             [[ "$engine" =~ ^[0-9]+\.[0-9]+\.[0-9]+-SNAPSHOT$ ]] || { echo "::error::Engine '$engine' is not A.B.C or A.B.C-SNAPSHOT" >&2; exit 1; }
             [ "$final" = false ] || { echo "::error::A SNAPSHOT engine is for a devN version only" >&2; exit 1; }
-            [ "${INPUT_RELEASE:-}" != true ] || { echo "::error::A release never links a SNAPSHOT engine ($engine)" >&2; exit 1; }
+            [ "${INPUT_RELEASE:-}" != true ] || [ "$engine" = "${pin_engine:-}" ] || { echo "::error::A release never links a SNAPSHOT engine ($engine) except the pinned one of a .devN tag" >&2; exit 1; }
           fi
           { echo "version=$version"; echo "engine=$engine"; echo "final=$final"; } >> "$GITHUB_OUTPUT"
           echo "wheel version $version, engine $engine, final=$final"
@@ -380,6 +392,7 @@ jobs:
         env:
           VERSION: ${{ needs.plan.outputs.version }}
           ENGINE: ${{ needs.plan.outputs.engine }}
+          RELEASE: ${{ inputs.release }}
         run: |
           set -euo pipefail
           # the Linux container logged /root/.m2/repository in the native-image classpath; on the runner that is $T/m2/repository
@@ -390,9 +403,17 @@ jobs:
           esac
           mkdir -p "$T/record"
           # THIRD_PARTY_NOTICES.md names the engine release and its jars, so it cannot match a SNAPSHOT build (timestamped jars, no tag):
-          # a SNAPSHOT run skips that comparison. Such a wheel is never published (see the plan job).
+          # a SNAPSHOT run skips that comparison.
           extra=()
-          if [[ "$ENGINE" == *-SNAPSHOT ]]; then extra=(--skip-notices-check); fi
+          if [[ "$ENGINE" == *-SNAPSHOT ]]; then
+            extra=(--skip-notices-check)
+            if [ "${RELEASE:-}" = true ]; then
+              # a .devN release: the Sonatype jars the build resolved must still be the pinned ones (an upstream deploy during the build fails
+              # here, fail closed), and the wheel records the snapshot and the image digest it embeds
+              uv run --no-project --python 3.12 python -I scripts/dev_engine_pin.py check --tag "$VERSION"
+              extra+=(--engine-pin)
+            fi
+          fi
           uv run --no-project --python 3.12 python native/wheel/build_wheel.py --lib-dir "$T/lib" --version "$VERSION" --engine "$ENGINE" \
             --graalvm-home "$GRAALVM_HOME_P5" --m2-repo "$m2" \
             --notices-out "$T/record/THIRD_PARTY_NOTICES.generated.md" --modules-out "$T/record/jdk-modules.txt" --out "$T/wheel" ${extra[@]+"${extra[@]}"}

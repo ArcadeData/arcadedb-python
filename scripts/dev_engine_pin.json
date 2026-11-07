@@ -1,0 +1,15 @@
+{
+  "engine": "26.12.1-SNAPSHOT",
+  "snapshot": "26.12.1-20261106.183100-26",
+  "image_digest": "sha256:faccacf735b4ec040092c9a3d6f5d0b63b4bd72ba7dffcc1f97b75a38e821f6b",
+  "jars": {
+    "arcadedb-console": "639c1bd077df6d334c2baddee22a956aa737999e38bb37e51c64bce227b9cd42",
+    "arcadedb-engine": "7e5443d0da08be895c0bc7cf6c9ce63dda750389672cca6d2ed41d99dea47a5f",
+    "arcadedb-graphql": "90bb2b2d0c184d6399a92bd61c427ca8d67dacc0abfb91d5fdac518baa09ad10",
+    "arcadedb-integration": "3f1584737f72e4f761374751c47ce5bf3deacaaaaec4a23d66d4ac3badb4a9ac",
+    "arcadedb-mcp": "b35ab1b04919148ef4e667ab95ddbaa286c6cc4d382af698a62dd8fa633f0349",
+    "arcadedb-network": "b23403fbdd585395717796d9943f20a12473cba3df1bf082e7ceb83e6de6a082",
+    "arcadedb-server": "0c1430856817df018135c30c1df9fc730a3a401a378309553f1ba4c5f8bb25ef",
+    "arcadedb-studio": "351a767ede7affd7921b2c4b820a6eba63ef0326c3737ed329c82474f3baecc1"
+  }
+}

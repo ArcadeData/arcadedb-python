@@ -146,6 +146,11 @@ def main():
         help="also write the generated notices here (CI keeps it in the build record)",
     )
     ap.add_argument(
+        "--engine-pin",
+        action="store_true",
+        help="--engine is the pinned snapshot of scripts/dev_engine_pin.json (a .devN release): record its timestamped version and image digest",
+    )
+    ap.add_argument(
         "--skip-notices-check",
         action="store_true",
         help="do not compare THIRD_PARTY_NOTICES.md with the gen_notices.py output (needs <lib-dir>/build.log)",
@@ -157,6 +162,17 @@ def main():
     )
     ap.add_argument("--plat", default="", help="override the computed platform tag")
     a = ap.parse_args()
+    pin = None
+    if a.engine_pin:
+        sys.path.insert(0, str(REPO / "scripts"))
+        import dev_engine_pin
+
+        pin = dev_engine_pin.load_pin()
+        problem = dev_engine_pin.tag_problem(a.version, pin)
+        if problem:
+            sys.exit(problem)
+        if a.engine != pin["engine"]:
+            sys.exit(f"--engine {a.engine} is not the pinned engine {pin['engine']}")
     lib_dir, out = Path(a.lib_dir), Path(a.out).resolve()
     libname = LIB_NAMES.get(sys.platform) or sys.exit(
         f"unsupported platform {sys.platform}"
@@ -246,6 +262,8 @@ def main():
     (dst / "_build_info.py").write_text(
         f'"""Written by native-wheel/build_wheel.py."""\n'
         f'ENGINE_VERSION = "{a.engine}"  # the ArcadeDB engine release compiled into {libname}\n'
+        f'ENGINE_SNAPSHOT = {pin["snapshot"] if pin else None!r}  # the exact upstream snapshot (scripts/dev_engine_pin.json) of a .devN wheel\n'
+        f'ENGINE_IMAGE_DIGEST = {pin["image_digest"] if pin else None!r}  # the arcadedata/arcadedb image the same snapshot was pinned by\n'
         f'NATIVE_IMAGE = "GraalVM CE 25.4.4.1.1, -O3, -march={a.march}"\n'
         f'NATIVE_MARCH = "{a.march}"  # lib.py checks the CPU only for an x86-64-v3 image\n'
         f'SOURCE_COMMIT = "{commit}"  # ArcadeData/arcadedb-python commit of the bindings and the Java glue\n',
@@ -255,7 +273,7 @@ def main():
     t = ip.read_text(encoding="utf-8")
     t = t.replace(
         "# Import async execution\n",
-        "from ._build_info import ENGINE_VERSION, NATIVE_IMAGE, NATIVE_MARCH, SOURCE_COMMIT  # noqa: F401\n\n# Import async execution\n",
+        "from ._build_info import ENGINE_IMAGE_DIGEST, ENGINE_SNAPSHOT, ENGINE_VERSION, NATIVE_IMAGE, NATIVE_MARCH, SOURCE_COMMIT  # noqa: F401\n\n# Import async execution\n",
         1,
     )
     t = t.replace(

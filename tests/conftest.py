@@ -38,6 +38,7 @@ WINDOWS_NOT_APPLICABLE = {
 }
 if sys.platform == "win32":
     collect_ignore.extend(WINDOWS_NOT_APPLICABLE)
+    collect_ignore.append("test_dev_engine_pin.py")  # runs the bash code of a workflow step
 if BACKEND != "native":
     # Java -> Python upcalls (Python functions in SQL) exist on the native build only
     collect_ignore.append("test_native_udf.py")
