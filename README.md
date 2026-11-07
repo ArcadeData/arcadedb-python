@@ -16,6 +16,19 @@ Python bindings for [ArcadeDB](https://arcadedb.com), the multi-model database (
 
 Both packages `import arcadedb`, and they have the same public API. Install one, not both. Not sure which? Read [Which package?](https://github.com/ArcadeData/arcadedb-python/blob/main/docs/modules/ROOT/pages/which-package.adoc).
 
+## Embedded bindings or drivers?
+
+This repository is the embedded bindings: the engine runs inside your Python process. The official [drivers](https://github.com/ArcadeData/arcadedb-drivers) are clients of a running ArcadeDB server. Do not mix them up.
+
+| | Embedded bindings (this repository) | Drivers |
+|---|---|---|
+| What it is | The ArcadeDB engine, inside your Python process | Python clients of an ArcadeDB server, HTTP (sync and async) or gRPC. They contain no engine |
+| Needs a server? | No. An in-process HTTP server and Studio are optional | Yes: the Docker image `arcadedata/arcadedb` or any ArcadeDB server. The gRPC driver also needs the server's gRPC plugin |
+| Package and import | `arcadedb` or `arcadedb-jvm`, `import arcadedb` | [`arcadedb-driver`](https://pypi.org/project/arcadedb-driver/), `import arcadedb_driver` (HTTP); [`arcadedb-driver-grpc`](https://pypi.org/project/arcadedb-driver-grpc/), `import arcadedb_driver_grpc` (gRPC) |
+| Use it when | One process, no server: tests, notebooks, scripts, an agent that owns its data | Several clients, an existing server, a service boundary, HA or replication, or clients that are not Python |
+
+You can also use both, for example the bindings for a job and the HTTP driver for a shared server. Driver docs: [HTTP](https://docs.arcadedb.com/arcadedb/how-to/connectivity/drivers/python-http), [gRPC](https://docs.arcadedb.com/arcadedb/how-to/connectivity/drivers/python-grpc). More in [Which package?](https://github.com/ArcadeData/arcadedb-python/blob/main/docs/modules/ROOT/pages/which-package.adoc#embedded-or-driver).
+
 ## Install
 
 ```bash
@@ -65,8 +78,6 @@ This prints `Name: Alice` (the engine also logs to standard error). `create_data
 
 <!-- REMOVE WHEN: the old arcadedb-embedded* shims are retired and two releases have shipped with the two-package layout allow-old-name -->
 > New in 26.11.1: the `arcadedb-jvm` wheels carry the Studio web UI, which the server then serves. Studio used to bundle ApexCharts, which is no longer open source ([ArcadeData/arcadedb#10579](https://github.com/ArcadeData/arcadedb/issues/10579)), and [ArcadeData/arcadedb#10627](https://github.com/ArcadeData/arcadedb/pull/10627) replaced it with Apache ECharts. The earlier 26.10.x wheels on PyPI have no Studio.
-
-For several processes, other languages, HA or replication, run the official Docker image `arcadedata/arcadedb` ([ArcadeDB server](https://docs.arcadedb.com)) and connect with [`arcadedb-driver`](https://pypi.org/project/arcadedb-driver/) (HTTP client, developed in [ArcadeData/arcadedb-drivers](https://github.com/ArcadeData/arcadedb-drivers)).
 
 ## Packages on PyPI
 

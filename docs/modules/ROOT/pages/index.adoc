@@ -23,6 +23,8 @@ These packages run the ArcadeDB engine inside your Python process, with no netwo
 
 Not sure which one? Take `{native-pkg-name}`, and read xref:which-package.adoc[Which package?] to decide for sure. Install one of them, not both.
 
+These are the embedded bindings: the engine runs in your process. The official drivers (`{driver-pkg-name}` and `{grpc-driver-pkg-name}`) are clients of a running ArcadeDB server and contain no engine. To decide between the two, see xref:which-package.adoc#embedded-or-driver[Embedded bindings or a driver?].
+
 // REMOVE WHEN: the old arcadedb-embedded* shims are retired and two releases have shipped with the two-package layout allow-old-name
 NOTE: *First release.* The first release of this layout is 26.11.1, and both packages have a final release on PyPI. A plain `uv add {native-pkg-name}` installs the final. See xref:installation.adoc[Installation].
 
@@ -51,6 +53,8 @@ This page is the map. xref:installation.adoc[Installation] and xref:quickstart.a
 == Embedded bindings or the HTTP driver
 
 ArcadeDB reaches Python in two ways. Pick by where the engine should run.
+
+The table compares the bindings with the HTTP driver. The gRPC driver (`{grpc-driver-pkg-name}`) is the other official client, and xref:which-package.adoc#embedded-or-driver[Embedded bindings or a driver?] covers both.
 
 [cols="1,2,2"]
 |===
