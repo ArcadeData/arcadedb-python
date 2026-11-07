@@ -77,8 +77,5 @@ def test_the_parity_runner_still_reads_the_table_by_that_name_and_applies_it():
     src = PARITY.read_text(encoding="utf-8")
     assert '"WINDOWS_NOT_APPLICABLE"' in src and "ast.literal_eval" in src
     assert (
-        "win_files" in src
-        and 'sys.platform == "win32"'
-        in src.replace("\n    ", " ").replace("(", "").replace(")", "")
-        or "win_files" in src
-    )
+        "not in win_files" in src
+    ), "the parity runner no longer filters its files by the Windows table"
