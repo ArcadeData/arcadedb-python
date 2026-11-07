@@ -96,11 +96,18 @@ from .vector import (
     to_python_array,
 )
 
+# The native wheel records them in _build_info.py (and build_wheel.py imports them near the top of this file), the JVM wheel in
+# _version.py. Look in _build_info first: a fallback that ran last and set None hid the native wheel's value (26.12.1.dev0).
 try:
-    from ._version import ENGINE_IMAGE_DIGEST, ENGINE_SNAPSHOT
-except ImportError:  # a source checkout without a generated _version.py, or an older build
-    ENGINE_SNAPSHOT = None
-    ENGINE_IMAGE_DIGEST = None
+    from ._build_info import ENGINE_IMAGE_DIGEST, ENGINE_SNAPSHOT
+except ImportError:
+    try:
+        from ._version import ENGINE_IMAGE_DIGEST, ENGINE_SNAPSHOT
+    except (
+        ImportError
+    ):  # a source checkout without a generated _version.py, or an older build
+        ENGINE_SNAPSHOT = None
+        ENGINE_IMAGE_DIGEST = None
 
 __all__ = [
     "__version__",

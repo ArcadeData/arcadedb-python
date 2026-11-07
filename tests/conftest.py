@@ -35,10 +35,11 @@ WINDOWS_NOT_APPLICABLE = {
     # the release preflight is a maintainer tool for a POSIX shell: its check (f) runs the workflows' bash step code,
     # and on Windows it reports a SKIP, which its own tests cover on Linux and macOS (ArcadeData/arcadedb-python#208)
     "test_release_preflight.py": "runs the workflows' bash step code",
+    # runs the bash code of the plan step of test-native.yml (scripts/dev_engine_pin.py, #304)
+    "test_dev_engine_pin.py": "runs the bash code of a workflow step",
 }
 if sys.platform == "win32":
     collect_ignore.extend(WINDOWS_NOT_APPLICABLE)
-    collect_ignore.append("test_dev_engine_pin.py")  # runs the bash code of a workflow step
 if BACKEND != "native":
     # Java -> Python upcalls (Python functions in SQL) exist on the native build only
     collect_ignore.append("test_native_udf.py")
