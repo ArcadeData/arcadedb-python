@@ -23,6 +23,8 @@ Pick one of the two packages. Both import as `{import-name}`. If you are not sur
 
 Install one of them, not both. If both are installed, `import arcadedb` raises an `ImportError` that names both packages. See xref:which-package.adoc[Which package?] for the comparison, and for how to switch.
 
+Both packages run the engine inside your Python process. If you want a client for a running ArcadeDB server instead, install a driver (`{driver-pkg-name}` or `{grpc-driver-pkg-name}`): see xref:which-package.adoc#embedded-or-driver[Embedded bindings or a driver?].
+
 // REMOVE WHEN: the old arcadedb-embedded* shims are retired and two releases have shipped with the two-package layout allow-old-name
 NOTE: *First release.* The first release of this layout is 26.11.1, and both packages have a final release on PyPI. A plain `uv add {native-pkg-name}` installs the final, and a later pre-release (`A.B.C.devN`) needs `uv add --prerelease allow {native-pkg-name}`. The same holds for `{jvm-pkg-name}`.
 

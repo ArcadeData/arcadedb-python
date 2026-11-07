@@ -1,7 +1,52 @@
 = Which package?
-:description: Two PyPI packages carry the ArcadeDB engine for Python, arcadedb (native) and arcadedb-jvm (JVM). Both import as arcadedb. This page says which one to install.
+:description: Embedded bindings or a driver, and which embedded package to install. The packages arcadedb (native) and arcadedb-jvm (JVM) run the engine in your process and import as arcadedb. The drivers are clients of a server.
 
-Two packages give you the ArcadeDB engine inside your Python process. Both use the import name `{import-name}`, and they have the same public API. Install one of them, not both.
+Two packages give you the ArcadeDB engine inside your Python process. Both use the import name `{import-name}`, and they have the same public API. Install one of them, not both. If you are not sure that you want the engine in your process at all, read the next section first.
+
+[[embedded-or-driver]]
+== Embedded bindings or a driver?
+
+Python reaches ArcadeDB in two different ways, and the names look alike. The embedded bindings (this repository) run the engine inside your Python process. The official drivers (developed in https://github.com/ArcadeData/arcadedb-drivers[ArcadeData/arcadedb-drivers]) are clients that talk to a running ArcadeDB server. A driver contains no engine.
+
+[cols="1,2,2"]
+|===
+| | Embedded bindings (this repository) | Drivers (ArcadeData/arcadedb-drivers)
+
+| What it is
+| The ArcadeDB engine, running inside your Python process.
+| Python clients of an ArcadeDB server: `{driver-pkg-name}` over HTTP (sync and async) and `{grpc-driver-pkg-name}` over gRPC. They contain no engine.
+
+| Needs a server?
+| No. An in-process HTTP server and Studio are optional (`create_server()`).
+| Yes: the official Docker image `arcadedata/arcadedb`, or any ArcadeDB server. The gRPC driver also needs the gRPC plugin of the server, enabled with `-Darcadedb.server.plugins=Grpc:com.arcadedb.server.grpc.GrpcServerPlugin`.
+
+| Package and import name
+| `{native-pkg-name}` (native, the default) or `{jvm-pkg-name}` (JVM). Both: `import {import-name}`.
+| `{driver-pkg-name}`: `import arcadedb_driver`. `{grpc-driver-pkg-name}`: `import arcadedb_driver_grpc`.
+
+| Use it when
+| You need no server: one process, tests, notebooks, scripts, or an agent that owns its data.
+| Several clients share the data, a server already exists, you want a service boundary, or some clients are not written in Python.
+|===
+
+A rule of thumb:
+
+* No server and one process (tests, notebooks, scripts, an agent that owns its data): use the embedded bindings.
+* Several clients, an existing server, a service boundary or clients in other languages: use a driver.
+* You can use both. For example, run a job with the embedded bindings, and let other programs reach a shared server through the HTTP driver.
+
+The name `{import-name}` on PyPI is the embedded package, and the driver is `{driver-pkg-name}`. So `uv add {native-pkg-name}` gives you the engine, and `uv add {driver-pkg-name}` gives you a client that needs a server.
+
+// REMOVE WHEN: the old arcadedb-embedded* shims are retired and two releases have shipped with the two-package layout allow-old-name
+The package formerly `arcadedb-embedded` is now a shim that installs `{native-pkg-name}` (see <<old-names>>).
+
+The driver pages of the main manual: {arcadedb-docs-url}/how-to/connectivity/drivers/python-http[Python HTTP driver], {arcadedb-docs-url}/how-to/connectivity/drivers/python-grpc[Python gRPC driver], {arcadedb-docs-url}/how-to/connectivity/drivers/native-drivers[Native drivers] and the {arcadedb-docs-url}/tutorials/python-quickstart[Python quickstart]. The manual page for the embedded bindings is {arcadedb-docs-url}/how-to/connectivity/python-embedded[Python embedded].
+
+The server also speaks the Bolt, PostgreSQL, MongoDB and Redis protocols, for compatibility with existing tools. You reach them with the standard clients (`neo4j`, `psycopg`, `pymongo`, `redis-py`). ArcadeDB has no client of its own for these four. See {arcadedb-docs-url}/api-integration[API and integration], {arcadedb-docs-url}/how-to/connectivity/bolt[Neo4j Bolt], {arcadedb-docs-url}/how-to/connectivity/postgres[PostgreSQL protocol], {arcadedb-docs-url}/reference/mongodb-ql/mongo[MongoDB] and {arcadedb-docs-url}/reference/redis-ql/redis[Redis].
+
+== Native build or JVM build
+
+If you chose the embedded bindings, pick the build.
 
 [cols="1,2,3"]
 |===
@@ -118,7 +163,7 @@ There is no extra to select a build: `{native-pkg-name}[jvm]` does not exist. Yo
 
 == Server use
 
-Neither package is a server deployment. They embed the engine in one Python process. For HTTP access, Studio, many processes, other programming languages or high availability, run the official Docker image `arcadedata/arcadedb` and connect with a driver (see <<drivers>>). The xref:index.adoc#embedded-vs-http[Embedded bindings or the HTTP driver] section compares the two ways.
+Neither package is a server deployment. They embed the engine in one Python process. For HTTP access, Studio, many processes, other programming languages or high availability, run the official Docker image `arcadedata/arcadedb` and connect with a driver (see <<drivers>>). <<embedded-or-driver>> compares the two ways.
 
 // REMOVE WHEN: the old arcadedb-embedded* shims are retired and two releases have shipped with the two-package layout allow-old-name
 [[old-names]]
