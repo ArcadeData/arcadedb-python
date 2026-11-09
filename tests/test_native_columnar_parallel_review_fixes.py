@@ -1,8 +1,8 @@
 """Review of the native parallel loads (#328): nothing is lost silently, an interrupt leaves no writer running and no token behind.
 
 ``insert_columns(parallel=True)`` hands the records to the async writers in one crossing and waits for them before it returns. These
-tests pin what a caller relies on: a record that a writer rejects is counted (``stored + reported failed >= rows``) and the stored
-count is exactly the distinct keys; a load at the writers' batch boundary stores every row and nothing lands after the call returns;
+tests pin what a caller relies on: a record that a writer rejects is counted (``stored + reported failed >= rows``) and no key is stored twice
+(a writer that meets a duplicate abandons its whole open batch, and reports it); a load at the writers' batch boundary stores every row and nothing lands after the call returns;
 a ^C during the crossing, or between the chunks of the row path, waits for the writers and reads (so removes) the failure token; a wait
 that fails still reads the tokens; and the message of a failed parallel batch inside a caller's transaction does not claim that a
 rollback removes rows the writers committed. Needs the native library: conftest.py collects this file on the native backend only.
@@ -70,20 +70,23 @@ def _failed_count(error):
     return int(re.search(r"reported (\d+) failed record", str(error)).group(1))
 
 
-def test_a_duplicate_key_is_stored_once_and_the_rest_are_reported(temp_db):
+def test_a_duplicate_key_is_reported_and_no_row_is_stored_twice(temp_db):
     _type(temp_db, unique=True)
     n, dupes = 3_000, 50
     ids = np.arange(n, dtype=np.int64)
     ids[n - dupes :] = np.arange(dupes)  # the last 50 repeat the first 50 keys
     with pytest.raises(ArcadeDBError, match="failed record") as err:
         temp_db.insert_columns("Col", {"id": ids, "txt": ["t"] * n}, parallel=True)
-    stored = _count(temp_db, "Col")
+    stored_ids = [r["id"] for r in temp_db.query("sql", "SELECT id FROM Col").to_list()]
+    stored = len(stored_ids)
     assert (
         stored + _failed_count(err.value) >= n
     )  # every row is a stored row or a reported one
-    assert stored == len(set(ids.tolist())) == n - dupes
-    keys = {r["id"] for r in temp_db.query("sql", "SELECT id FROM Col").to_list()}
-    assert keys == set(ids.tolist())  # each key once, no key lost
+    # A writer that meets a duplicate key rolls back its WHOLE open batch (up to commit_every rows), so the valid rows of that batch are
+    # abandoned and reported too: `stored` can be below the number of distinct keys, never above it.
+    assert stored <= len(set(ids.tolist()))
+    assert set(stored_ids) <= set(ids.tolist())  # only ids that were sent
+    assert len(stored_ids) == len(set(stored_ids))  # none stored twice
 
 
 def test_a_load_at_the_writers_batch_boundary_stores_every_row_and_nothing_later(
