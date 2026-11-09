@@ -11,6 +11,7 @@ The counts are crossings (the ctypes doors ``cmd``, ``call``, ``call_bin``, ``ex
 deterministic. The oracle for the values and the errors is the lazy form itself (``db.command(...).first()``), kept for every other caller.
 """
 
+import contextlib
 import datetime as dt
 from decimal import Decimal
 
@@ -18,7 +19,7 @@ import numpy as np
 import pytest
 
 from arcadedb import ArcadeDBError
-from arcadedb._native import lib
+from arcadedb._native import extras, lib, records
 
 
 class _Crossings:
@@ -211,3 +212,140 @@ def test_an_update_outside_a_transaction_still_raises_before_reading(db, crossin
     with pytest.raises(ArcadeDBError, match="Transaction not begun"):
         record.save()
     assert crossings.names == ["arcadedb_n_tx"]
+
+
+# -- vetoes and errors of the first row, through the form whose reply carries the row
+
+
+def test_a_before_create_veto_on_a_new_record_writes_nothing_and_raises_nothing(
+    db, crossings
+):
+    veto = db.on("before_create", lambda r: r.get("name") != "blocked", "D")
+    vetoes = extras.veto_count()
+    with db.transaction():
+        doc = db.new_document("D")
+        doc.set("name", "blocked")
+        crossings.reset()
+        assert doc.save() is doc  # no error: a veto is not a failure
+        assert crossings.names == ["exec_query"]  # the veto came in the one crossing
+    assert extras.veto_count() == vetoes + 1
+    assert doc.get_rid() == records._UNSAVED  # the object was not given a record id
+    assert db.count_type("D") == 0  # nothing stored
+    veto.remove()
+    with db.transaction():
+        doc.save()  # the same object saves once the veto is lifted
+    assert db.count_type("D") == 1
+    assert db.lookup_by_rid(str(doc.get_identity())).get("name") == "blocked"
+
+
+def test_a_before_update_veto_writes_nothing_and_the_next_save_is_no_conflict(
+    db, crossings
+):
+    rid = _saved(db, name="a")
+    veto = db.on("before_update", lambda r: r.get("name") != "frozen", "D")
+    vetoes = extras.veto_count()
+    mutable = db.lookup_by_rid(rid).modify()
+    mutable.set("name", "frozen")  # a changed value of the kind stored as sent
+    with db.transaction():
+        crossings.reset()
+        assert mutable.save() is mutable
+        assert crossings.names == ["arcadedb_n_tx", "exec_query", "exec_query"]
+    assert extras.veto_count() == vetoes + 1
+    assert db.lookup_by_rid(rid).get("name") == "a"  # nothing written
+    veto.remove()
+    mutable.set("name", "thawed")
+    with db.transaction():
+        mutable.save()  # the copy is as it was: the earlier veto left no conflict behind
+    assert db.lookup_by_rid(rid).get("name") == "thawed"
+
+
+def test_a_before_update_veto_on_an_update_that_reads_its_row_back(db, crossings):
+    rid = _saved(db, name="a")
+    veto = db.on("before_update", lambda r: r.get("extra") != "x", "D")
+    vetoes = extras.veto_count()
+    mutable = db.lookup_by_rid(rid).modify()
+    mutable.set("extra", "x")  # a new property: the statement is the RETURN AFTER one
+    with db.transaction():
+        crossings.reset()
+        assert mutable.save() is mutable
+        assert crossings.names == ["arcadedb_n_tx", "exec_query", "exec_query"]
+    assert extras.veto_count() == vetoes + 1
+    stored = db.lookup_by_rid(rid)
+    assert stored.get("extra") is None and stored.get("name") == "a"
+    veto.remove()
+    with db.transaction():
+        mutable.save()
+    stored = db.lookup_by_rid(rid)
+    assert stored.get("extra") == "x" and stored.get("name") == "a"
+
+
+@contextlib.contextmanager
+def _rolled_back(db):
+    """A transaction that is always rolled back: a statement that failed leaves nothing to commit."""
+    db.begin()
+    try:
+        yield
+    finally:
+        db.rollback()
+
+
+def _raises_at(call):
+    """``("call", error)`` when the statement call raises, ``("read", error)`` when reading its first row does, ``(None, None)``."""
+    try:
+        result = call()
+    except ArcadeDBError as error:
+        return "call", error
+    try:
+        result.first()
+    except ArcadeDBError as error:
+        return "read", error
+    return None, None
+
+
+FIRST_ROW_ERRORS = {
+    "insert": ("INSERT INTO D SET v = 1 / (1 - 1)", False),
+    "update": ("UPDATE :rid SET v = 1 / (1 - 1)", True),
+}
+
+
+@pytest.mark.parametrize("case", list(FIRST_ROW_ERRORS))
+def test_an_error_met_while_the_first_row_is_computed_is_raised_when_it_is_read(
+    db, case
+):
+    sql, with_rid = FIRST_ROW_ERRORS[case]
+    rid = _saved(db, v=1)
+    params = ({"rid": records.RID(rid)},) if with_rid else ()
+    with _rolled_back(db):
+        lazy_phase, lazy = _raises_at(lambda: db.command("sql", sql, *params))
+    with _rolled_back(db):
+        eager_phase, eager = _raises_at(
+            lambda: db._command_first_row("sql", sql, *params)
+        )
+    assert (
+        eager_phase == lazy_phase == "read"
+    )  # the engine computes the row when it is pulled: the reply carries it as rerr
+    assert str(eager).startswith("Reading the result set failed: ")
+    assert str(eager) == str(lazy) and type(eager) is type(lazy)
+    assert eager.native.get("cls") == lazy.native.get("cls")
+
+
+def test_a_before_create_callback_that_raises_fails_save_as_the_lazy_form_does(db):
+    def explode(record):
+        raise RuntimeError("no creating today")
+
+    handle = db.on("before_create", explode, "D")
+    with _rolled_back(db):
+        lazy_phase, lazy = _raises_at(
+            lambda: db.command("sql", "INSERT INTO D CONTENT :row", {"row": {"a": 1}})
+        )
+    with pytest.raises(ArcadeDBError) as eager:
+        with db.transaction():
+            doc = db.new_document("D")
+            doc.set("a", 1)
+            doc.save()
+    handle.remove()
+    assert lazy_phase is not None
+    assert str(eager.value) == str(lazy)
+    assert "before_create" in str(eager.value)
+    assert "RuntimeError: no creating today" in str(eager.value)
+    assert db.count_type("D") == 0
