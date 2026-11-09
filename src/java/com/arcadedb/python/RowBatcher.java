@@ -53,23 +53,36 @@ public final class RowBatcher {
    * JSON has no NaN or infinity, and the engine's writers turn them into null. This returns {@code value} with every
    * NaN, Infinity and -Infinity (a Double or Float, or an element of a float[], a double[], a Collection or a Map, at any
    * depth) replaced by the tag {@code {"\u0001": ["f", "NaN"]}} (the text is {@code Double.toString}), which Python turns
-   * back into a float. A value with nothing non-finite is returned as it is, with no copy, so the common row costs one
-   * type test per value.
+   * back into a float. A Float, and each element of a float[], is also widened to a double (a float[] becomes a double[]),
+   * so the JSON text is the exact double and Python reads the same float that to_list() returns (#314). A value that is
+   * neither a Float nor a float[] and has nothing non-finite is returned as it is, with no copy, so the common row costs
+   * one type test per value.
    */
   static Object keepNonFinite(final Object value) {
-    if (value instanceof Double || value instanceof Float) {
-      final double d = ((Number) value).doubleValue();
+    if (value instanceof Double) {
+      final double d = (Double) value;
       return Double.isFinite(d) ? value : tag(d);
     }
+    if (value instanceof Float) {
+      // widened to a Double: the JSON writer prints a Float as the shortest float32 text ("0.1"), which Python reads as a
+      // different double than the exact widening of the float32 that to_list() and the native build return
+      final double d = ((Float) value).doubleValue();
+      return Double.isFinite(d) ? (Object) d : tag(d);
+    }
     if (value instanceof float[] floats) {
-      for (final float f : floats)
-        if (!Float.isFinite(f)) {
-          final List<Object> out = new ArrayList<>(floats.length);
-          for (final float x : floats)
-            out.add(Float.isFinite(x) ? (Object) x : tag(x));
-          return out;
-        }
-      return value;
+      final double[] wide = new double[floats.length];
+      boolean finite = true;
+      for (int i = 0; i < floats.length; i++) {
+        wide[i] = floats[i];
+        if (!Double.isFinite(wide[i]))
+          finite = false;
+      }
+      if (finite)
+        return wide;
+      final List<Object> out = new ArrayList<>(wide.length);
+      for (final double x : wide)
+        out.add(Double.isFinite(x) ? (Object) x : tag(x));
+      return out;
     }
     if (value instanceof double[] doubles) {
       for (final double d : doubles)
