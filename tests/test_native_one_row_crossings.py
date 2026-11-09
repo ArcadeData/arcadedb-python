@@ -193,9 +193,8 @@ def test_a_stale_record_is_still_refused_before_anything_is_written(db):
     rid = _saved(db, a=1, b=1)
     mine = db.lookup_by_rid(rid).modify()
     with db.transaction():
-        db.command(
-            "sql", f"UPDATE {rid} SET b = 9"
-        ).close()  # nosec B608 - a record id this test read
+        bump_sql = f"UPDATE {rid} SET b = 9"  # nosec B608 - a record id this test read
+        db.command("sql", bump_sql).close()
     mine.set("a", 2)
     with pytest.raises(ArcadeDBError, match="ConcurrentModificationException"):
         with db.transaction():
