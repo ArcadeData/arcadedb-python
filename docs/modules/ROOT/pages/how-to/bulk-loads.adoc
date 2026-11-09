@@ -65,7 +65,7 @@ Because the two packages have different defaults, the same program can keep diff
 
 On both packages, `insert_many` keeps rows with `datetime`, `date`, `Decimal`, `bytes`, numpy scalar, or pandas `NA` and `NaT` values on the bulk path. On the `arcadedb` (native) package, a row with a value the bulk text cannot carry (NaN or infinity, an integer beyond 64 bits, a date-time or `Decimal` inside a list or dict, or a `datetime.time`) goes in with its own statement, in the order given.
 
-`insert_many` and `create_vertices` check their rows while they write the JSON text, in one pass over the rows, not in a loop before it. The first bad row of a batch raises the same exception type and message as before. The message names the bad value, not a row number.
+`insert_many` and `create_vertices` check their rows while they write the JSON text, in one pass over the rows, not in a loop before it. The same rows fail the check as before, and they take the same fallback path as before. The check raises no error to your code.
 
 [[columnar-loads]]
 == Columnar loads
@@ -74,7 +74,7 @@ On both packages, `insert_many` keeps rows with `datetime`, `date`, `Decimal`, `
 
 On the `arcadedb` (native) package, a batch whose columns the library's buffers can carry crosses in one call, with no Python dict per row and no JSON text. These columns stay columnar: integers, floats, bools, text, date-times (`datetime`, `pandas.Timestamp`, and Arrow timestamps of any unit), dates, `Decimal`, and `bytes` or `bytearray`. The stored values are the ones the row path stores.
 
-A column the buffers cannot carry makes the batch take the row path, which stores the same values through `insert_many`. These are a column that mixes types, a nested value, a numpy `datetime64` array, an integer beyond 64 bits, a string with a lone surrogate, a non-finite `Decimal`, and a pandas `NaT` or `NA` column. `ARCADEDB_NATIVE_BULK=0` in the environment turns the columnar path off.
+A column the buffers cannot carry makes the batch take the row path, which stores the same values through `insert_many`. These are a column that mixes types, a nested value, an integer beyond 64 bits, a string with a lone surrogate, a non-finite `Decimal`, and, in `insert_columns`, a numpy `datetime64` array or a list that holds pandas `NaT` or `NA`. A DataFrame goes through Arrow first, where a `NaT` or `NA` is a null, so it stays columnar. `ARCADEDB_NATIVE_BULK=0` in the environment turns the columnar path off.
 
 On the `arcadedb-jvm` package, a column of only `str` and `None` crosses as one UTF-8 buffer with its row offsets, and a mask when a row is null. A column that mixes types, is empty, or holds more than 2 GiB of text crosses value by value. A column with a lone surrogate also crosses value by value, and is refused with the error it always raised, before anything is written.
 
@@ -102,7 +102,7 @@ On both packages, `insert_dataframe` and `insert_arrow` on a vertex type load th
 
 * The load runs with the write-ahead log setting of the database. `graph_batch()` has its own `use_wal` argument.
 * Each batch of `batch_size` rows (10,000 by default) is one transaction. A failed batch is rolled back, earlier batches stay committed, and the error message says how many rows that is.
-* A batch whose save or commit raises a `NeedRetryException` (an MVCC conflict with another writer, a lock timeout) is rolled back and written again from its first row. It is tried up to 10 more times, after a wait that starts at 1 second and doubles up to 10 seconds. After the last try the error is raised unchanged. The columnar insert does this for every type it loads, not only for vertices, when no transaction of yours is open.
+* A batch whose save or commit raises a `NeedRetryException` (an MVCC conflict with another writer, a lock timeout) is rolled back and written again from its first row. It is tried up to 10 more times, after a wait that starts at 1 second and doubles up to 10 seconds. After the last try the error is raised unchanged. The columnar insert does this for every type it loads, not only for vertices, when no transaction of yours is open. A call with `parallel=True` does not retry, and on the native package neither does a batch that takes the row path.
 * A vertex load inside a transaction you opened is refused with `ArcadeDBError` before anything is written, because the load commits its own batches. A document load joins your transaction.
 
 == Change the commit size
