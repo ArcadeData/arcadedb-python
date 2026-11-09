@@ -1,0 +1,50 @@
+# Assigns every new issue and pull request to the maintainer, as it is opened.
+#
+# Without this an item has no assignee until someone sets one by hand, and the maintainer wants to see each
+# one in their own queue from the first minute. The only thing to change is the `maintainer` login in the
+# script below. A pull request that already has the maintainer assigned is left alone, and an assignment
+# the API refuses (a bot, a fork pull request) is logged as a warning and never fails the job.
+#
+# `pull_request_target` so a fork's pull request still gets a token that can edit it. Nothing from the pull
+# request head is checked out or run: the job calls the GitHub API only.
+#
+# REMOVE WHEN: nothing, this stays for as long as the repository has a maintainer to assign.
+name: Assign the maintainer
+
+on:
+  issues:
+    types: [opened]
+  pull_request_target:
+    types: [opened]
+
+permissions:
+  issues: write
+  # assigning a pull request needs pull-requests: write (issues: write covers issues only)
+  pull-requests: write
+  contents: read
+
+jobs:
+  assign:
+    name: Assign the maintainer
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Assign the maintainer
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const maintainer = 'tae898';
+            const { owner, repo } = context.repo;
+            const item = context.payload.issue ?? context.payload.pull_request;
+            const number = item.number;
+
+            if (item.assignees.some((a) => a.login.toLowerCase() === maintainer.toLowerCase())) {
+              core.info(`#${number}: ${maintainer} is already assigned.`);
+              return;
+            }
+            try {
+              await github.rest.issues.addAssignees({ owner, repo, issue_number: number, assignees: [maintainer] });
+              core.info(`#${number}: assigned to ${maintainer}.`);
+            } catch (error) {
+              core.warning(`#${number}: could not assign ${maintainer}: ${error.message}`);
+            }
