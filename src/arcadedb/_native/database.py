@@ -470,15 +470,11 @@ class NativeResultSet:
         with two exceptions that are the same on both builds. A DATETIME keeps its microseconds (a ``datetime64[us]`` column, where
         ``to_columns()`` and ``to_arrow()`` carry milliseconds), a DATE is a ``datetime.date`` in an object column, and a ``Decimal``
         stays one. A column of ``float[]`` vectors holds one numpy ``float32`` array per cell (a row of the matrix ``to_columns()``
-        returns, not a Python list per row); ``to_list()`` gives lists of floats.
+        returns, not a Python list per row) and None for a null; ``to_list()`` gives lists of floats.
         """
         import pandas as pd
 
         columns = self._columns(25_000, None, True)
-        # pandas rejects 2-D ndarrays as column values; vector columns become object columns of row slices
-        columns = {
-            k: (list(v) if getattr(v, "ndim", 1) > 1 else v) for k, v in columns.items()
-        }
         return pd.DataFrame(columns)
 
     def _columns(self, batch_size, columns, micros):
@@ -498,7 +494,8 @@ class NativeResultSet:
         """Columns as the JVM build returns them (numpy int64/float64/bool/datetime64[ms] arrays, lists for text and JSON-typed
         values, an object array of Decimal), decoded from column frames by the decoder both builds share. The arrays are writable,
         and a column's type belongs to the whole result, not to where a batch ends. A column is a float32 matrix when the property is
-        a ``float[]`` (ARRAY_OF_FLOATS), and a list of lists when it is a LIST of numbers whatever the values. An empty result is
+        a ``float[]`` (ARRAY_OF_FLOATS), and a list of lists when it is a LIST of numbers whatever the values; a null vector is a row of
+        NaN in the matrix (``to_dataframe()`` and ``to_arrow()`` keep it a null). An empty result is
         ``{}``, or the ``columns`` asked for as empty lists. None when numpy is missing.
         """
         try:

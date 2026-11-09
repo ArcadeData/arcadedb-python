@@ -340,9 +340,8 @@ def _assert_frame_equal(new, old_rows, columns=None):
             # a vector cell is a numpy float32 array (documented), the values are the stored ones
             for cell, want in zip(new[name].tolist(), old[name].tolist()):
                 if want is None:
-                    assert cell is None or (
-                        isinstance(cell, float) and math.isnan(cell)
-                    ), name
+                    # a null vector is a missing value, never a vector of NaN
+                    assert cell is None, (name, cell)
                 else:
                     assert isinstance(cell, np.ndarray) and cell.dtype == np.float32, (
                         name,

@@ -529,5 +529,68 @@ def test_vectors_whose_dimension_changes_between_frames_are_one_list_column(temp
         [{"i": i, "v": [0.5, 1.0, 2.0] if i < 300 else [0.5, 1.0]} for i in range(600)],
     )
     t = db.query("sql", "SELECT i, v FROM Dim ORDER BY i").to_arrow(batch_size=100)
-    assert t.schema.field("v").type == pa.list_(pa.float32())
+    assert t.schema.field("v").type == pa.list_(
+        pa.float64()
+    )  # a lossless widening, wherever the dimension changes
     assert t.column("v").to_pylist() == [[0.5, 1.0, 2.0]] * 300 + [[0.5, 1.0]] * 300
+
+
+def test_vector_types_unify_by_value_and_dimension_never_to_text():
+    def vec(dim, ctype, dtype, rows=2):
+        data = np.arange(rows * dim, dtype=dtype).reshape(rows, dim).tobytes()
+        return _frame(rows, [("v", ctype, [], data, dim)])
+
+    f3, f2 = _arrow(vec(3, "f4v", "<f4")), _arrow(vec(2, "f4v", "<f4"))
+    f8 = _arrow(vec(3, "f8v", "<f8"))
+    table = _columnar.merge_arrow(["v"], [f3, f2])
+    assert table.schema.field("v").type == pa.list_(pa.float64())
+    assert table.column("v").to_pylist() == [[0, 1, 2], [3, 4, 5], [0, 1], [2, 3]]
+    table = _columnar.merge_arrow(["v"], [f3, f8])
+    assert table.schema.field("v").type == pa.list_(pa.float64(), 3)
+    assert table.column("v").to_pylist() == [[0, 1, 2], [3, 4, 5]] * 2
+
+
+def test_a_null_vector_is_none_in_the_dataframe_form_and_a_nan_row_in_the_matrix():
+    data = np.array([[0.5, 1.0], [0, 0], [2.0, 3.0]], dtype="<f4").tobytes()
+    frame = _frame(3, [("v", "f4v", [1], data, 2)])
+    _, cells = _columns(frame, micros=True)
+    cells = cells["v"]
+    assert cells[1] is None
+    assert all(
+        isinstance(c, np.ndarray) and c.dtype == np.float32
+        for c in (cells[0], cells[2])
+    )
+    assert cells[2].tolist() == [2.0, 3.0]
+    _, matrix = _columns(frame)
+    assert matrix["v"].shape == (3, 2)
+    assert np.isnan(matrix["v"][1]).all()
+
+
+def test_null_vectors_in_every_columnar_api(temp_db):
+    db = temp_db
+    db.command("sql", "CREATE DOCUMENT TYPE NV")
+    db.command("sql", "CREATE PROPERTY NV.i INTEGER")
+    db.command("sql", "CREATE PROPERTY NV.v ARRAY_OF_FLOATS")
+    rows = [
+        {"i": i, "v": None if i % 5 == 2 else [0.5 * i, 1.0, 2.0]} for i in range(700)
+    ]
+    db.insert_many("NV", rows)
+    sql = "SELECT i, v FROM NV ORDER BY i"
+    nulls = [i for i in range(700) if i % 5 == 2]
+    df = db.query("sql", sql).to_dataframe()
+    cells = df["v"].tolist()
+    assert [i for i, c in enumerate(cells) if c is None] == nulls
+    assert all(
+        isinstance(c, np.ndarray) and c.dtype == np.float32
+        for c in cells
+        if c is not None
+    )
+    assert cells[3].tolist() == [1.5, 1.0, 2.0]
+    t = db.query("sql", sql).to_arrow()
+    assert t.column("v").null_count == len(nulls)
+    assert [i for i, v in enumerate(t.column("v").to_pylist()) if v is None] == nulls
+    p = db.query("sql", sql).to_polars()
+    assert p["v"].null_count() == len(nulls)
+    assert p["v"].to_list()[3] == [1.5, 1.0, 2.0]
+    m = db.query("sql", sql).to_columns()["v"]
+    assert m.shape == (700, 3) and np.isnan(m[nulls]).all()

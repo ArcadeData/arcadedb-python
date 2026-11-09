@@ -555,8 +555,8 @@ class ResultSet:
         carry milliseconds), a DATE is a ``datetime.date`` in an object column,
         and a ``Decimal`` stays one. A column of ``float[]`` vectors holds one
         numpy ``float32`` array per cell (a row of the matrix ``to_columns()``
-        returns, no copy into a Python list per row); ``to_list()`` gives
-        lists of floats.
+        returns, no copy into a Python list per row) and None for a null;
+        ``to_list()`` gives lists of floats.
 
         Args:
             convert_types: Convert Java types to Python (default: True)
@@ -588,12 +588,7 @@ class ResultSet:
             # to_arrow() keep the documented milliseconds.
             columns = self._read_columns(25_000, None, micros=True)
             if columns is not None:
-                # pandas rejects 2-D ndarrays as column values; vector
-                # columns (f4v/f8v) become object columns of row slices
-                columns = {
-                    k: (list(v) if getattr(v, "ndim", 1) > 1 else v)
-                    for k, v in columns.items()
-                }
+                # a vector column is already one numpy array per cell, None for a null
                 return pd.DataFrame(columns)
 
         return pd.DataFrame(self.to_list(convert_types=convert_types))
@@ -657,7 +652,9 @@ class ResultSet:
         ``Decimal`` values (#115). The type of a column belongs to the whole
         result, not to where a batch ends: a batch that lacks the column or
         holds only nulls for it takes the type of the batches that have
-        values. The arrays are writable. An empty result is ``{}``, or, when
+        values. The arrays are writable. A vector column is a ``(count, dim)`` matrix
+        and a null vector is a row of NaN in it (``to_dataframe()`` and ``to_arrow()`` keep
+        it a null). An empty result is ``{}``, or, when
         ``columns`` is given, those columns as empty lists.
 
         The columns are the union of every row's property names, in order of

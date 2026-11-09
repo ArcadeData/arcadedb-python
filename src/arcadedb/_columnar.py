@@ -170,14 +170,15 @@ def _unify_arrow_chunk_types(arrs: list, pa) -> list:
         # (the widening is exact), never text
         values = {t.value_type for t in types}
         if values <= {pa.float32(), pa.float64()}:
-            value = pa.float64() if pa.float64() in values else pa.float32()
+            # always float64: the widening is exact, and a frame whose rows differ in length is a json column (list<double>) on its
+            # own, so float32 here would make the type depend on whether the change falls inside a frame or between two
             sizes = {
                 t.list_size if pa.types.is_fixed_size_list(t) else None for t in types
             }
             target = (
-                pa.list_(value, next(iter(sizes)))
+                pa.list_(pa.float64(), next(iter(sizes)))
                 if len(sizes) == 1 and None not in sizes
-                else pa.list_(value)
+                else pa.list_(pa.float64())
             )
             try:
                 return [pa.array(a.to_pylist(), type=target) for a in arrs]
@@ -238,7 +239,10 @@ def decode_columns_frame(
 ) -> Tuple[int, Dict[str, Any], Dict[str, Any]]:
     """``(count, parts, header)`` of one frame as ``to_columns`` columns: ``parts`` maps a column name to a numpy array
     (int64, float64, bool, datetime64) or a Python list (text, JSON-typed values, a bool column with nulls); a count of 0 has
-    no parts. With ``micros`` a naive datetime column is ``datetime64[us]`` (``dtu``).
+    no parts. A vector column is a (count, dim) matrix, a null row of it NaN.
+
+    ``micros`` is the ``to_dataframe`` form: a naive datetime column is ``datetime64[us]`` (``dtu``), and a vector column is a
+    list with one numpy array per cell and None for a null (a NaN row would read as a vector of NaN, not as a missing value).
     """
     import numpy as np
 
@@ -291,6 +295,10 @@ def decode_columns_frame(
                 values = np.empty((count, 0), dtype=dt)
             else:
                 values = np.frombuffer(data, dtype=dt).reshape(count, dim).copy()
+            if micros:
+                values = [
+                    None if has_nulls and mask[i] else values[i] for i in range(count)
+                ]
         elif ctype == "json":
             values = json_values(data, side, count)
         elif ctype == "dec":
