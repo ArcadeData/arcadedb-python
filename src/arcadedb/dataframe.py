@@ -434,7 +434,7 @@ def insert_table(
                     batch.column(i),
                     pa,
                     native,
-                    arrow=native and not is_vertex and not parallel,
+                    arrow=native and not is_vertex,
                 )
                 for i, name in enumerate(names)
             }
@@ -497,9 +497,22 @@ def _insert_documents_native(
     """One batch of documents on the native backend. When every column can cross as memory (numbers, bools, strings, nulls,
     float vectors for an ``ARRAY_OF_FLOATS`` property) the batch goes through the columnar entry, no Python values and no JSON
     text; otherwise the columns become one dict per row and go to ``insert_many`` (one crossing per 10,000 rows). Either way
-    the batch is one transaction, or joins the caller's.
+    the batch is one transaction, or joins the caller's. With ``parallel`` the same columnar entry hands the records to the async
+    writers (no transaction), and the call waits for them and raises when a record failed, as ``insert_many(parallel=True)`` does.
     """
-    if not parallel:
+    if parallel:
+        from ._native.bulk import insert_columns_parallel
+
+        try:
+            sent = insert_columns_parallel(
+                db, type_name, columns, {} if declared is None else declared
+            )
+        except ArcadeDBError as e:
+            raise db._parallel_load_failed(type_name, e) from e
+        if sent is not None:
+            db._finish_parallel(type_name, [sent[1]], sent[0])
+            return
+    else:
         from ._native.bulk import insert_columns_fast
 
         if (

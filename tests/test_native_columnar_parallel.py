@@ -206,3 +206,38 @@ def test_the_synchronous_call_is_unchanged(temp_db, spy):
     assert temp_db.insert_columns("Col", _columns(500), commit_every=100) == 500
     assert spy.count(COLP) == 1 and spy.row_chunks == 0
     assert _count(temp_db, "Col") == 500
+
+
+def test_insert_arrow_parallel_takes_the_columnar_entry(temp_db, spy, monkeypatch):
+    import pyarrow as pa
+
+    _types(temp_db, "Ref", "ByTable")
+    columns = _columns(2_000)
+    table = pa.table(
+        {
+            "id": columns["id"],
+            "val": pa.array(
+                [None if i % 7 == 0 else v for i, v in enumerate(columns["val"])]
+            ),
+            "txt": pa.array(columns["txt"]),
+        }
+    )
+    with (
+        monkeypatch.context() as m
+    ):  # the private reference: the row path of the old code
+        m.setattr(bulk, "_ENABLED", False)
+        assert (
+            temp_db.insert_arrow("Ref", table, batch_size=700, parallel=True) == 2_000
+        )
+    assert spy.count(COLP) == 0 and spy.row_chunks >= 1
+
+    spy.calls.clear()
+    spy.row_chunks = 0
+    assert (
+        temp_db.insert_arrow("ByTable", table, batch_size=700, parallel=True) == 2_000
+    )
+    assert spy.count(COLP) == 3 and spy.row_chunks == 0  # one crossing per batch
+
+    expected = _stored(temp_db, "Ref")
+    assert len(expected) == 2_000 and expected[0]["val"][0] is None
+    assert _stored(temp_db, "ByTable") == expected
