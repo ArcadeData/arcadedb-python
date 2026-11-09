@@ -82,3 +82,40 @@ def test_a_scalar_the_text_changes_sends_its_chunk_through_the_matrix_path(
             assert len(rids) == 250
             stored = db.query("sql", "SELECT x FROM V WHERE id = 150").first().get("x")
             assert stored == 5e-324 and type(stored) is float
+
+
+def test_the_stored_type_does_not_depend_on_which_chunk_held_a_bad_value(
+    temp_db_path, monkeypatch
+):
+    """An undeclared int property is stored as the same type in the chunks that crossed as JSON text and in the chunk that took the
+    property-matrix path because a NaN sat in another property of one of its rows (the 100,000-row chunking of the real class).
+    """
+    n = 250_000
+    rows = [{"id": i, "k": i % 1000} for i in range(n)]
+    rows[150_000] = {"id": 150_000, "k": 1, "x": float("nan")}  # chunk 2 of 3 only
+    probes = {5: "chunk 1", 150_001: "chunk 2", 249_999: "chunk 3"}
+    calls = []
+    real = GraphBatch._to_java_property_matrix
+
+    def spy(self, chunk):
+        calls.append(len(chunk))
+        return real(self, chunk)
+
+    monkeypatch.setattr(GraphBatch, "_to_java_property_matrix", spy)
+    with arcadedb.create_database(temp_db_path) as db:
+        db.command("sql", "CREATE VERTEX TYPE V")
+        with db.graph_batch(parallel_flush=False) as batch:
+            assert len(batch.create_vertices("V", rows)) == n
+        assert calls == [100_000], "only the chunk with the NaN takes the matrix path"
+        ids = ", ".join(str(i) for i in probes)
+        query = (
+            f"SELECT id, k, k.javaType() AS t FROM V WHERE id IN [{ids}]"  # nosec B608
+        )
+        got = db.query("sql", query).to_list()
+        by_id = {r["id"]: (r["k"], str(r["t"])) for r in got}
+        assert set(by_id) == set(probes)
+        assert {i: by_id[i][0] for i in probes} == {i: i % 1000 for i in probes}
+        types = {probes[i]: by_id[i][1] for i in probes}
+        assert (
+            len(set(types.values())) == 1
+        ), f"the stored type depends on the chunk: {types}"

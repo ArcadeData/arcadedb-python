@@ -232,6 +232,21 @@ def test_the_first_bad_row_of_a_large_batch_gives_the_old_error(kind, tagged):
 
 
 @pytest.mark.parametrize("tagged", [False, True], ids=["untagged", "tagged"])
+def test_the_first_bad_rows_error_carries_no_context(tagged):
+    # json.dumps refuses the NaN of the second row first; the error is still the walk's for the first row, as it was when the
+    # loop ran before json.dumps, and it does not show the NaN error as the context it was raised in
+    rows = [{"a": 2**70}, {"b": math.nan}]
+    new = tc.json_bulk_dumps_tagged if tagged else tc.json_bulk_dumps
+    with pytest.raises(ValueError) as caught:
+        new(rows)
+    assert str(caught.value) == _outcome(lambda r: _old_dumps(r, tagged), rows)[1]
+    assert caught.value.__context__ is None
+    # with nothing for the walk to find, json.dumps's own error is the one raised
+    with pytest.raises(ValueError, match="Out of range float"):
+        new([{"b": math.nan}])
+
+
+@pytest.mark.parametrize("tagged", [False, True], ids=["untagged", "tagged"])
 def test_a_clean_large_batch_is_the_plain_json_text(tagged):
     rows = _batch(20_000, {})
     new = tc.json_bulk_dumps_tagged if tagged else tc.json_bulk_dumps

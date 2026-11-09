@@ -917,9 +917,17 @@ def _dumps_once(rows: Any, tagged: bool) -> str:
             if tagged
             else _dumps_checked(rows)
         )
-    except (TypeError, ValueError):
-        _check_rows(rows, tagged)
-        raise
+    except (TypeError, ValueError) as error:
+        refused = error
+    else:
+        refused = None
+    if refused is not None:
+        # outside the except block, so the walk's error does not carry json.dumps's as __context__ (the old loop ran first)
+        try:
+            _check_rows(rows, tagged)
+            raise refused
+        finally:
+            del refused
     if (
         _rows_need_walk(rows, tagged)
         or _SURROGATE_ESCAPE.search(text)
