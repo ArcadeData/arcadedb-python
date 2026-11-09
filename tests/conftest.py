@@ -83,6 +83,8 @@ if BACKEND != "native":
     collect_ignore.append("test_native_point_op_glue.py")
     # the address table of append_samples (arcadedb_n_async_bin), observed on the native library
     collect_ignore.append("test_native_timeseries_binary.py")
+    # arcadedb._native.columns builds the columnar readers' tables from the rows; the file compares it with the rules it replaced (#312)
+    collect_ignore.append("test_native_columns_reference.py")
 if not os.path.isfile(
     os.path.join(os.path.dirname(os.path.dirname(__file__)), "docs", "index.md")
 ):
