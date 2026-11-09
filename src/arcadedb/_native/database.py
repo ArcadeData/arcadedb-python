@@ -877,7 +877,8 @@ class NativeDatabase:
         a newDocument/set/save loop inside the image, as ``DocumentBatcher.insertManyJson`` on the JPype path). A ``datetime`` (also
         ``pandas.Timestamp`` and ``numpy.datetime64``), ``date``, ``Decimal``, ``bytes``/``bytearray``, numpy scalar, ``pandas.NA`` or
         ``pandas.NaT`` sitting directly in a row crosses in that text as a tagged value (``{"\\u0001": [kind, payload]}``, decoded by
-        ``Json.java``), so it does not move the chunk off this path; such a chunk loses the columnar entry. A row with a value the JSON
+        ``Json.java``), so it does not move the chunk off this path; but when a column holds only date-times, dates, Decimals or
+        bytes (None is a null) the chunk goes as columns, the same stored objects. A row with a value the JSON
         text cannot carry unchanged (NaN or Infinity, an integer beyond 64 bits, a date-time or decimal inside a list or map, a non-str
         key, a lone surrogate, a ``datetime.time``) goes through ``INSERT INTO t CONTENT :row`` on its own, in one crossing for a run of
         such rows; the rows around it keep the bulk path and every row is inserted in the order given. Inside the caller's

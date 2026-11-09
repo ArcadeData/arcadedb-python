@@ -325,8 +325,10 @@ def _column_values(name: str, chunk, pa, native: bool = False, arrow: bool = Fal
     """One Arrow array as what ``Database.insert_columns`` takes: a numpy array when the column crosses as one
     buffer (integers, floats and booleans without nulls), else a list of values (``None`` is a null).
 
-    ``arrow`` (the native backend's document load): a string column, and a numeric one with nulls, stay Arrow arrays, which
-    the columnar entry reads in place (the offsets, the bytes and the validity bitmap) instead of as Python values.
+    ``arrow`` (the native backend's document load): a string, binary, timestamp, date or decimal column, and a numeric one with
+    nulls, stay Arrow arrays, which the columnar entry reads in place (the offsets, the bytes, the integer ticks and the validity
+    bitmap) instead of as Python values; ``_insert_documents_native`` turns them into tagged values for the row path when a batch
+    cannot go columnar.
     """
     types = pa.types
     if types.is_dictionary(chunk.type):  # a pandas categorical or a Polars Categorical
@@ -361,6 +363,8 @@ def _column_values(name: str, chunk, pa, native: bool = False, arrow: bool = Fal
                 values = values.astype("float64")  # float16/32 widen exactly
             return values
         return chunk.to_pylist()
+    if arrow and kind in ("timestamp", "date", "decimal", "binary"):
+        return chunk
     if kind in ("timestamp", "date"):
         return (
             _temporal_to_tagged(chunk, pa) if native else _temporal_to_java(chunk, pa)
@@ -496,6 +500,20 @@ def _insert_vertices(
     )
 
 
+def _arrow_row_values(col) -> list:
+    """A column kept as an Arrow array, as the values the row path takes: Python values, or tagged values for a timestamp, date,
+    decimal or binary column (the form it had before the columnar entry took them, so the stored value is unchanged).
+    """
+    import pyarrow as pa
+
+    kind = _kind(pa, col.type)
+    if kind in ("timestamp", "date"):
+        return _temporal_to_tagged(col, pa)
+    if kind in ("decimal", "binary"):
+        return _scalars_to_tagged(kind, col)
+    return col.to_pylist()
+
+
 def _insert_documents_native(
     db,
     type_name: str,
@@ -542,7 +560,7 @@ def _insert_documents_native(
         if hasattr(
             col, "to_pylist"
         ):  # a column kept as an Arrow array for the columnar entry
-            lists.append(col.to_pylist())
+            lists.append(_arrow_row_values(col))
         else:
             # jvm-payload: not-a-crossing -- no JVM here: insert_many serialises the rows to JSON text
             lists.append(col.tolist() if hasattr(col, "tolist") else col)

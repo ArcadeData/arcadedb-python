@@ -2,18 +2,28 @@
 
 A column crosses as raw memory, not as JSON text: the image reads each buffer in place and builds the documents without a parser. This
 module only decides how a column is laid out and hands the addresses over; it needs no native library, so the layouts are unit-tested
-without one. A column that cannot be laid out (a nested value, a mixed-type column, a date-time, an integer past 64 bits, a string with
-a lone surrogate) makes :func:`pack` return ``None`` and the caller uses the JSON path for that call; nothing is half sent.
+without one. A column that cannot be laid out (a nested value, a mixed-type column, a numpy datetime64, an integer past 64 bits, a string
+with a lone surrogate) makes :func:`pack` return ``None`` and the caller uses the JSON path for that call; nothing is half sent.
 
 Kinds (the image's, ``BulkOps.insertColumns``): ``q`` int64, ``d`` float64, ``b`` bool byte, ``i`` int32, ``e`` float32, ``f`` float32
 matrix (``dim`` per row), ``s`` UTF-8 string (``int32 offsets[n+1]`` and the bytes they index: Arrow's string layout). A column may
 carry a null bitmap (Arrow's: bit ``i`` of byte ``i // 8``, least significant first, 1 = present).
+
+Temporal, decimal and binary kinds (the values the JSON path sends as tagged values, so the stored value is the same object): ``T`` a
+date-time, int64 ticks since 1970-01-01T00:00:00 of the UTC wall clock, ``dim`` ticks per second (1, 1000, 10**6 or 10**9: an Arrow
+timestamp keeps its unit, a Python ``datetime`` is microseconds), read as ``LocalDateTime``; ``D`` a date, int32 days since the epoch,
+read as ``LocalDate``; ``n`` a decimal, the string layout holding ``str(Decimal)``, read as ``BigDecimal``; ``x`` bytes, the string
+layout, read as ``byte[]``. A time-zone-aware ``datetime`` or Arrow timestamp is its UTC wall clock and a naive one is taken as it is,
+the rule of ``_tag_datetime``; nothing here decides a time zone.
 
 ``i`` and ``e`` and the float matrix from a list of lists are chosen only for a property declared ``INTEGER``, ``FLOAT`` and
 ``ARRAY_OF_FLOATS``: the engine would convert to those types anyway, so the stored value is the one the JSON path stores. For an
 undeclared property an ``int32`` column crosses as ``q`` (a Long) and a ``float32`` column as ``d`` (a Double), as the JSON path stores
 them.
 """
+
+from datetime import date, datetime, timezone
+from decimal import Decimal
 
 from .schema_objects import (  # the schema-entry reader shared with NativeType (#195)
     _name_type,
@@ -27,6 +37,12 @@ except ImportError:  # pragma: no cover
 _INT64_MAX = 2**63 - 1
 _INT32_MAX = 2**31 - 1
 _NoneType = type(None)
+_EPOCH_ORDINAL = date(1970, 1, 1).toordinal()
+_UTC = timezone.utc
+_BLOB_KINDS = (
+    "snx"  # the kinds laid out as int32 offsets[n + 1] plus the bytes they index
+)
+_TICKS = {"s": 1, "ms": 1_000, "us": 1_000_000, "ns": 1_000_000_000}
 
 
 class Packed:
@@ -39,8 +55,8 @@ class Packed:
         self.kind = kind
         self.dim = dim
         self.n = int(array.shape[0]) - (
-            1 if kind == "s" else 0
-        )  # a string column's array is its n + 1 offsets
+            1 if kind in _BLOB_KINDS else 0
+        )  # a string, decimal or bytes column's array is its n + 1 offsets
         self.data = (array.ctypes.data, array.nbytes)
         self.aux = aux or (0, 0)
         self.nulls = (nulls.ctypes.data, nulls.nbytes) if nulls is not None else (0, 0)
@@ -166,6 +182,35 @@ def _string_column(name, texts, nulls=None):
     return Packed(name, "s", 0, offsets, aux=aux, nulls=nulls, keep=(blob_array, data))
 
 
+def _blob_column(name, kind, items, nulls=None):
+    """A list of bytes (a null already replaced by b'') as an offsets-plus-bytes column of ``kind``, or None past 2 GiB."""
+    n = len(items)
+    data = b"".join(items)
+    if len(data) > _INT32_MAX:
+        return None
+    lengths = _np.fromiter(map(len, items), dtype=_np.int64, count=n)
+    offsets = _np.zeros(n + 1, dtype=_np.int32)
+    _np.cumsum(lengths, out=offsets[1:], dtype=_np.int32)
+    blob_array = (
+        _np.frombuffer(data, dtype=_np.uint8) if data else _np.zeros(0, dtype=_np.uint8)
+    )
+    aux = (blob_array.ctypes.data, blob_array.nbytes) if data else (0, 0)
+    return Packed(name, kind, 0, offsets, aux=aux, nulls=nulls, keep=(blob_array, data))
+
+
+def _epoch_micros(value):
+    """Microseconds since 1970-01-01T00:00:00 of the UTC wall clock of a ``datetime`` (a naive one is taken as it is, as ``_tag_datetime``)."""
+    if value.utcoffset() is not None:
+        value = value.astimezone(_UTC)
+    seconds = (
+        (value.toordinal() - _EPOCH_ORDINAL) * 86400
+        + value.hour * 3600
+        + value.minute * 60
+        + value.second
+    )
+    return seconds * 1_000_000 + value.microsecond
+
+
 def _list_column(name, values, declared):
     """A list or tuple of Python values as a column: one type (None allowed) or a list of equal-length float arrays; else None."""
     n = len(values)
@@ -203,6 +248,33 @@ def _list_column(name, values, declared):
             return None  # an integer beyond 64 bits
         kind = "q" if only is int else "d" if only is float else "b"
         return Packed(name, kind, 0, arr, nulls=nulls)
+    if issubclass(only, datetime):
+        if only.__name__ == "NaTType":
+            return None  # the JSON path stores it as a null
+        try:
+            ticks = [0 if v is None else _epoch_micros(v) for v in values]
+        except (OverflowError, ValueError):
+            return None  # the JSON path raises what it raised before
+        return Packed(
+            name, "T", 1_000_000, _np.array(ticks, dtype=_np.int64), nulls=nulls
+        )
+    if only is date:
+        days = [0 if v is None else v.toordinal() - _EPOCH_ORDINAL for v in values]
+        return Packed(name, "D", 0, _np.array(days, dtype=_np.int32), nulls=nulls)
+    if only is Decimal:
+        texts = []
+        for v in values:
+            if v is None:
+                texts.append(b"")
+            elif v.is_finite():
+                texts.append(str(v).encode("ascii"))
+            else:
+                return None  # the JSON path sends a non-finite Decimal down the per-row path
+        return _blob_column(name, "n", texts, nulls)
+    if only is bytes or only is bytearray:
+        return _blob_column(
+            name, "x", values if present is None else [v or b"" for v in values], nulls
+        )
     if only is list and declared.get(name) == "ARRAY_OF_FLOATS" and present is None:
         try:
             arr = _np.array(values, dtype=_np.float32)
@@ -248,10 +320,11 @@ def _arrow_column(name, arr, declared):
         if arr.null_count
         else None
     )
-    if types.is_string(t) or types.is_large_string(t):
+    is_text = types.is_string(t) or types.is_large_string(t)
+    if is_text or types.is_binary(t) or types.is_large_binary(t):
         bufs = arr.buffers()
         off_buf, data_buf = bufs[1], bufs[2]
-        if types.is_string(t):
+        if types.is_string(t) or types.is_binary(t):
             offsets = _np.frombuffer(off_buf, dtype=_np.int32)[
                 arr.offset : arr.offset + n + 1
             ]
@@ -266,8 +339,35 @@ def _arrow_column(name, arr, declared):
         size = 0 if data_buf is None else min(data_buf.size, _INT32_MAX)
         aux = (data_buf.address, size) if size else (0, 0)
         return Packed(
-            name, "s", 0, offsets, aux=aux, nulls=nulls, keep=(arr, off_buf, data_buf)
+            name,
+            "s" if is_text else "x",
+            0,
+            offsets,
+            aux=aux,
+            nulls=nulls,
+            keep=(arr, off_buf, data_buf),
         )
+    if types.is_timestamp(t):
+        values = arr.cast(pa.int64()).fill_null(0).to_numpy(zero_copy_only=False)
+        return Packed(
+            name,
+            "T",
+            _TICKS[t.unit],
+            _np.ascontiguousarray(values, dtype=_np.int64),
+            nulls=nulls,
+        )
+    if types.is_date(t):
+        if types.is_date64(t):  # milliseconds since the epoch, floor-divided to days
+            raw = arr.cast(pa.int64()).fill_null(0).to_numpy(zero_copy_only=False)
+            days = raw // 86_400_000
+        else:
+            days = arr.cast(pa.int32()).fill_null(0).to_numpy(zero_copy_only=False)
+        return Packed(
+            name, "D", 0, _np.ascontiguousarray(days, dtype=_np.int32), nulls=nulls
+        )
+    if types.is_decimal(t):
+        texts = [b"" if v is None else str(v).encode("ascii") for v in arr.to_pylist()]
+        return _blob_column(name, "n", texts, nulls)
     if types.is_integer(t) or types.is_floating(t) or types.is_boolean(t):
         if arr.null_count:
             arr = arr.fill_null(False if types.is_boolean(t) else 0)

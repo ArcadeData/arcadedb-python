@@ -51,6 +51,8 @@ if BACKEND != "native":
     collect_ignore.append("test_native_columnar_parallel.py")
     # the review of the native parallel loads: no silent loss, an interrupt waits for the writers and reads the failure token
     collect_ignore.append("test_native_columnar_parallel_review_fixes.py")
+    # a column of date-times, dates, Decimals or bytes crosses as a column (kinds T D n x), observed on the native library
+    collect_ignore.append("test_native_columnar_temporal.py")
     # the rows of an insert_many chunk with date-times, Decimals, bytes and numpy scalars are told apart by the entry points they cross
     collect_ignore.append("test_native_mixed_chunk.py")
     # the native build's ingest defaults (insert_many and graph_batch commit size), observed on the native library

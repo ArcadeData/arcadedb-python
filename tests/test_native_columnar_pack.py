@@ -198,15 +198,106 @@ def test_columns_the_buffer_cannot_carry_unchanged_are_refused(column):
     assert columnar.pack({"c": column}, NO_TYPES) is None
 
 
-def test_datetimes_decimals_and_object_arrays_of_them_are_refused():
+def test_numpy_datetime64_arrays_and_mixed_temporal_columns_are_refused():
     import datetime
     import decimal
 
-    assert columnar.pack({"d": [datetime.datetime(2020, 1, 1)]}, NO_TYPES) is None
-    assert columnar.pack({"d": [decimal.Decimal("1.5")]}, NO_TYPES) is None
     assert (
         columnar.pack({"d": np.array(["2020-01-01"], dtype="datetime64[D]")}, NO_TYPES)
         is None
+    )
+    assert (
+        columnar.pack(
+            {"d": [datetime.datetime(2020, 1, 1), datetime.date(2020, 1, 1)]}, NO_TYPES
+        )
+        is None
+    )
+    assert (
+        columnar.pack({"d": [decimal.Decimal("1"), decimal.Decimal("NaN")]}, NO_TYPES)
+        is None
+    )
+    assert columnar.pack({"d": [b"a", "b"]}, NO_TYPES) is None
+
+
+def _ticks(col, dtype):
+    return np.frombuffer(_bytes(col.data), dtype=dtype).tolist()
+
+
+def test_python_datetimes_are_utc_wall_clock_microseconds():
+    import datetime
+
+    utc9 = datetime.timezone(datetime.timedelta(hours=9))
+    values = [
+        datetime.datetime(1970, 1, 1),
+        datetime.datetime(1969, 12, 31, 23, 59, 59, 999999),
+        datetime.datetime(2020, 1, 2, 12, 0, 0, 5, tzinfo=utc9),  # 03:00:00.000005 UTC
+        None,
+    ]
+    rows, cols = columnar.pack({"t": values}, NO_TYPES)
+    col = cols[0]
+    assert rows == 4 and col.kind == "T" and col.dim == 1_000_000
+    assert _ticks(col, np.int64) == [0, -1, 1_577_934_000_000_005, 0]
+    assert _present(col) == [True, True, True, False]
+
+
+def test_python_dates_are_epoch_days():
+    import datetime
+
+    rows, cols = columnar.pack(
+        {"d": [datetime.date(1970, 1, 2), datetime.date(1969, 12, 31), None]}, NO_TYPES
+    )
+    assert cols[0].kind == "D" and _ticks(cols[0], np.int32) == [1, -1, 0]
+    assert _present(cols[0]) == [True, True, False]
+
+
+def test_decimals_and_bytes_use_the_string_layout():
+    import decimal
+
+    rows, cols = columnar.pack(
+        {
+            "a": [decimal.Decimal("1E+3"), None, decimal.Decimal("-0.50")],
+            "b": [b"\x00\xff", b"", None],
+            "c": [bytearray(b"xy"), bytearray(b"z"), bytearray(b"")],
+        },
+        NO_TYPES,
+    )
+    a, b, c = cols
+    assert [x.kind for x in cols] == ["n", "x", "x"]
+    offsets = np.frombuffer(_bytes(a.data), dtype=np.int32).tolist()
+    assert offsets == [0, 4, 4, 9] and _bytes(a.aux) == b"1E+3-0.50"
+    offsets = np.frombuffer(_bytes(b.data), dtype=np.int32).tolist()
+    assert offsets == [0, 2, 2, 2] and _bytes(b.aux) == b"\x00\xff"
+    assert _bytes(c.aux) == b"xyz" and _present(a) == [True, False, True]
+
+
+def test_arrow_timestamps_dates_decimals_and_binary():
+    import decimal
+
+    import pyarrow as pa
+
+    stamps = pa.array([1, None, -2], pa.int64()).cast(
+        pa.timestamp("ms", tz="Asia/Seoul")
+    )
+    days = pa.array([3, -4, None], pa.int32()).cast(pa.date32())
+    day_ms = pa.array([86_400_000 * 2, -1, None], pa.int64()).cast(pa.date64())
+    amounts = pa.array([decimal.Decimal("1.50"), None], pa.decimal128(10, 2))
+    blobs = pa.array([b"ab", None, b"c"])
+    for name, col, expected in (
+        ("t", stamps, ("T", 1_000)),
+        ("d", days, ("D", 0)),
+        ("m", day_ms, ("D", 0)),
+    ):
+        packed = columnar.pack({name: col}, NO_TYPES)[1][0]
+        assert (packed.kind, packed.dim) == expected
+    assert _ticks(columnar.pack({"t": stamps}, NO_TYPES)[1][0], np.int64) == [1, 0, -2]
+    assert _ticks(columnar.pack({"d": days}, NO_TYPES)[1][0], np.int32) == [3, -4, 0]
+    # a date64 is floor-divided to days: 2 days, then -1 ms is the day before the epoch
+    assert _ticks(columnar.pack({"m": day_ms}, NO_TYPES)[1][0], np.int32) == [2, -1, 0]
+    n = columnar.pack({"n": amounts}, NO_TYPES)[1][0]
+    assert n.kind == "n" and _bytes(n.aux) == b"1.50"
+    x = columnar.pack({"x": blobs}, NO_TYPES)[1][0]
+    assert (
+        x.kind == "x" and _bytes(x.aux) == b"abc" and _present(x) == [True, False, True]
     )
 
 

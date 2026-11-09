@@ -19,8 +19,12 @@ import org.graalvm.nativeimage.c.type.CTypeConversion;
 import org.graalvm.word.Pointer;
 import org.graalvm.word.WordFactory;
 
+import java.math.BigDecimal;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Map;
 
@@ -82,7 +86,10 @@ final class BulkOps {
   /**
    * header: {"n":rows,"commit":every,"cols":[[name,kind,dim],..]}. Kinds: q (int64), d (float64), b (bool byte), i (int32), e (float32),
    * f (float32 matrix, dim floats per row), s (UTF-8 string: int32 offsets[n+1] in the data slot, the bytes they index in the aux slot, as
-   * an Arrow string array; offsets[0] need not be 0). spec: per column six longs, [data address, data bytes, aux address, aux bytes, null
+   * an Arrow string array; offsets[0] need not be 0). The kinds that the JSON rows carry as tagged values (Json.decodeTag), read as the same
+   * objects: T (int64 ticks since 1970-01-01T00:00:00 of the UTC wall clock, dim = ticks per second: 1, 1000, 10^6 or 10^9, read as a
+   * LocalDateTime), D (int32 days since the epoch, a LocalDate), n (a decimal as text in the string layout, a BigDecimal) and x (bytes in
+   * the string layout, a byte[]), so a column of these is stored as the row path stores it. spec: per column six longs, [data address, data bytes, aux address, aux bytes, null
    * bitmap address, null bitmap bytes]; the bitmap is Arrow's (bit i of byte i/8, least significant first; 1 = present), an address of 0
    * means no nulls. The memory belongs to the caller for the duration of the call; nothing is kept. Every length is checked here before
    * the first document is built, so a wrong table is an exception and nothing is written. Same transaction contract as
@@ -121,13 +128,18 @@ final class BulkOps {
       final long need = switch (kinds[c]) {
         case 'q', 'd' -> 8L * n;
         case 'b' -> n;
-        case 'i', 'e' -> 4L * n;
+        case 'i', 'e', 'D' -> 4L * n;
+        case 'T' -> {
+          if (dims[c] != 1 && dims[c] != 1_000 && dims[c] != 1_000_000 && dims[c] != 1_000_000_000)
+            throw new IllegalArgumentException("column '" + names[c] + "': a date-time column has 1, 1000, 10^6 or 10^9 ticks per second, not " + dims[c]);
+          yield 8L * n;
+        }
         case 'f' -> {
           if (dims[c] <= 0)
             throw new IllegalArgumentException("column '" + names[c] + "': a vector column needs a dimension above 0");
           yield 4L * n * dims[c];
         }
-        case 's' -> 4L * (n + 1L);
+        case 's', 'n', 'x' -> 4L * (n + 1L);
         default -> throw new IllegalArgumentException("unknown column kind " + kinds[c]);
       };
       if (dataBytes < need || (need > 0 && dataAddr == 0))
@@ -138,7 +150,7 @@ final class BulkOps {
           throw new IllegalArgumentException("column '" + names[c] + "' has a null bitmap of " + nullBytes + " bytes, " + (n + 7L) / 8 + " needed");
         nulls[c] = nullAddr;
       }
-      if (kinds[c] == 's') {
+      if (kinds[c] == 's' || kinds[c] == 'n' || kinds[c] == 'x') {
         if (auxBytes < 0 || auxBytes > Integer.MAX_VALUE || (auxBytes > 0 && auxAddr == 0))
           throw new IllegalArgumentException("column '" + names[c] + "': the string bytes are missing or beyond 2 GiB");
         blobs[c] = auxBytes == 0 ? ByteBuffer.allocate(0) : CTypeConversion.asByteBuffer(WordFactory.pointer(auxAddr), (int) auxBytes);
@@ -220,6 +232,25 @@ final class BulkOps {
         case 'b' -> doc.set(names[c], base.readByte(WordFactory.signed(i)) != 0);
         case 'i' -> doc.set(names[c], base.readInt(WordFactory.signed(4L * i)));
         case 'e' -> doc.set(names[c], base.readFloat(WordFactory.signed(4L * i)));
+        case 'T' -> {
+          final long ticks = base.readLong(WordFactory.signed(8L * i));
+          final long perSecond = dims[c];
+          doc.set(names[c], LocalDateTime.ofEpochSecond(Math.floorDiv(ticks, perSecond),
+              (int) (Math.floorMod(ticks, perSecond) * (1_000_000_000L / perSecond)), ZoneOffset.UTC));
+        }
+        case 'D' -> doc.set(names[c], LocalDate.ofEpochDay(base.readInt(WordFactory.signed(4L * i))));
+        case 'n' -> {
+          final int from = base.readInt(WordFactory.signed(4L * i));
+          final int len = base.readInt(WordFactory.signed(4L * (i + 1L))) - from;
+          blobs[c].get(from, scratch, 0, len);
+          doc.set(names[c], new BigDecimal(new String(scratch, 0, len, StandardCharsets.US_ASCII)));
+        }
+        case 'x' -> {
+          final int from = base.readInt(WordFactory.signed(4L * i));
+          final byte[] bytes = new byte[base.readInt(WordFactory.signed(4L * (i + 1L))) - from];
+          blobs[c].get(from, bytes, 0, bytes.length);
+          doc.set(names[c], bytes);
+        }
         case 's' -> {
           final int from = base.readInt(WordFactory.signed(4L * i));
           final int len = base.readInt(WordFactory.signed(4L * (i + 1L))) - from;

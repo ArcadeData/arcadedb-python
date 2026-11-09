@@ -169,7 +169,8 @@ def test_a_pandas_timestamp_is_stored_as_the_statement_path_stores_it(
         _statement_path(db, "Ref", rows)
         spy.clear()
         db.insert_many("Bulk", rows)
-        assert spy.count(MANY) == 0 and spy.count(ROWS) == 1
+        # one column of Timestamps is the kind T of the columnar entry (#316): microseconds, as the tagged path keeps them
+        assert spy.count(MANY) == 0 and spy.count(ROWS) == 0 and spy.count(COLP) == 1
         assert _stored(db, "Bulk") == _stored(db, "Ref")
 
 

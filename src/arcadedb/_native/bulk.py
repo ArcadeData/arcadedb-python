@@ -1,7 +1,7 @@
 """Columnar bulk insert through one crossing (``arcadedb_n_insert_colp``): whole columns go over by address, with no JSON text. Numpy
 ints, floats and bools, lists of one value type (None is a null), strings (UTF-8 bytes plus offsets, as Arrow lays them out), float32
-vector columns and Arrow arrays are laid out by :mod:`.columnar`; anything else (nested values, mixed-type columns, date-times,
-decimals, integers past 64 bits) returns None and the caller uses the per-row JSON path. The documents are built image-side as
+vector columns, date-times, dates, decimals, bytes and Arrow arrays are laid out by :mod:`.columnar`; anything else (nested values,
+mixed-type columns, integers past 64 bits) returns None and the caller uses the per-row JSON path. The documents are built image-side as
 ``DocumentBatcher.insertColumns`` builds them on JPype; with ``parallel`` they are handed to the async writers instead of a transaction
 (``DocumentBatcher.insertColumnsParallel``). ``ARCADEDB_NATIVE_BULK=0`` turns the columnar path off.
 """
