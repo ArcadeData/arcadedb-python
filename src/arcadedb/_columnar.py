@@ -287,14 +287,16 @@ def decode_columns_frame(
             else:
                 values = arr
         elif ctype in ("f4v", "f8v"):
-            # fixed-dimension vector column -> 2-D array (count, dim); the writer puts NaN rows into null slots;
-            # an empty vector has no "dim" in the header
+            # fixed-dimension vector column -> 2-D array (count, dim); an empty vector has no "dim" in the header. The null rows are
+            # made NaN here, whatever the writer put in the slot: a row of zeros would read as a real zero vector
             dim = col.get("dim", 0)
             dt = "<f4" if ctype == "f4v" else "<f8"
             if dim == 0:
                 values = np.empty((count, 0), dtype=dt)
             else:
                 values = np.frombuffer(data, dtype=dt).reshape(count, dim).copy()
+            if has_nulls:
+                values[mask] = np.nan
             if micros:
                 values = [
                     None if has_nulls and mask[i] else values[i] for i in range(count)
