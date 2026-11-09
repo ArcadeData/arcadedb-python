@@ -172,7 +172,7 @@ def test_random_rows_agree_with_the_validation_loop(tagged):
         dt.datetime(2026, 1, 2), dt.date(2026, 1, 2), decimal.Decimal("1.5"), b"ab", np.int64(7),
         np.float64(math.nan), Colour.RED, Name("s"), {1, 2}, object(),
     ]  # fmt: skip
-    rnd = random.Random(318)
+    rnd = random.Random(318)  # nosec B311 - a seeded corpus, not security
     new = tc.json_bulk_dumps_tagged if tagged else tc.json_bulk_dumps
     for _ in range(3000):
         rows = []
@@ -313,7 +313,7 @@ def test_a_value_that_may_be_bad_runs_the_walk(monkeypatch, row):
 
 
 def test_int64_overflow_pattern_matches_exactly_the_tokens_from_2_to_the_63():
-    rnd = random.Random(63)
+    rnd = random.Random(63)  # nosec B311 - a seeded corpus, not security
     values = [
         0,
         1,
@@ -348,7 +348,8 @@ def _types(db):
 
 
 def _stored(db, type_name):
-    rows = db.query("sql", f"SELECT FROM {type_name}").to_list()
+    query = f"SELECT FROM {type_name}"  # nosec B608 - test-controlled
+    rows = db.query("sql", query).to_list()
     return sorted(
         (
             r["p_partkey"],
