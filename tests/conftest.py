@@ -83,6 +83,8 @@ if BACKEND != "native":
     collect_ignore.append("test_native_point_op_glue.py")
     # the address table of append_samples (arcadedb_n_async_bin), observed on the native library
     collect_ignore.append("test_native_timeseries_binary.py")
+    # the native columnar fast path (arcadedb._native.bulk.insert_columns_fast) with a rows-dropped fault in it, found by the ingest-integrity check (#336)
+    collect_ignore.append("test_native_ingest_integrity_faults.py")
 if not os.path.isfile(
     os.path.join(os.path.dirname(os.path.dirname(__file__)), "docs", "index.md")
 ):
@@ -122,6 +124,7 @@ NATIVE_NOT_APPLICABLE = {
     "test_async_proxy_cache.py": "the JPype proxy classes of the JVM build's async executor",
     "test_read_crossings.py": "crossing counts of the JVM build's read path (JPype proxies of the Java objects and the bridge classes)",
     "test_reader_crossings.py": "crossing counts of the JVM build's record and row readers (JPype proxies of the Java objects and the bridge classes)",
+    "test_jvm_ingest_integrity_faults.py": "rows-dropped faults put into the JVM build's column conversion and bulk vertex path (core._column_to_java, GraphBatch._create_vertices_json_bulk)",
 }
 if BACKEND == "native" and not os.environ.get("NATIVE_PARITY_ALL"):
     collect_ignore.extend(NATIVE_NOT_APPLICABLE)
@@ -521,3 +524,30 @@ def pytest_sessionfinish(session, exitstatus):
 def pytest_terminal_summary(terminalreporter, exitstatus, config):
     """Terminal summary hook."""
     pass
+
+
+@pytest.fixture
+def store(temp_db_path):
+    """A database on disk that a test can close and open again (the ingest-integrity tests, ArcadeData/arcadedb-python#336)."""
+    from tests.ingest_integrity import Store
+
+    box = Store(temp_db_path)
+    yield box
+    box.close()
+
+
+@pytest.fixture
+def small_chunks(monkeypatch):
+    """insert_many reads 7 rows at a time and a graph batch crosses 7 rows at a time (the real chunks are 10,000 and 100,000)."""
+    from tests.ingest_integrity import CHUNK
+
+    if BACKEND == "native":
+        from arcadedb._native import database, extras
+
+        monkeypatch.setattr(database, "_INSERT_MANY_CHUNK", CHUNK)
+        monkeypatch.setattr(extras.NativeGraphBatch, "_BULK_CHUNK", CHUNK)
+    else:
+        from arcadedb import core
+
+        monkeypatch.setattr(core, "_INSERT_MANY_CHUNK", CHUNK)
+        monkeypatch.setattr(arcadedb.GraphBatch, "_BULK_CHUNK", CHUNK)
