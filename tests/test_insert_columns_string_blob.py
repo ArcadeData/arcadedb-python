@@ -69,7 +69,6 @@ def test_a_column_of_str_and_none_is_one_string_column(values):
         ["a", 1.5, None],
         [1, 2, 3],
         [None, None],
-        ["ok", "lone \ud800 surrogate"],
         [],
     ],
     ids=[
@@ -78,7 +77,6 @@ def test_a_column_of_str_and_none_is_one_string_column(values):
         "str_float",
         "ints",
         "only_none",
-        "lone_surrogate",
         "empty",
     ],
 )
@@ -123,25 +121,33 @@ def test_the_blob_stores_the_table_the_per_element_path_stores(
     assert _stored(temp_db, "Blob") == [(i, label[i]) for i in range(n)]
 
 
-def test_a_lone_surrogate_column_is_handled_as_before(temp_db, monkeypatch):
-    # no UTF-8 form: the column takes the per-element path whatever that path does with it, so the outcome equals the old one
-    values = ["ok", "lone \ud800 surrogate", "fine"]
-    cols = {"id": np.arange(3, dtype=np.int64), "label": values}
-    _make_type(temp_db, "Blob")
-    _make_type(temp_db, "Ref")
-    outcomes = []
-    for name, force_old in (("Blob", False), ("Ref", True)):
-        with monkeypatch.context() as mp:
-            if force_old:
-                mp.setattr(core, "_string_column", lambda values: None)
-            try:
-                temp_db.insert_columns(name, cols)
-                outcomes.append(("stored", _stored(temp_db, name)))
-            except (
-                Exception
-            ) as e:  # noqa: BLE001 - the type and message are what is compared
-                outcomes.append((type(e).__name__, str(e).replace(name, "T")))
-    assert outcomes[0] == outcomes[1]
+@pytest.mark.parametrize("position", [0, 500, 999], ids=["first", "middle", "last"])
+def test_a_lone_surrogate_keeps_the_column_off_the_blob_and_is_refused_as_before(
+    temp_db, position
+):
+    # a lone surrogate has no UTF-8 form: the blob builder gives up (it never raises), and the per-element path, which is what ran
+    # before, refuses the column (JPype cannot encode the str) before anything is written. The refusal is the contract of every bulk
+    # entry point: a lone surrogate raises instead of becoming a question mark (test_bulk_json_paths.py).
+    values = [f"row {i} \U0001f600" if i % 3 else f"row {i}" for i in range(1_000)]
+    values[position] = "lone \ud800 surrogate"
+    assert core._string_column(values) is None
+    with pytest.raises(UnicodeEncodeError):
+        core._column_to_java("label", values)
+    _make_type(temp_db, "S")
+    with pytest.raises(UnicodeEncodeError):
+        temp_db.insert_columns(
+            "S", {"id": np.arange(1_000, dtype=np.int64), "label": values}
+        )
+    count = temp_db.query("sql", "SELECT count(*) AS c FROM S").first().get("c")
+    assert count == 0
+
+
+def test_a_non_bmp_character_still_takes_the_blob():
+    # U+1F600 and U+10000 are one code point each and a surrogate PAIR in Java, but valid UTF-8: the blob carries them
+    values = ["a", "\U0001f600", "\U00010000\U0010ffff", None, "\ud7ff\ue000"]
+    assert core._string_column(values) is not None
+    array, n = core._column_to_java("label", values)
+    assert n == 5 and isinstance(array, _string_column_class())
 
 
 @pytest.mark.parametrize(
