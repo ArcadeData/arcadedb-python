@@ -248,8 +248,13 @@ class NativeResultSet:
             "with block), so the rows it had not returned are gone. Run the query again to read them."
         )
 
-    def _fill(self) -> bool:
-        """Fetch the next batch into the buffer; False once the cursor is drained."""
+    def _fill(self, into: Optional[list] = None) -> bool:
+        """Fetch the next batch into the buffer; False once the cursor is drained.
+
+        ``into``: a list that takes the rows (without their meta) of the batch when the buffer is empty, so a drain that
+        wants only the rows does not build one tuple per row to take them apart again. The buffer then stays empty, and the
+        answer is the same: whether the batch had a row (or an error is pending).
+        """
         if self._pending_error is not None:
             err, self._pending_error = self._pending_error, None
             self._more = False
@@ -279,10 +284,16 @@ class NativeResultSet:
             raise ArcadeDBError(
                 f"Reading the result set failed: {reply.get('cls')}: {reply.get('error')}"
             )
-        self._buf.extend(zip(reply["rows"], reply["meta"]))
+        if into is not None and not self._buf:
+            batch = reply["rows"]
+            into.extend(batch)
+            has_rows = bool(batch)
+        else:
+            self._buf.extend(zip(reply["rows"], reply["meta"]))
+            has_rows = bool(self._buf)
         self._more = not reply["drained"]
         self._pending_error = reply.get("rerr")
-        return bool(self._buf) or self._pending_error is not None
+        return has_rows or self._pending_error is not None
 
     def _finish(self) -> None:
         self._exhausted = True
@@ -334,11 +345,14 @@ class NativeResultSet:
         out: List[Dict[str, Any]] = []
         if not self._readable():
             return out
-        while True:
-            out.extend(p for p, _ in self._buf)
-            self._buf.clear()
-            if not self._fill():
-                break
+        buf = self._buf
+        if (
+            buf
+        ):  # rows read ahead (the first reply, or rows a caller has not taken): the only rows that carry a tuple
+            out.extend([p for p, _ in buf])
+            buf.clear()
+        while self._fill(out):
+            pass
         self._finish()
         return out
 
