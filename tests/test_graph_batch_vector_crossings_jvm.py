@@ -239,3 +239,84 @@ def test_take_vector_columns_reads_java_arrays_through_one_stack(db):
         doubles[0]["v"]
     )
     assert isinstance(arcadedb.to_java_float_array(x[0]), float_array)
+
+
+def test_rows_with_vectors_cross_in_blocks_sized_by_their_width(
+    db, crossings, monkeypatch
+):
+    # about _VECTOR_BLOCK_FLOATS floats per crossing over all the vector columns, never fewer than _VECTOR_BLOCK_MIN_ROWS rows
+    monkeypatch.setattr(GraphBatch, "_BULK_CHUNK", 100_000)
+    monkeypatch.setattr(GraphBatch, "_VECTOR_BLOCK_FLOATS", 640)  # 40 rows of 16 floats
+    monkeypatch.setattr(GraphBatch, "_VECTOR_BLOCK_MIN_ROWS", 10)
+    x = _x()
+    arrays = _floats(x)
+    rows = [{"id": i, "embedding": arrays[i]} for i in range(ROWS)]
+    with db.graph_batch(parallel_flush=False) as gb:
+        assert len(gb.create_vertices("Declared", rows)) == ROWS
+    assert crossings["fallback"] == [] and crossings["convert"] == []
+    assert (
+        crossings["bridge"] == ["createVerticesJson"] * 7
+    )  # 6 blocks of 40, one of 10
+    assert crossings["matrix"].count("Matrix") == 7
+    sql = "SELECT id, embedding FROM Declared"
+    stored = {r["id"]: r["embedding"] for r in db.query("sql", sql).to_list()}
+    assert len(stored) == ROWS
+    for i in range(ROWS):
+        assert np.array(stored[i], dtype=np.float32).tobytes() == x[i].tobytes()
+    # the floor: a block is never smaller than _VECTOR_BLOCK_MIN_ROWS rows
+    crossings["bridge"].clear()
+    monkeypatch.setattr(GraphBatch, "_VECTOR_BLOCK_FLOATS", 16)
+    rows = [{"id": 1000 + i, "embedding": arrays[i]} for i in range(25)]
+    with db.graph_batch(parallel_flush=False) as gb:
+        gb.create_vertices("Free", rows)
+    assert crossings["bridge"] == ["createVerticesJson"] * 3  # 10, 10, 5
+    # rows without a vector keep the whole _BULK_CHUNK
+    crossings["bridge"].clear()
+    with db.graph_batch(parallel_flush=False) as gb:
+        gb.create_vertices("Free", [{"id": 2000 + i} for i in range(ROWS)])
+    assert crossings["bridge"] == ["createVerticesJson"]
+
+
+def test_vector_width_counts_the_vector_columns_of_the_first_row(db):
+    x = _x(3, 16)
+    arrays = _floats(x)
+    both = [{"a": 1, "v": arrays[0], "w": x[1], "d": x[2].astype(np.float64)}]
+    assert (
+        tc.vector_width(both, set()) == 16 + 16
+    )  # a float32 array and a Java float[] of any property; the float64 array is not one
+    assert tc.vector_width(both, {"d"}) == 16 + 16 + 16  # on a declared property it is
+    assert tc.vector_width([{"a": 1, "l": [1.0, 2.0]}], {"l"}) == 2
+    assert tc.vector_width([{"a": 1, "l": [1.0, 2.0]}], set()) == 0
+    assert tc.vector_width([], {"l"}) == 0 and tc.vector_width([None], {"l"}) == 0
+    assert tc.vector_width([{"v": np.float32(1.5)}], set()) == 0
+
+
+def test_the_previous_chunks_rows_are_released_before_the_next_chunk_is_split(
+    db, crossings, monkeypatch
+):
+    """Two chunks' float[] buffers and rest rows were alive at once: `split` still held the previous chunk's while the next was built."""
+    import weakref
+
+    class Rest(list):  # a list that can be weakly referenced
+        pass
+
+    alive = (
+        []
+    )  # for every call of the split: whether the rest rows of each earlier call are still alive
+    refs = []
+    real = gbm.split_float_vectors
+
+    def spy(*args, **kwargs):
+        alive.append([ref() is not None for ref in refs])
+        out = real(*args, **kwargs)
+        rest = Rest(out[0])
+        refs.append(weakref.ref(rest))
+        return (rest,) + tuple(out[1:])
+
+    monkeypatch.setattr(gbm, "split_float_vectors", spy)
+    x = _x()
+    arrays = _floats(x)
+    rows = [{"id": i, "embedding": arrays[i]} for i in range(ROWS)]
+    with db.graph_batch(parallel_flush=False) as gb:
+        assert len(gb.create_vertices("Declared", rows)) == ROWS
+    assert alive == [[], [False], [False, False]]

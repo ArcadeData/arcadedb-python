@@ -806,26 +806,9 @@ def _dumps_checked(rows: Any, **kwargs: Any) -> str:
     return text
 
 
-def _int64_overflow_pattern() -> str:
-    """The digit runs of 2**63 and above, which a JSON integer token beyond 64 bits has.
-
-    A run of 20 digits or more, or of 19 digits that is not below 9223372036854775808. A run that follows a digit or a "." is not an
-    integer token (the digits after the point of a float such as 0.00012345678901234568 are no token), so only a run start counts.
-    """
-    limit = str(2**63)
-    parts = [r"[0-9]{20,}"]
-    for i, digit in enumerate(limit):
-        low = int(digit) if i == len(limit) - 1 else int(digit) + 1
-        if low <= 9:
-            parts.append(f"{limit[:i]}[{low}-9][0-9]{{{len(limit) - 1 - i}}}")
-    return r"(?<![.0-9])(?:" + "|".join(parts) + ")"
-
-
-_INT64_OVERFLOW = re.compile(_int64_overflow_pattern())
-# json.dumps writes a surrogate code unit as \ud800 to \udfff in lower case: a lone surrogate, and also half of every non-BMP
-# character (an emoji), so a hit only sends the rows to the walk, which decides
-_SURROGATE_ESCAPE = re.compile(r"\\ud[89a-f]")
 _DICT_ONLY = frozenset((dict,))
+# the kinds of a column whose text json.dumps itself decides: a NaN or Infinity it refuses (allow_nan=False), a subnormal `_dumps_checked` refuses
+_TEXT_SAFE = frozenset((type(None), bool, float))
 _STR_ONLY = frozenset((str,))
 
 
@@ -885,39 +868,54 @@ def _kind_is_tagged(kind: type) -> bool:
 
 
 def _rows_need_walk(rows: Any, tagged: bool) -> bool:
-    """Whether the types of the rows leave a check that the JSON text cannot show: only exact dict rows with str keys and values of
-    the exact scalar types (and, tagged, the kinds bulk_tag_default checks) are decided by the text. The census runs in C: one pass
-    over the keys and one over the values, no Python-level loop per row.
+    """Whether the rows may hold a value the JSON text would change, decided from their types and their columns, in C.
+
+    Only exact dict rows with str keys can be decided here. Each column is one list of its values and one census of their types;
+    a column of the exact scalar types is screened (`_scalar_column_suspect`: the 64-bit range of its ints, the UTF-8 form of its
+    strs), a column of the kinds bulk_tag_default writes (tagged) holds nothing the walk has to see, and any other type, or a
+    column of mixed kinds, sends the rows to the walk. A false alarm costs the walk and changes nothing else. This replaces two
+    scans of the JSON text with regular expressions (a lone surrogate, an integer token of 2**63 and above): the one for the
+    integer token cost 2.5 microseconds a row of a three-column table (12 ms of a 5,000-row call), a column screen about 0.2.
     """
     if not set(map(type, rows)) <= _DICT_ONLY:
         return True
-    if not set(map(type, itertools.chain.from_iterable(rows))) <= _STR_ONLY:
+    keys = set(itertools.chain.from_iterable(rows))
+    if not set(map(type, keys)) <= _STR_ONLY:
         return True
-    extra = (
-        set(map(type, itertools.chain.from_iterable(map(dict.values, rows))))
-        - _BULK_SCALAR_TYPES
-    )
-    if not extra:
-        return False
-    return not (tagged and all(map(_kind_is_tagged, extra)))
+    for key in keys:
+        column = list(map(dict.get, rows, itertools.repeat(key)))
+        kinds = set(map(type, column))
+        extra = kinds - _BULK_SCALAR_TYPES
+        if extra:
+            if not (tagged and all(map(_kind_is_tagged, extra))):
+                return True
+            if kinds - extra - {_NONE_KIND}:
+                return True  # tagged kinds beside scalars in one column: the walk judges each value
+            continue  # bulk_tag_default checks these as json.dumps writes them
+        if not kinds <= _TEXT_SAFE and _scalar_column_suspect(column, kinds):
+            return True
+    return False
 
 
-def _dumps_once(rows: Any, tagged: bool) -> str:
-    """One json.dumps pass for the bulk paths, with the checks of `_check_rows` decided from what that pass shows.
+def _dumps_once(rows: Any, tagged: bool, vetted: bool = False) -> str:
+    """One json.dumps pass for the bulk paths, with the checks of `_check_rows` decided from the types and columns of the rows.
 
-    A str or int the text would change cannot be seen by a json.dumps hook (the encoder writes both itself), so the text decides:
-    a surrogate escape (a lone surrogate) or an integer token of 2**63 and above sends the rows to the walk, and so do rows whose
-    types the text cannot vouch for (`_rows_need_walk`). When json.dumps itself refuses the rows (NaN, an unknown type, a
-    subnormal, a hook error) the walk runs first, as the validation loop used to run before json.dumps, so the error of the first
-    bad row in row order is still the walk's; if the walk finds nothing, json.dumps's own error stands. A false alarm costs the walk
-    and changes nothing else.
+    A str or int the text would change cannot be seen by a json.dumps hook (the encoder writes both itself), so the rows decide:
+    `_rows_need_walk` screens their columns in C and sends the rows to the walk when a value may be bad or its type is one it cannot
+    vouch for. When json.dumps itself refuses the rows (NaN, an unknown type, a subnormal, a hook error) the walk runs first, as the
+    validation loop used to run before json.dumps, so the error of the first bad row in row order is still the walk's; if the walk
+    finds nothing, json.dumps's own error stands. A false alarm costs the walk and changes nothing else.
+
+    `vetted` is for a caller that has already screened these rows with the same census (`screen_vertex_rows`: every value an exact
+    scalar, no NaN, Infinity, subnormal, integer beyond 64 bits or lone surrogate): the text is written without a second look.
     """
     try:
-        text = (
-            _dumps_checked(rows, default=bulk_tag_default)
-            if tagged
-            else _dumps_checked(rows)
-        )
+        if vetted:
+            text = json.dumps(rows, allow_nan=False)
+        elif tagged:
+            text = _dumps_checked(rows, default=bulk_tag_default)
+        else:
+            text = _dumps_checked(rows)
     except (TypeError, ValueError) as error:
         refused = error
     else:
@@ -929,22 +927,19 @@ def _dumps_once(rows: Any, tagged: bool) -> str:
             raise refused
         finally:
             del refused
-    if (
-        _rows_need_walk(rows, tagged)
-        or _SURROGATE_ESCAPE.search(text)
-        or _INT64_OVERFLOW.search(text)
-    ):
+    if not vetted and _rows_need_walk(rows, tagged):
         _check_rows(rows, tagged)
     return text
 
 
-def json_bulk_dumps(rows: Any) -> str:
+def json_bulk_dumps(rows: Any, vetted: bool = False) -> str:
     """json.dumps for the bulk paths: raises ValueError (or TypeError) when
     any value in `rows` would change on the way to the engine.
 
-    `rows` is a list of dicts (one per record). The rows are written once; see `_dumps_once` for how the values are checked.
+    `rows` is a list of dicts (one per record). The rows are written once; see `_dumps_once` for how the values are checked and
+    for `vetted`.
     """
-    return _dumps_once(rows, False)
+    return _dumps_once(rows, False, vetted)
 
 
 # ---------------------------------------------------------------------------
@@ -1067,14 +1062,15 @@ _NONE_KIND = type(None)
 _SCREEN_BLOCK = 100_000  # rows per block of the scalar screen, so its transient lists and joined texts stay bounded
 
 
-def _scalar_column_suspect(column: list) -> bool:
+def _scalar_column_suspect(column: list, kinds: Any = None) -> bool:
     """Whether one block of a column of exact scalar values may hold a value the JSON text would change.
 
     Conservative (a false alarm only sends the column to the exact per-value judgement) and run in C: the type census, the joined
     text of a str column (a lone surrogate has no UTF-8 form), min and max of an int column (the 64-bit range), and a float column as
-    one float64 array (NaN, Infinity, a subnormal). Columns of mixed kinds are suspect.
+    one float64 array (NaN, Infinity, a subnormal). Columns of mixed kinds are suspect. `kinds` is the set of the types of `column`
+    when the caller has taken that census already (it is not changed).
     """
-    kinds = set(map(type, column))
+    kinds = set(map(type, column)) if kinds is None else set(kinds)
     if _NONE_KIND in kinds:
         column = [value for value in column if value is not None]
         kinds.discard(_NONE_KIND)
@@ -1103,50 +1099,52 @@ def _scalar_column_suspect(column: list) -> bool:
     return True
 
 
-def _scalar_screen(rows: Any, key: str) -> bool:
-    """Whether the column `key` of all `rows`, which holds exact scalars only, may hold a value the JSON text would change."""
-    for start in range(0, len(rows), _SCREEN_BLOCK):
-        block = list(_column(rows[start : start + _SCREEN_BLOCK], key))
-        if _scalar_column_suspect(block):
-            return True
-    return False
-
-
-def classify_vertex_rows(rows: Any, declared: Any, screen_scalars: bool = False):
-    """What GraphBatch.create_vertices must know about its rows before it writes any chunk, decided by types.
-
-    `screen_scalars` is for an input of more than one chunk. One chunk is decided by its own dumps before anything is sent, so a
-    value the text would change sends all of it the matrix way. Several chunks are sent one after the other, so such a value in
-    a late chunk would leave the earlier ones stored from the JSON text (an int as an Integer) and the late one from the matrix path
-    (a Long): the stored type of a property would depend on which chunk held a bad value. With `screen_scalars` the columns of exact
-    scalars are screened in C over the whole input first (`_scalar_screen`), and a column that may hold a bad value is judged value
-    by value as the code before did, so a bad scalar anywhere gives None for the whole input, as it always did.
-
-    Returns None when the rows must all go the property-matrix way (a property name that is not a str, or a value of a type the
-    tagged JSON does not carry: a set, a numpy or pandas value, a list or tuple of only numbers, any other object); otherwise True when
-    some value needs the tagged text (json_bulk_dumps_tagged) and False when json_bulk_dumps carries every row. A value of an exact
-    scalar type is not judged here unless `screen_scalars`: whether the text carries it (a NaN, an integer beyond 64 bits, a lone
-    surrogate) is decided in the dumps of its chunk. The property of `declared` (ARRAY_OF_FLOATS) that holds a list or a numpy array is left to
-    split_float_vectors. The census over the keys and the values runs in C; a Python-level loop runs only over a column that
-    holds a type other than the exact scalars.
+def _screen_key(rows: Any, key: str, screen: bool):
+    """(odd, suspect) for the column `key` of all `rows`: the types in it beyond the exact scalars, and, with `screen`, whether a column
+    of exact scalars only may hold a value the JSON text would change. One list and one census per block of `_SCREEN_BLOCK` rows.
     """
+    odd = set()
+    suspect = False
+    for start in range(0, len(rows), _SCREEN_BLOCK):
+        block = (
+            rows if len(rows) <= _SCREEN_BLOCK else rows[start : start + _SCREEN_BLOCK]
+        )
+        column = list(_column(block, key))
+        kinds = set(map(type, column))
+        extra = kinds - _BULK_SCALAR_TYPES
+        if extra:
+            odd |= extra
+        elif screen and not suspect:
+            suspect = _scalar_column_suspect(column, kinds)
+    return odd, suspect
+
+
+def _classify_rows(rows: Any, declared: Any, screen_scalars: bool):
+    """The verdict of classify_vertex_rows and screen_vertex_rows: None, or ``(tagged, vetted)``.
+
+    `vetted` is True when every column of the rows holds exact scalars only and `screen_scalars` found nothing the text would change
+    in it (a column the screen flagged counts when every value passed the judgement by value): then no chunk of these rows needs a
+    check of its own."""
     if not set(map(type, rows)) <= _ROWS_OR_NONE:
-        return _classify_walk(
-            rows, declared
+        tagged = _classify_walk(rows, declared)
+        return (
+            None if tagged is None else (tagged, False)
         )  # a row that is no dict: the walk raises what it always raised
     keys = set(itertools.chain.from_iterable(filter(None, rows)))
     if not set(map(type, keys)) <= _STR_ONLY:
         return None
     tagged = False
+    vetted = screen_scalars
     for key in keys:
-        odd = set(map(type, _column(rows, key))) - _BULK_SCALAR_TYPES
-        if not odd:
-            if not screen_scalars or not _scalar_screen(rows, key):
-                continue  # exact scalars; with screen_scalars (several chunks) only a column that passes the screen
-        elif key in declared and all(_is_vector_kind(kind) for kind in odd):
-            continue  # the vectors of a declared column
-        elif all(_is_float_array_kind(kind) for kind in odd):
-            continue  # a column of arrays: take_vector_columns takes the float32 ones; a chunk it leaves goes the matrix way
+        odd, suspect = _screen_key(rows, key, screen_scalars)
+        if odd:
+            vetted = False
+            if key in declared and all(_is_vector_kind(kind) for kind in odd):
+                continue  # the vectors of a declared column
+            if all(_is_float_array_kind(kind) for kind in odd):
+                continue  # a column of arrays: take_vector_columns takes the float32 ones; a chunk it leaves goes the matrix way
+        elif not suspect:
+            continue  # exact scalars; with screen_scalars a column that passed the screen
         for value in _column(rows, key):
             if (type(value) in _BULK_SCALAR_TYPES and not screen_scalars) or (
                 key in declared and is_vector_candidate(value)
@@ -1162,7 +1160,39 @@ def classify_vertex_rows(rows: Any, declared: Any, screen_scalars: bool = False)
                 if not json_bulk_shape_ok(value):
                     return None
                 tagged = True
-    return tagged
+    return tagged, vetted and not tagged
+
+
+def classify_vertex_rows(rows: Any, declared: Any, screen_scalars: bool = False):
+    """What GraphBatch.create_vertices must know about its rows before it writes any chunk, decided by types.
+
+    `screen_scalars` is for an input of several chunks, which are sent one after the other: a value the text would change in a late
+    chunk would leave the earlier ones stored from the JSON text (an int as an Integer) and the late one from the matrix path (a Long),
+    so the stored type of a property would depend on which chunk held it. With `screen_scalars` the columns of exact scalars are
+    screened in C over the whole input first (`_screen_key`), and a column that may hold a bad value is judged value by value, so a
+    bad scalar anywhere gives None for the whole input.
+
+    Returns None when the rows must all go the property-matrix way (a property name that is not a str, or a value of a type the
+    tagged JSON does not carry: a set, a numpy or pandas value, a list or tuple of only numbers, any other object); otherwise True when
+    some value needs the tagged text (json_bulk_dumps_tagged) and False when json_bulk_dumps carries every row. A value of an exact
+    scalar type is not judged here unless `screen_scalars`: whether the text carries it (a NaN, an integer beyond 64 bits, a lone
+    surrogate) is then decided in the dumps of its chunk. The property of `declared` (ARRAY_OF_FLOATS) that holds a list or a numpy
+    array is left to split_float_vectors. The census over the keys and the values runs in C; a Python-level loop runs only over a
+    column that holds a type other than the exact scalars, or that the screen flagged.
+    """
+    verdict = _classify_rows(rows, declared, screen_scalars)
+    return None if verdict is None else verdict[0]
+
+
+def screen_vertex_rows(rows: Any, declared: Any):
+    """classify_vertex_rows with the whole-input screen, for any number of chunks: None, or ``(tagged, vetted)``.
+
+    `vetted` says that every value of every row is an exact scalar the JSON text carries unchanged (a column holding any other type,
+    a vector or a tagged kind, is not vetted). The chunks of such rows are then written by ``json_bulk_dumps(chunk, vetted=True)``
+    with no check of their own. One chunk is screened here too, so its values are looked at once, as columns in C, and not again in
+    the text: a value the text would change sends all of it the property-matrix way, which is what its own dumps did before.
+    """
+    return _classify_rows(rows, declared, True)
 
 
 def _classify_walk(rows: Any, declared: Any):
@@ -1331,6 +1361,25 @@ def take_vector_columns(rows, declared, undeclared=False):
     if not taken:
         return None
     return taken, matrices, _without_keys(rows, taken)
+
+
+def vector_width(rows, declared):
+    """How many floats the vector columns of the first row hold (0 when it holds none): a list, array, Java ``float[]`` or ``double[]``
+    in a declared property, or a float32 array or Java ``float[]`` in any property. GraphBatch.create_vertices sizes its crossings by it.
+    """
+    first = rows[0] if rows else None
+    if not isinstance(first, dict):
+        return 0
+    width = 0
+    for key, value in first.items():
+        if (key in declared and is_vector_candidate(value)) or _is_float32_vector(
+            value
+        ):
+            try:
+                width += len(value)
+            except TypeError:  # a 0-dimensional array
+                pass
+    return width
 
 
 def split_float_vectors(java_db, type_name, rows, declared=None, undeclared=False):

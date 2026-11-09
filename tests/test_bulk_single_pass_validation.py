@@ -327,7 +327,9 @@ def test_a_value_that_may_be_bad_runs_the_walk(monkeypatch, row):
     assert walks, "the walk must decide a row the text cannot vouch for"
 
 
-def test_int64_overflow_pattern_matches_exactly_the_tokens_from_2_to_the_63():
+def test_the_column_screen_flags_exactly_the_ints_beyond_64_bits():
+    # two regular expressions over the JSON text used to decide this; the text scan of the integer tokens cost 2.5 microseconds a row
+    # (12 ms of a 5,000-row create_vertices call of the paper's l2 shape), so the columns decide it now, in C, and the text is not scanned
     rnd = random.Random(63)  # nosec B311 - a seeded corpus, not security
     values = [
         0,
@@ -345,12 +347,116 @@ def test_int64_overflow_pattern_matches_exactly_the_tokens_from_2_to_the_63():
     ]
     values += [rnd.randint(10**18, 2**65) for _ in range(5000)]  # fmt: skip
     for value in values:
-        for text in (str(value), str(-value), f"[{value},1]", f'{{"a":{value}}}'):
-            hit = tc._INT64_OVERFLOW.search(text) is not None
-            assert hit == (value >= 2**63), text
-    # digits after the point of a float and inside an exponent are no integer token
-    assert tc._INT64_OVERFLOW.search("[0.00012345678901234568]") is None
-    assert tc._INT64_OVERFLOW.search("[1.2345678901234567e+19]") is None
+        for number in (value, -value):
+            outside = not INT64_MIN <= number <= INT64_MAX
+            assert tc._rows_need_walk([{"a": number}], False) is outside, number
+            assert tc._rows_need_walk([{"a": None}, {"a": number}], False) is outside
+            assert tc._scalar_column_suspect([number, None]) is outside, number
+    # digits after the point of a float and inside an exponent are no integer token, and a float column is not screened at all
+    assert tc._rows_need_walk([{"f": 0.00012345678901234568}], False) is False
+    assert tc._rows_need_walk([{"f": 1.2345678901234567e19}], False) is False
+    assert tc._rows_need_walk([{"s": "id-123456789012345678901"}], False) is False
+
+
+@pytest.mark.parametrize("tagged", [False, True], ids=["untagged", "tagged"])
+def test_a_bad_value_in_a_ragged_or_nullable_column_runs_the_walk_and_gives_the_old_error(
+    tagged,
+):
+    new = tc.json_bulk_dumps_tagged if tagged else tc.json_bulk_dumps
+    for rows in (
+        [{"a": 1}, {"b": "x"}, {"a": 2**70}],  # the key is missing in the middle row
+        [{"a": None}, {"a": INT64_MIN - 1}],
+        [{"s": "ok"}, {"s": None}, {"s": "x\ud800"}],
+        [{"a": 1}, {"a": "text"}, {"a": 2**63}],  # a column of two kinds
+    ):
+        assert tc._rows_need_walk(rows, tagged) is True, rows
+        expected = _outcome(lambda r: _old_dumps(r, tagged), rows)
+        assert expected[0] == "ValueError", expected
+        assert _outcome(new, rows) == expected
+
+
+def test_a_nullable_column_of_a_tagged_kind_and_the_scalar_columns_are_not_walked(
+    monkeypatch,
+):
+    walks = []
+    real = tc._check_rows
+    monkeypatch.setattr(
+        tc,
+        "_check_rows",
+        lambda rows, tagged: walks.append(tagged) or real(rows, tagged),
+    )
+    rows = [
+        {
+            "id": i,
+            "born": None if i % 3 == 0 else dt.datetime(2026, 1, 2, 3, 4, i % 60),
+            "name": None if i % 5 == 0 else f"n{i}",
+            "w": i / 7,
+        }
+        for i in range(300)
+    ]
+    assert tc._rows_need_walk(rows, True) is False
+    assert tc.json_bulk_dumps_tagged(rows)
+    assert walks == []
+    # a column of a tagged kind beside an int: the walk judges each value
+    assert tc._rows_need_walk([{"a": dt.date(2026, 1, 2)}, {"a": 5}], True) is True
+
+
+def test_screen_vertex_rows_vets_a_table_of_exact_scalars(monkeypatch):
+    rows = _batch(2_000, {})
+    rows += [
+        {
+            "ts": 1_700_000_000_123_456_789,
+            "hi": INT64_MAX,
+            "lo": INT64_MIN,
+            "f": 0.00012345678901234568,
+        },
+        {"han": "한글퟿中文", "nul": "a\x00b", "e": "", "n": None, "b": True},
+        {"mixed": 1},
+        {"mixed": 2.5},  # a column of two kinds: judged value by value, and it passes
+        {},
+    ]
+    assert tc.screen_vertex_rows(rows, set()) == (False, True)
+    # a vetted table is written with no check of its own: neither the type census nor the walk runs, and the text is the plain text
+    calls = []
+    for name in ("_rows_need_walk", "_check_rows"):
+        real = getattr(tc, name)
+        monkeypatch.setattr(
+            tc, name, lambda *a, _n=name, _r=real: calls.append(_n) or _r(*a)
+        )
+    assert tc.json_bulk_dumps(rows, vetted=True) == json.dumps(rows)
+    assert calls == []
+    plain = rows[
+        :2_000
+    ]  # no column of two kinds: the type census and the column screen decide, no walk
+    assert tc.json_bulk_dumps(plain) == json.dumps(plain)
+    assert calls == ["_rows_need_walk"], "an unvetted call still looks at its rows"
+
+
+def test_screen_vertex_rows_does_not_vet_a_column_of_another_type():
+    x = np.arange(12, dtype=np.float32).reshape(4, 3)
+    born = dt.datetime(2026, 1, 2)
+    assert tc.screen_vertex_rows([{"a": 1, "d": born}] * 3, set()) == (True, False)
+    assert tc.screen_vertex_rows([{"a": 1, "l": ["x", 2]}] * 3, set()) == (True, False)
+    # float32 arrays of an undeclared column, and the list of a declared one, are left to split_float_vectors
+    assert tc.screen_vertex_rows([{"v": row} for row in x], set()) == (False, False)
+    assert tc.screen_vertex_rows([{"v": row.tolist()} for row in x], {"v"}) == (
+        False,
+        False,
+    )
+    # an empty row (None counts as one) holds nothing to judge
+    assert tc.screen_vertex_rows([{"a": 1}, None, {}], set()) == (False, True)
+
+
+@pytest.mark.parametrize(
+    "bad", [2**63, INT64_MIN - 1, math.nan, math.inf, 5e-324, "a\ud800", {1, 2}]
+)
+def test_screen_vertex_rows_gives_none_for_what_the_text_would_change(bad):
+    rows = [{"id": i, "x": 1.5} for i in range(300)]
+    assert tc.screen_vertex_rows(rows, set()) == (False, True)
+    rows[150]["x"] = bad
+    assert tc.screen_vertex_rows(rows, set()) is None
+    assert tc.classify_vertex_rows(rows, set(), True) is None
+    assert tc.screen_vertex_rows([{"id": 1}, {1: "a"}], set()) is None
 
 
 # ---------------------------------------------------------------------------

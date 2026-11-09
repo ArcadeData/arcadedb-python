@@ -3,11 +3,12 @@
 Before, `_create_vertices_json_bulk` called `json_bulk_scalar_ok` on every value of every row before the first chunk was written, and
 the chunk was then walked again by json.dumps. Now `type_conversion.classify_vertex_rows` takes a census of the types in C, and the
 value checks come from the one json.dumps pass of each chunk (`json_bulk_dumps`, as `json_bulk_dumps_tagged` already did for the tagged
-text). The rule that keeps the stored type of a property from depending on which chunk held a bad value: an input of one chunk is decided
-by its own dumps before anything is sent; an input of several chunks first has its columns of exact scalars screened in C over the whole
-input (`classify_vertex_rows(..., screen_scalars=True)`), and a bad scalar (a NaN, an integer beyond 64 bits, a lone surrogate, a
-subnormal) anywhere sends the WHOLE input the property-matrix way, as it did before. A name that is not a str or a type the text does not
-carry does the same (`_create_vertices_json_bulk` returns None).
+text). The rule that keeps the stored type of a property from depending on which chunk held a bad value: the columns of exact scalars are
+screened in C over the whole input, one chunk or several (`type_conversion.screen_vertex_rows`), and a bad scalar (a NaN, an integer beyond
+64 bits, a lone surrogate, a subnormal) anywhere sends the WHOLE input the property-matrix way, as it did before. A name that is not a str
+or a type the text does not carry does the same (`_create_vertices_json_bulk` returns None). An input of exact scalars only has then been
+looked at once, as columns, so its chunks are written with no check of their own (no text scan, no walk): the 5,000-row call of the l2
+Person load spent 12 ms of 43 in two regular expressions over the JSON text before this (#318 follow-up, the g1 regression of candidate 3).
 """
 
 import pytest
@@ -154,3 +155,47 @@ def _stored_types(db, probes):
     assert set(by_id) == set(probes)
     assert {i: by_id[i][0] for i in probes} == {i: i % 1000 for i in probes}
     return {probes[i]: by_id[i][1] for i in probes}
+
+
+@pytest.mark.parametrize("chunk", [100_000, 500], ids=["one_chunk", "screened"])
+def test_a_screened_scalar_table_is_written_with_no_check_per_chunk(
+    temp_db_path, monkeypatch, chunk
+):
+    # the l2 Person shape: the input was screened once as columns, so no chunk runs the census again or the walk (candidate 3 ran two
+    # regular expressions over every chunk's text here: 31 percent more wall for the 5,000-row call)
+    calls = []
+    for name in ("_rows_need_walk", "_check_rows"):
+        real = getattr(tc, name)
+        monkeypatch.setattr(
+            tc, name, lambda *a, _n=name, _r=real: calls.append(_n) or _r(*a)
+        )
+    monkeypatch.setattr(GraphBatch, "_BULK_CHUNK", chunk)
+    rows = _rows(2_000)
+    with arcadedb.create_database(temp_db_path) as db:
+        db.command("sql", "CREATE VERTEX TYPE V")
+        with db.graph_batch(parallel_flush=False) as batch:
+            assert len(batch.create_vertices("V", rows)) == len(rows)
+        assert db.query("sql", "SELECT count(*) AS c FROM V").first().get("c") == 2_000
+    assert calls == []
+
+
+def test_rows_with_another_kind_of_column_are_still_checked_chunk_by_chunk(
+    temp_db_path, monkeypatch
+):
+    from datetime import datetime
+
+    walks = []
+    real = tc._rows_need_walk
+    monkeypatch.setattr(
+        tc,
+        "_rows_need_walk",
+        lambda rows, tagged: walks.append(len(rows)) or real(rows, tagged),
+    )
+    monkeypatch.setattr(GraphBatch, "_BULK_CHUNK", 100)
+    rows = [{"id": i, "born": datetime(2026, 1, 2, 3, 4, 5)} for i in range(250)]
+    with arcadedb.create_database(temp_db_path) as db:
+        db.command("sql", "CREATE VERTEX TYPE V")
+        with db.graph_batch(parallel_flush=False) as batch:
+            assert len(batch.create_vertices("V", rows)) == 250
+        assert db.query("sql", "SELECT count(*) AS c FROM V").first().get("c") == 250
+    assert walks == [100, 100, 50]
