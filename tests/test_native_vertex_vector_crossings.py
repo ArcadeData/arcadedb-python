@@ -59,6 +59,19 @@ class _Spy:
     def entries(self):
         return [c[0] for c in self.crossings]
 
+    def around(self, call):
+        """``(result, hooks, crossings)`` of one ``call()``: the codec hook calls and the library crossings made inside it only.
+
+        ``codec._prep`` is counted by name, so it also counts the calls the batch itself makes outside ``create_vertices``: creating
+        the batch (``_enc`` of its options, whose ``_prep`` recurses into the patched name once per option) and ``close()``
+        (``encode_gb_args({})``). Those are a few calls and do not depend on the rows, so the counts here are taken around the
+        ``create_vertices`` call alone.
+        """
+        before, seen = dict(self.hooks), len(self.crossings)
+        result = call()
+        used = {key: self.hooks[key] - before[key] for key in before}
+        return result, used, len(self.crossings) - seen
+
 
 @pytest.fixture
 def spy(monkeypatch):
@@ -95,9 +108,12 @@ def test_a_float32_column_is_one_matrix_with_no_hook_call_per_row(db, spy, type_
     x = _x()
     rows = [{"id": i, "embedding": x[i]} for i in range(ROWS)]
     with db.graph_batch(commit_every=CHUNK) as gb:
-        assert len(gb.create_vertices(type_name, rows)) == ROWS
+        rids, used, crossed = spy.around(lambda: gb.create_vertices(type_name, rows))
+    assert len(rids) == ROWS
     assert spy.entries() == ["arcadedb_n_gb_bin"] * 3  # one crossing per chunk of 100
-    assert spy.hooks == {"gb_default": 0, "default": 0, "prep": 0}, spy.hooks
+    # no per-row hook: the per-row hooks of the old path are never called, and nothing is called more than once per crossing
+    assert used["gb_default"] == 0 and used["default"] == 0, used
+    assert used["prep"] <= crossed, used  # the old path called it for every row
     assert [c[3] for c in spy.crossings] == [CHUNK * DIM, CHUNK * DIM, 50 * DIM]
     for _, text, buf, count in spy.crossings:
         args = json.loads(text)
@@ -108,6 +124,19 @@ def test_a_float32_column_is_one_matrix_with_no_hook_call_per_row(db, spy, type_
             buf, ctypes.Array
         )  # a view of the matrix, not a copy of its bytes
     _assert_bit_equal(_stored(db, type_name), x)
+
+
+def test_the_python_work_does_not_grow_with_the_row_count(db, spy):
+    # 250 rows in three chunks of 100, then 2,500 rows in three chunks of 1,000: ten times the rows, the same number of crossings, and
+    # the same bound on the codec hooks (the old path called the hooks once or more for every row, so it would show 250 and 2,500)
+    for rows_n, chunk in ((250, 100), (2500, 1000)):
+        x = _x(rows_n)
+        rows = [{"id": i, "embedding": x[i]} for i in range(rows_n)]
+        with db.graph_batch(commit_every=chunk) as gb:
+            rids, used, crossed = spy.around(lambda: gb.create_vertices("Free", rows))
+        assert len(rids) == rows_n and crossed == 3
+        assert used["gb_default"] == 0 and used["default"] == 0, used
+        assert used["prep"] <= crossed, used
 
 
 def test_two_columns_and_a_date_time_keep_the_buffer_layout(db, spy):
