@@ -1503,8 +1503,9 @@ class NativeDatabase:
         self, type_name, df, *, batch_size: int = 10_000, parallel: bool = False
     ) -> int:
         """A pandas or Polars DataFrame into a type, in batches: the strict Arrow loading of ``Database.insert_dataframe``
-        (dtype refusals, declared types, NaN rules, the committed-rows message), batches through :meth:`insert_many` for a
-        document type and a vertex type alike (a vertex load refuses to run inside a transaction the caller opened; ``arcadedb/dataframe.py``).
+        (dtype refusals, declared types, NaN rules, the committed-rows message), batches through the columnar insert
+        (:meth:`insert_columns`; :meth:`insert_many` for a batch whose columns cannot cross as memory) for a document type and a
+        vertex type alike (a vertex load refuses to run inside a transaction the caller opened; ``arcadedb/dataframe.py``).
         """
         from ..dataframe import insert_table, to_arrow_table
 

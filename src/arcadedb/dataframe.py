@@ -8,15 +8,15 @@ one, and each Arrow column becomes the typed array ``Database.insert_columns``
 sends across the bridge, for a document type and for a vertex type alike (the
 vertex type gets vertices from the same ``DocumentBatcher.insertColumns``; it
 refuses to run inside a transaction the caller opened, as ``GraphBatch`` does).
-No Java was added.
 
 The native backend (the ``arcadedb`` wheel) shares everything but the
 last step: the checks, the type mapping, the batching and the error wording are
 the same code. A batch of documents or vertices goes over by address through
 the columnar entry (``arcadedb_n_insert_colp``) when every column can cross as
-memory, else as one JSON text through ``Database.insert_many`` (one crossing per
-10,000 rows), where a value JSON cannot carry (a date-time, a decimal, bytes)
-travels as a tagged value the image decodes.
+memory (numbers, bools, strings, float vectors, date-times, dates, decimals and bytes),
+else as one JSON text through ``Database.insert_many`` (one crossing per 10,000 rows),
+where a value JSON cannot carry (a date-time, a decimal, bytes) travels as a tagged
+value the image decodes.
 """
 
 import re
@@ -506,9 +506,9 @@ def _insert_documents_native(
     parallel: bool,
     declared: Optional[Dict[str, str]] = None,
 ):
-    """One batch of documents on the native backend. When every column can cross as memory (numbers, bools, strings, nulls,
-    float vectors for an ``ARRAY_OF_FLOATS`` property) the batch goes through the columnar entry, no Python values and no JSON
-    text; otherwise the columns become one dict per row and go to ``insert_many`` (one crossing per 10,000 rows). Either way
+    """One batch of documents or vertices on the native backend. When every column can cross as memory (numbers, bools, strings,
+    nulls, date-times, dates, decimals, bytes, float vectors for an ``ARRAY_OF_FLOATS`` property) the batch goes through the
+    columnar entry, no Python values and no JSON text; otherwise the columns become one dict per row and go to ``insert_many`` (one crossing per 10,000 rows). Either way
     the batch is one transaction, or joins the caller's. With ``parallel`` the same columnar entry hands the records to the async
     writers (no transaction), and the call waits for them and raises when a record failed, as ``insert_many(parallel=True)`` does.
     """

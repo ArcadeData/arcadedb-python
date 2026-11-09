@@ -1343,9 +1343,10 @@ class Database:
 
         The Arrow counterpart of :meth:`insert_columns`: each Arrow column is
         converted to the typed array ``insert_columns`` sends across the bridge
-        (``DocumentBatcher.insertColumns``), so a document type loads at that
-        path's speed; a vertex type loads through ``GraphBatch``. Documents and
-        vertices only: an edge type is refused.
+        (``DocumentBatcher.insertColumns``), so a document type and a vertex
+        type load at that path's speed (a vertex type is not loaded through
+        ``GraphBatch``; a vertex load refuses to run inside a transaction the
+        caller opened). Documents and vertices only: an edge type is refused.
 
         A property the type does not declare takes the stored type below; a
         declared property converts to its declared type.
