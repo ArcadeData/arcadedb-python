@@ -66,7 +66,8 @@ def _stored(db, name, column):
 
 
 def _bytes(values):
-    return [None if v is None else bytes(v) for v in values]
+    # a BINARY property reads back as the values of a Java byte[] (signed, -128..127) or as bytes; & 0xFF takes both to the same bytes
+    return [None if v is None else bytes(b & 0xFF for b in v) for v in values]
 
 
 @pytest.mark.parametrize("path", ["insert_columns", "insert_many"])

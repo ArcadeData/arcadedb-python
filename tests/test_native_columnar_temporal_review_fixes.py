@@ -10,8 +10,10 @@ native backend only.
 """
 
 import datetime as dt
+import decimal
 import math
 
+import numpy as np
 import pytest
 
 from arcadedb._native import columnar, lib  # noqa: E402
@@ -52,7 +54,7 @@ def test_a_date64_past_int32_days_is_not_laid_out_and_never_wraps():
     assert columnar.pack({"d": wraps}, NO_TYPES) is None
     below = pa.array([DAY_MS * (-(2**31) - 1)], pa.int64()).cast(pa.date64())
     assert columnar.pack({"d": below}, NO_TYPES) is None
-    one_bad = pa.array([0, DAY_MS, DAY_MS * 2**40], pa.int64()).cast(pa.date64())
+    one_bad = pa.array([0, DAY_MS, DAY_MS * 2**33], pa.int64()).cast(pa.date64())
     assert columnar.pack({"d": one_bad}, NO_TYPES) is None  # one value is enough
 
 
@@ -88,6 +90,18 @@ def test_a_timestamp_at_the_limits_stays_columnar():
     for unit in ("ms", "us", "ns"):
         big = pa.array([2**63 - 1, -(2**63)], pa.timestamp(unit))
         assert _kinds({"t": big}) == ["T"], unit
+
+
+@pytest.mark.parametrize("text", ["NaN", "-NaN", "sNaN", "Infinity", "-Infinity"])
+def test_a_non_finite_decimal_is_never_laid_out(text):
+    # new BigDecimal("NaN") throws in the image, in the middle of a batch: the column must stay in Python, in every container
+    bad = decimal.Decimal(text)
+    assert columnar.pack({"x": [decimal.Decimal("1.5"), bad]}, NO_TYPES) is None
+    assert columnar.pack({"x": [None, bad, None]}, NO_TYPES) is None
+    as_object = np.array([decimal.Decimal("1"), bad], dtype=object)
+    assert columnar.pack({"x": as_object}, NO_TYPES) is None
+    finite = columnar.pack({"x": [decimal.Decimal("1.5"), None]}, NO_TYPES)
+    assert finite is not None and finite[1][0].kind == "n"  # the finite column crosses
 
 
 def _type(db, name):

@@ -250,8 +250,10 @@ def test_an_uncarriable_value_sends_its_own_row_to_the_statement_not_the_chunk(
         spy.clear()
         db.insert_many("Bulk", rows)
         assert spy.count(MANY) == 1, "one statement run for the one uncarriable row"
+        # the rows before and after it stay on the bulk entry; its columnar form carries the date-time column now, so each run
+        # crosses on arcadedb_n_insert_colp (before it was the JSON entry, arcadedb_n_insert_rows)
         assert (
-            spy.count(ROWS) == 2
+            spy.count(COLP) == 2 and spy.count(ROWS) == 0
         ), "the rows before and after it stay on the bulk entry"
         assert _stored(db, "Bulk") == _stored(db, "Ref")
 

@@ -174,17 +174,21 @@ def test_pandas_timestamps_keep_microseconds_as_the_json_path_does(
 
 
 @pytest.mark.parametrize(
-    "column",
+    "column, colp_runs",
     [
-        [dt.datetime(2020, 1, 1), dt.date(2020, 1, 1)],  # a date-time and a date
-        [decimal.Decimal("1.5"), decimal.Decimal("NaN")],  # a non-finite Decimal
-        [b"a", "b"],  # bytes and text
+        ([dt.datetime(2020, 1, 1), dt.date(2020, 1, 1)], 0),  # a date-time and a date
+        # A non-finite Decimal: the column is refused (BigDecimal("NaN") would throw mid-batch in the image), so the NaN row goes to the
+        # statement on its own, as before. The row around it is a run of carriable rows: it goes in bulk, and the columnar entry
+        # carries a finite Decimal now, so that one run crosses on arcadedb_n_insert_colp (before, it was the JSON entry).
+        ([decimal.Decimal("1.5"), decimal.Decimal("NaN")], 1),
+        ([b"a", "b"], 0),  # bytes and text
     ],
     ids=["datetime-and-date", "nan-decimal", "bytes-and-text"],
 )
 def test_a_column_the_buffers_cannot_carry_unchanged_still_falls_back(
-    temp_db, spy, monkeypatch, column
+    temp_db, spy, monkeypatch, column, colp_runs
 ):
+    assert columnar.pack({"x": column}, columnar.Declared(known={})) is None
     _type(temp_db, "Ref", declared=False)
     _type(temp_db, "Col", declared=False)
     rows = [{"id": i, "x": v} for i, v in enumerate(column)]
@@ -195,11 +199,11 @@ def test_a_column_the_buffers_cannot_carry_unchanged_still_falls_back(
     ):  # the statement path may refuse it; then the new path must refuse it the same way
         with pytest.raises(Exception):
             temp_db.insert_many("Col", rows)
-        assert spy.count(COLP) == 0
+        assert spy.count(COLP) == colp_runs
         return
     spy.calls.clear()
     temp_db.insert_many("Col", rows)
-    assert spy.count(COLP) == 0
+    assert spy.count(COLP) == colp_runs
     assert _stored(temp_db, "Col") == _stored(temp_db, "Ref")
 
 

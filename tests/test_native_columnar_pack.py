@@ -190,7 +190,11 @@ def test_a_bitmap_longer_than_a_byte():
         [1, 2**63],  # past 64 bits
         [{"a": 1}, {"a": 2}],  # nested
         [[1], [2]],  # a list without a declared ARRAY_OF_FLOATS
-        [b"ab", b"cd"],
+        [
+            b"ab",
+            "cd",
+        ],  # bytes and text (a column of bytes alone crosses as kind x since #316)
+        [b"ab", bytearray(b"cd")],  # two bytes-like types
         [np.int64(1), np.int64(2)],  # numpy scalars in a list are not Python numbers
     ],
 )
