@@ -130,6 +130,7 @@ NATIVE_NOT_APPLICABLE = {
     "test_server_packaging.py": "JVM wheel contents",
     "test_runtime_cache.py": "JRE runtime cache of the JVM wheel",
     "test_aot.py": "JVM class-data cache",
+    "test_jvm_cds.py": "class-data-sharing archive of the JVM wheel's bundled JRE",
     "test_stage_jars.py": "staging of the JVM wheel's jars",
     "test_extract_version.py": "version of the JVM wheel's engine jar",
     "test_extract_version_classifiers.py": "version of the JVM wheel's engine jar",
