@@ -232,6 +232,7 @@ def _load():
             "arcadedb_n_insert_colp": [P, L, S, S, P, I],
             "arcadedb_n_next": [P, L, I],
             "arcadedb_n_next_bin": [P, L, I],
+            "arcadedb_n_next_col": [P, L, I, S, I],
             "arcadedb_n_rs_close": [P, L],
             "arcadedb_n_cmd": [P, L, I, S, S, S, S, L, I],
             "arcadedb_n_last_error": [P],
@@ -390,6 +391,42 @@ def call_bin(name: str, *args):
     lib = _lib or _load()
     th = _thread_handle()
     return _take(lib, th, getattr(lib, name)(th, *args), True)
+
+
+def call_frame(rs_id: int, max_rows: int, spec: bytes, flags: int) -> bytes:
+    """One column frame of an open cursor (``arcadedb_n_next_col``): its bytes, in the layout ``arcadedb._columnar`` reads.
+
+    The reply is an int64 byte count and the frame. A negative count is the negated length of an error JSON: it is raised as
+    :class:`ColumnFrameError` with the decoded reply (the cursor is already closed on the Java side then). ``max_rows`` is a C int:
+    callers clamp it (``arcadedb._columnar.frame_rows``).
+    """
+    lib = _lib or _load()
+    if getattr(lib, "arcadedb_n_next_col", None) is None:
+        raise ArcadeDBError(
+            "The native library is older than this wheel: it has no arcadedb_n_next_col entry point, which to_arrow, to_columns, "
+            "to_dataframe and to_polars need. Reinstall the arcadedb wheel (a library and its Python files ship together)."
+        )
+    th = _thread_handle()
+    ptr = lib.arcadedb_n_next_col(th, rs_id, max_rows, spec, flags)
+    if not ptr:
+        raise ArcadeDBError(
+            "The native library returned no reply to a column frame request"
+        )
+    try:
+        n = int.from_bytes(ctypes.string_at(ptr, 8), "little", signed=True)
+        if n < 0:
+            raise ColumnFrameError(json.loads(ctypes.string_at(ptr + 8, -n)))
+        return ctypes.string_at(ptr + 8, n)
+    finally:
+        lib.arcadedb_free(th, ptr)
+
+
+class ColumnFrameError(Exception):
+    """The error reply (the dict ``errorJson`` writes) of a failed ``arcadedb_n_next_col``."""
+
+    def __init__(self, reply: dict):
+        super().__init__(reply.get("error"))
+        self.reply = reply
 
 
 def alloc(size: int):

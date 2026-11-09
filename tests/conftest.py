@@ -39,6 +39,8 @@ WINDOWS_NOT_APPLICABLE = {
 if sys.platform == "win32":
     collect_ignore.extend(WINDOWS_NOT_APPLICABLE)
 if BACKEND != "native":
+    # the old JSON-row route that the native column frames are compared with (the module lives in the native package)
+    collect_ignore.append("test_native_column_frames_reference.py")
     # Java -> Python upcalls (Python functions in SQL) exist on the native build only
     collect_ignore.append("test_native_udf.py")
     # how find_nearest hands the query vector to the native library (the codec's side buffer)
@@ -97,7 +99,7 @@ if BACKEND != "native":
     collect_ignore.append("test_native_point_op_glue.py")
     # the address table of append_samples (arcadedb_n_async_bin), observed on the native library
     collect_ignore.append("test_native_timeseries_binary.py")
-    # arcadedb._native.columns builds the columnar readers' tables from the rows; the file compares it with the rules it replaced (#312)
+    # the drain of a native result set (_fill(into), _drain_dicts) against row-by-row iteration (#321; the columns module it once compared is gone, #331)
     collect_ignore.append("test_native_columns_reference.py")
     # the crossings of GraphBatch.create_vertices with float32 columns (lib.call, the codec's per-row hooks), observed on the native library
     collect_ignore.append("test_native_vertex_vector_crossings.py")

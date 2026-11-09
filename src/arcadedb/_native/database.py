@@ -9,6 +9,7 @@ from collections import deque
 from datetime import date, datetime
 from typing import Any, Dict, Iterator, List, Optional
 
+from .. import _columnar
 from .._params import refuse_surplus_positionals
 from ..exceptions import ArcadeDBError
 from ..transactions import TransactionContext
@@ -211,6 +212,10 @@ class NativeResultSet:
         self._rs = reply["rs"]
         self._buf = deque(zip(reply["rows"], reply["meta"]))
         self._more = not reply["drained"]
+        # the properties that were float[] ("f") or double[] ("d") in the rows read so far: a JSON row cannot tell them from a list of
+        # doubles, and a columnar read types them as vector columns (colframes.py)
+        self._vectors: Dict[str, str] = {}
+        self._note_vectors(reply)
         self._closed = False
         self._exhausted = False
         # the engine computes lazily: an error met while the first rows were read is raised when the rows before it
@@ -225,6 +230,7 @@ class NativeResultSet:
         self._rs = rs_id
         self._buf = deque()
         self._tagged = False
+        self._vectors = {}
         self._more = rs_id > 0
         self._closed = False
         self._exhausted = False
@@ -294,7 +300,14 @@ class NativeResultSet:
             has_rows = bool(self._buf)
         self._more = not reply["drained"]
         self._pending_error = reply.get("rerr")
+        self._note_vectors(reply)
         return has_rows or self._pending_error is not None
+
+    def _note_vectors(self, reply: dict) -> None:
+        for name in reply.get("fv", ()):
+            self._vectors[name] = "f"
+        for name in reply.get("dv", ()):
+            self._vectors[name] = "d"
 
     def _finish(self) -> None:
         self._exhausted = True
@@ -422,33 +435,104 @@ class NativeResultSet:
             # returns as it is. The flag is read after the batch is built, so it covers every reply the batch's rows came from
             yield [json_native(row) for row in batch] if self._tagged else batch
 
+    def _read_frames(self, batch_size, columns, decode, flags=0):
+        """The rows still to be read, in the two forms a result has: ``(head_rows, batches)``.
+
+        ``head_rows`` are the rows this object holds as dicts (the first reply, and any reply the caller read by row): they are
+        not in the cursor any more. ``batches`` is the list of ``(count, parts)`` that ``decode(frame_bytes)`` makes of each column
+        frame the cursor yields (about 1 MiB of values each, ``batch_size`` rows at most; ``flags`` 1 asks for datetimes as
+        microseconds). The result is finished when this returns.
+        """
+        size = _columnar.frame_rows(batch_size)
+        head_rows: list = []
+        batches: list = []
+        if not self._readable():
+            return head_rows, batches
+        spec = json.dumps(list(columns)).encode("utf-8") if columns is not None else b""
+        head_rows = [props for props, _ in self._buf]
+        self._buf.clear()
+        if self._pending_error is not None:
+            self._fill()  # the rows before the error are consumed: raise it
+        while self._more and self._rs:
+            try:
+                raw = lib.call_frame(self._rs, size, spec, flags)
+            except lib.ColumnFrameError as exc:
+                # the library closed the cursor
+                self._more = False
+                self._rs = 0
+                self._closed = True
+                self._exhausted = True
+                raise _read_error(exc.reply) from None
+            count, parts, header = decode(raw)
+            if header.get("done"):
+                self._more = False  # the library closed the cursor with the frame that ended the rows
+                self._rs = 0
+            elif count == 0:
+                # an open cursor must give a row per frame: never loop on a library that does not
+                self._more = False
+                self.close()
+                raise ArcadeDBError(
+                    "The native library returned an empty column frame for a cursor with rows left (frame row limit "
+                    f"{size}). This is a bug in the library or in the wheel."
+                )
+            if count:
+                batches.append((count, parts))
+        self._finish()
+        return head_rows, batches
+
     def to_dataframe(self, convert_types: bool = True):
+        """The rows as a ``pandas.DataFrame``, read as column frames (no dict per row). The values are the ones ``to_list()`` returns,
+        with two exceptions that are the same on both builds. A DATETIME keeps its microseconds (a ``datetime64[us]`` column, where
+        ``to_columns()`` and ``to_arrow()`` carry milliseconds), a DATE is a ``datetime.date`` in an object column, and a ``Decimal``
+        stays one. A column of ``float[]`` vectors holds one numpy ``float32`` array per cell (a row of the matrix ``to_columns()``
+        returns, not a Python list per row) and None for a null; ``to_list()`` gives lists of floats.
+        """
         import pandas as pd
 
-        return pd.DataFrame(self._drain_dicts())
+        columns = self._columns(25_000, None, True)
+        return pd.DataFrame(columns)
+
+    def _columns(self, batch_size, columns, micros):
+        from . import colframes
+
+        head_rows, batches = self._read_frames(
+            batch_size,
+            columns,
+            lambda raw: colframes.decode_columns(raw, micros),
+            1 if micros else 0,
+        )
+        return colframes.columns_result(
+            head_rows, columns, micros, batches, self._vectors
+        )
 
     def to_columns(self, batch_size: int = 25_000, columns=None):
-        """Columns as the JPype path returns them (numpy int64/float64/bool/datetime64[ms] arrays, lists for text and
-        JSON-typed values, an object array of Decimal), built in Python from the rows: a columnar JSON path, no
-        binary buffer. None when numpy is missing."""
+        """Columns as the JVM build returns them (numpy int64/float64/bool/datetime64[ms] arrays, lists for text and JSON-typed
+        values, an object array of Decimal), decoded from column frames by the decoder both builds share. The arrays are writable,
+        and a column's type belongs to the whole result, not to where a batch ends. A column is a float32 matrix when the property is
+        a ``float[]`` (ARRAY_OF_FLOATS), and a list of lists when it is a LIST of numbers whatever the values; a null vector is a row of
+        NaN in the matrix (``to_dataframe()`` and ``to_arrow()`` keep it a null). An empty result is
+        ``{}``, or the ``columns`` asked for as empty lists. None when numpy is missing.
+        """
         try:
-            import numpy  # noqa: F401
+            __import__("numpy")  # availability check
         except ImportError:
             return None
-        from .columns import to_columns
-
-        return to_columns(self._drain_dicts(), columns)
+        return self._columns(batch_size, columns, False)
 
     def to_arrow(self, batch_size: int = 25_000, columns=None):
-        """A ``pyarrow.Table`` with the types of :meth:`to_columns` but nulls kept (None when pyarrow is missing)."""
+        """A ``pyarrow.Table`` with the types of :meth:`to_columns` but nulls kept (None when pyarrow is missing), decoded from
+        column frames by the decoder both builds share."""
         try:
-            import numpy  # noqa: F401
-            import pyarrow  # noqa: F401
+            __import__("numpy")  # availability check
+            __import__("pyarrow")
         except ImportError:
             return None
-        from .columns import to_arrow
+        from . import colframes
 
-        return to_arrow(self._drain_dicts(), columns)
+        head_rows, batches = self._read_frames(
+            batch_size, columns, colframes.decode_arrow
+        )
+        return colframes.arrow_result(head_rows, columns, batches, self._vectors)
 
     def to_polars(self, batch_size: int = 25_000, columns=None):
         try:

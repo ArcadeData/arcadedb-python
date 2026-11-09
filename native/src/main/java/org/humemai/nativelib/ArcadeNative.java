@@ -317,6 +317,52 @@ public final class ArcadeNative {
     }
   }
 
+  /**
+   * The next rows of an open cursor as one column frame (see ColumnFrames), written as an int64 LE byte count and the frame; a failure is
+   * the negated byte count of the error JSON and that JSON. max: rows at most (a frame also ends at about 1 MiB of values). columns: a
+   * JSON array of the column names to read, or "" for the union of the names of the rows. flags bit 0: datetimes as microseconds (the
+   * to_dataframe form). The rows the cursor already gave out in a JSON reply are not in the frame. The frame that ends the rows closes the
+   * cursor. The reply is freed with arcadedb_free.
+   */
+  @CEntryPoint(name = "arcadedb_n_next_col")
+  @SuppressWarnings("unchecked")
+  public static CCharPointer nextCol(final IsolateThread thread, final long rsId, final int max, final CCharPointer columns,
+      final int flags) {
+    ResultSet rs = null;
+    try {
+      rs = RESULT_SETS.get(rsId);
+      if (rs == null)
+        throw new IllegalArgumentException("unknown result set " + rsId);
+      String[] pinned = null;
+      final String spec = str(columns);
+      if (spec != null && !spec.isEmpty()) {
+        final List<Object> names = (List<Object>) Json.parse(spec);
+        pinned = new String[names.size()];
+        for (int i = 0; i < pinned.length; i++)
+          pinned[i] = (String) names.get(i);
+      }
+      final ColumnFrames.Frame frame = ColumnFrames.next(rs, max, pinned, (flags & 1) != 0);
+      if (frame.done) {
+        RESULT_SETS.remove(rsId);
+        closeQuietly(rs);
+      }
+      return frameOut(frame.bytes.length, frame.bytes);
+    } catch (final Throwable t) {
+      RESULT_SETS.remove(rsId);
+      closeQuietly(rs);
+      final byte[] e = errorJson(t).getBytes(StandardCharsets.UTF_8);
+      return frameOut(-e.length, e);
+    }
+  }
+
+  private static CCharPointer frameOut(final int length, final byte[] b) {
+    final CCharPointer p = UnmanagedMemory.malloc(8 + b.length);
+    final ByteBuffer bb = CTypeConversion.asByteBuffer(p, 8 + b.length).order(ByteOrder.LITTLE_ENDIAN);
+    bb.putLong(length);
+    bb.put(b, 0, b.length);
+    return p;
+  }
+
   @CEntryPoint(name = "arcadedb_n_rs_close")
   public static CCharPointer rsClose(final IsolateThread thread, final long rsId) {
     closeQuietly(RESULT_SETS.remove(rsId));
