@@ -432,3 +432,33 @@ def test_a_bad_row_inside_a_large_batch_is_refused(temp_db_path, entry, bad):
             else:
                 with db.graph_batch(parallel_flush=False) as batch:
                     batch.create_vertices("PartV", rows)
+
+
+def test_the_scalar_screen_flags_what_the_text_would_change_and_passes_the_rest():
+    # the whole-input screen of create_vertices: conservative, so a false alarm is allowed, a miss is not
+    clean = {
+        "str": ["a", "é中", "\U0001f600", "", None],
+        "int": [1, -1, INT64_MAX, INT64_MIN, None],
+        "float": [0.5, -0.0, 0.0, 1e-300, 1.7e308, None],
+        "bool": [True, False, None],
+        "nones": [None, None],
+    }
+    for name, column in clean.items():
+        assert tc._scalar_column_suspect(list(column)) is False, name
+    bad = {
+        "surrogate": ["ok", "a\ud800b"],
+        "above_max": [1, INT64_MAX + 1],
+        "below_min": [INT64_MIN - 1, 1],
+        "nan": [1.5, math.nan],
+        "inf": [math.inf],
+        "subnormal": [1.5, 5e-324],
+        "mixed": [1, "a"],
+        "int_float": [1, 2.5],
+    }
+    for name, column in bad.items():
+        assert tc._scalar_column_suspect(list(column)) is True, name
+    # the screen runs over blocks: a bad value in the last block of a large column is found
+    column = [{"x": i} for i in range(250_000)]
+    column[249_999] = {"x": INT64_MAX + 1}
+    assert tc.classify_vertex_rows(column, set(), True) is None
+    assert tc.classify_vertex_rows(column, set(), False) is False

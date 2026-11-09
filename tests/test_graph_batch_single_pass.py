@@ -3,9 +3,11 @@
 Before, `_create_vertices_json_bulk` called `json_bulk_scalar_ok` on every value of every row before the first chunk was written, and
 the chunk was then walked again by json.dumps. Now `type_conversion.classify_vertex_rows` takes a census of the types in C, and the
 value checks come from the one json.dumps pass of each chunk (`json_bulk_dumps`, as `json_bulk_dumps_tagged` already did for the tagged
-text). What stays: the whole input goes the property-matrix way for a property name that is not a str or a type the text does not carry
-(`_create_vertices_json_bulk` returns None); what changes: a scalar the text would change (a subnormal, a NaN, an integer beyond 64 bits,
-a lone surrogate) sends its own chunk, not the whole input, through the matrix path, as it already did for a tagged chunk.
+text). The rule that keeps the stored type of a property from depending on which chunk held a bad value: an input of one chunk is decided
+by its own dumps before anything is sent; an input of several chunks first has its columns of exact scalars screened in C over the whole
+input (`classify_vertex_rows(..., screen_scalars=True)`), and a bad scalar (a NaN, an integer beyond 64 bits, a lone surrogate, a
+subnormal) anywhere sends the WHOLE input the property-matrix way, as it did before. A name that is not a str or a type the text does not
+carry does the same (`_create_vertices_json_bulk` returns None).
 """
 
 import pytest
@@ -23,10 +25,12 @@ def _rows(n):
     ]
 
 
-def test_scalar_rows_are_not_judged_value_by_value(temp_db_path, monkeypatch):
+@pytest.mark.parametrize("chunk", [100_000, 500], ids=["one_chunk", "screened"])
+def test_scalar_rows_are_not_judged_value_by_value(temp_db_path, monkeypatch, chunk):
     def refuse(value):
         raise AssertionError("a per-value gate ran over a scalar table")
 
+    monkeypatch.setattr(GraphBatch, "_BULK_CHUNK", chunk)
     monkeypatch.setattr(tc, "json_bulk_scalar_ok", refuse)
     monkeypatch.setattr(gbm, "json_bulk_scalar_ok", refuse)
     monkeypatch.setattr(tc, "json_bulk_shape_ok", refuse)
@@ -53,16 +57,17 @@ def test_the_whole_input_still_goes_the_matrix_way_for_a_name_or_type_the_text_d
 
 
 @pytest.mark.parametrize("value", [5e-324, float("nan"), 2**70, "a\ud800b"])
-def test_a_scalar_the_text_changes_sends_its_chunk_through_the_matrix_path(
-    temp_db_path, monkeypatch, value
+@pytest.mark.parametrize("chunks", [1, 3], ids=["one_chunk", "three_chunks"])
+def test_a_scalar_the_text_changes_sends_the_whole_input_through_the_matrix_path(
+    temp_db_path, monkeypatch, value, chunks
 ):
-    monkeypatch.setattr(GraphBatch, "_BULK_CHUNK", 100)
+    monkeypatch.setattr(GraphBatch, "_BULK_CHUNK", 100 if chunks == 3 else 1_000)
     calls = []
     real = GraphBatch._to_java_property_matrix
 
-    def spy(self, chunk):
-        calls.append(len(chunk))
-        return real(self, chunk)
+    def spy(self, rows):
+        calls.append(len(rows))
+        return real(self, rows)
 
     monkeypatch.setattr(GraphBatch, "_to_java_property_matrix", spy)
     rows = [{"id": i, "x": 1.5} for i in range(250)]
@@ -76,7 +81,7 @@ def test_a_scalar_the_text_changes_sends_its_chunk_through_the_matrix_path(
                 Exception
             ):  # noqa: BLE001 - the matrix path refuses a value that no entry point stores
                 rids = None
-        assert calls == [100], "only the chunk of row 150 takes the matrix path"
+        assert calls == [250], "the whole input takes the matrix path, once"
         if value == 5e-324:
             # stored as the double every other entry point stores; the text of a subnormal was read as a DECIMAL
             assert len(rids) == 250
@@ -84,16 +89,20 @@ def test_a_scalar_the_text_changes_sends_its_chunk_through_the_matrix_path(
             assert stored == 5e-324 and type(stored) is float
 
 
+@pytest.mark.parametrize(
+    "bad_row", [5, 150_000, 249_999], ids=["first_chunk", "middle_chunk", "last_chunk"]
+)
 def test_the_stored_type_does_not_depend_on_which_chunk_held_a_bad_value(
-    temp_db_path, monkeypatch
+    temp_db_path, monkeypatch, bad_row
 ):
-    """An undeclared int property is stored as the same type in the chunks that crossed as JSON text and in the chunk that took the
-    property-matrix path because a NaN sat in another property of one of its rows (the 100,000-row chunking of the real class).
+    """An undeclared int property is stored as the same Java type in every chunk, whichever chunk holds a NaN in another property
+    (the 100,000-row chunking of the real class): the NaN sends the whole input the matrix way, so no chunk is stored from the JSON text.
     """
     n = 250_000
     rows = [{"id": i, "k": i % 1000} for i in range(n)]
-    rows[150_000] = {"id": 150_000, "k": 1, "x": float("nan")}  # chunk 2 of 3 only
-    probes = {5: "chunk 1", 150_001: "chunk 2", 249_999: "chunk 3"}
+    rows[bad_row] = {"id": bad_row, "k": 1, "x": float("nan")}
+    probes = {7: "chunk 1", 150_001: "chunk 2", 249_999: "chunk 3"}
+    probes.pop(bad_row, None)
     calls = []
     real = GraphBatch._to_java_property_matrix
 
@@ -106,16 +115,42 @@ def test_the_stored_type_does_not_depend_on_which_chunk_held_a_bad_value(
         db.command("sql", "CREATE VERTEX TYPE V")
         with db.graph_batch(parallel_flush=False) as batch:
             assert len(batch.create_vertices("V", rows)) == n
-        assert calls == [100_000], "only the chunk with the NaN takes the matrix path"
-        ids = ", ".join(str(i) for i in probes)
-        query = (
-            f"SELECT id, k, k.javaType() AS t FROM V WHERE id IN [{ids}]"  # nosec B608
-        )
-        got = db.query("sql", query).to_list()
-        by_id = {r["id"]: (r["k"], str(r["t"])) for r in got}
-        assert set(by_id) == set(probes)
-        assert {i: by_id[i][0] for i in probes} == {i: i % 1000 for i in probes}
-        types = {probes[i]: by_id[i][1] for i in probes}
+        assert calls == [n], "the whole input takes the matrix path, once"
+        types = _stored_types(db, probes)
         assert (
             len(set(types.values())) == 1
         ), f"the stored type depends on the chunk: {types}"
+
+
+def test_a_clean_input_of_several_chunks_is_stored_alike_in_every_chunk(
+    temp_db_path, monkeypatch
+):
+    n = 250_000
+    rows = [{"id": i, "k": i % 1000} for i in range(n)]
+    probes = {7: "chunk 1", 150_001: "chunk 2", 249_999: "chunk 3"}
+    calls = []
+    real = GraphBatch._to_java_property_matrix
+    monkeypatch.setattr(
+        GraphBatch,
+        "_to_java_property_matrix",
+        lambda self, chunk: calls.append(len(chunk)) or real(self, chunk),
+    )
+    with arcadedb.create_database(temp_db_path) as db:
+        db.command("sql", "CREATE VERTEX TYPE V")
+        with db.graph_batch(parallel_flush=False) as batch:
+            assert len(batch.create_vertices("V", rows)) == n
+        assert calls == [], "a clean input never takes the matrix path"
+        types = _stored_types(db, probes)
+        assert (
+            len(set(types.values())) == 1
+        ), f"the stored type depends on the chunk: {types}"
+
+
+def _stored_types(db, probes):
+    ids = ", ".join(str(i) for i in probes)
+    query = f"SELECT id, k, k.javaType() AS t FROM V WHERE id IN [{ids}]"  # nosec B608
+    got = db.query("sql", query).to_list()
+    by_id = {r["id"]: (r["k"], str(r["t"])) for r in got}
+    assert set(by_id) == set(probes)
+    assert {i: by_id[i][0] for i in probes} == {i: i % 1000 for i in probes}
+    return {probes[i]: by_id[i][1] for i in probes}
