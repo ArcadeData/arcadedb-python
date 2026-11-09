@@ -57,10 +57,13 @@ final class ColumnFrames {
   static final class Frame {
     final byte[] bytes;
     final boolean done;
+    /** The index in {@code head} of the first row this frame did not take (a frame may end before the head does). */
+    final int headUsed;
 
-    Frame(final byte[] bytes, final boolean done) {
+    Frame(final byte[] bytes, final boolean done, final int headUsed) {
       this.bytes = bytes;
       this.done = done;
+      this.headUsed = headUsed;
     }
   }
 
@@ -377,6 +380,6 @@ final class ColumnFrames {
     out.putInt(headerBytes.length);
     out.put(headerBytes);
     out.put(bodyBytes);
-    return new Frame(out.array(), done);
+    return new Frame(out.array(), done, h);
   }
 }

@@ -337,7 +337,7 @@ public final class ArcadeNative {
    * the negated byte count of the error JSON and that JSON. max: rows at most (a frame also ends at about 1 MiB of values). columns: a
    * JSON array of the column names to read, or "" for the union of the names of the rows. flags bit 0: datetimes as microseconds (the
    * to_dataframe form). skip: of the rows that the first reply of this cursor already held (HEADS), the number the caller has taken; the
-   * first frame starts after them. The frame that ends the rows closes the cursor. The reply is freed with arcadedb_free.
+   * first frame starts after them, and a frame that ends before those rows do leaves the rest in HEADS for the next call (skip 0). The frame that ends the rows closes the cursor. The reply is freed with arcadedb_free.
    */
   @CEntryPoint(name = "arcadedb_n_next_col")
   @SuppressWarnings("unchecked")
@@ -361,6 +361,9 @@ public final class ArcadeNative {
       if (frame.done) {
         removeCursor(rsId);
         closeQuietly(rs);
+      } else if (head != null && frame.headUsed < head.size()) {
+        // the frame ended (batch_size rows or about 1 MiB) before the replayed rows did: the next call starts with the rest
+        HEADS.put(rsId, new ArrayList<>(head.subList(frame.headUsed, head.size())));
       }
       return frameOut(frame.bytes.length, frame.bytes);
     } catch (final Throwable t) {

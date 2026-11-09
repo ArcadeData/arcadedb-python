@@ -14,6 +14,7 @@ import struct
 from datetime import datetime
 
 import numpy as np
+import pandas as pd
 import pyarrow as pa
 import pytest
 
@@ -328,7 +329,11 @@ def test_to_dataframe_and_to_polars(table):
     df = db.query("sql", _sel()).to_dataframe()
     assert list(df.columns) == [n for n, _ in TYPES]
     assert list(df["big"]) == [r["big"] for r in rows]
-    assert df["s"].tolist() == [r["s"] for r in rows]
+    # pandas decides how a missing string is shown (None in an object column, nan in the string dtype of pandas 3): the same on
+    # both wheels, since both build the frame from a list with None
+    assert [None if pd.isna(v) else v for v in df["s"].tolist()] == [
+        r["s"] for r in rows
+    ]
     assert [list(v) for v in df["v3"]] == [r["v3"] for r in rows]
     assert df["ts"].iloc[1] == datetime(2026, 1, 2, 3, 4, 5, 1000)
     import polars as pl
