@@ -28,6 +28,7 @@ from .codec import _PLAIN, _default, _np, _prep, encode_gb_args, loads, sample_a
 _UPCALL_TYPE = ctypes.CFUNCTYPE(
     None, ctypes.c_longlong, ctypes.c_char_p, ctypes.c_void_p
 )
+_DICT_OR_NONE = frozenset((dict, type(None)))
 _callbacks: dict = {}
 _callback_ids = itertools.count(1)
 _callbacks_lock = threading.Lock()
@@ -229,21 +230,6 @@ class NativeGraphBatch(_BaseGraphBatch):
                 raise TypeError(f"property names must be str, got {key!r}")
         return properties
 
-    def _create_vertices_json_bulk(self, type_name: str, rows):
-        """The bulk path (JSON rows in, RIDs out): the RIDs, or None for rows JSON would change (the caller falls back)."""
-        from ..type_conversion import json_bulk_scalar_ok
-
-        for row in rows:
-            for key, value in (row or {}).items():
-                if type(key) is not str or not json_bulk_scalar_ok(value):
-                    return None
-        return self._op(
-            f"Failed to create batch vertices for type '{type_name}'",
-            "create_vertices",
-            type=type_name,
-            rows=[r or {} for r in rows],
-        )["rids"]
-
     def create_vertices(self, type_name: str, count_or_properties) -> list:
         """The RIDs of the new vertices. Rows go in chunks of the batch's ``commit_every`` (1000 unless graph_batch() got another value;
         0: 10,000), one crossing and one transaction per chunk: chunks that already went in stay stored if a later chunk fails.
@@ -274,11 +260,14 @@ class NativeGraphBatch(_BaseGraphBatch):
                     ]
                 return rids
             rows = list(count_or_properties)
-            for row in rows:
-                if row is not None and not isinstance(row, dict):
-                    raise TypeError(
-                        "create_vertices() property rows must be dicts or None"
-                    )
+            if (
+                not set(map(type, rows)) <= _DICT_OR_NONE
+            ):  # exact types in C; only an odd row pays the isinstance loop
+                for row in rows:
+                    if row is not None and not isinstance(row, dict):
+                        raise TypeError(
+                            "create_vertices() property rows must be dicts or None"
+                        )
             # chunked, as the JPype wrapper does: one crossing, one JSON text and one reply per chunk, so a 1M-vertex load
             # never holds the text, the parsed rows and the reply of all of it at once (the Serial GC copies what lives)
             rids = []
