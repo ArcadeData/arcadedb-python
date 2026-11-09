@@ -438,6 +438,8 @@ def untagged_only(monkeypatch):
 
     monkeypatch.setattr(gbm, "json_bulk_dumps_tagged", dumps)
     monkeypatch.setattr(gbm, "json_bulk_shape_ok", shape)
+    # create_vertices decides the shapes in type_conversion.classify_vertex_rows, which calls the gate there
+    monkeypatch.setattr(type_conversion, "json_bulk_shape_ok", shape)
     return calls
 
 

@@ -5,6 +5,7 @@ Handles automatic conversion of Java objects to native Python types for better
 developer experience and integration with Python ecosystem (pandas, numpy, etc.).
 """
 
+import itertools
 import json
 import math
 import re
@@ -804,16 +805,38 @@ def _dumps_checked(rows: Any, **kwargs: Any) -> str:
     return text
 
 
-def json_bulk_dumps(rows: Any) -> str:
-    """json.dumps for the bulk paths: raises ValueError (or TypeError) when
-    any value in `rows` would change on the way to the engine.
+def _int64_overflow_pattern() -> str:
+    """The digit runs of 2**63 and above, which a JSON integer token beyond 64 bits has.
 
-    `rows` is a list of dicts (one per record). The common value types are
-    checked in this loop without a call per value, because every value of a
-    large load passes through it; floats need no check here, since
-    `allow_nan=False` makes json.dumps itself refuse NaN and the infinities.
+    A run of 20 digits or more, or of 19 digits that is not below 9223372036854775808. A run that follows a digit or a "." is not an
+    integer token (the digits after the point of a float such as 0.00012345678901234568 are no token), so only a run start counts.
+    """
+    limit = str(2**63)
+    parts = [r"[0-9]{20,}"]
+    for i, digit in enumerate(limit):
+        low = int(digit) if i == len(limit) - 1 else int(digit) + 1
+        if low <= 9:
+            parts.append(f"{limit[:i]}[{low}-9][0-9]{{{len(limit) - 1 - i}}}")
+    return r"(?<![.0-9])(?:" + "|".join(parts) + ")"
+
+
+_INT64_OVERFLOW = re.compile(_int64_overflow_pattern())
+# json.dumps writes a surrogate code unit as \ud800 to \udfff in lower case: a lone surrogate, and also half of every non-BMP
+# character (an emoji), so a hit only sends the rows to the walk, which decides
+_SURROGATE_ESCAPE = re.compile(r"\\ud[89a-f]")
+_DICT_ONLY = frozenset((dict,))
+_STR_ONLY = frozenset((str,))
+
+
+def _check_rows(rows: Any, tagged: bool) -> None:
+    """The per-row walk: raise ValueError (or TypeError) for the first row, in row order, that holds a value the JSON text would change.
+
+    This is the exact reference. The bulk dumps do not run it on every call: `_dumps_once` runs it only when the text or the types of
+    the rows show that a value may be bad, and when json.dumps itself refused the rows, so the error is always the walk's.
+    `tagged` is insert_many's format (see json_bulk_dumps_tagged), where the kinds bulk_tag_default writes are allowed in a row.
     """
     int_min, int_max = _INT64_MIN, _INT64_MAX
+    kinds = _TAGGED_KINDS
     for row in rows:
         for key in row:
             if type(key) is not str:
@@ -832,11 +855,87 @@ def json_bulk_dumps(rows: Any) -> str:
                     )
             elif kind is float or kind is bool or value is None:
                 continue
+            elif tagged and kind in kinds:
+                continue  # bulk_tag_default checks it as json.dumps writes it
+            elif tagged and kind is dict and _TAG in value:
+                raise ValueError(
+                    "a map keyed by the tag marker cannot go through the JSON bulk path"
+                )
+            elif tagged and (
+                isinstance(value, (datetime, date, Decimal, bytes, bytearray))
+                or (_np is not None and isinstance(value, _np.generic))
+                or _is_pandas_null(kind)
+            ):
+                continue  # a subclass (pandas.Timestamp), a numpy scalar, pandas NA or NaT
             else:
                 _json_bulk_check(
                     value
                 )  # nested lists and dicts, and subclasses of the types above
-    return _dumps_checked(rows)
+
+
+def _kind_is_tagged(kind: type) -> bool:
+    """Whether bulk_tag_default (not the walk) checks a value of this type: the kinds `_check_rows` lets through in tagged mode."""
+    return (
+        kind in _TAGGED_KINDS
+        or issubclass(kind, (datetime, date, Decimal, bytes, bytearray))
+        or (_np is not None and issubclass(kind, _np.generic))
+        or _is_pandas_null(kind)
+    )
+
+
+def _rows_need_walk(rows: Any, tagged: bool) -> bool:
+    """Whether the types of the rows leave a check that the JSON text cannot show: only exact dict rows with str keys and values of
+    the exact scalar types (and, tagged, the kinds bulk_tag_default checks) are decided by the text. The census runs in C: one pass
+    over the keys and one over the values, no Python-level loop per row.
+    """
+    if not set(map(type, rows)) <= _DICT_ONLY:
+        return True
+    if not set(map(type, itertools.chain.from_iterable(rows))) <= _STR_ONLY:
+        return True
+    extra = (
+        set(map(type, itertools.chain.from_iterable(map(dict.values, rows))))
+        - _BULK_SCALAR_TYPES
+    )
+    if not extra:
+        return False
+    return not (tagged and all(map(_kind_is_tagged, extra)))
+
+
+def _dumps_once(rows: Any, tagged: bool) -> str:
+    """One json.dumps pass for the bulk paths, with the checks of `_check_rows` decided from what that pass shows.
+
+    A str or int the text would change cannot be seen by a json.dumps hook (the encoder writes both itself), so the text decides:
+    a surrogate escape (a lone surrogate) or an integer token of 2**63 and above sends the rows to the walk, and so do rows whose
+    types the text cannot vouch for (`_rows_need_walk`). When json.dumps itself refuses the rows (NaN, an unknown type, a
+    subnormal, a hook error) the walk runs first, as the validation loop used to run before json.dumps, so the error of the first
+    bad row in row order is still the walk's; if the walk finds nothing, json.dumps's own error stands. A false alarm costs the walk
+    and changes nothing else.
+    """
+    try:
+        text = (
+            _dumps_checked(rows, default=bulk_tag_default)
+            if tagged
+            else _dumps_checked(rows)
+        )
+    except (TypeError, ValueError):
+        _check_rows(rows, tagged)
+        raise
+    if (
+        _rows_need_walk(rows, tagged)
+        or _SURROGATE_ESCAPE.search(text)
+        or _INT64_OVERFLOW.search(text)
+    ):
+        _check_rows(rows, tagged)
+    return text
+
+
+def json_bulk_dumps(rows: Any) -> str:
+    """json.dumps for the bulk paths: raises ValueError (or TypeError) when
+    any value in `rows` would change on the way to the engine.
+
+    `rows` is a list of dicts (one per record). The rows are written once; see `_dumps_once` for how the values are checked.
+    """
+    return _dumps_once(rows, False)
 
 
 # ---------------------------------------------------------------------------
@@ -933,43 +1032,7 @@ def json_bulk_dumps_tagged(rows: Any) -> str:
     through, written by bulk_tag_default. Raises TypeError or ValueError exactly where json_bulk_dumps does for every other value
     (a datetime inside a list or map included), so the caller can send that row down the per-row path.
     """
-    int_min, int_max = _INT64_MIN, _INT64_MAX
-    tagged = _TAGGED_KINDS
-    for row in rows:
-        for key in row:
-            if type(key) is not str:
-                raise ValueError("a non-str key cannot go through the JSON bulk path")
-        for value in row.values():
-            kind = type(value)
-            if kind is str:
-                if not value.isascii() and not _str_survives_json(value):
-                    raise ValueError(
-                        "a string with a lone surrogate cannot go through the JSON bulk path"
-                    )
-            elif kind is int:
-                if not int_min <= value <= int_max:
-                    raise ValueError(
-                        f"an integer beyond 64 bits cannot go through the JSON bulk path: {value}"
-                    )
-            elif kind is float or kind is bool or value is None:
-                continue
-            elif kind in tagged:
-                continue  # bulk_tag_default checks it as json.dumps writes it
-            elif kind is dict and _TAG in value:
-                raise ValueError(
-                    "a map keyed by the tag marker cannot go through the JSON bulk path"
-                )
-            elif (
-                isinstance(value, (datetime, date, Decimal, bytes, bytearray))
-                or (_np is not None and isinstance(value, _np.generic))
-                or _is_pandas_null(kind)
-            ):
-                continue  # a subclass (pandas.Timestamp), a numpy scalar, pandas NA or NaT
-            else:
-                _json_bulk_check(
-                    value
-                )  # nested lists and dicts, and subclasses of the types above
-    return _dumps_checked(rows, default=bulk_tag_default)
+    return _dumps_once(rows, True)
 
 
 def bulk_row_ok(row: Any, skip=()) -> bool:
@@ -980,6 +1043,81 @@ def bulk_row_ok(row: Any, skip=()) -> bool:
         json_bulk_dumps_tagged((row,))
     except (TypeError, ValueError):
         return False
+    return True
+
+
+_ROWS_OR_NONE = frozenset((dict, type(None)))
+
+
+def _column(rows: Any, key: str):
+    """The value of `key` in every non-empty row (None where the row lacks it), as one C-level iterator."""
+    return map(dict.get, filter(None, rows), itertools.repeat(key))
+
+
+def classify_vertex_rows(rows: Any, declared: Any):
+    """What GraphBatch.create_vertices must know about its rows before it writes any chunk, decided by types.
+
+    Returns None when the rows must all go the property-matrix way (a property name that is not a str, or a value of a type the
+    tagged JSON does not carry: a set, a numpy or pandas value, a list or tuple of only numbers, any other object); otherwise True when
+    some value needs the tagged text (json_bulk_dumps_tagged) and False when json_bulk_dumps carries every row. A value of an exact
+    scalar type is not judged here: whether the text carries it (a NaN, an integer beyond 64 bits, a lone surrogate) is decided in
+    the dumps of its chunk. The property of `declared` (ARRAY_OF_FLOATS) that holds a list or a numpy array is left to
+    split_float_vectors. The census over the keys and the values runs in C; a Python-level loop runs only over a column that
+    holds a type other than the exact scalars.
+    """
+    if not set(map(type, rows)) <= _ROWS_OR_NONE:
+        return _classify_walk(
+            rows, declared
+        )  # a row that is no dict: the walk raises what it always raised
+    keys = set(itertools.chain.from_iterable(filter(None, rows)))
+    if not set(map(type, keys)) <= _STR_ONLY:
+        return None
+    tagged = False
+    for key in keys:
+        odd = set(map(type, _column(rows, key))) - _BULK_SCALAR_TYPES
+        if not odd:
+            continue
+        if key in declared and all(
+            kind is list or (_np is not None and issubclass(kind, _np.ndarray))
+            for kind in odd
+        ):
+            continue  # the vectors of a declared column
+        for value in _column(rows, key):
+            if type(value) in _BULK_SCALAR_TYPES or (
+                key in declared and is_vector_candidate(value)
+            ):
+                continue
+            if not json_bulk_scalar_ok(value):
+                if not json_bulk_shape_ok(value):
+                    return None
+                tagged = True
+    return tagged
+
+
+def _classify_walk(rows: Any, declared: Any):
+    tagged = False
+    for row in rows:
+        if row:
+            for key, value in row.items():
+                if type(key) is not str:
+                    return None
+                if key in declared and is_vector_candidate(value):
+                    continue
+                if not json_bulk_scalar_ok(value):
+                    if not json_bulk_shape_ok(value):
+                        return None
+                    tagged = True
+    return tagged
+
+
+def declared_scalars_ok(rows: Any, declared: Any) -> bool:
+    """False when a declared ARRAY_OF_FLOATS property still holds a list (or any non-scalar) after the vector split."""
+    for key in declared:
+        if set(map(type, _column(rows, key))) <= _BULK_SCALAR_TYPES:
+            continue  # scalars: the dumps of the chunk decides whether the text carries them
+        for row in rows:
+            if row and key in row and not json_bulk_scalar_ok(row[key]):
+                return False
     return True
 
 

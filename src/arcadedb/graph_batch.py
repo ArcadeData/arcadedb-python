@@ -12,9 +12,11 @@ from ._logging import get_logger, log_swallowed_exception
 from .exceptions import ArcadeDBError
 from .graph import Document, Vertex
 from .type_conversion import (
+    classify_vertex_rows,
     convert_python_to_java,
     declared_float_vectors,
-    is_vector_candidate,
+    declared_scalars_ok,
+    json_bulk_dumps,
     json_bulk_dumps_tagged,
     json_bulk_scalar_ok,
     json_bulk_shape_ok,
@@ -256,58 +258,40 @@ class GraphBatch:
         or bytes value crosses inside the JSON as the tagged value
         json_bulk_dumps_tagged writes and VertexBatcher decodes (the stored
         value is what the property-matrix path stores). An input whose values
-        are all scalars takes the untagged json.dumps path as before. A chunk
-        holding a value the text cannot carry (a NaN, an integer beyond 64
-        bits or a date-time inside a list, a subnormal) goes through the
-        property-matrix path on its own. Returns None when
-        unavailable/unsuitable so the caller falls back to the property-matrix
-        path for the whole input."""
+        are all scalars is written by json_bulk_dumps. The values are checked
+        in the one json.dumps pass of each chunk (see type_conversion._dumps_once),
+        not in a loop over the rows before it: a chunk holding a value the text
+        cannot carry (a NaN, an integer beyond 64 bits, a lone surrogate, a
+        subnormal, or a date-time inside a list) goes through the property-matrix
+        path on its own. Returns None when unavailable/unsuitable (a property
+        name that is not a str, a type the text does not carry) so the caller
+        falls back to the property-matrix path for the whole input."""
         try:
             vertex_batcher = jpype.JClass("com.arcadedb.python.VertexBatcher")
             declared = set(declared_float_vectors(self._java_db, type_name))
         except Exception:
             return None
 
-        tagged = False  # a value that needs the tagged text; False keeps the untagged code of before
-        for row in rows:
-            if row:
-                for key, value in row.items():
-                    if type(key) is not str:
-                        # a property name that is not a str, which json.dumps would
-                        # write as text ({1: "a"} as "1") where the matrix path
-                        # refuses it
-                        return None
-                    if key in declared and is_vector_candidate(value):
-                        continue  # the vector split below takes it, or its chunk goes the matrix way
-                    if not json_bulk_scalar_ok(value):
-                        if not json_bulk_shape_ok(value):
-                            # a type the tagged JSON does not carry (a set, a numpy
-                            # or pandas value, any subclass, a list of only numbers:
-                            # the matrix path converts those), or a scalar JSON
-                            # would change: an integer beyond 64 bits, NaN or
-                            # Infinity, a lone surrogate
-                            return None
-                        tagged = True
+        tagged = classify_vertex_rows(rows, declared)
+        if tagged is None:
+            # a property name that is not a str (json.dumps would write 1 as "1" where the matrix path refuses it), or a type the
+            # tagged JSON does not carry (a set, a numpy or pandas value, any subclass, a list of only numbers: the matrix path
+            # converts those)
+            return None
 
-        import json
-
+        dumps = json_bulk_dumps_tagged if tagged else json_bulk_dumps
         # chunked so huge ingests never materialize one giant JSON string
         rids = []
         for start in range(0, len(rows), self._BULK_CHUNK):
             chunk = rows[start : start + self._BULK_CHUNK]
             split = split_float_vectors(self._java_db, type_name, chunk, declared)
             rest = split[0] if split else chunk
-            if not tagged:
-                text = None
-                if not declared or self._json_bulk_ok(rest):
-                    text = json.dumps([row or {} for row in rest])
-            else:
-                text = None
-                if self._json_bulk_declared_ok(rest, declared):
-                    try:
-                        text = json_bulk_dumps_tagged([row or {} for row in rest])
-                    except (TypeError, ValueError):
-                        text = None  # a value the text cannot carry, see the docstring
+            text = None
+            if declared_scalars_ok(rest, declared):
+                try:
+                    text = dumps([row or {} for row in rest])
+                except (TypeError, ValueError):
+                    text = None  # a value the text cannot carry, see the docstring
             if text is None:
                 # a list the matrix cannot carry (ragged, a null, not numbers)
                 # is left in this chunk, or a value the text would change: the
@@ -329,25 +313,6 @@ class GraphBatch:
             if joined:
                 rids.extend(joined.split(";"))
         return rids
-
-    @staticmethod
-    def _json_bulk_ok(rows):
-        for row in rows:
-            if row:
-                for value in row.values():
-                    if not json_bulk_scalar_ok(value):
-                        return False
-        return True
-
-    @staticmethod
-    def _json_bulk_declared_ok(rows, declared):
-        """False when a declared ARRAY_OF_FLOATS property still holds a list (or any non-scalar) after the vector split."""
-        for row in rows:
-            if row:
-                for key in declared:
-                    if key in row and not json_bulk_scalar_ok(row[key]):
-                        return False
-        return True
 
     def new_edge(
         self,

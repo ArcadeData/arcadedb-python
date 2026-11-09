@@ -104,7 +104,7 @@ def test_a_lone_surrogate_raises_instead_of_becoming_a_question_mark(
             _write(db, entry, "a\ud800b")
 
 
-def test_ordinary_rows_stay_on_the_bulk_path(temp_db_path):
+def test_ordinary_rows_stay_on_the_bulk_path():
     rows = [
         {"id": i, "name": f"n{i}", "score": i * 0.5, "flag": i % 2 == 0, "note": None}
         for i in range(5)
@@ -113,14 +113,7 @@ def test_ordinary_rows_stay_on_the_bulk_path(temp_db_path):
     assert all(
         type_conversion.json_bulk_scalar_ok(v) for row in rows for v in row.values()
     )
-    with arcadedb.create_database(temp_db_path) as db:
-        _create_types(db)
-        with db.graph_batch(parallel_flush=False) as batch:
-            assert len(batch._create_vertices_json_bulk("V", rows)) == len(rows)
-            assert batch._create_vertices_json_bulk("V", rows + [{"id": 2**70}]) is None
-            assert (
-                batch._create_vertices_json_bulk("V", rows + [{"x": math.nan}]) is None
-            )
+    # the graph batch's side of this (the JVM wheel's _create_vertices_json_bulk) is in test_graph_batch_single_pass.py
 
 
 @pytest.mark.parametrize(
