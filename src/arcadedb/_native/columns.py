@@ -5,12 +5,16 @@ from decimal import Decimal
 
 
 def _names(rows, columns):
+    """The column names: ``columns``, or the keys of the rows in the order they are first seen."""
     if columns is not None:
         return list(columns)
     seen = {}
+    known = seen.keys()
     for row in rows:
-        for k in row:
-            seen.setdefault(k, None)
+        # a row whose keys are all known (nearly every row) costs one C-level subset test, not one Python step per key
+        if not row.keys() <= known:
+            for k in row:
+                seen.setdefault(k, None)
     return list(seen)
 
 
@@ -84,13 +88,13 @@ def to_columns(rows, columns=None):
     out = {}
     for name in _names(rows, columns):
         values = [row.get(name) for row in rows]
-        if _kind(values) == "obj":
+        kind = _kind(values)
+        if kind == "obj":
             vectors = _float_vectors(values)
             if vectors is not None:
                 out[name] = vectors
                 continue
         has_null = any(v is None for v in values)
-        kind = _kind(values)
         if kind == "i":
             out[name] = (
                 np.array([np.nan if v is None else v for v in values], dtype=np.float64)
@@ -124,12 +128,40 @@ def to_columns(rows, columns=None):
     return out
 
 
+def _inferred(values):
+    """``pa.array(values)`` when pyarrow's own inference gives the array the rules of :func:`to_arrow` would give, else None.
+
+    Inference replaces the per-value Python pass of :func:`_kind` for a column of ints, floats, bools, strings, lists and
+    other values it types on its own. Two inferred types differ from the rules: a temporal type (the rules write
+    ``timestamp[ms]`` for a datetime and a date, inference gives ``timestamp[us]`` or ``date32``) and an unsigned integer
+    (an int above int64 is an error under the rules). A column that inference cannot type is also left to the rules,
+    whatever the error (``ArrowInvalid``, ``ArrowTypeError``, and ``OverflowError`` for an int above int64, which the
+    explicit-type call turns into ``ArrowInvalid``), so a failed inference never decides the outcome: the rules have the
+    fallbacks (exact text for an int beyond 2**53 next to floats, for a Decimal wider than decimal256, for a value of mixed
+    types).
+    """
+    import pyarrow as pa
+
+    try:
+        array = pa.array(values)
+    except Exception:  # the rules decide the outcome of a column inference cannot type
+        return None
+    kind = array.type
+    if pa.types.is_temporal(kind) or pa.types.is_unsigned_integer(kind):
+        return None
+    return array
+
+
 def to_arrow(rows, columns=None):
     import pyarrow as pa
 
     arrays = {}
     for name in _names(rows, columns):
         values = [row.get(name) for row in rows]
+        inferred = _inferred(values)
+        if inferred is not None:
+            arrays[name] = inferred
+            continue
         kind = _kind(values)
         if kind == "i":
             arrays[name] = pa.array(values, type=pa.int64())
