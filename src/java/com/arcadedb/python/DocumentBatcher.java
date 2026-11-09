@@ -31,6 +31,7 @@ package com.arcadedb.python;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.async.ErrorCallback;
+import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.VertexType;
@@ -38,6 +39,7 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.Map;
+import java.util.function.IntConsumer;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -69,31 +71,11 @@ public final class DocumentBatcher {
     // commits and the failure rollback apply only to the transactions opened
     // here, matching the Python per-row fallback (#7882).
     final boolean vertex = n > 0 && isVertexType(db, typeName);
-    final boolean wasActive = db.isTransactionActive();
-    if (!wasActive)
-      db.begin();
-    try {
-      for (int i = 0; i < n; i++) {
-        final MutableDocument doc = newRecord(db, typeName, vertex);
-        fill(doc, rows.getJSONObject(i), i, vectorNames, vectors);
-        doc.save();
-        if (!wasActive && commitEvery > 0 && (i + 1) % commitEvery == 0) {
-          db.commit();
-          db.begin();
-        }
-      }
-      if (!wasActive)
-        db.commit();
-    } catch (final Throwable e) {
-      if (!wasActive && db.isTransactionActive()) {
-        try {
-          db.rollback();
-        } catch (final Throwable rollbackError) {
-          e.addSuppressed(rollbackError);
-        }
-      }
-      throw e;
-    }
+    writeChunks(db, n, commitEvery, i -> {
+      final MutableDocument doc = newRecord(db, typeName, vertex);
+      fill(doc, rows.getJSONObject(i), i, vectorNames, vectors);
+      doc.save();
+    });
     return n;
   }
 
@@ -113,32 +95,80 @@ public final class DocumentBatcher {
       final int n, final int commitEvery) {
     checkColumns(names, columns, n);
     final boolean vertex = n > 0 && isVertexType(db, typeName);
-    final boolean wasActive = db.isTransactionActive();
-    if (!wasActive)
-      db.begin();
-    try {
-      for (int i = 0; i < n; i++) {
-        final MutableDocument doc = newRecord(db, typeName, vertex);
-        fillRow(doc, names, columns, i);
-        doc.save();
-        if (!wasActive && commitEvery > 0 && (i + 1) % commitEvery == 0) {
-          db.commit();
-          db.begin();
-        }
-      }
-      if (!wasActive)
-        db.commit();
-    } catch (final Throwable e) {
-      if (!wasActive && db.isTransactionActive()) {
-        try {
-          db.rollback();
-        } catch (final Throwable rollbackError) {
-          e.addSuppressed(rollbackError);
-        }
-      }
-      throw e;
-    }
+    writeChunks(db, n, commitEvery, i -> {
+      final MutableDocument doc = newRecord(db, typeName, vertex);
+      fillRow(doc, names, columns, i);
+      doc.save();
+    });
     return n;
+  }
+
+  /**
+   * The retries of a chunk and the back-off before them are the engine's GraphBatch defaults (commitRetries 10, commitRetryDelayMs 1000,
+   * doubling up to 10 s), so a load that went through createVertices before keeps the same patience.
+   */
+  private static final int  COMMIT_RETRIES          = 10;
+  private static final long COMMIT_RETRY_DELAY_MS   = 1_000L;
+  private static final long MAX_COMMIT_RETRY_DELAY_MS = 10_000L;
+
+  /**
+   * Writes rows [0, n) with writeRow (build and save row i), in transactions opened here: one per commitEvery rows (0: one for all). A
+   * chunk whose save or commit raises a NeedRetryException (an MVCC conflict with another writer, a lock timeout) is rolled back and
+   * written again from its first row after a back-off, up to COMMIT_RETRIES times; after the last attempt the error is thrown unchanged.
+   * Any other failure rolls the open chunk back and is thrown; the chunks committed before it stay. A transaction the caller opened is the
+   * caller's: the rows join it, nothing is committed, rolled back or retried here.
+   */
+  private static void writeChunks(final Database db, final int n, final int commitEvery, final IntConsumer writeRow) {
+    if (db.isTransactionActive()) {
+      for (int i = 0; i < n; i++)
+        writeRow.accept(i);
+      return;
+    }
+    for (int from = 0; from < n;) {
+      final int to = commitEvery > 0 ? (int) Math.min((long) n, (long) from + commitEvery) : n;
+      for (int attempt = 0;;) {
+        try {
+          db.begin();
+          for (int i = from; i < to; i++)
+            writeRow.accept(i);
+          db.commit();
+          break;
+        } catch (final NeedRetryException e) {
+          if (!rollbackQuietly(db, e) || ++attempt > COMMIT_RETRIES)
+            throw e;
+          backoffBeforeRetry(attempt);
+        } catch (final Throwable e) {
+          rollbackQuietly(db, e);
+          throw e;
+        }
+      }
+      from = to;
+    }
+  }
+
+  /** Rolls back the open transaction, if any; false when the rollback itself failed (the failure is added to e as suppressed). */
+  private static boolean rollbackQuietly(final Database db, final Throwable e) {
+    if (!db.isTransactionActive())
+      return true;
+    try {
+      db.rollback();
+      return true;
+    } catch (final Throwable rollbackError) {
+      e.addSuppressed(rollbackError);
+      return false;
+    }
+  }
+
+  private static void backoffBeforeRetry(final int attempt) {
+    long delay = COMMIT_RETRY_DELAY_MS;
+    for (int i = 1; i < attempt && delay < MAX_COMMIT_RETRY_DELAY_MS; i++)
+      delay = Math.min(delay * 2, MAX_COMMIT_RETRY_DELAY_MS);
+    try {
+      Thread.sleep(delay);
+    } catch (final InterruptedException ie) {
+      Thread.currentThread().interrupt();
+      throw new NeedRetryException("Interrupted while waiting to retry the commit of a bulk-insert chunk");
+    }
   }
 
   /**
