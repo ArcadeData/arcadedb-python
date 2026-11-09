@@ -563,7 +563,18 @@ def test_a_null_vector_is_none_in_the_dataframe_form_and_a_nan_row_in_the_matrix
     assert cells[2].tolist() == [2.0, 3.0]
     _, matrix = _columns(frame)
     assert matrix["v"].shape == (3, 2)
-    assert np.isnan(matrix["v"][1]).all()
+    assert np.isnan(
+        matrix["v"][1]
+    ).all()  # the slot holds zeros in this frame: the decoder makes the null row NaN
+    assert not np.isnan(matrix["v"][[0, 2]]).any() and matrix["v"].flags.writeable
+    # the same after the merge with a frame that has no null and one that lacks the column
+    plain = _frame(1, [("v", "f4v", [], np.array([[7, 8]], dtype="<f4").tobytes(), 2)])
+    other = _frame(1, [("w", "i8", [], struct.pack("<q", 1))])
+    merged = _columnar.merge_columns(
+        ["v", "w"], [_columns(frame), _columns(plain), _columns(other)]
+    )["v"]
+    assert merged.shape == (5, 2) and merged.flags.writeable
+    assert np.isnan(merged[[1, 4]]).all() and merged[3].tolist() == [7, 8]
 
 
 def test_null_vectors_in_every_columnar_api(temp_db):
