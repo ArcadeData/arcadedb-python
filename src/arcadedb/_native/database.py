@@ -40,6 +40,7 @@ _RID_RE = re.compile(r"#?-?\d+:-?\d+")
 _FIRST_BATCH = 256
 _EPOCH_DAY_ORDINAL = date(1970, 1, 1).toordinal()
 _NEXT_BATCH = 2048
+_EAGER = 8  # a flag of _exec that never reaches the library: the statement's first rows come back in its own reply
 _wrap_record = None
 _KIND = {"v": "v", "e": "e", "d": "d"}
 
@@ -608,12 +609,14 @@ class NativeDatabase:
         self, flags: int, prefix: str, language: str, command: str, args
     ) -> NativeResultSet:
         self._check_not_closed()
+        eager = flags & _EAGER
+        flags &= ~_EAGER
         if args:
             refuse_surplus_positionals(
                 "command" if flags & 1 else "query", language, command, args
             )
         interrupts.clear()
-        if flags & 1 and _LAZY_COMMAND_ROWS and lib.CMD_PATH:
+        if flags & 1 and _LAZY_COMMAND_ROWS and lib.CMD_PATH and not eager:
             # phase 8: the cursor id comes back as a long (no reply text to free and decode); the rows are read late or never
             text, buf, count = encode_params(args, binary=True)
             rid = lib.cmd(
@@ -630,7 +633,7 @@ class NativeDatabase:
                 raise _error(prefix, json.loads(lib.last_error()))
             return NativeResultSet._lazy(self, rid)
         # phase 7 (arcadedb_n_exec flags): 2 = a command's rows are pulled but encoded only when read, 4 = float arrays come back as a float32 tail
-        if flags & 1 and _LAZY_COMMAND_ROWS:
+        if flags & 1 and _LAZY_COMMAND_ROWS and not eager:
             flags |= 2
         if _BINARY_REPLY:
             flags |= 4
@@ -679,6 +682,14 @@ class NativeDatabase:
     def command(self, language: str, command: str, *args) -> NativeResultSet:
         """Run a statement that may write."""
         return self._exec(1, "Command failed", language, command, args)
+
+    def _command_first_row(self, language: str, command: str, *args) -> NativeResultSet:
+        """:meth:`command` for a caller that reads the first row right away (a create or an update that returns its row): the statement runs
+        and its first rows come back in the same crossing (``arcadedb_n_exec`` without the lazy bit) instead of a cursor id that a second
+        crossing (``arcadedb_n_next_bin``) reads. The rows, the values and the errors are those of :meth:`command`; an error met while
+        the first rows are computed is raised when they are read, as on the lazy path.
+        """
+        return self._exec(1 | _EAGER, "Command failed", language, command, args)
 
     # -- transactions
 

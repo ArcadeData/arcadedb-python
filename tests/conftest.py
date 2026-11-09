@@ -65,6 +65,8 @@ if BACKEND != "native":
     collect_ignore.append("test_native_async_callbacks.py")
     # the short call path of a point read (codec.encode_params, lib.exec_query, first()), observed on the native library
     collect_ignore.append("test_native_point_read.py")
+    # the crossings of save() and new_edge() (lib.cmd, lib.call, lib.call_bin, lib.exec_query are the native library's ctypes doors)
+    collect_ignore.append("test_native_one_row_crossings.py")
     # an RID built from an RID keeps the text, so the fast named-parameter path of codec.encode_params can encode it (#265)
     collect_ignore.append("test_native_rid_params.py")
     # to_json_list walks the rows with codec.json_native only when a reply restored a tagged value (#219), observed on the native library
