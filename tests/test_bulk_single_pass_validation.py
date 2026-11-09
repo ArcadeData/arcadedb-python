@@ -256,7 +256,9 @@ def test_a_clean_large_batch_is_the_plain_json_text(tagged):
 def test_scalar_rows_are_not_walked_when_the_text_carries_them(monkeypatch):
     # the insert_many shape of the paper's l1tpc Part load and the create_vertices shape of l2, e2 and l3d: dict rows of str, int, float,
     # bool and None. Numbers that look alike but fit: 19-digit ints below 2**63, floats whose text has a long run of digits after the
-    # point, text with digits, Hangul and CJK (BMP characters that json.dumps writes as \uXXXX, some of them as \ud...).
+    # point, text with digits, Hangul and CJK (BMP characters that json.dumps writes as \uXXXX, some of them as \ud...), and non-BMP
+    # characters (an emoji): json.dumps writes each as a surrogate PAIR (\ud83d\ude00), which the old text scan took for a lone surrogate
+    # and sent to the walk, a false alarm; UTF-8 encodes them, so the column screen passes them and the old loop accepted them too.
     walks = []
     real = tc._check_rows
     monkeypatch.setattr(
@@ -277,6 +279,11 @@ def test_scalar_rows_are_not_walked_when_the_text_carries_them(monkeypatch):
             "s": "id-123456789012345678",
             "han": "한글퟿中文",
             "nul": "a\x00b",
+        },
+        {
+            "emoji": "\U0001f600",
+            "plane1": "\U00010000x\U0010ffff",
+            "mixed": "a\U0001f600b",
         },
         {"e": "", "n": None, "b": True, "neg": -123456789012345678},
     ]
@@ -308,7 +315,6 @@ def test_tagged_kinds_are_not_walked_either(monkeypatch):
         {"a": 10**20},
         {"a": INT64_MIN - 1},
         {"a": "a\ud800"},
-        {"a": "\U0001f600"},
         {7: "x"},
         {"a": [1]},
         {"a": 5e-324},
@@ -375,6 +381,34 @@ def test_a_bad_value_in_a_ragged_or_nullable_column_runs_the_walk_and_gives_the_
         assert _outcome(new, rows) == expected
 
 
+@pytest.mark.parametrize("tagged", [False, True], ids=["untagged", "tagged"])
+@pytest.mark.parametrize(
+    "text",
+    ["\U0001f600", "\U00010000", "\U0010ffff", "a\U0001f600b", "\ue000\U0001f600"],
+)
+def test_a_non_bmp_character_is_no_bad_value_and_is_not_walked(
+    monkeypatch, text, tagged
+):
+    # the row the old text scan sent to the walk (a surrogate pair in the text) and the old loop accepted: same text, no walk
+    walks = []
+    real = tc._check_rows
+    monkeypatch.setattr(
+        tc,
+        "_check_rows",
+        lambda rows, tagged: walks.append(tagged) or real(rows, tagged),
+    )
+    rows = [{"id": 1}, {"a": text}]
+    new = tc.json_bulk_dumps_tagged if tagged else tc.json_bulk_dumps
+    assert _outcome(new, rows) == ("text", json.dumps(rows))
+    assert _outcome(lambda r: _old_dumps(r, tagged), rows) == ("text", json.dumps(rows))
+    assert walks == []
+    # two lone surrogates next to each other are no pair: UTF-8 cannot encode them, the walk refuses them
+    bad = [{"id": 1}, {"a": "\ud83d\ude00"}]
+    got = _outcome(new, bad)
+    assert got == _outcome(lambda r: _old_dumps(r, tagged), bad)
+    assert got[0] == "ValueError" and walks == [tagged]
+
+
 def test_a_nullable_column_of_a_tagged_kind_and_the_scalar_columns_are_not_walked(
     monkeypatch,
 ):
@@ -416,6 +450,7 @@ def test_screen_vertex_rows_vets_a_table_of_exact_scalars(monkeypatch):
         {},
     ]
     assert tc.screen_vertex_rows(rows, set()) == (False, True)
+    assert tc.screen_vertex_rows([{"a": "\U0001f600"}], set()) == (False, True)
     # a vetted table is written with no check of its own: neither the type census nor the walk runs, and the text is the plain text
     calls = []
     for name in ("_rows_need_walk", "_check_rows"):
