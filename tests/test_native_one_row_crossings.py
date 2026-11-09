@@ -302,17 +302,19 @@ def _raises_at(call):
     return None, None
 
 
-FIRST_ROW_ERRORS = {
+STATEMENT_ERRORS = {
     "insert": ("INSERT INTO D SET v = 1 / (1 - 1)", False),
     "update": ("UPDATE :rid SET v = 1 / (1 - 1)", True),
 }
 
 
-@pytest.mark.parametrize("case", list(FIRST_ROW_ERRORS))
-def test_an_error_met_while_the_first_row_is_computed_is_raised_when_it_is_read(
-    db, case
-):
-    sql, with_rid = FIRST_ROW_ERRORS[case]
+@pytest.mark.parametrize("case", list(STATEMENT_ERRORS))
+def test_a_statement_error_has_the_timing_class_and_message_of_the_lazy_form(db, case):
+    """An INSERT or UPDATE is run by the engine while the statement is called, so both forms raise from the call (a CI run showed
+    it: the first version of this test expected the error when the row is read, and the call raised). What a caller of save() sees
+    is the same either way: one ArcadeDBError with one message. What is pinned is that the two forms agree on all three.
+    """
+    sql, with_rid = STATEMENT_ERRORS[case]
     rid = _saved(db, v=1)
     params = ({"rid": records.RID(rid)},) if with_rid else ()
     with _rolled_back(db):
@@ -321,12 +323,27 @@ def test_an_error_met_while_the_first_row_is_computed_is_raised_when_it_is_read(
         eager_phase, eager = _raises_at(
             lambda: db._command_first_row("sql", sql, *params)
         )
-    assert (
-        eager_phase == lazy_phase == "read"
-    )  # the engine computes the row when it is pulled: the reply carries it as rerr
-    assert str(eager).startswith("Reading the result set failed: ")
+    assert lazy_phase is not None and eager_phase == lazy_phase
     assert str(eager) == str(lazy) and type(eager) is type(lazy)
     assert eager.native.get("cls") == lazy.native.get("cls")
+
+
+def test_a_row_error_is_raised_when_the_row_is_read_by_both_forms(db):
+    """A statement whose rows the engine computes lazily (a SELECT run as a command) fails when its first row is read: the public
+    ``command`` as before (the cursor's read), and the eager form (the error travels in the reply as ``rerr`` and is raised by the
+    read of the row it replaces). The call itself returns."""
+    _saved(db, i=1)
+    sql = "SELECT 1 / (i - i) AS f FROM D"
+    with _rolled_back(db):
+        lazy = db.command("sql", sql)
+        with pytest.raises(ArcadeDBError) as lazy_error:
+            lazy.first()
+        eager = db._command_first_row("sql", sql)
+        with pytest.raises(ArcadeDBError) as eager_error:
+            eager.first()
+    assert str(lazy_error.value).startswith("Reading the result set failed: ")
+    assert str(eager_error.value) == str(lazy_error.value)
+    assert type(eager_error.value) is type(lazy_error.value)
 
 
 def test_a_before_create_callback_that_raises_fails_save_as_the_lazy_form_does(db):

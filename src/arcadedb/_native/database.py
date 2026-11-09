@@ -686,8 +686,9 @@ class NativeDatabase:
     def _command_first_row(self, language: str, command: str, *args) -> NativeResultSet:
         """:meth:`command` for a caller that reads the first row right away (a create or an update that returns its row): the statement runs
         and its first rows come back in the same crossing (``arcadedb_n_exec`` without the lazy bit) instead of a cursor id that a second
-        crossing (``arcadedb_n_next_bin``) reads. The rows, the values and the errors are those of :meth:`command`; an error met while
-        the first rows are computed is raised when they are read, as on the lazy path.
+        crossing (``arcadedb_n_next_bin``) reads. The rows, the values and the errors are those of :meth:`command`, at the same moment:
+        an error the engine raises while it runs the statement (an INSERT or an UPDATE) is raised by this call, as by :meth:`command`;
+        one met while rows are computed lazily comes in the reply (``rerr``) and is raised when the row is read, as on the lazy path.
         """
         return self._exec(1 | _EAGER, "Command failed", language, command, args)
 
