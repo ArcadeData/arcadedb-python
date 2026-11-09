@@ -322,14 +322,28 @@ def _scalars_to_tagged(kind: str, chunk):
     ]
 
 
+def _is_number_list(pa, arrow_type) -> bool:
+    """A list, large list or fixed-size list of integers or floats: the column the columnar entry lays out as a float32 matrix."""
+    types = pa.types
+    if not (
+        types.is_list(arrow_type)
+        or types.is_large_list(arrow_type)
+        or types.is_fixed_size_list(arrow_type)
+    ):
+        return False
+    return types.is_floating(arrow_type.value_type) or types.is_integer(
+        arrow_type.value_type
+    )
+
+
 def _column_values(name: str, chunk, pa, native: bool = False, arrow: bool = False):
     """One Arrow array as what ``Database.insert_columns`` takes: a numpy array when the column crosses as one
     buffer (integers, floats and booleans without nulls), else a list of values (``None`` is a null).
 
-    ``arrow`` (the native backend's document load): a string, binary, timestamp, date or decimal column, and a numeric one with
-    nulls, stay Arrow arrays, which the columnar entry reads in place (the offsets, the bytes, the integer ticks and the validity
-    bitmap) instead of as Python values; ``_insert_documents_native`` turns them into tagged values for the row path when a batch
-    cannot go columnar.
+    ``arrow`` (the native backend's document and vertex load): a string, binary, timestamp, date or decimal column, a list of
+    numbers (a vector) and a numeric column with nulls, stay Arrow arrays, which the columnar entry reads in place (the offsets,
+    the bytes, the integer ticks, the vector values and the validity bitmap) instead of as Python values; ``_insert_documents_native``
+    turns them into Python or tagged values for the row path when a batch cannot go columnar.
     """
     types = pa.types
     if types.is_dictionary(chunk.type):  # a pandas categorical or a Polars Categorical
@@ -366,6 +380,8 @@ def _column_values(name: str, chunk, pa, native: bool = False, arrow: bool = Fal
         return chunk.to_pylist()
     if arrow and kind in ("timestamp", "date", "decimal", "binary"):
         return chunk
+    if arrow and kind == "list" and _is_number_list(pa, chunk.type):
+        return chunk  # a vector column: the columnar entry reads the values in place (to_pylist makes one Python float per element)
     if kind in ("timestamp", "date"):
         return (
             _temporal_to_tagged(chunk, pa) if native else _temporal_to_java(chunk, pa)
@@ -480,6 +496,10 @@ def insert_table(
                 ) from exc
             raise
         written += batch.num_rows
+        del (
+            columns,
+            batch,
+        )  # sent: drop this batch's columns before the next batch is built, so two batches are never alive together
     return written
 
 
