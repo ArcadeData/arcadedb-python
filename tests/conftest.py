@@ -89,6 +89,8 @@ if BACKEND != "native":
     collect_ignore.append("test_native_timeseries_binary.py")
     # arcadedb._native.columns builds the columnar readers' tables from the rows; the file compares it with the rules it replaced (#312)
     collect_ignore.append("test_native_columns_reference.py")
+    # the crossings of GraphBatch.create_vertices with float32 columns (lib.call, the codec's per-row hooks), observed on the native library
+    collect_ignore.append("test_native_vertex_vector_crossings.py")
 if not os.path.isfile(
     os.path.join(os.path.dirname(os.path.dirname(__file__)), "docs", "index.md")
 ):
@@ -126,6 +128,7 @@ NATIVE_NOT_APPLICABLE = {
     "test_insert_many_gc_pause.py": "the cyclic collector pause is the JVM build's (the native insert_many allocates nothing the collector tracks)",
     "test_graph_batch_tagged_shapes.py": "the JVM wheel's graph batch bulk path (bridge VertexBatcher and EdgeBatcher, the property-matrix fallback)",
     "test_graph_batch_single_pass.py": "the JVM wheel's graph batch bulk path (GraphBatch._create_vertices_json_bulk, the property-matrix fallback)",
+    "test_graph_batch_vector_crossings_jvm.py": "the JPype crossings of the JVM wheel's create_vertices vector path (the bridge classes, the property-matrix fallback)",
     "test_async_proxy_cache.py": "the JPype proxy classes of the JVM build's async executor",
     "test_read_crossings.py": "crossing counts of the JVM build's read path (JPype proxies of the Java objects and the bridge classes)",
     "test_reader_crossings.py": "crossing counts of the JVM build's record and row readers (JPype proxies of the Java objects and the bridge classes)",

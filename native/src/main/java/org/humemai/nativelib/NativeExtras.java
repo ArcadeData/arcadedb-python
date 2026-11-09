@@ -73,6 +73,7 @@ import org.graalvm.word.Pointer;
 import org.graalvm.word.WordFactory;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -248,6 +249,45 @@ public final class NativeExtras {
       out[i++] = e.getValue();
     }
     return out;
+  }
+
+  /**
+   * The float32 vector columns of create_vertices rows: vecs is {"names": [..], "dims": [..], "offs": [..]} and the side buffer holds, for
+   * column c, one vector after the other (rows * dims[c] floats) from float offset offs[c]. Row i gets the property names[c] as a float[]
+   * of its slice, appended to its property array: the float[] that a {"\u0001":["B",offset,count]} tag per row gave, from one matrix and
+   * no tag per row. A null or empty vecs leaves the rows as they are.
+   */
+  private static void withVectors(final List<Object[]> flats, final Object vecs, final long buf, final long bufFloats) {
+    if (!(vecs instanceof Map<?, ?> v))
+      return;
+    final List<?> names = (List<?>) v.get("names"), dims = (List<?>) v.get("dims"), offs = (List<?>) v.get("offs");
+    final int columns = names.size(), rows = flats.size();
+    if (columns == 0)
+      return;
+    if (buf == 0 || dims.size() != columns || offs.size() != columns)
+      throw new IllegalArgumentException("vector columns without a matching side buffer");
+    final int[] dim = new int[columns];
+    final long[] off = new long[columns];
+    for (int c = 0; c < columns; c++) {
+      dim[c] = ((Number) dims.get(c)).intValue();
+      off[c] = ((Number) offs.get(c)).longValue();
+      if (dim[c] < 1 || off[c] < 0 || off[c] + (long) rows * dim[c] > bufFloats)
+        throw new IllegalArgumentException("vector column outside the side buffer");
+    }
+    final CFloatPointer fp = WordFactory.pointer(buf);
+    for (int i = 0; i < rows; i++) {
+      final Object[] row = flats.get(i);
+      final Object[] grown = Arrays.copyOf(row, row.length + 2 * columns);
+      for (int c = 0; c < columns; c++) {
+        final float[] f = new float[dim[c]];
+        final int base = (int) (off[c] + (long) i * dim[c]);
+        for (int k = 0; k < dim[c]; k++)
+          f[k] = fp.read(base + k);
+        grown[row.length + 2 * c] = names.get(c);
+        grown[row.length + 2 * c + 1] = f;
+      }
+      flats.set(i, grown);
+    }
   }
 
   static String ridList(final RID[] rids) {
@@ -488,8 +528,10 @@ public final class NativeExtras {
         final RID[] rids;
         if (!(a.get("rows") instanceof Integer))
           rids = batch.createVertices((String) a.get("type"), intOf(a.get("count"), 0));
-        else
+        else {
+          withVectors(flats, a.get("vecs"), buf, bufFloats);
           rids = batch.createVertices((String) a.get("type"), flats.toArray(new Object[0][]));
+        }
         return ArcadeNative.out("{\"ok\":true,\"rids\":" + ridList(rids) + "}");
       }
       case "new_edge" -> batch.newEdge(new RID((String) a.get("src")), (String) a.get("type"), new RID((String) a.get("dst")),

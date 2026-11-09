@@ -19,8 +19,18 @@ from ..callbacks import EventHandle as _BaseEventHandle
 from ..callbacks import check_event, check_function
 from ..exceptions import ArcadeDBError
 from ..graph_batch import GraphBatch as _BaseGraphBatch
+from ..type_conversion import take_vector_columns
 from . import interrupts, lib, not_yet
-from .codec import _PLAIN, _default, _np, _prep, encode_gb_args, loads, sample_array
+from .codec import (
+    _PLAIN,
+    _default,
+    _np,
+    _prep,
+    encode_gb_args,
+    encode_vertex_args,
+    loads,
+    sample_array,
+)
 
 # -------------------------------------------------------------------------------------------------------- upcall
 
@@ -181,6 +191,30 @@ class NativeGraphBatch(_BaseGraphBatch):
             return _call(prefix, "arcadedb_n_gb", self._gb, lib.b(op), lib.b(text))
         return _call(prefix, "arcadedb_n_gb", self._gb, lib.b(op), lib.b(_enc(args)))
 
+    def _create_chunk(self, prefix: str, type_name: str, rows: list) -> list:
+        """One crossing and one transaction for `rows` (dicts): the RIDs of the new vertices.
+
+        A property whose value in every row is a float32 numpy array of one length crosses as one float32 matrix in the side buffer
+        (``take_vector_columns``, ``encode_vertex_args``), with no tag, hook call or Python code per row; every other value is
+        written as :func:`encode_gb_args` writes it.
+        """
+        taken = take_vector_columns(rows, (), undeclared=True) if lib.GB_BIN else None
+        if taken is None:
+            return self._op(prefix, "create_vertices", type=type_name, rows=rows)[
+                "rids"
+            ]
+        names, matrices, rest = taken
+        text, buf, count = encode_vertex_args(type_name, rest, names, matrices)
+        return _call(
+            prefix,
+            "arcadedb_n_gb_bin",
+            self._gb,
+            lib.b("create_vertices"),
+            lib.b(text),
+            buf,
+            count,
+        )["rids"]
+
     def new_vertex(self, type_name: str):
         from .records import Vertex
 
@@ -234,8 +268,10 @@ class NativeGraphBatch(_BaseGraphBatch):
         """The RIDs of the new vertices. Rows go in chunks of the batch's ``commit_every`` (1000 unless graph_batch() got another value;
         0: 10,000), one crossing and one transaction per chunk: chunks that already went in stay stored if a later chunk fails.
 
-        A non-empty one-dimensional ``float32`` numpy array in a row crosses in a binary side buffer; a list or a ``float64`` array
-        crosses as number text (``new_edge`` and ``new_edges`` props follow the same rule).
+        A property whose value in every row is a non-empty one-dimensional ``float32`` numpy array of one length crosses as one
+        float32 matrix in a binary side buffer, one buffer per property and chunk; any other ``float32`` array of a row crosses in the side
+        buffer one array at a time, and a list or a ``float64`` array as number text (``new_edge`` and ``new_edges`` props follow the
+        one-array rule).
         """
         self._check_not_closed()
         db = self._db
@@ -260,8 +296,9 @@ class NativeGraphBatch(_BaseGraphBatch):
                     ]
                 return rids
             rows = list(count_or_properties)
+            kinds = set(map(type, rows))
             if (
-                not set(map(type, rows)) <= _DICT_OR_NONE
+                not kinds <= _DICT_OR_NONE
             ):  # exact types in C; only an odd row pays the isinstance loop
                 for row in rows:
                     if row is not None and not isinstance(row, dict):
@@ -271,15 +308,12 @@ class NativeGraphBatch(_BaseGraphBatch):
             # chunked, as the JPype wrapper does: one crossing, one JSON text and one reply per chunk, so a 1M-vertex load
             # never holds the text, the parsed rows and the reply of all of it at once (the Serial GC copies what lives)
             rids = []
+            has_none = type(None) in kinds
             for start in range(0, len(rows), chunk):
-                rids.extend(
-                    self._op(
-                        prefix,
-                        "create_vertices",
-                        type=type_name,
-                        rows=[r or {} for r in rows[start : start + chunk]],
-                    )["rids"]
-                )
+                part = rows[start : start + chunk]
+                if has_none:
+                    part = [r or {} for r in part]
+                rids.extend(self._create_chunk(prefix, type_name, part))
             if not rows:
                 rids = self._op(prefix, "create_vertices", type=type_name, rows=[])[
                     "rids"
