@@ -1,0 +1,49 @@
+# Enforces the pre-commit hooks (.pre-commit-config.yaml) on every pull request and push to main,
+# so a contribution made without the local hooks is still checked. Contributors run the same hooks
+# locally with `uvx pre-commit install` (see CONTRIBUTING.md).
+name: Pre-commit
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  pre-commit:
+    name: Run pre-commit on all files
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      # pre-commit and its hooks run through uvx (a throwaway environment), so nothing is installed
+      # into the runner's Python. uv is pinned in every install URL of this repo.
+      - name: Setup UV package manager
+        shell: bash
+        run: |
+          # Retry transient network failures (a connection reset failed a whole examples job on #8897); the
+          # script is downloaded first so a retried transfer is never piped half-written into sh.
+          installer="$(mktemp)"
+          curl -LsSf --retry 5 --retry-all-errors --retry-delay 5 -o "$installer" https://astral.sh/uv/0.12.0/install.sh
+          sh "$installer"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.local/bin:$PATH"
+          uv --version
+
+      - name: Run pre-commit on all files
+        run: uvx pre-commit run --all-files --show-diff-on-failure
