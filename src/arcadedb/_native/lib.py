@@ -232,6 +232,7 @@ def _load():
             "arcadedb_n_insert_colp": [P, L, S, S, P, I],
             "arcadedb_n_next": [P, L, I],
             "arcadedb_n_next_bin": [P, L, I],
+            "arcadedb_n_next_col": [P, L, I, S, I, I],
             "arcadedb_n_rs_close": [P, L],
             "arcadedb_n_cmd": [P, L, I, S, S, S, S, L, I],
             "arcadedb_n_last_error": [P],
@@ -363,6 +364,32 @@ def call_bin(name: str, *args):
     finally:
         lib.arcadedb_free(th, ptr)
     return raw.decode("utf-8"), floats
+
+
+def call_frame(rs_id: int, max_rows: int, spec: bytes, flags: int, skip: int) -> bytes:
+    """One column frame of an open cursor (``arcadedb_n_next_col``): its bytes, in the layout ``arcadedb._columnar`` reads.
+
+    The reply is an int64 byte count and the frame. A negative count is the negated length of an error JSON: it is raised as
+    :class:`ColumnFrameError` with the decoded reply (the cursor is already closed on the Java side then).
+    """
+    lib = _lib or _load()
+    th = _thread_handle()
+    ptr = lib.arcadedb_n_next_col(th, rs_id, max_rows, spec, flags, skip)
+    try:
+        n = int.from_bytes(ctypes.string_at(ptr, 8), "little", signed=True)
+        if n < 0:
+            raise ColumnFrameError(json.loads(ctypes.string_at(ptr + 8, -n)))
+        return ctypes.string_at(ptr + 8, n)
+    finally:
+        lib.arcadedb_free(th, ptr)
+
+
+class ColumnFrameError(Exception):
+    """The error reply (the dict ``errorJson`` writes) of a failed ``arcadedb_n_next_col``."""
+
+    def __init__(self, reply: dict):
+        super().__init__(reply.get("error"))
+        self.reply = reply
 
 
 def alloc(size: int):

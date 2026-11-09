@@ -210,6 +210,9 @@ class NativeResultSet:
         self._rs = reply["rs"]
         self._buf = deque(zip(reply["rows"], reply["meta"]))
         self._more = not reply["drained"]
+        # the rows of this reply that the cursor still holds, for a columnar read to replay (arcadedb_n_next_col): the first reply of
+        # a cursor with more rows. Any later read of the cursor by row (arcadedb_n_next) lets the library drop them
+        self._head_n = len(reply["rows"]) if self._more else 0
         self._closed = False
         self._exhausted = False
         # the engine computes lazily: an error met while the first rows were read is raised when the rows before it
@@ -224,6 +227,7 @@ class NativeResultSet:
         self._rs = rs_id
         self._buf = deque()
         self._tagged = False
+        self._head_n = 0
         self._more = rs_id > 0
         self._closed = False
         self._exhausted = False
@@ -258,6 +262,7 @@ class NativeResultSet:
             raise _read_error(err)
         if not self._more:
             return False
+        self._head_n = 0
         try:
             if lib.NEXT_BIN and _BINARY_REPLY:
                 reply, tagged = loads_tagged(
@@ -407,33 +412,100 @@ class NativeResultSet:
             # returns as it is. The flag is read after the batch is built, so it covers every reply the batch's rows came from
             yield [json_native(row) for row in batch] if self._tagged else batch
 
+    def _read_frames(self, batch_size, columns, decode, flags=0):
+        """The rows still to be read, in the two forms a result has: ``(head_rows, batches)``.
+
+        ``head_rows`` are rows that this object holds as dicts (the first reply, when the cursor no longer has them);
+        ``batches`` is the list of ``(count, parts)`` that ``decode(frame_bytes)`` makes of each column frame the cursor
+        yields (about 1 MiB of values each, ``batch_size`` rows at most; ``flags`` 1 asks for datetimes as microseconds). The result
+        is finished when this returns.
+        """
+        if int(batch_size) < 1:
+            raise ValueError("batch_size must be at least 1")
+        head_rows: list = []
+        batches: list = []
+        if not self._readable():
+            return head_rows, batches
+        spec = json.dumps(list(columns)).encode("utf-8") if columns is not None else b""
+        skip = 0
+        if self._head_n and self._more and self._rs:
+            # the cursor still holds the rows of the first reply: it replays the ones this object has not handed out
+            skip = self._head_n - len(self._buf)
+            self._buf.clear()
+        else:
+            head_rows = [props for props, _ in self._buf]
+            self._buf.clear()
+            if self._pending_error is not None:
+                self._fill()  # the rows before the error are consumed: raise it
+        while self._more and self._rs:
+            try:
+                raw = lib.call_frame(self._rs, int(batch_size), spec, flags, skip)
+            except lib.ColumnFrameError as exc:
+                # the library closed the cursor
+                self._more = False
+                self._rs = 0
+                self._closed = True
+                self._exhausted = True
+                raise _read_error(exc.reply) from None
+            skip = 0
+            self._head_n = 0
+            count, parts, header = decode(raw)
+            if header.get("done"):
+                self._more = False  # the library closed the cursor with the frame that ended the rows
+                self._rs = 0
+            if count:
+                batches.append((count, parts))
+        self._finish()
+        return head_rows, batches
+
     def to_dataframe(self, convert_types: bool = True):
+        """The rows as a ``pandas.DataFrame``: the values ``to_list()`` returns (a DATETIME keeps its microseconds, a DATE is a
+        ``datetime.date`` in an object column, a ``Decimal`` stays one), read as column frames, not as one dict per row.
+        """
         import pandas as pd
 
-        return pd.DataFrame(self._drain_dicts())
+        columns = self._columns(25_000, None, True)
+        # pandas rejects 2-D ndarrays as column values; vector columns become object columns of row slices
+        columns = {
+            k: (list(v) if getattr(v, "ndim", 1) > 1 else v) for k, v in columns.items()
+        }
+        return pd.DataFrame(columns)
+
+    def _columns(self, batch_size, columns, micros):
+        from . import colframes
+
+        head_rows, batches = self._read_frames(
+            batch_size,
+            columns,
+            lambda raw: colframes.decode_columns(raw, micros),
+            1 if micros else 0,
+        )
+        return colframes.columns_result(head_rows, columns, micros, batches)
 
     def to_columns(self, batch_size: int = 25_000, columns=None):
         """Columns as the JPype path returns them (numpy int64/float64/bool/datetime64[ms] arrays, lists for text and
-        JSON-typed values, an object array of Decimal), built in Python from the rows: a columnar JSON path, no
-        binary buffer. None when numpy is missing."""
+        JSON-typed values, an object array of Decimal), decoded from column frames by the decoder both builds share. None when
+        numpy is missing."""
         try:
-            import numpy  # noqa: F401
+            __import__("numpy")  # availability check
         except ImportError:
             return None
-        from .columns import to_columns
-
-        return to_columns(self._drain_dicts(), columns)
+        return self._columns(batch_size, columns, False)
 
     def to_arrow(self, batch_size: int = 25_000, columns=None):
-        """A ``pyarrow.Table`` with the types of :meth:`to_columns` but nulls kept (None when pyarrow is missing)."""
+        """A ``pyarrow.Table`` with the types of :meth:`to_columns` but nulls kept (None when pyarrow is missing), decoded from
+        column frames by the decoder both builds share."""
         try:
-            import numpy  # noqa: F401
-            import pyarrow  # noqa: F401
+            __import__("numpy")  # availability check
+            __import__("pyarrow")
         except ImportError:
             return None
-        from .columns import to_arrow
+        from . import colframes
 
-        return to_arrow(self._drain_dicts(), columns)
+        head_rows, batches = self._read_frames(
+            batch_size, columns, colframes.decode_arrow
+        )
+        return colframes.arrow_result(head_rows, columns, batches)
 
     def to_polars(self, batch_size: int = 25_000, columns=None):
         try:

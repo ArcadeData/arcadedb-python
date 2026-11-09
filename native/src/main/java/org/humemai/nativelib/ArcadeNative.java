@@ -20,6 +20,7 @@ import com.arcadedb.database.TransactionContext;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.NeedRetryException;
+import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.server.ArcadeDBServer;
@@ -36,6 +37,7 @@ import org.graalvm.nativeimage.c.type.CTypeConversion;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -45,6 +47,17 @@ import java.util.function.Supplier;
 public final class ArcadeNative {
   static final Map<Long, Database> DBS = new ConcurrentHashMap<>();
   private static final Map<Long, ResultSet> RESULT_SETS = new ConcurrentHashMap<>();
+  /**
+   * The rows of the first reply of an open cursor, kept until the cursor is read again or closed: that reply is JSON for the row APIs,
+   * and a columnar read (arcadedb_n_next_col) that starts from it replays these rows into its first frame instead of losing them.
+   * At most the first reply (256 rows) of a cursor that has more rows.
+   */
+  private static final Map<Long, List<Result>> HEADS = new ConcurrentHashMap<>();
+
+  private static ResultSet removeCursor(final long id) {
+    HEADS.remove(id);
+    return RESULT_SETS.remove(id);
+  }
   private static final Map<Long, ArcadeDBServer> SERVERS = new ConcurrentHashMap<>();
   static final AtomicLong IDS = new AtomicLong(1);
 
@@ -288,9 +301,10 @@ public final class ArcadeNative {
       rs = RESULT_SETS.get(rsId);
       if (rs == null)
         throw new IllegalArgumentException("unknown result set " + rsId);
-      return out(batchOf(rsId, rs, max));
+      HEADS.remove(rsId);
+      return out(batchOf(rsId, rs, max, null));
     } catch (final Throwable t) {
-      RESULT_SETS.remove(rsId);
+      removeCursor(rsId);
       closeQuietly(rs);
       return err(t);
     }
@@ -309,17 +323,65 @@ public final class ArcadeNative {
       if (rs == null)
         throw new IllegalArgumentException("unknown result set " + rsId);
       final ResultSet cursor = rs;
-      return withFloatTail(() -> batchOf(rsId, cursor, max));
+      HEADS.remove(rsId);
+      return withFloatTail(() -> batchOf(rsId, cursor, max, null));
     } catch (final Throwable t) {
-      RESULT_SETS.remove(rsId);
+      removeCursor(rsId);
       closeQuietly(rs);
       return err(t);
     }
   }
 
+  /**
+   * The next rows of an open cursor as one column frame (see ColumnFrames), written as an int64 LE byte count and the frame; a failure is
+   * the negated byte count of the error JSON and that JSON. max: rows at most (a frame also ends at about 1 MiB of values). columns: a
+   * JSON array of the column names to read, or "" for the union of the names of the rows. flags bit 0: datetimes as microseconds (the
+   * to_dataframe form). skip: of the rows that the first reply of this cursor already held (HEADS), the number the caller has taken; the
+   * first frame starts after them. The frame that ends the rows closes the cursor. The reply is freed with arcadedb_free.
+   */
+  @CEntryPoint(name = "arcadedb_n_next_col")
+  @SuppressWarnings("unchecked")
+  public static CCharPointer nextCol(final IsolateThread thread, final long rsId, final int max, final CCharPointer columns,
+      final int flags, final int skip) {
+    ResultSet rs = null;
+    try {
+      rs = RESULT_SETS.get(rsId);
+      if (rs == null)
+        throw new IllegalArgumentException("unknown result set " + rsId);
+      final List<Result> head = HEADS.remove(rsId);
+      String[] pinned = null;
+      final String spec = str(columns);
+      if (spec != null && !spec.isEmpty()) {
+        final List<Object> names = (List<Object>) Json.parse(spec);
+        pinned = new String[names.size()];
+        for (int i = 0; i < pinned.length; i++)
+          pinned[i] = (String) names.get(i);
+      }
+      final ColumnFrames.Frame frame = ColumnFrames.next(rs, head, skip, max, pinned, (flags & 1) != 0);
+      if (frame.done) {
+        removeCursor(rsId);
+        closeQuietly(rs);
+      }
+      return frameOut(frame.bytes.length, frame.bytes);
+    } catch (final Throwable t) {
+      removeCursor(rsId);
+      closeQuietly(rs);
+      final byte[] e = errorJson(t).getBytes(StandardCharsets.UTF_8);
+      return frameOut(-e.length, e);
+    }
+  }
+
+  private static CCharPointer frameOut(final int length, final byte[] b) {
+    final CCharPointer p = UnmanagedMemory.malloc(8 + b.length);
+    final ByteBuffer bb = CTypeConversion.asByteBuffer(p, 8 + b.length).order(ByteOrder.LITTLE_ENDIAN);
+    bb.putLong(length);
+    bb.put(b, 0, b.length);
+    return p;
+  }
+
   @CEntryPoint(name = "arcadedb_n_rs_close")
   public static CCharPointer rsClose(final IsolateThread thread, final long rsId) {
-    closeQuietly(RESULT_SETS.remove(rsId));
+    closeQuietly(removeCursor(rsId));
     return OK();
   }
 
@@ -328,16 +390,20 @@ public final class ArcadeNative {
       return "{\"ok\":true,\"rs\":0,\"rows\":[],\"meta\":[],\"drained\":true}";
     final long id = IDS.getAndIncrement();
     RESULT_SETS.put(id, rs);
-    return batchOf(id, rs, max);
+    final List<Result> keep = new ArrayList<>();
+    final String reply = batchOf(id, rs, max, keep);
+    if (RESULT_SETS.containsKey(id))
+      HEADS.put(id, keep);
+    return reply;
   }
 
-  private static String batchOf(final long id, final ResultSet rs, final int max) {
+  private static String batchOf(final long id, final ResultSet rs, final int max, final List<Result> keep) {
     final StringBuilder sb = new StringBuilder("{\"ok\":true,\"rs\":");
     final int mark = sb.length();
     sb.append(id).append(',');
-    final boolean drained = NativeCodec.appendBatch(sb, rs, max);
+    final boolean drained = NativeCodec.appendBatch(sb, rs, max, keep);
     if (drained) {
-      RESULT_SETS.remove(id);
+      removeCursor(id);
       closeQuietly(rs);
       sb.replace(mark, mark + String.valueOf(id).length(), "0");
     }
@@ -650,7 +716,7 @@ public final class ArcadeNative {
   public static void rsCloseMany(final IsolateThread thread, final CLongPointer ids, final int n) {
     try {
       for (int i = 0; i < n; i++)
-        closeQuietly(RESULT_SETS.remove(ids.read(i)));
+        closeQuietly(removeCursor(ids.read(i)));
     } catch (final Throwable ignored) {
       // closing is best effort, as in arcadedb_n_rs_close
     }

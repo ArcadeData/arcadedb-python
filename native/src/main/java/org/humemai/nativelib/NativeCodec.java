@@ -52,6 +52,11 @@ final class NativeCodec {
    * for a projection, or [rid, typeName, kind] for a record row (kind v, e or d).
    */
   static boolean appendBatch(final StringBuilder sb, final ResultSet rs, final int max) {
+    return appendBatch(sb, rs, max, null);
+  }
+
+  /** As above; {@code keep}, when not null, receives each row that was encoded (a columnar read replays them, see ArcadeNative.HEADS). */
+  static boolean appendBatch(final StringBuilder sb, final ResultSet rs, final int max, final java.util.List<Result> keep) {
     final StringBuilder meta = new StringBuilder("[");
     sb.append("\"rows\":[");
     int n = 0;
@@ -78,6 +83,8 @@ final class NativeCodec {
           throw t;
         }
         n++;
+        if (keep != null)
+          keep.add(row);
         if (sb.length() >= MAX_BATCH_CHARS)
           break;
       }

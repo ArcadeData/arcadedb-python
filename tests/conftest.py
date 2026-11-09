@@ -39,6 +39,8 @@ WINDOWS_NOT_APPLICABLE = {
 if sys.platform == "win32":
     collect_ignore.extend(WINDOWS_NOT_APPLICABLE)
 if BACKEND != "native":
+    # the old JSON-row route that the native column frames are compared with (the module lives in the native package)
+    collect_ignore.append("test_native_column_frames_reference.py")
     # Java -> Python upcalls (Python functions in SQL) exist on the native build only
     collect_ignore.append("test_native_udf.py")
     # how find_nearest hands the query vector to the native library (the codec's side buffer)
