@@ -903,7 +903,8 @@ class NativeDatabase:
         a newDocument/set/save loop inside the image, as ``DocumentBatcher.insertManyJson`` on the JPype path). A ``datetime`` (also
         ``pandas.Timestamp`` and ``numpy.datetime64``), ``date``, ``Decimal``, ``bytes``/``bytearray``, numpy scalar, ``pandas.NA`` or
         ``pandas.NaT`` sitting directly in a row crosses in that text as a tagged value (``{"\\u0001": [kind, payload]}``, decoded by
-        ``Json.java``), so it does not move the chunk off this path; such a chunk loses the columnar entry. A row with a value the JSON
+        ``Json.java``), so it does not move the chunk off this path; but when a column holds only date-times, dates, Decimals or
+        bytes (None is a null) the chunk goes as columns, the same stored objects. A row with a value the JSON
         text cannot carry unchanged (NaN or Infinity, an integer beyond 64 bits, a date-time or decimal inside a list or map, a non-str
         key, a lone surrogate, a ``datetime.time``) goes through ``INSERT INTO t CONTENT :row`` on its own, in one crossing for a run of
         such rows; the rows around it keep the bulk path and every row is inserted in the order given. Inside the caller's
@@ -1021,20 +1022,50 @@ class NativeDatabase:
             raise _error("Command failed", reply)
         return reply["n"]
 
-    def _parallel_load_failed(self, type_name, error) -> ArcadeDBError:
+    def _drain_parallel(self, tokens):
+        """Waits for the async writers, then reads, and so removes, the failure token of every parallel load handed in. Returns
+        ``(problem, failed, first)``: the error of the wait or of a read (or None), the failed records the writers reported on all the
+        tokens and the first failure's text. The tokens are read whatever the wait did: an unread token keeps its entries for good.
+        """
+        from . import extras
+
+        problem = None
+        try:
+            self._async().wait_completion()
+        except Exception as e:
+            problem = e
+        failed, first = 0, None
+        for token in tokens:
+            try:
+                result = extras.failures(self, token)
+            except Exception as e:
+                problem = problem or e
+                continue
+            if result["count"] and first is None:
+                first = result["first"]
+            failed += result["count"]
+        return problem, failed, first
+
+    def _abandon_parallel(self, tokens):
+        """A parallel load that is being interrupted: waits for the writers (they run on) and removes the tokens; the error that is on its
+        way out is the one to report.
+        """
+        self._drain_parallel(tokens)
+
+    def _parallel_load_failed(self, type_name, error, tokens=()) -> ArcadeDBError:
         """The error for a parallel load that failed while handing rows to the writers: waits for the queue to drain first, so
         the caller sees a final state, and says that the rows handed over before the failure may have been stored.
         """
-        try:
-            self._async().wait_completion()
-        except Exception:  # nosec B110 - the original error is the one to report
-            pass
+        _, failed, _ = self._drain_parallel(tokens)
         text = str(error)
         prefix = "Failed to bulk-insert: "
         if text.startswith(prefix):
             text = text[len(prefix) :]
+        reported = (
+            f"; the writers had reported {failed} failed record(s)" if failed else ""
+        )
         return ArcadeDBError(
-            f"Failed to bulk-insert into '{type_name}': {text}; the rows handed to the "
+            f"Failed to bulk-insert into '{type_name}': {text}{reported}; the rows handed to the "
             f"parallel writers before the failure may have been stored (the call waited "
             f"for them before raising)"
         )
@@ -1056,26 +1087,28 @@ class NativeDatabase:
                     tokens.append(extras.insert_parallel(self, type_name, chunk)["fid"])
                 except ArcadeDBError as e:
                     # as the JPype path: the rows handed to the writers before the failure are written whatever this call does
-                    raise self._parallel_load_failed(type_name, e) from e
+                    raise self._parallel_load_failed(type_name, e, tokens) from e
                 n += len(chunk)
         except ArcadeDBError:
             raise
         except BaseException:
-            try:
-                self._async().wait_completion()
-            except Exception:  # nosec B110 - the original error is the one to report
-                pass
+            self._abandon_parallel(tokens)
             raise
+        return self._finish_parallel(type_name, tokens, n)
+
+    def _finish_parallel(self, type_name, tokens, n) -> int:
+        """The end of a parallel load: wait for the async writers, then read the failure count of every token and raise when a record failed."""
         try:
-            self._async().wait_completion()
-        except Exception as e:
-            raise ArcadeDBError(f"Failed to bulk-insert into '{type_name}': {e}") from e
-        n_failed, first = 0, None
-        for token in tokens:
-            result = extras.failures(self, token)
-            if result["count"] and first is None:
-                first = result["first"]
-            n_failed += result["count"]
+            problem, n_failed, first = self._drain_parallel(tokens)
+        except BaseException:
+            self._abandon_parallel(
+                tokens
+            )  # a ^C in the wait: finish it, and remove the tokens
+            raise
+        if problem is not None:
+            raise ArcadeDBError(
+                f"Failed to bulk-insert into '{type_name}': {problem}"
+            ) from problem
         if n_failed:
             raise ArcadeDBError(
                 f"Failed to bulk-insert into '{type_name}': the parallel writers reported {n_failed} failed record(s) "
@@ -1340,7 +1373,11 @@ class NativeDatabase:
     def insert_columns(
         self, type_name, columns, commit_every: int = 10_000, parallel: bool = False
     ) -> int:
-        """Bulk insert from whole columns (dict of name -> numpy array or list), as rows through :meth:`insert_many`."""
+        """Bulk insert from whole columns (dict of name -> numpy array or list): columns the buffers can carry cross in one call
+        (``arcadedb_n_insert_colp``), any other column set goes as rows through :meth:`insert_many`. With ``parallel=True`` the
+        same one call hands the records to the async writers (no transaction, ``commit_every`` does not apply, the call waits for the
+        writers and raises when a record failed), as ``insert_many(parallel=True)`` does for rows.
+        """
         self._check_not_closed()
         items = list(columns.items()) if hasattr(columns, "items") else None
         if not items:
@@ -1356,7 +1393,13 @@ class NativeDatabase:
         known = {n: len(v) for n, v in items if hasattr(v, "__len__")}
         if len(set(known.values())) > 1:
             raise ValueError(f"columns differ in length: {known}")
-        if not parallel:
+        if parallel:
+            from .bulk import insert_columns_parallel
+
+            done = insert_columns_parallel(self, type_name, columns)
+            if done is not None:
+                return done
+        else:
             from .bulk import insert_columns_fast
 
             done = insert_columns_fast(self, type_name, columns, commit_every)
@@ -1377,7 +1420,7 @@ class NativeDatabase:
     ) -> int:
         """A pandas or Polars DataFrame into a type, in batches: the strict Arrow loading of ``Database.insert_dataframe``
         (dtype refusals, declared types, NaN rules, the committed-rows message), batches through :meth:`insert_many` for a
-        document type and ``GraphBatch.create_vertices`` for a vertex type (``arcadedb/dataframe.py``).
+        document type and a vertex type alike (a vertex load refuses to run inside a transaction the caller opened; ``arcadedb/dataframe.py``).
         """
         from ..dataframe import insert_table, to_arrow_table
 

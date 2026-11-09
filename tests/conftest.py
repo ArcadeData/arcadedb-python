@@ -47,6 +47,16 @@ if BACKEND != "native":
     collect_ignore.append("test_native_vector_hit_lazy.py")
     # the columnar insert's stored records are compared between the JSON and the columnar entry points of the native library
     collect_ignore.append("test_native_columnar_insert.py")
+    # insert_columns(parallel=True) takes the columnar entry and stores what the row path stores (arcadedb_n_insert_colp with "parallel")
+    collect_ignore.append("test_native_columnar_parallel.py")
+    # the review of the native parallel loads: no silent loss, an interrupt waits for the writers and reads the failure token
+    collect_ignore.append("test_native_columnar_parallel_review_fixes.py")
+    # a column of date-times, dates, Decimals or bytes crosses as a column (kinds T D n x), observed on the native library
+    collect_ignore.append("test_native_columnar_temporal.py")
+    # the review of the temporal kinds: a value the image cannot take is refused in Python, never wrapped or thrown mid-batch
+    collect_ignore.append("test_native_columnar_temporal_review_fixes.py")
+    # a vertex load by insert_dataframe or insert_arrow crosses as columns, one crossing per batch, observed on the native library
+    collect_ignore.append("test_native_vertex_columnar.py")
     # the rows of an insert_many chunk with date-times, Decimals, bytes and numpy scalars are told apart by the entry points they cross
     collect_ignore.append("test_native_mixed_chunk.py")
     # the native build's ingest defaults (insert_many and graph_batch commit size), observed on the native library

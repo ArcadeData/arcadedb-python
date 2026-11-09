@@ -169,7 +169,8 @@ def test_a_pandas_timestamp_is_stored_as_the_statement_path_stores_it(
         _statement_path(db, "Ref", rows)
         spy.clear()
         db.insert_many("Bulk", rows)
-        assert spy.count(MANY) == 0 and spy.count(ROWS) == 1
+        # one column of Timestamps is the kind T of the columnar entry (#316): microseconds, as the tagged path keeps them
+        assert spy.count(MANY) == 0 and spy.count(ROWS) == 0 and spy.count(COLP) == 1
         assert _stored(db, "Bulk") == _stored(db, "Ref")
 
 
@@ -249,8 +250,10 @@ def test_an_uncarriable_value_sends_its_own_row_to_the_statement_not_the_chunk(
         spy.clear()
         db.insert_many("Bulk", rows)
         assert spy.count(MANY) == 1, "one statement run for the one uncarriable row"
+        # the rows before and after it stay on the bulk entry; its columnar form carries the date-time column now, so each run
+        # crosses on arcadedb_n_insert_colp (before it was the JSON entry, arcadedb_n_insert_rows)
         assert (
-            spy.count(ROWS) == 2
+            spy.count(COLP) == 2 and spy.count(ROWS) == 0
         ), "the rows before and after it stay on the bulk entry"
         assert _stored(db, "Bulk") == _stored(db, "Ref")
 

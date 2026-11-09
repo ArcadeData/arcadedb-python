@@ -569,6 +569,51 @@ public final class NativeExtras {
   private static final Map<Long, AtomicLong> ASYNC_FAILS = new ConcurrentHashMap<>();
   private static final Map<Long, AtomicReference<Throwable>> ASYNC_FIRST = new ConcurrentHashMap<>();
 
+  /**
+   * A failure token for one parallel load: the id the caller reads (and so removes) with the "failures" operation, and the callback that
+   * counts. The caller creates it before the load ("token" operation) and passes the id in the load's header, so that it holds the id
+   * whatever happens to the call, an interrupt included, and always has the means to wait for the writers and remove the entries.
+   */
+  static final class FailureToken {
+    final long fid;
+    final AtomicLong count;
+    final AtomicReference<Throwable> first;
+    final ErrorCallback onError;
+
+    private FailureToken(final long fid, final AtomicLong count, final AtomicReference<Throwable> first) {
+      this.fid = fid;
+      this.count = count;
+      this.first = first;
+      this.onError = t -> {
+        count.incrementAndGet();
+        first.compareAndSet(null, t);
+      };
+    }
+
+    /** A new token, registered for the "failures" operation. */
+    static FailureToken create() {
+      final FailureToken token = new FailureToken(ArcadeNative.IDS.getAndIncrement(), new AtomicLong(), new AtomicReference<>());
+      ASYNC_FAILS.put(token.fid, token.count);
+      ASYNC_FIRST.put(token.fid, token.first);
+      return token;
+    }
+
+    /** The token that "token" created, for the load that its id was passed to. */
+    static FailureToken of(final long fid) {
+      final AtomicLong count = ASYNC_FAILS.get(fid);
+      final AtomicReference<Throwable> first = ASYNC_FIRST.get(fid);
+      if (count == null || first == null)
+        throw new IllegalArgumentException("unknown failure token " + fid + " (already read, or never created)");
+      return new FailureToken(fid, count, first);
+    }
+
+    /** The load failed before it returned: the caller gets the error, not a token to read failures from. */
+    void drop() {
+      ASYNC_FAILS.remove(fid);
+      ASYNC_FIRST.remove(fid);
+    }
+  }
+
   private static String replyRows(final ResultSet rs) {
     final StringBuilder sb = new StringBuilder("{\"ok\":true,\"rs\":0,");
     NativeCodec.appendBatch(sb, rs, Integer.MAX_VALUE);
@@ -866,15 +911,9 @@ public final class NativeExtras {
         ex.appendSamples((String) a.get("type"), stamps, columns);
       }
       case "insert_parallel" -> {
-        final long fid = ArcadeNative.IDS.getAndIncrement();
-        final AtomicLong count = new AtomicLong();
-        final AtomicReference<Throwable> first = new AtomicReference<>();
-        ASYNC_FAILS.put(fid, count);
-        ASYNC_FIRST.put(fid, first);
-        final ErrorCallback onError = t -> {
-          count.incrementAndGet();
-          first.compareAndSet(null, t);
-        };
+        final FailureToken token = FailureToken.create();
+        final long fid = token.fid;
+        final ErrorCallback onError = token.onError;
         final String type = (String) a.get("type");
         try {
           final List<Object> rows = (List<Object>) a.get("rows");
@@ -888,11 +927,13 @@ public final class NativeExtras {
             ex.createRecord(doc, null, onError);
           }
         } catch (final Throwable t) {
-          ASYNC_FAILS.remove(fid); // the caller gets the error, not a token to read failures from
-          ASYNC_FIRST.remove(fid);
+          token.drop(); // the caller gets the error, not a token to read failures from
           throw t;
         }
         return ArcadeNative.out("{\"ok\":true,\"fid\":" + fid + "}");
+      }
+      case "token" -> {
+        return ArcadeNative.out("{\"ok\":true,\"fid\":" + FailureToken.create().fid + "}");
       }
       case "failures" -> {
         final long fid = ((Number) a.get("fid")).longValue();

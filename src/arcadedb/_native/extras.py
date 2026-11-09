@@ -938,6 +938,19 @@ def insert_parallel(database, type_name: str, rows) -> dict:
     )
 
 
+def failure_token(database) -> int:
+    """A new failure token for one parallel load: the caller makes it before the load, hands its id to the load and reads it with
+    :func:`failures` after the final wait, so it holds the id whatever happens to the load (an interrupt included).
+    """
+    return _call(
+        "Failed to make a failure token",
+        "arcadedb_n_async",
+        database._h,
+        b"token",
+        lib.b(_enc({})),
+    )["fid"]
+
+
 def failures(database, token: int) -> dict:
     return _call(
         "Failed to read the parallel writers",
