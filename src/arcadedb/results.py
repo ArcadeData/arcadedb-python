@@ -15,6 +15,9 @@ from jpype import JException
 from ._columnar import (
     decode_arrow_frame,
     decode_columns_frame,
+    empty_arrow,
+    empty_columns,
+    frame_rows,
     merge_arrow,
     merge_columns,
 )
@@ -546,10 +549,14 @@ class ResultSet:
 
         Requires pandas to be installed.
 
-        Values are the ones ``to_list()`` returns: a DATETIME keeps its
-        microseconds (a ``datetime64[us]`` column, where ``to_columns()`` and
-        ``to_arrow()`` carry milliseconds), a DATE is a ``datetime.date`` in an
-        object column, and a ``Decimal`` stays one.
+        Values are the ones ``to_list()`` returns, with two exceptions that are
+        the same on both builds. A DATETIME keeps its microseconds (a
+        ``datetime64[us]`` column, where ``to_columns()`` and ``to_arrow()``
+        carry milliseconds), a DATE is a ``datetime.date`` in an object column,
+        and a ``Decimal`` stays one. A column of ``float[]`` vectors holds one
+        numpy ``float32`` array per cell (a row of the matrix ``to_columns()``
+        returns, no copy into a Python list per row); ``to_list()`` gives
+        lists of floats.
 
         Args:
             convert_types: Convert Java types to Python (default: True)
@@ -599,7 +606,9 @@ class ResultSet:
 
         Reads :meth:`to_arrow` and hands the table to Polars, so nulls keep
         their type (a nullable integer stays an integer column) and a DECIMAL
-        column is a Polars ``Decimal``. Requires polars and pyarrow
+        column is a Polars ``Decimal``. A column of ``float[]`` vectors is a
+        Polars ``Array(Float32, n)`` (``to_arrow()`` types it as a fixed-size
+        list of float32). Requires polars and pyarrow
         (``uv add 'arcadedb-jvm[polars]'``).
 
         Args:
@@ -645,7 +654,11 @@ class ResultSet:
         Null handling follows pandas conventions: int/datetime columns with
         nulls are promoted to float64 with NaN / datetime64 NaT; string and
         JSON columns use None. A DECIMAL column is an object array of exact
-        ``Decimal`` values (#115).
+        ``Decimal`` values (#115). The type of a column belongs to the whole
+        result, not to where a batch ends: a batch that lacks the column or
+        holds only nulls for it takes the type of the batches that have
+        values. The arrays are writable. An empty result is ``{}``, or, when
+        ``columns`` is given, those columns as empty lists.
 
         The columns are the union of every row's property names, in order of
         first appearance, because a document is schemaless: a property the
@@ -690,13 +703,13 @@ class ResultSet:
         # ";".join: a name may legally contain a semicolon, a quote or a
         # backslash.
         spec = json.dumps(list(columns)) if columns is not None else ""
+        size = frame_rows(batch_size)
         if not self._readable():
-            return {}
-        total = 0
+            return empty_columns(columns)
         while True:
             try:
                 java_batch = column_batcher.nextColumnBatch(
-                    self._java_result_set, int(batch_size), spec, micros
+                    self._java_result_set, size, spec, micros
                 )
             except JException as exc:
                 raise _read_error(exc) from exc
@@ -711,11 +724,8 @@ class ResultSet:
                 if name not in names:
                     names.append(name)
             batches.append((count, parts))
-            total += count
 
-        if total == 0:
-            return {}
-        return merge_columns(names, batches)
+        return merge_columns(names, batches, columns)
 
     def to_arrow(
         self, batch_size: int = 25_000, columns: Optional[Sequence[str]] = None
@@ -748,7 +758,7 @@ class ResultSet:
         """
         try:
             __import__("numpy")  # availability check
-            import pyarrow as pa
+            __import__("pyarrow")  # availability check
         except ImportError:
             return None
 
@@ -763,13 +773,13 @@ class ResultSet:
         batches: List[Tuple[int, Dict[str, Any]]] = []
 
         spec = json.dumps(list(columns)) if columns is not None else ""
+        size = frame_rows(batch_size)
         if not self._readable():
-            return pa.table({})
-        total = 0
+            return empty_arrow(columns)
         while True:
             try:
                 java_batch = column_batcher.nextColumnBatch(
-                    self._java_result_set, int(batch_size), spec, False
+                    self._java_result_set, size, spec, False
                 )
             except JException as exc:
                 raise _read_error(exc) from exc
@@ -784,11 +794,8 @@ class ResultSet:
                 if name not in names:
                     names.append(name)
             batches.append((count, chunks))
-            total += count
 
-        if total == 0 or not names:
-            return pa.table({})
-        return merge_arrow(names, batches)
+        return merge_arrow(names, batches, columns)
 
     def iter_chunks(
         self, size: int = 1000, convert_types: bool = True

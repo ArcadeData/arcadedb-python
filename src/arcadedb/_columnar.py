@@ -165,12 +165,56 @@ def _unify_arrow_chunk_types(arrs: list, pa) -> list:
         except pa.ArrowException:
             pass
 
+    if all(pa.types.is_list(t) or pa.types.is_fixed_size_list(t) for t in types):
+        # vectors and lists of numbers: a dimension that changes between frames makes a list, float32 next to float64 is float64
+        # (the widening is exact), never text
+        values = {t.value_type for t in types}
+        if values <= {pa.float32(), pa.float64()}:
+            value = pa.float64() if pa.float64() in values else pa.float32()
+            sizes = {
+                t.list_size if pa.types.is_fixed_size_list(t) else None for t in types
+            }
+            target = (
+                pa.list_(value, next(iter(sizes)))
+                if len(sizes) == 1 and None not in sizes
+                else pa.list_(value)
+            )
+            try:
+                return [pa.array(a.to_pylist(), type=target) for a in arrs]
+            except pa.ArrowException:
+                pass
+
     if all(pa.types.is_decimal(t) for t in types):
         common = _common_decimal_type(list(types), pa)
         if common is not None:
             return [a.cast(common) for a in arrs]
 
     return _cast_all_to_string(arrs, pa)
+
+
+MAX_FRAME_ROWS = 2**31 - 1  # a frame's row limit crosses to the library as a C int
+
+
+def frame_rows(batch_size) -> int:
+    """The row limit of a frame for ``batch_size``: at least 1 (a ValueError otherwise), at most what a C int holds, so a huge
+    ``batch_size`` means "as many as one frame takes" instead of wrapping around to zero or a negative number.
+    """
+    rows = int(batch_size)
+    if rows < 1:
+        raise ValueError(f"batch_size must be at least 1, got {batch_size}")
+    return min(rows, MAX_FRAME_ROWS)
+
+
+def empty_columns(columns) -> Dict[str, Any]:
+    """The ``to_columns`` dict of a result with no rows: no column, or the ones the caller asked for, empty."""
+    return {} if columns is None else {name: [] for name in columns}
+
+
+def empty_arrow(columns):
+    """The ``to_arrow`` table of a result with no rows: no column, or the ones the caller asked for, empty and of the null type."""
+    import pyarrow as pa
+
+    return pa.table({} if columns is None else {name: pa.nulls(0) for name in columns})
 
 
 def _null_mask(buf, pos: int, nulls_len: int, count: int):
@@ -213,14 +257,15 @@ def decode_columns_frame(
         pos += col["bytes"]
 
         if ctype == "i8":
-            arr = np.frombuffer(data, dtype="<i8")
+            # a copy: np.frombuffer over bytes is read-only, and every array of to_columns is writable
+            arr = np.frombuffer(data, dtype="<i8").copy()
             if has_nulls:
                 arr = arr.astype(np.float64)
                 arr[mask] = np.nan
             values = arr
         elif ctype == "f8":
             # the writer already puts NaN into null slots
-            values = np.frombuffer(data, dtype="<f8")
+            values = np.frombuffer(data, dtype="<f8").copy()
         elif ctype == "dt":
             arr = np.frombuffer(data, dtype="<i8").astype("datetime64[ms]")
             if has_nulls:
@@ -245,7 +290,7 @@ def decode_columns_frame(
             if dim == 0:
                 values = np.empty((count, 0), dtype=dt)
             else:
-                values = np.frombuffer(data, dtype=dt).reshape(count, dim)
+                values = np.frombuffer(data, dtype=dt).reshape(count, dim).copy()
         elif ctype == "json":
             values = json_values(data, side, count)
         elif ctype == "dec":
@@ -258,17 +303,34 @@ def decode_columns_frame(
     return count, parts, header
 
 
+def _is_all_none(part, count: int) -> bool:
+    return (
+        isinstance(part, list) and len(part) == count and all(v is None for v in part)
+    )
+
+
 def merge_columns(
-    names: List[str], batches: List[Tuple[int, Dict[str, Any]]]
+    names: List[str], batches: List[Tuple[int, Dict[str, Any]]], columns=None
 ) -> Dict[str, Any]:
-    """The ``to_columns`` dict of the parts of every frame: a column a frame lacks gets nulls (NaN, NaT or None) there."""
+    """The ``to_columns`` dict of the parts of every frame. The type of a column belongs to the whole result, not to where the frames
+    end: a frame that lacks the column, or holds only nulls for it, takes the type of the frames that have values (NaN, NaT or None
+    in its rows). With no rows at all the result is :func:`empty_columns`."""
     import numpy as np
 
+    if not batches or not names:
+        return empty_columns(columns)
     out: Dict[str, Any] = {}
     for name in names:
-        template = next(p[name] for _, p in batches if name in p)
+        typed = [
+            p[name] for c, p in batches if name in p and not _is_all_none(p[name], c)
+        ]
+        template = typed[0] if typed else next(p[name] for _, p in batches if name in p)
         parts = [
-            p[name] if name in p else _missing_column_part(c, template)
+            (
+                p[name]
+                if name in p and not (typed and _is_all_none(p[name], c))
+                else _missing_column_part(c, template)
+            )
             for c, p in batches
         ]
         np_parts = [p for p in parts if not isinstance(p, list)]
@@ -374,13 +436,15 @@ def decode_arrow_frame(
     return count, chunks, header
 
 
-def merge_arrow(names: List[str], batches: List[Tuple[int, Dict[str, Any]]]):
+def merge_arrow(
+    names: List[str], batches: List[Tuple[int, Dict[str, Any]]], columns=None
+):
     """The ``pyarrow.Table`` of the chunks of every frame: one chunked column per name, one type per column (see
     :func:`_unify_arrow_chunk_types`), a frame that lacks a column adds nulls."""
     import pyarrow as pa
 
     if not batches or not names:
-        return pa.table({})
+        return empty_arrow(columns)
     return pa.table(
         {
             n: pa.chunked_array(

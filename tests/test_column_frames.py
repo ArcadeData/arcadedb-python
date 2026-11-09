@@ -336,8 +336,198 @@ def test_to_dataframe_and_to_polars(table):
     ]
     assert [list(v) for v in df["v3"]] == [r["v3"] for r in rows]
     assert df["ts"].iloc[1] == datetime(2026, 1, 2, 3, 4, 5, 1000)
+    assert str(df["ts"].dtype).startswith(
+        "datetime64[us"
+    )  # microseconds on both wheels, whatever pandas infers from datetimes
+    # a vector cell is a numpy float32 array, not a Python list (documented on to_dataframe)
+    assert all(isinstance(v, np.ndarray) and v.dtype == np.float32 for v in df["v3"])
     import polars as pl
 
     p = db.query("sql", _sel()).to_polars()
     assert isinstance(p, pl.DataFrame) and p.height == 5000
+    assert p.schema["v3"] == pl.Array(pl.Float32, 3)
     assert p["big"].to_list() == [r["big"] for r in rows]
+
+
+# --- what a column's type depends on: the whole result, not the size of the result or where a batch ends ---------------------
+
+
+@pytest.mark.parametrize("batch_size", [2**31 - 1, 2**31, 2**32, 10**10])
+def test_a_huge_batch_size_means_as_many_as_one_batch_takes(table, batch_size):
+    db, rows = table
+    t = db.query("sql", _sel()).to_arrow(batch_size=batch_size)
+    assert t.num_rows == 5000
+    c = db.query("sql", _sel()).to_columns(batch_size=batch_size)
+    assert len(c["big"]) == 5000
+
+
+@pytest.mark.parametrize("batch_size", [0, -1])
+def test_a_batch_size_below_one_is_refused(table, batch_size):
+    db, _ = table
+    with pytest.raises(ValueError):
+        db.query("sql", _sel()).to_arrow(batch_size=batch_size)
+    with pytest.raises(ValueError):
+        db.query("sql", _sel()).to_columns(batch_size=batch_size)
+
+
+def test_no_rows_with_columns_given_returns_those_columns_empty(table):
+    db, _ = table
+    sql = "SELECT n, s FROM T WHERE big < 0"
+    t = db.query("sql", sql).to_arrow(columns=["s", "n"])
+    assert t.column_names == ["s", "n"] and t.num_rows == 0
+    assert db.query("sql", sql).to_columns(columns=["s", "n"]) == {"s": [], "n": []}
+    assert db.query("sql", sql).to_columns() == {}
+    assert db.query("sql", sql).to_arrow().num_columns == 0
+
+
+@pytest.mark.parametrize("limit", [1, 10, 300])
+def test_to_columns_arrays_are_writable(table, limit):
+    db, _ = table
+    c = db.query(
+        "sql",
+        f"SELECT big, d, ts, v3 FROM T ORDER BY big LIMIT {limit}",  # nosec B608 - an integer of the test
+    ).to_columns()
+    for name in ("big", "d", "ts", "v3"):
+        assert c[name].flags.writeable, (name, limit)
+        c[name][0] = c[name][0]
+
+
+@pytest.mark.parametrize("rows", [255, 256, 257, 511, 512, 513])
+def test_sizes_around_the_first_reply_and_two_of_them(table, rows):
+    db, stored = table
+    t = db.query("sql", _sel() + f" LIMIT {rows}").to_arrow()
+    assert t.num_rows == rows
+    assert t.column("big").to_pylist() == [r["big"] for r in stored[:rows]]
+    assert t.column("v9").to_pylist() == [r["v9"] for r in stored[:rows]]
+    assert t.schema.field("v9").type == pa.list_(pa.float32(), 9)
+    assert t.schema.field("s").type == pa.string()
+
+
+def test_two_cursors_open_at_once_and_a_cursor_closed_early(table):
+    db, rows = table
+    one = db.query("sql", _sel())
+    two = db.query("sql", _sel())
+    assert next(one).get("big") == rows[0]["big"]
+    assert next(two).get("big") == rows[0]["big"]
+    t_two = two.to_arrow()
+    t_one = one.to_arrow()
+    assert t_one.column("big").to_pylist() == [r["big"] for r in rows[1:]]
+    assert t_two.column("big").to_pylist() == [r["big"] for r in rows[1:]]
+    partly = db.query("sql", _sel())
+    for _ in range(300):
+        next(partly)
+    partly.close()
+    fresh = db.query("sql", _sel() + " LIMIT 400").to_arrow()
+    assert fresh.num_rows == 400
+
+
+def test_a_cursor_with_nothing_read_closed_many_times_over(table):
+    db, _ = table
+    cursors = [db.query("sql", _sel()) for _ in range(300)]
+    for cursor in cursors:
+        cursor.close()
+    assert db.query("sql", _sel() + " LIMIT 3").to_arrow().num_rows == 3
+
+
+@pytest.fixture
+def declared(temp_db):
+    db = temp_db
+    db.command("sql", "CREATE DOCUMENT TYPE Dec")
+    db.command("sql", "CREATE PROPERTY Dec.i INTEGER")
+    db.command("sql", "CREATE PROPERTY Dec.arr ARRAY_OF_FLOATS")
+    db.command("sql", "CREATE PROPERTY Dec.dbl ARRAY_OF_DOUBLES")
+    db.command("sql", "CREATE PROPERTY Dec.lst LIST")
+    rows = [
+        {
+            "i": i,
+            "arr": [0.5 * i, 1.0, 2.0],
+            "dbl": [0.5 * i, 1.5, 2.5],
+            "lst": [0.5 * i, 1.0, 2.0],
+        }
+        for i in range(3000)
+    ]
+    db.insert_many("Dec", rows)
+    return db, rows
+
+
+@pytest.mark.parametrize("rows", [10, 300, 3000])
+def test_a_vector_column_is_a_declared_array_whatever_the_result_size(declared, rows):
+    db, stored = declared
+    sql = f"SELECT i, arr, dbl, lst FROM Dec ORDER BY i LIMIT {rows}"  # nosec B608 - an integer of the test
+    c = db.query("sql", sql).to_columns()
+    assert isinstance(c["arr"], np.ndarray) and c["arr"].dtype == np.float32
+    assert isinstance(c["dbl"], np.ndarray) and c["dbl"].dtype == np.float64
+    assert isinstance(c["lst"], list), type(
+        c["lst"]
+    )  # a LIST of doubles is lists, not a float32 matrix that happens to fit
+    assert c["lst"] == [r["lst"] for r in stored[:rows]]
+    t = db.query("sql", sql).to_arrow()
+    assert t.schema.field("arr").type == pa.list_(pa.float32(), 3)
+    assert t.schema.field("dbl").type == pa.list_(pa.float64(), 3)
+    assert t.schema.field("lst").type == pa.list_(pa.float64())
+    assert t.column("dbl").to_pylist() == [r["dbl"] for r in stored[:rows]]
+
+
+def test_a_double_array_stays_double_after_rows_read_past_the_first_reply(declared):
+    db, stored = declared
+    rs = db.query("sql", "SELECT i, dbl, arr FROM Dec ORDER BY i")
+    for _ in range(300):
+        next(rs)
+    t = rs.to_arrow()
+    assert t.schema.field("dbl").type == pa.list_(pa.float64(), 3)
+    assert t.schema.field("arr").type == pa.list_(pa.float32(), 3)
+    assert t.column("dbl").to_pylist() == [r["dbl"] for r in stored[300:]]
+
+
+def test_a_property_that_is_numeric_from_row_30000_on_has_one_type(temp_db):
+    db = temp_db
+    db.command("sql", "CREATE DOCUMENT TYPE Late")
+    db.command("sql", "CREATE PROPERTY Late.i INTEGER")
+    rows = [{"i": i} for i in range(30000)] + [
+        {"i": i, "late": i * 2} for i in range(30000, 30100)
+    ]
+    db.insert_many("Late", rows)
+    sql = "SELECT i, late FROM Late ORDER BY i"
+    t = db.query("sql", sql).to_arrow(batch_size=25_000, columns=["i", "late"])
+    assert t.schema.field("late").type == pa.int64()
+    late = t.column("late").to_pylist()
+    assert late[:30000] == [None] * 30000 and late[30000:] == [
+        i * 2 for i in range(30000, 30100)
+    ]
+    c = db.query("sql", sql).to_columns(batch_size=25_000, columns=["i", "late"])
+    assert isinstance(c["late"], np.ndarray) and c["late"].dtype == np.float64
+    assert np.isnan(c["late"][:30000]).all()
+    assert list(c["late"][30000:]) == [i * 2 for i in range(30000, 30100)]
+
+
+@pytest.mark.parametrize("rows", [10, 300])
+def test_an_integer_beyond_2_53_next_to_a_float_stays_exact(temp_db, rows):
+    db = temp_db
+    db.command("sql", "CREATE DOCUMENT TYPE Mix")
+    db.command("sql", "CREATE PROPERTY Mix.i INTEGER")
+    big = 2**60 + 1
+    db.insert_many(
+        "Mix", [{"i": i, "x": big if i % 2 == 0 else 1.5} for i in range(rows)]
+    )
+    c = db.query("sql", "SELECT i, x FROM Mix ORDER BY i").to_columns()
+    want = [big if i % 2 == 0 else 1.5 for i in range(rows)]
+    assert list(c["x"]) == want
+    assert all(type(a) is type(b) for a, b in zip(c["x"], want))
+    t = db.query("sql", "SELECT i, x FROM Mix ORDER BY i").to_arrow()
+    assert t.column("x").to_pylist() == [
+        str(v) for v in want
+    ]  # no common numeric type: exact text, as across batches
+
+
+def test_vectors_whose_dimension_changes_between_frames_are_one_list_column(temp_db):
+    db = temp_db
+    db.command("sql", "CREATE DOCUMENT TYPE Dim")
+    db.command("sql", "CREATE PROPERTY Dim.i INTEGER")
+    db.command("sql", "CREATE PROPERTY Dim.v ARRAY_OF_FLOATS")
+    db.insert_many(
+        "Dim",
+        [{"i": i, "v": [0.5, 1.0, 2.0] if i < 300 else [0.5, 1.0]} for i in range(600)],
+    )
+    t = db.query("sql", "SELECT i, v FROM Dim ORDER BY i").to_arrow(batch_size=100)
+    assert t.schema.field("v").type == pa.list_(pa.float32())
+    assert t.column("v").to_pylist() == [[0.5, 1.0, 2.0]] * 300 + [[0.5, 1.0]] * 300

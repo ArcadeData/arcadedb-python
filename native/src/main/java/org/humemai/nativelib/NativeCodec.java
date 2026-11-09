@@ -51,13 +51,38 @@ final class NativeCodec {
    * Appends {@code "rows":[..],"meta":[..],"drained":b} (no braces) with up to max rows. meta has one entry per row: 0
    * for a projection, or [rid, typeName, kind] for a record row (kind v, e or d).
    */
-  static boolean appendBatch(final StringBuilder sb, final ResultSet rs, final int max) {
-    return appendBatch(sb, rs, max, null);
+  /**
+   * The names of the properties whose value was a float[] (f) or a double[] (d) in a row of a batch. A JSON reply writes both as a list of
+   * numbers, so the reader cannot tell a vector from a list of doubles: the reply names the vectors, {@code "fv":[..]} and {@code "dv":[..]}
+   * after "drained" (absent when there is none), and a columnar read types those columns as vectors, as a column frame does.
+   */
+  static final class VecHints {
+    final java.util.LinkedHashSet<String> f = new java.util.LinkedHashSet<>();
+    final java.util.LinkedHashSet<String> d = new java.util.LinkedHashSet<>();
+
+    void appendTo(final StringBuilder sb) {
+      appendNames(sb, ",\"fv\":", f);
+      appendNames(sb, ",\"dv\":", d);
+    }
+
+    private static void appendNames(final StringBuilder sb, final String key, final java.util.Set<String> names) {
+      if (names.isEmpty())
+        return;
+      sb.append(key).append('[');
+      boolean first = true;
+      for (final String name : names) {
+        if (!first)
+          sb.append(',');
+        first = false;
+        quote(sb, name);
+      }
+      sb.append(']');
+    }
   }
 
-  /** As above; {@code keep}, when not null, receives each row that was encoded (a columnar read replays them, see ArcadeNative.HEADS). */
-  static boolean appendBatch(final StringBuilder sb, final ResultSet rs, final int max, final java.util.List<Result> keep) {
+  static boolean appendBatch(final StringBuilder sb, final ResultSet rs, final int max) {
     final StringBuilder meta = new StringBuilder("[");
+    final VecHints hints = new VecHints();
     sb.append("\"rows\":[");
     int n = 0;
     boolean drained = false;
@@ -76,15 +101,13 @@ final class NativeCodec {
             sb.append(',');
             meta.append(',');
           }
-          appendRow(sb, meta, row);
+          appendRow(sb, meta, row, hints);
         } catch (final Throwable t) {
           sb.setLength(rowStart);
           meta.setLength(metaStart);
           throw t;
         }
         n++;
-        if (keep != null)
-          keep.add(row);
         if (sb.length() >= MAX_BATCH_CHARS)
           break;
       }
@@ -97,10 +120,11 @@ final class NativeCodec {
     sb.append("],\"meta\":").append(meta).append("],\"drained\":").append(drained);
     if (readError != null)
       sb.append(",\"rerr\":").append(readError);
+    hints.appendTo(sb);
     return drained;
   }
 
-  private static void appendRow(final StringBuilder sb, final StringBuilder meta, final Result row) {
+  private static void appendRow(final StringBuilder sb, final StringBuilder meta, final Result row, final VecHints hints) {
     sb.append('{');
     boolean first = true;
     for (final String name : row.getPropertyNames()) {
@@ -109,7 +133,12 @@ final class NativeCodec {
       first = false;
       quote(sb, name);
       sb.append(':');
-      append(sb, row.getProperty(name));
+      final Object value = row.getProperty(name);
+      if (value instanceof float[])
+        hints.f.add(name);
+      else if (value instanceof double[])
+        hints.d.add(name);
+      append(sb, value);
     }
     sb.append('}');
     if (row.isElement()) {

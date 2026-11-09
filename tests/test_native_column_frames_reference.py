@@ -262,23 +262,20 @@ def ref_db(tmp_path_factory):
     db.close()
 
 
-def _norm(v):
-    """A value as a plain Python object, NaN, NaT and None alike (pandas turns a None into NaN in some columns)."""
-    if isinstance(v, np.ndarray):
-        return [_norm(x) for x in v.tolist()]
-    if isinstance(v, (list, tuple)):
-        return [_norm(x) for x in v]
-    if v is None or v is pd.NaT:
-        return None
-    if isinstance(v, float) and math.isnan(v):
-        return None
-    if isinstance(v, np.datetime64):
-        return None if np.isnat(v) else v.astype("datetime64[us]").item()
-    if isinstance(v, np.generic):
-        return v.item()
-    if isinstance(v, pd.Timestamp):
-        return v.to_pydatetime()
-    return v
+def _eq(have, want):
+    """Equal values, NaN equal to NaN, None equal only to None: a missing value is not a NaN."""
+    if isinstance(have, np.ndarray) or isinstance(want, np.ndarray):
+        return np.array_equal(np.asarray(have), np.asarray(want), equal_nan=True)
+    if isinstance(have, (list, tuple)) and isinstance(want, (list, tuple)):
+        return len(have) == len(want) and all(_eq(x, y) for x, y in zip(have, want))
+    if (
+        isinstance(have, float)
+        and isinstance(want, float)
+        and math.isnan(have)
+        and math.isnan(want)
+    ):
+        return True
+    return have == want
 
 
 def _old_rows(db, sql, *args):
@@ -292,16 +289,19 @@ def _assert_arrow_equal(new, old):
         have, want = new.column(name), old.column(name)
         if pa.types.is_null(want.type):
             assert have.type == pa.string() and have.null_count == len(have), name
-        elif pa.types.is_list(want.type) and want.type.value_type == pa.float64():
-            assert pa.types.is_fixed_size_list(have.type) or pa.types.is_list(
-                have.type
+        elif (
+            pa.types.is_list(want.type)
+            and want.type.value_type == pa.float64()
+            and name.startswith("v")
+        ):
+            # a float[] column: the same values as a fixed-size list of float32 (a float32 widened to float64 is exact)
+            assert have.type == pa.list_(
+                pa.float32(),
+                len(want[0].as_py() if want[0].is_valid else want[1].as_py()),
             ), name
-            assert have.type.value_type in (pa.float32(), pa.float64()), name
         else:
             assert have.type == want.type, (name, have.type, want.type)
-        assert [_norm(x) for x in have.to_pylist()] == [
-            _norm(x) for x in want.to_pylist()
-        ], name
+        assert _eq(have.to_pylist(), want.to_pylist()), name
 
 
 def _assert_columns_equal(new, old):
@@ -312,9 +312,22 @@ def _assert_columns_equal(new, old):
             assert isinstance(have, np.ndarray), (name, type(have))
             assert have.dtype == want.dtype, (name, have.dtype, want.dtype)
             assert have.shape == want.shape, name
+            np.testing.assert_array_equal(have, want, err_msg=name)
         else:
             assert isinstance(have, list), (name, type(have))
-        assert _norm(have) == _norm(want), name
+            assert _eq(have, want), name
+
+
+def _missing_as_none(values):
+    """pandas decides how a missing value is shown (None, nan or NaT, by dtype and version): all of them are one here."""
+    return [
+        (
+            None
+            if v is None or v is pd.NaT or (isinstance(v, float) and math.isnan(v))
+            else v
+        )
+        for v in values
+    ]
 
 
 def _assert_frame_equal(new, old_rows, columns=None):
@@ -323,7 +336,31 @@ def _assert_frame_equal(new, old_rows, columns=None):
         old = old.reindex(columns=list(columns))
     assert list(new.columns) == list(old.columns)
     for name in old.columns:
-        assert _norm(new[name].tolist()) == _norm(old[name].tolist()), name
+        if name.startswith("v") and name != "vv":
+            # a vector cell is a numpy float32 array (documented), the values are the stored ones
+            for cell, want in zip(new[name].tolist(), old[name].tolist()):
+                if want is None:
+                    assert cell is None or (
+                        isinstance(cell, float) and math.isnan(cell)
+                    ), name
+                else:
+                    assert isinstance(cell, np.ndarray) and cell.dtype == np.float32, (
+                        name,
+                        type(cell),
+                    )
+                    assert _eq(cell.tolist(), want), name
+            continue
+        have = _missing_as_none(new[name].tolist())
+        want = _missing_as_none(old[name].tolist())
+        assert [
+            x.to_pydatetime() if isinstance(x, pd.Timestamp) else x for x in have
+        ] == [
+            x.to_pydatetime() if isinstance(x, pd.Timestamp) else x for x in want
+        ], name
+    if "ts" in old.columns:
+        assert str(new["ts"].dtype).startswith("datetime64[us"), new[
+            "ts"
+        ].dtype  # microseconds, whatever pandas infers from datetimes
 
 
 QUERIES = [
@@ -425,10 +462,68 @@ def test_to_list_still_reads_the_json_rows(ref_db):
     assert len(rows) == 300 and rows[299]["big"] == (1 << 40) + 299
 
 
-def test_the_cursor_keeps_no_rows_after_a_row_read(ref_db):
+def test_a_frame_stays_near_its_budget_when_every_row_has_other_properties(tmp_path):
+    """Rows that each carry a property no other row has: the frame holds rows times the union of the names, not the values read."""
+    from unittest import mock
+
+    import arcadedb
+    from arcadedb._native import lib
+
+    db = arcadedb.create_database(str(tmp_path / "sparse"))
+    try:
+        db.command("sql", "CREATE DOCUMENT TYPE Sparse")
+        db.insert_many("Sparse", [{"i": i, f"p{i}": i} for i in range(2000)])
+        sizes = []
+        real = lib.call_frame
+
+        def spy(*args):
+            raw = real(*args)
+            sizes.append(len(raw))
+            return raw
+
+        with mock.patch.object(lib, "call_frame", spy):
+            t = db.query("sql", "SELECT FROM Sparse ORDER BY i").to_arrow()
+        assert t.num_rows == 2000 and t.num_columns == 2001
+        assert t.column("p1999").to_pylist() == [None] * 1999 + [1999]
+        # about 1 MiB of fixed-width buffers (rows x columns x 9 bytes) is what a frame is allowed; 2000 x 2000 x 9 = 36 MiB in one frame is not
+        assert len(sizes) > 5 and max(sizes) < 3 * (1 << 20), sizes
+    finally:
+        db.close()
+
+
+def test_an_empty_frame_for_a_cursor_with_rows_left_is_an_error_not_a_loop(ref_db):
+    from unittest import mock
+
+    from arcadedb._native import lib
+    from arcadedb.exceptions import ArcadeDBError
+
+    header = b'{"count":0,"done":false,"cols":[]}'
+    empty = len(header).to_bytes(4, "little") + header
+
     rs = ref_db.query("sql", "SELECT FROM R ORDER BY big")
-    assert rs._head_n == 256
-    for _ in range(300):
-        next(rs)
-    assert rs._head_n == 0
-    rs.close()
+    with mock.patch.object(lib, "call_frame", lambda *args: empty):
+        with pytest.raises(ArcadeDBError, match="empty column frame"):
+            rs.to_arrow()
+
+
+def test_a_cursor_reads_a_huge_batch_size_without_wrapping(ref_db):
+    sql = "SELECT big FROM R ORDER BY big"
+    for batch_size in (2**31, 2**32, 2**33 + 5):
+        assert ref_db.query("sql", sql).to_arrow(batch_size=batch_size).num_rows == ROWS
+
+
+def test_a_list_property_is_not_a_vector_column_at_any_result_size(tmp_path):
+    import arcadedb
+
+    db = arcadedb.create_database(str(tmp_path / "lists"))
+    try:
+        db.command("sql", "CREATE DOCUMENT TYPE L")
+        db.insert_many("L", [{"i": i, "lst": [0.5, 1.0, 2.0]} for i in range(600)])
+        for rows in (5, 300, 600):
+            c = db.query(
+                "sql",
+                f"SELECT i, lst FROM L ORDER BY i LIMIT {rows}",  # nosec B608 - an integer of the test
+            ).to_columns()
+            assert isinstance(c["lst"], list) and c["lst"] == [[0.5, 1.0, 2.0]] * rows
+    finally:
+        db.close()

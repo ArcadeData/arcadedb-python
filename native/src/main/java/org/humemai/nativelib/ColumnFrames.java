@@ -57,13 +57,10 @@ final class ColumnFrames {
   static final class Frame {
     final byte[] bytes;
     final boolean done;
-    /** The index in {@code head} of the first row this frame did not take (a frame may end before the head does). */
-    final int headUsed;
 
-    Frame(final byte[] bytes, final boolean done, final int headUsed) {
+    Frame(final byte[] bytes, final boolean done) {
       this.bytes = bytes;
       this.done = done;
-      this.headUsed = headUsed;
     }
   }
 
@@ -126,38 +123,33 @@ final class ColumnFrames {
   }
 
   /**
-   * The next frame. {@code head} holds rows that were already read from the cursor when its first reply was encoded as JSON (the
-   * frame starts at {@code head[skip]}, then goes on with the cursor), or is null. {@code pinned} is the column set, or null to take
-   * the union of the names of the rows of this frame, in order of first appearance. With {@code micros} a naive datetime column is
-   * epoch microseconds ("dtu") and a column with a DATE, a time-zone-aware temporal or a year Python cannot hold is "json".
+   * The next frame of the cursor. {@code pinned} is the column set, or null to take the union of the names of the rows of this frame, in
+   * order of first appearance. With {@code micros} a naive datetime column is epoch microseconds ("dtu") and a column with a DATE, a
+   * time-zone-aware temporal or a year Python cannot hold is "json".
+   *
+   * The frame ends at {@code max} rows or when what it will hold reaches FRAME_BYTES: the larger of the sizes of the values read and of the
+   * fixed-width buffers (rows times columns times 9 bytes, which a schemaless result with a different property in every row makes much
+   * bigger than its values), so the allocation of a frame stays near its budget whatever the shape of the rows. A frame has one row at least.
    */
-  static Frame next(final ResultSet rs, final List<Result> head, final int skip, final int max, final String[] pinned,
-      final boolean micros) {
-    final List<Result> results = new ArrayList<>(Math.min(Math.max(max, 1), 1 << 14));
-    int h = Math.max(skip, 0);
+  static Frame next(final ResultSet rs, final int max, final String[] pinned, final boolean micros) {
+    final int cap = Math.max(max, 1);
+    final List<Result> results = new ArrayList<>(Math.min(cap, 1 << 14));
+    final Set<String> names = new LinkedHashSet<>();
+    String[] previous = null;
     long budget = 0;
     boolean done = false;
-    while (results.size() < max && budget < FRAME_BYTES) {
-      final Result row;
-      if (head != null && h < head.size())
-        row = head.get(h++);
-      else if (rs.hasNext())
-        row = rs.next();
-      else {
+    while (results.size() < cap
+        && Math.max(budget, (long) results.size() * (pinned != null ? pinned.length : names.size()) * 9L) < FRAME_BYTES) {
+      if (!rs.hasNext()) {
         done = true;
         break;
       }
+      final Result row = rs.next();
       results.add(row);
       budget += estimate(row);
-    }
-    if (!done)
-      done = (head == null || h >= head.size()) && !rs.hasNext();
-
-    String[] columns = pinned;
-    if (columns == null) {
-      final Set<String> names = new LinkedHashSet<>();
-      String[] previous = null;
-      for (final Result row : results) {
+      if (pinned == null) {
+        // rows of one type almost always list the same names in the same order: a row is compared with the one before it name by name
+        // and only a row that differs is hashed into the set
         final Set<String> rowNames = row.getPropertyNames();
         if (previous != null && rowNames.size() == previous.length) {
           int i = 0;
@@ -172,8 +164,11 @@ final class ColumnFrames {
         names.addAll(rowNames);
         previous = rowNames.toArray(new String[0]);
       }
-      columns = names.toArray(new String[0]);
     }
+    if (!done)
+      done = !rs.hasNext();
+
+    final String[] columns = pinned != null ? pinned : names.toArray(new String[0]);
     final int n = columns.length;
     final int count = results.size();
     final List<Object[]> rows = new ArrayList<>(count);
@@ -380,6 +375,6 @@ final class ColumnFrames {
     out.putInt(headerBytes.length);
     out.put(headerBytes);
     out.put(bodyBytes);
-    return new Frame(out.array(), done, h);
+    return new Frame(out.array(), done);
   }
 }
