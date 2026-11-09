@@ -114,6 +114,8 @@ print(db.count_type("Chunk"))
 
 On the `arcadedb-jvm` package, `create_vertices` sends the values of a property declared `ARRAY_OF_FLOATS` as one binary float32 matrix when every row holds a list, a numpy array or a Java `float[]` or `double[]` of numbers of one length. A property that is not declared takes the same matrix when every row holds a `float32` numpy array or a Java `float[]` (what `to_java_float_array` returns on this package) of one length, and the stored value is a `float[]`, as before. A list or a `float64` array on an undeclared property keeps its doubles and the older path. So `float32` arrays and `to_java_float_array` values take the binary path on both packages, declared or not.
 
+To read many vectors, use `to_columns()`, `to_dataframe()`, `to_arrow()` or `to_polars()`. `to_list()` builds one Python list of floats for each vector. A column is a vector column only when the property is declared `ARRAY_OF_FLOATS`; a `LIST` property of numbers is a list column. `to_columns()` returns a `(count, dim)` `float32` matrix, with a row of `NaN` for a null vector. `to_dataframe()` returns one `float32` numpy array in each cell, and `None` for a null. `to_arrow()` returns a fixed-size list of `float32`, and `to_polars()` an `Array(Float32, n)`. Vectors of different lengths in one result make a variable-length list column (`list<double>` in Arrow). The rules for nulls, `batch_size` and memory are in xref:how-to/databases-and-queries.adoc#reading-large-results[Reading large results].
+
 == Search
 
 === SQL

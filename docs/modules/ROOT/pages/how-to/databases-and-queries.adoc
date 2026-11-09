@@ -249,7 +249,7 @@ A query vector for `vectorNeighbors` can be a numpy array or a list. This sectio
 `db.query` returns a result set you can iterate. What a row holds, how a Python value is converted and which rows are record objects is on xref:how-to/values-and-records.adoc[Values and records]. Two methods cover the usual needs:
 
 * `first()` returns the first row, or `None` when there is none, so `if db.query(...).first():` tests whether anything matched.
-* `to_list()` materialises the whole result as a list of dicts. Use it when you need the whole result in memory; iterate when you stop early or the result is large.
+* `to_list()` materialises the whole result as a list of dicts, one Python dict per row. Use it for a small result, or when you need the whole result in memory; iterate when you stop early. For a large result, see <<reading-large-results>>.
 * `iter_json_batches(batch_size=10_000)` yields the rows as lists of JSON-native dicts, `batch_size` rows per list (the last may be shorter), with the same values as `to_json_list()`. On the native build `batch_size` bounds memory: the result set holds one reply of the cursor (2048 rows) and one batch at a time, and reads the next reply only when the next batch is asked for, so a large result is never held whole. On the JVM build a batch is serialised on the Java side one at a time. `to_list()`, `to_json_list()`, `to_dataframe()`, `to_columns()`, `to_arrow()` and `to_polars()` still hold the whole result, because they return it whole.
 +
 One laptop study on the native build, 1,000,000 rows read with `batch_size=10_000`, 10 clean pairs of this change against the previous behaviour; each figure is the ratio of the new value to the old one, so below 1 is lower. Peak RSS: 0.286 (95% interval 0.284 to 0.289). Time to the first batch: 0.010 (95% interval 0.009 to 0.010). Wall time of the whole read: 0.958 (95% interval 0.952 to 0.966). This is one machine and one result shape, not a speed promise.
@@ -275,6 +275,55 @@ On the JVM build, `Document.to_dict()`, `Result.to_dict()` and `get_property_nam
 
 The control times `json.dumps` of rows already fetched, which uses no query and no JPype call. Its ratios on the four workloads are 0.996, 0.987, 0.993 and 1.000, and the same build measured twice gave ratios whose intervals contain 1. The figures come from one Linux x86_64 laptop with two cores for the process, Python 3.12, the median of 21 timed passes per run, and builds alternated in both orders. They cover the JVM build and these four workloads only, not wider rows, other value types, `to_list()`, or the native build.
 
+[[reading-large-results]]
+=== Reading large results
+
+The row APIs build one Python dict per row: `to_list()`, `to_json_list()`, and a `for` loop over the result set. They suit small results. For a large result, read columns:
+
+* `to_columns()` returns a dict of column name to a numpy array, or to a Python list for text and for JSON-typed values.
+* `to_arrow()` returns a `pyarrow.Table`.
+* `to_dataframe()` returns a `pandas.DataFrame`.
+* `to_polars()` returns a `polars.DataFrame`, read through `to_arrow()`.
+
+These four build no dict per row. Both packages read the result as typed column frames and decode them with the same code, so one query gives the same column types and values on `arcadedb` (native) and on `arcadedb-jvm`. On the native package, the first rows of a query (up to 256) are the one exception: they arrive with the query as JSON, because the row APIs read them. A column read puts those rows into the same column rules as the later frames.
+
+`to_columns()` needs numpy, `to_arrow()` needs numpy and pyarrow, `to_dataframe()` needs pandas, and `to_polars()` needs polars and pyarrow. `to_columns()` and `to_arrow()` return `None` when a library is missing. `to_dataframe(convert_types=False)` on `arcadedb-jvm` builds the frame from `to_list()` instead; on `arcadedb` the argument has no effect.
+
+`to_columns()`, `to_arrow()` and `to_polars()` take `batch_size`, the most rows in one frame (default 25,000), and `columns`, a list of names to read as a projection would. `to_dataframe()` takes neither and uses 25,000. `batch_size` must be at least 1 (`ValueError` otherwise). A value above 2,147,483,647 (2^31^ - 1) is clamped to 2,147,483,647. On the native package a frame also ends when the values it holds reach about 1 MiB.
+
+Memory: these calls return the whole result, so it must fit in memory. The frames are decoded as they are read and kept until the end of the result. For a result of several frames, `to_columns()` and `to_dataframe()` then copy them into one array for each column, so the frames and the merged arrays are held together for a moment. `to_arrow()` keeps the frames as the chunks of one column. If the result does not fit, read it in pieces with `iter_json_batches()`.
+
+==== What the column calls return
+
+* The type of a column belongs to the whole result, not to where a frame ends. A frame that lacks a property, or holds only nulls for it, takes the type of the frames that have values. `batch_size` never changes a column's type.
+* Nulls: in `to_columns()` and `to_dataframe()`, an integer column with a null is `float64` with `NaN` (the pandas rule), a `DATETIME` column with a null holds `NaT`, and text and JSON-typed columns hold `None`. In `to_arrow()` and `to_polars()`, an integer column with a null stays `int64` with a null.
+* An integer beyond 2^53^ next to a floating value has no exact double, so the column is not made a `float64` column. `to_columns()` gives a list of Python values, each an `int` or a `float` as stored. `to_arrow()` and `to_polars()` give a string column with the exact text of each value. `to_dataframe()` passes the same list to pandas, which infers `float64` for a list of `int` and `float` values, so the integer is rounded there. Use `to_columns()` or `to_arrow()` when such a value must stay exact.
+* A vector column exists only when the property is declared as an array (`ARRAY_OF_FLOATS`). A `LIST` property of numbers is a list column, whatever its values.
+* Dates and decimals: `DATETIME` is `datetime64[ms]` in `to_columns()` and `timestamp[ms]` in `to_arrow()`, and `datetime64[us]` in `to_dataframe()`. A `DECIMAL` stays a `Decimal` (an object array in `to_columns()`, a decimal column in Arrow). A `DATE` in `to_dataframe()` is a `datetime.date` in an object column.
+* The arrays of `to_columns()` are writable.
+* A result with no rows gives `{}` from `to_columns()`. With `columns=[...]`, it gives those columns as empty lists. `to_arrow()` gives an empty table, or with `columns=[...]` those columns empty and of the null type.
+
+A vector cell has one form for each call:
+
+[cols="2,3"]
+|===
+| Call | Vector column (`float[]`)
+
+| `to_columns()`
+| One `(count, dim)` `float32` matrix. A null vector is a row of `NaN`.
+
+| `to_dataframe()`
+| One `float32` numpy array in each cell, and `None` for a null.
+
+| `to_arrow()`
+| A fixed-size list of `float32`. A null vector is a null.
+
+| `to_polars()`
+| `Array(Float32, n)`.
+|===
+
+A `double[]` property gives `float64` in each of these. If the vectors of a result do not all have one length, the column is a list of variable length: `list<double>` in Arrow, a list of lists in `to_columns()`.
+
 [[result-set-single-pass]]
 === A result set is read once
 
@@ -294,6 +343,8 @@ Use `to_list()` when you need the rows twice. It reads the whole result into a l
 A record id inside a row value (`SELECT @rid AS r`, a `LINK` property, a list of links such as `out('Knows').@rid`) comes back as an RID object, not as text. `str(rid)` is the text (`"#10:5"`), so is an f-string, and `get_rid()` always returns text or `None`. Two RIDs of the same record are equal and hash alike, so they work in sets and as dict keys, and RIDs sort by bucket, then position. `getBucketId()`, `getPosition()`, `toString()` and `isValid()` work on the object. It goes back in as a query parameter (`WHERE @rid = ?`, or a list passed by name) and to `db.lookup_by_rid()`, as itself or as its text. `to_json_list()` is the exception: a record id in its rows is the text (`"#10:5"`), on both builds, and so is a map key that is not a string, because a JSON object has no other kind of key.
 
 On the native build the record wrappers send their record id to the engine as a parameter, not in the statement text. The engine keeps a parsed statement in a cache keyed by its text (`arcadedb.sqlStatementCache`, 300 entries by default) and leaves a record id written in a `FROM` target as part of that text, so each record would be a cache entry of its own. `get_out_edges()`, `get_in_edges()`, `get_both_edges()`, `new_edge()`, `Edge.get_in()`, `Edge.get_out()`, `save()` and `delete()` send the id as a parameter, so every record shares one text. `db.lookup_by_rid()` keeps the id in the statement text: measured, the parameter path was 2 % slower for a lookup, so it stays as it is.
+
+On the native build, `save()` of a new record and `Vertex.new_edge` read the record they create from the reply of the statement that creates it, so a create is one call into the library. `save()` of a saved record makes three calls: the transaction check, the `SELECT` of the stale-record check, and the `UPDATE`. The records, their values and the errors are the same as before.
 
 `Vertex.new_edge()` works on a vertex object that you read in an earlier transaction, on both builds. The first edge of a vertex rewrites its record, so an object read before that commit is out of date. The native build goes by record id. The JVM build looks up the current source vertex by its record id inside the active transaction and passes the target as its record id, so the engine loads that one too. The vertex object you hold is not refreshed: call `db.lookup_by_rid()` again to see its current properties.
 
