@@ -421,8 +421,12 @@ def insert_table(
     native = _is_native(db)
     written = 0
     # a document load inside the caller's own transaction joins it (insert_columns commits
-    # nothing then); a vertex load refuses to run inside one
-    in_caller_transaction = (not is_vertex) and bool(db.is_transaction_active())
+    # nothing then); a vertex load refuses to run inside one. parallel=True never joins it: the
+    # async writers commit the records themselves, so a rollback of the caller's transaction does
+    # not remove them
+    in_caller_transaction = (
+        (not is_vertex) and (not parallel) and bool(db.is_transaction_active())
+    )
     graph_batch = db.graph_batch() if is_vertex else None
     try:
         for batch in table.to_batches(max_chunksize=batch_size):
@@ -458,6 +462,13 @@ def insert_table(
                     raise ArcadeDBError(
                         f"{exc}; the {written} row(s) of the batches before this one "
                         f"were written in your transaction, not committed"
+                    ) from exc
+                if written and parallel:
+                    # the async writers commit on their own, inside the caller's transaction or not
+                    raise ArcadeDBError(
+                        f"{exc}; the {written} row(s) of the batches before this one "
+                        f"were handed to the async writers, which commit on their own: "
+                        f"a rollback of your transaction does not remove them"
                     ) from exc
                 if written:
                     raise ArcadeDBError(
@@ -503,14 +514,12 @@ def _insert_documents_native(
     if parallel:
         from ._native.bulk import insert_columns_parallel
 
-        try:
-            sent = insert_columns_parallel(
+        if (
+            insert_columns_parallel(
                 db, type_name, columns, {} if declared is None else declared
             )
-        except ArcadeDBError as e:
-            raise db._parallel_load_failed(type_name, e) from e
-        if sent is not None:
-            db._finish_parallel(type_name, [sent[1]], sent[0])
+            is not None
+        ):
             return
     else:
         from ._native.bulk import insert_columns_fast

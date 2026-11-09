@@ -8,6 +8,7 @@ decimals, integers past 64 bits) returns None and the caller uses the per-row JS
 
 import os
 
+from ..exceptions import ArcadeDBError
 from . import columnar, lib
 
 _ENABLED = os.environ.get("ARCADEDB_NATIVE_BULK", "1") != "0"
@@ -22,7 +23,7 @@ def _usable():
     )
 
 
-def _send(db, type_name, packed, rows, commit_every, prefix, parallel=False):
+def _send(db, type_name, packed, rows, commit_every, prefix, fid=None):
     from .database import _call
 
     spec = columnar.spec_of(packed)
@@ -31,7 +32,7 @@ def _send(db, type_name, packed, rows, commit_every, prefix, parallel=False):
         "arcadedb_n_insert_colp",
         db._h,
         lib.b(type_name),
-        lib.b(columnar.header_of(rows, commit_every, packed, parallel)),
+        lib.b(columnar.header_of(rows, commit_every, packed, fid)),
         spec,
         len(spec),
     )  # `packed` holds the arrays the addresses point into until the call returns
@@ -55,9 +56,10 @@ def insert_columns_fast(
 
 
 def insert_columns_parallel(db, type_name, columns, declared=None):
-    """Hand ``columns`` (name -> column) to the async writers in one crossing: ``(rows, failure token)``, or None when a column cannot be
-    sent this way. The call does not wait for the writers: the caller waits for them and reads the failures for the token
-    (``Database._finish_parallel``), as for ``insert_many(parallel=True)``.
+    """Hand ``columns`` (name -> column) to the async writers in one crossing, wait for them and return the row count, or None when a
+    column cannot be sent this way (nothing was handed over then). A record that a writer rejects raises
+    (``Database._finish_parallel``), as for ``insert_many(parallel=True)``, and so does an interrupt, after the writers have finished:
+    the failure token is made before the crossing, so the call always has the id to wait for and to read.
     """
     if not _usable():
         return None
@@ -65,8 +67,17 @@ def insert_columns_parallel(db, type_name, columns, declared=None):
     if packed is None:
         return None
     rows, cols = packed
-    reply = _send(db, type_name, cols, rows, 0, "Failed to bulk-insert", parallel=True)
-    return int(reply["n"]), reply["fid"]
+    from . import extras
+
+    fid = extras.failure_token(db)
+    try:
+        _send(db, type_name, cols, rows, 0, "Failed to bulk-insert", fid=fid)
+    except ArcadeDBError as e:
+        raise db._parallel_load_failed(type_name, e, [fid]) from e
+    except BaseException:
+        db._abandon_parallel([fid])  # a ^C: the writers still run, so wait for them
+        raise
+    return db._finish_parallel(type_name, [fid], rows)
 
 
 def insert_rows_columnar(db, type_name, chunk):

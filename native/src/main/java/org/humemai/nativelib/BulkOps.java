@@ -63,22 +63,20 @@ final class BulkOps {
 
   /**
    * The pointer form (arcadedb_n_insert_colp): the table holds SLOTS longs per column, see {@link #insertColumns(Database, String, Map, long[], ErrorCallback)}.
-   * Returns the reply text: {"ok":true,"n":rows}, and for a header with "parallel":true also "fid", the token that the "failures" operation of
-   * arcadedb_n_async reads (see there). In that mode the records are handed to the database's async executor, the call does not wait for
-   * the writers, and it neither opens, commits nor rolls back a transaction ("commit" does not apply), exactly as insert_parallel does for rows.
+   * Returns the reply text {"ok":true,"n":rows}. A header with "parallel":true must also carry "fid", a failure token that the caller made
+   * with the "token" operation of arcadedb_n_async: the records go to the database's async executor, the call does not wait for the writers
+   * and neither opens, commits nor rolls back a transaction ("commit" does not apply), exactly as insert_parallel does for rows. The
+   * caller waits for the writers and reads (and so removes) the token with the "failures" operation, also when this call throws or never
+   * returns to it: the token is the caller's, so this call never drops it.
    */
   @SuppressWarnings("unchecked")
   static String insertColumnsReply(final Database db, final String type, final String header, final long[] spec) {
     final Map<String, Object> h = (Map<String, Object>) Json.parse(header);
     if (!Boolean.TRUE.equals(h.get("parallel")))
       return "{\"ok\":true,\"n\":" + insertColumns(db, type, h, spec, null) + "}";
-    final NativeExtras.FailureToken token = new NativeExtras.FailureToken();
-    try {
-      return "{\"ok\":true,\"n\":" + insertColumns(db, type, h, spec, token.onError) + ",\"fid\":" + token.fid + "}";
-    } catch (final Throwable t) {
-      token.drop(); // the caller gets the error, not a token to read failures from
-      throw t;
-    }
+    if (!(h.get("fid") instanceof Number fid))
+      throw new IllegalArgumentException("a parallel columnar insert needs a failure token (header \"fid\", from the \"token\" operation)");
+    return "{\"ok\":true,\"n\":" + insertColumns(db, type, h, spec, NativeExtras.FailureToken.of(fid.longValue()).onError) + "}";
   }
 
   /**
@@ -165,10 +163,16 @@ final class BulkOps {
         throw new IllegalArgumentException("Cannot bulk-insert into '" + type
             + "' because it is an edge type; load the vertices, then create the edges (graph_batch().new_edges() or CREATE EDGE)");
       final DatabaseAsyncExecutor async = db.async();
-      for (int i = 0; i < n; i++) {
-        final MutableDocument doc = vertex ? db.newVertex(type) : db.newDocument(type);
-        setRow(doc, i, names, kinds, dims, data, nulls, blobs, scratch);
-        async.createRecord(doc, null, onError);
+      int handed = 0;
+      try {
+        for (; handed < n; handed++) {
+          final MutableDocument doc = vertex ? db.newVertex(type) : db.newDocument(type);
+          setRow(doc, handed, names, kinds, dims, data, nulls, blobs, scratch);
+          async.createRecord(doc, null, onError);
+        }
+      } catch (final Throwable t) {
+        // the records handed over before the failure are the writers' now, whatever this call does
+        throw new IllegalStateException("after handing " + handed + " of " + n + " rows to the async writers (those may have been stored): " + t, t);
       }
       return n;
     }

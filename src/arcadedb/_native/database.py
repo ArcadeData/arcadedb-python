@@ -995,20 +995,50 @@ class NativeDatabase:
             raise _error("Command failed", reply)
         return reply["n"]
 
-    def _parallel_load_failed(self, type_name, error) -> ArcadeDBError:
+    def _drain_parallel(self, tokens):
+        """Waits for the async writers, then reads, and so removes, the failure token of every parallel load handed in. Returns
+        ``(problem, failed, first)``: the error of the wait or of a read (or None), the failed records the writers reported on all the
+        tokens and the first failure's text. The tokens are read whatever the wait did: an unread token keeps its entries for good.
+        """
+        from . import extras
+
+        problem = None
+        try:
+            self._async().wait_completion()
+        except Exception as e:
+            problem = e
+        failed, first = 0, None
+        for token in tokens:
+            try:
+                result = extras.failures(self, token)
+            except Exception as e:
+                problem = problem or e
+                continue
+            if result["count"] and first is None:
+                first = result["first"]
+            failed += result["count"]
+        return problem, failed, first
+
+    def _abandon_parallel(self, tokens):
+        """A parallel load that is being interrupted: waits for the writers (they run on) and removes the tokens; the error that is on its
+        way out is the one to report.
+        """
+        self._drain_parallel(tokens)
+
+    def _parallel_load_failed(self, type_name, error, tokens=()) -> ArcadeDBError:
         """The error for a parallel load that failed while handing rows to the writers: waits for the queue to drain first, so
         the caller sees a final state, and says that the rows handed over before the failure may have been stored.
         """
-        try:
-            self._async().wait_completion()
-        except Exception:  # nosec B110 - the original error is the one to report
-            pass
+        _, failed, _ = self._drain_parallel(tokens)
         text = str(error)
         prefix = "Failed to bulk-insert: "
         if text.startswith(prefix):
             text = text[len(prefix) :]
+        reported = (
+            f"; the writers had reported {failed} failed record(s)" if failed else ""
+        )
         return ArcadeDBError(
-            f"Failed to bulk-insert into '{type_name}': {text}; the rows handed to the "
+            f"Failed to bulk-insert into '{type_name}': {text}{reported}; the rows handed to the "
             f"parallel writers before the failure may have been stored (the call waited "
             f"for them before raising)"
         )
@@ -1030,32 +1060,28 @@ class NativeDatabase:
                     tokens.append(extras.insert_parallel(self, type_name, chunk)["fid"])
                 except ArcadeDBError as e:
                     # as the JPype path: the rows handed to the writers before the failure are written whatever this call does
-                    raise self._parallel_load_failed(type_name, e) from e
+                    raise self._parallel_load_failed(type_name, e, tokens) from e
                 n += len(chunk)
         except ArcadeDBError:
             raise
         except BaseException:
-            try:
-                self._async().wait_completion()
-            except Exception:  # nosec B110 - the original error is the one to report
-                pass
+            self._abandon_parallel(tokens)
             raise
         return self._finish_parallel(type_name, tokens, n)
 
     def _finish_parallel(self, type_name, tokens, n) -> int:
         """The end of a parallel load: wait for the async writers, then read the failure count of every token and raise when a record failed."""
-        from . import extras
-
         try:
-            self._async().wait_completion()
-        except Exception as e:
-            raise ArcadeDBError(f"Failed to bulk-insert into '{type_name}': {e}") from e
-        n_failed, first = 0, None
-        for token in tokens:
-            result = extras.failures(self, token)
-            if result["count"] and first is None:
-                first = result["first"]
-            n_failed += result["count"]
+            problem, n_failed, first = self._drain_parallel(tokens)
+        except BaseException:
+            self._abandon_parallel(
+                tokens
+            )  # a ^C in the wait: finish it, and remove the tokens
+            raise
+        if problem is not None:
+            raise ArcadeDBError(
+                f"Failed to bulk-insert into '{type_name}': {problem}"
+            ) from problem
         if n_failed:
             raise ArcadeDBError(
                 f"Failed to bulk-insert into '{type_name}': the parallel writers reported {n_failed} failed record(s) "
@@ -1343,13 +1369,9 @@ class NativeDatabase:
         if parallel:
             from .bulk import insert_columns_parallel
 
-            try:
-                sent = insert_columns_parallel(self, type_name, columns)
-            except ArcadeDBError as e:
-                # as insert_many(parallel=True): rows handed to the writers before the failure may be stored
-                raise self._parallel_load_failed(type_name, e) from e
-            if sent is not None:
-                return self._finish_parallel(type_name, [sent[1]], sent[0])
+            done = insert_columns_parallel(self, type_name, columns)
+            if done is not None:
+                return done
         else:
             from .bulk import insert_columns_fast
 
