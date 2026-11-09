@@ -166,6 +166,10 @@ COLUMNS = {
     "ints-and-floats": [1, 2.5, None, 3],
     "int-beyond-2-53-and-floats": [BIG, 0.5],
     "big-int-beyond-2-53-and-floats": [2**60, 1.5, None],
+    "int-above-int64-and-floats": [2**63, 0.5],
+    "int-above-uint64-and-floats": [2**64, 1.5, None],
+    "int-below-int64-and-floats": [-(2**63) - 1, 0.5],
+    "int-above-int64-and-string": [2**63, "x"],
     "bools": [True, False, True],
     "bools-null": [True, None, False],
     "bool-and-int": [True, 1, 0],
@@ -241,10 +245,8 @@ def _outcome(fn, *args):
 def _same_table(a, b):
     assert a.schema == b.schema, (a.schema, b.schema)
     assert a.column_names == b.column_names
-    assert a.equals(b), (a.to_pydict(), b.to_pydict())
-    assert repr(a.to_pydict()) == repr(
-        b.to_pydict()
-    )  # NaN, -0.0 and the type of every value count
+    # not Table.equals: it is False for a NaN next to the same NaN. repr counts NaN, -0.0 and the type of every value
+    assert repr(a.to_pydict()) == repr(b.to_pydict())
 
 
 def _same_column(a, b, name):

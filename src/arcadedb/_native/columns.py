@@ -134,15 +134,17 @@ def _inferred(values):
     Inference replaces the per-value Python pass of :func:`_kind` for a column of ints, floats, bools, strings, lists and
     other values it types on its own. Two inferred types differ from the rules: a temporal type (the rules write
     ``timestamp[ms]`` for a datetime and a date, inference gives ``timestamp[us]`` or ``date32``) and an unsigned integer
-    (an int above int64 is an error under the rules). A column that inference cannot type (``ArrowInvalid``,
-    ``ArrowTypeError``) is also left to the rules, which have the fallbacks (exact text for an int beyond 2**53 next to
-    floats, for a Decimal wider than decimal256, for a value of mixed types).
+    (an int above int64 is an error under the rules). A column that inference cannot type is also left to the rules,
+    whatever the error (``ArrowInvalid``, ``ArrowTypeError``, and ``OverflowError`` for an int above int64, which the
+    explicit-type call turns into ``ArrowInvalid``), so a failed inference never decides the outcome: the rules have the
+    fallbacks (exact text for an int beyond 2**53 next to floats, for a Decimal wider than decimal256, for a value of mixed
+    types).
     """
     import pyarrow as pa
 
     try:
         array = pa.array(values)
-    except (pa.ArrowInvalid, pa.ArrowTypeError):
+    except Exception:  # the rules decide the outcome of a column inference cannot type
         return None
     kind = array.type
     if pa.types.is_temporal(kind) or pa.types.is_unsigned_integer(kind):
