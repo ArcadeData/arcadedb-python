@@ -233,6 +233,11 @@ def test_the_address_table_and_header_describe_the_columns():
         "cols": [["id", "q", 0], ["s", "s", 0]],
     }
     assert json.loads(columnar.header_of(rows, 2**40, packed))["commit"] == 2**31 - 1
+    # "parallel" is in the header only when asked for (the image hands the records to the async writers then)
+    assert json.loads(columnar.header_of(rows, 10_000, packed, parallel=True))[
+        "parallel"
+    ]
+    assert "parallel" not in json.loads(columnar.header_of(rows, 10_000, packed))
 
 
 def test_rows_become_columns_only_when_every_row_has_the_same_keys():

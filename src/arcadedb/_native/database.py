@@ -1040,6 +1040,12 @@ class NativeDatabase:
             except Exception:  # nosec B110 - the original error is the one to report
                 pass
             raise
+        return self._finish_parallel(type_name, tokens, n)
+
+    def _finish_parallel(self, type_name, tokens, n) -> int:
+        """The end of a parallel load: wait for the async writers, then read the failure count of every token and raise when a record failed."""
+        from . import extras
+
         try:
             self._async().wait_completion()
         except Exception as e:
@@ -1314,7 +1320,11 @@ class NativeDatabase:
     def insert_columns(
         self, type_name, columns, commit_every: int = 10_000, parallel: bool = False
     ) -> int:
-        """Bulk insert from whole columns (dict of name -> numpy array or list), as rows through :meth:`insert_many`."""
+        """Bulk insert from whole columns (dict of name -> numpy array or list): columns the buffers can carry cross in one call
+        (``arcadedb_n_insert_colp``), any other column set goes as rows through :meth:`insert_many`. With ``parallel=True`` the
+        same one call hands the records to the async writers (no transaction, ``commit_every`` does not apply, the call waits for the
+        writers and raises when a record failed), as ``insert_many(parallel=True)`` does for rows.
+        """
         self._check_not_closed()
         items = list(columns.items()) if hasattr(columns, "items") else None
         if not items:
@@ -1330,7 +1340,17 @@ class NativeDatabase:
         known = {n: len(v) for n, v in items if hasattr(v, "__len__")}
         if len(set(known.values())) > 1:
             raise ValueError(f"columns differ in length: {known}")
-        if not parallel:
+        if parallel:
+            from .bulk import insert_columns_parallel
+
+            try:
+                sent = insert_columns_parallel(self, type_name, columns)
+            except ArcadeDBError as e:
+                # as insert_many(parallel=True): rows handed to the writers before the failure may be stored
+                raise self._parallel_load_failed(type_name, e) from e
+            if sent is not None:
+                return self._finish_parallel(type_name, [sent[1]], sent[0])
+        else:
             from .bulk import insert_columns_fast
 
             done = insert_columns_fast(self, type_name, columns, commit_every)

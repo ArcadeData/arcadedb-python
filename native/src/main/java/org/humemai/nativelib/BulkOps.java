@@ -10,6 +10,9 @@ package org.humemai.nativelib;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.async.DatabaseAsyncExecutor;
+import com.arcadedb.database.async.ErrorCallback;
+import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.VertexType;
 
 import org.graalvm.nativeimage.c.type.CTypeConversion;
@@ -55,13 +58,27 @@ final class BulkOps {
       spec[SLOTS * c + 1] = bytes;
       pos += bytes;
     }
-    return insertColumns(db, type, h, spec);
+    return insertColumns(db, type, h, spec, null);
   }
 
-  /** The pointer form (arcadedb_n_insert_colp): the table holds SLOTS longs per column, see {@link #insertColumns(Database, String, Map, long[])}. */
+  /**
+   * The pointer form (arcadedb_n_insert_colp): the table holds SLOTS longs per column, see {@link #insertColumns(Database, String, Map, long[], ErrorCallback)}.
+   * Returns the reply text: {"ok":true,"n":rows}, and for a header with "parallel":true also "fid", the token that the "failures" operation of
+   * arcadedb_n_async reads (see there). In that mode the records are handed to the database's async executor, the call does not wait for
+   * the writers, and it neither opens, commits nor rolls back a transaction ("commit" does not apply), exactly as insert_parallel does for rows.
+   */
   @SuppressWarnings("unchecked")
-  static long insertColumns(final Database db, final String type, final String header, final long[] spec) {
-    return insertColumns(db, type, (Map<String, Object>) Json.parse(header), spec);
+  static String insertColumnsReply(final Database db, final String type, final String header, final long[] spec) {
+    final Map<String, Object> h = (Map<String, Object>) Json.parse(header);
+    if (!Boolean.TRUE.equals(h.get("parallel")))
+      return "{\"ok\":true,\"n\":" + insertColumns(db, type, h, spec, null) + "}";
+    final NativeExtras.FailureToken token = new NativeExtras.FailureToken();
+    try {
+      return "{\"ok\":true,\"n\":" + insertColumns(db, type, h, spec, token.onError) + ",\"fid\":" + token.fid + "}";
+    } catch (final Throwable t) {
+      token.drop(); // the caller gets the error, not a token to read failures from
+      throw t;
+    }
   }
 
   /**
@@ -72,9 +89,13 @@ final class BulkOps {
    * means no nulls. The memory belongs to the caller for the duration of the call; nothing is kept. Every length is checked here before
    * the first document is built, so a wrong table is an exception and nothing is written. Same transaction contract as
    * DocumentBatcher.insertColumns: batch commits and the rollback on failure apply only to a transaction opened here.
+   * onError null: the synchronous mode above. Not null (header "parallel":true): every record goes to db.async().createRecord with that
+   * callback and no transaction is touched, as DocumentBatcher.insertColumnsParallel does; an edge type is refused there, as it is by
+   * insert_parallel. The columns are validated before the first record is handed over in both modes.
    */
   @SuppressWarnings("unchecked")
-  private static long insertColumns(final Database db, final String type, final Map<String, Object> h, final long[] spec) {
+  private static long insertColumns(final Database db, final String type, final Map<String, Object> h, final long[] spec,
+      final ErrorCallback onError) {
     final long nRows = ((Number) h.get("n")).longValue();
     if (nRows < 0 || nRows > Integer.MAX_VALUE)
       throw new IllegalArgumentException("row count out of range: " + nRows);
@@ -137,45 +158,27 @@ final class BulkOps {
       }
     }
     final byte[] scratch = new byte[longest];
-    final boolean vertex = db.getSchema().getType(type) instanceof VertexType;
+    final Object schemaType = db.getSchema().getType(type);
+    final boolean vertex = schemaType instanceof VertexType;
+    if (onError != null) {
+      if (schemaType instanceof EdgeType)
+        throw new IllegalArgumentException("Cannot bulk-insert into '" + type
+            + "' because it is an edge type; load the vertices, then create the edges (graph_batch().new_edges() or CREATE EDGE)");
+      final DatabaseAsyncExecutor async = db.async();
+      for (int i = 0; i < n; i++) {
+        final MutableDocument doc = vertex ? db.newVertex(type) : db.newDocument(type);
+        setRow(doc, i, names, kinds, dims, data, nulls, blobs, scratch);
+        async.createRecord(doc, null, onError);
+      }
+      return n;
+    }
     final boolean wasActive = db.isTransactionActive();
     if (!wasActive)
       db.begin();
     try {
       for (int i = 0; i < n; i++) {
         final MutableDocument doc = vertex ? db.newVertex(type) : db.newDocument(type);
-        for (int c = 0; c < k; c++) {
-          final Pointer base = WordFactory.pointer(data[c]);
-          if (nulls[c] != 0 && ((WordFactory.<Pointer>pointer(nulls[c]).readByte(WordFactory.signed(i >> 3)) >> (i & 7)) & 1) == 0) {
-            doc.set(names[c], null);
-            continue;
-          }
-          switch (kinds[c]) {
-            case 'q' -> doc.set(names[c], base.readLong(WordFactory.signed(8L * i)));
-            case 'd' -> doc.set(names[c], base.readDouble(WordFactory.signed(8L * i)));
-            case 'b' -> doc.set(names[c], base.readByte(WordFactory.signed(i)) != 0);
-            case 'i' -> doc.set(names[c], base.readInt(WordFactory.signed(4L * i)));
-            case 'e' -> doc.set(names[c], base.readFloat(WordFactory.signed(4L * i)));
-            case 's' -> {
-              final int from = base.readInt(WordFactory.signed(4L * i));
-              final int len = base.readInt(WordFactory.signed(4L * (i + 1L))) - from;
-              if (len == 0)
-                doc.set(names[c], "");
-              else {
-                blobs[c].get(from, scratch, 0, len);
-                doc.set(names[c], new String(scratch, 0, len, StandardCharsets.UTF_8));
-              }
-            }
-            default -> {
-              final int dim = dims[c];
-              final float[] v = new float[dim];
-              final long at = 4L * i * dim;
-              for (int j = 0; j < dim; j++)
-                v[j] = base.readFloat(WordFactory.signed(at + 4L * j));
-              doc.set(names[c], v);
-            }
-          }
-        }
+        setRow(doc, i, names, kinds, dims, data, nulls, blobs, scratch);
         doc.save();
         if (!wasActive && commitEvery > 0 && (i + 1) % commitEvery == 0) {
           db.commit();
@@ -195,6 +198,44 @@ final class BulkOps {
       throw e;
     }
     return n;
+  }
+
+  /** Sets the properties of row i on doc from the columns: the one place that reads a value out of a buffer. */
+  private static void setRow(final MutableDocument doc, final int i, final String[] names, final char[] kinds, final int[] dims,
+      final long[] data, final long[] nulls, final ByteBuffer[] blobs, final byte[] scratch) {
+    final int k = names.length;
+    for (int c = 0; c < k; c++) {
+      final Pointer base = WordFactory.pointer(data[c]);
+      if (nulls[c] != 0 && ((WordFactory.<Pointer>pointer(nulls[c]).readByte(WordFactory.signed(i >> 3)) >> (i & 7)) & 1) == 0) {
+        doc.set(names[c], null);
+        continue;
+      }
+      switch (kinds[c]) {
+        case 'q' -> doc.set(names[c], base.readLong(WordFactory.signed(8L * i)));
+        case 'd' -> doc.set(names[c], base.readDouble(WordFactory.signed(8L * i)));
+        case 'b' -> doc.set(names[c], base.readByte(WordFactory.signed(i)) != 0);
+        case 'i' -> doc.set(names[c], base.readInt(WordFactory.signed(4L * i)));
+        case 'e' -> doc.set(names[c], base.readFloat(WordFactory.signed(4L * i)));
+        case 's' -> {
+          final int from = base.readInt(WordFactory.signed(4L * i));
+          final int len = base.readInt(WordFactory.signed(4L * (i + 1L))) - from;
+          if (len == 0)
+            doc.set(names[c], "");
+          else {
+            blobs[c].get(from, scratch, 0, len);
+            doc.set(names[c], new String(scratch, 0, len, StandardCharsets.UTF_8));
+          }
+        }
+        default -> {
+          final int dim = dims[c];
+          final float[] v = new float[dim];
+          final long at = 4L * i * dim;
+          for (int j = 0; j < dim; j++)
+            v[j] = base.readFloat(WordFactory.signed(at + 4L * j));
+          doc.set(names[c], v);
+        }
+      }
+    }
   }
 
   /**

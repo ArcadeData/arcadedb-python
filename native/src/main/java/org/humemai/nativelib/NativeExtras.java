@@ -527,6 +527,28 @@ public final class NativeExtras {
   private static final Map<Long, AtomicLong> ASYNC_FAILS = new ConcurrentHashMap<>();
   private static final Map<Long, AtomicReference<Throwable>> ASYNC_FIRST = new ConcurrentHashMap<>();
 
+  /** A failure token for one parallel load: the id the caller reads with the "failures" operation, and the callback that counts. */
+  static final class FailureToken {
+    final long fid = ArcadeNative.IDS.getAndIncrement();
+    final AtomicLong count = new AtomicLong();
+    final AtomicReference<Throwable> first = new AtomicReference<>();
+    final ErrorCallback onError = t -> {
+      count.incrementAndGet();
+      first.compareAndSet(null, t);
+    };
+
+    FailureToken() {
+      ASYNC_FAILS.put(fid, count);
+      ASYNC_FIRST.put(fid, first);
+    }
+
+    /** The load failed before it returned: the caller gets the error, not a token to read failures from. */
+    void drop() {
+      ASYNC_FAILS.remove(fid);
+      ASYNC_FIRST.remove(fid);
+    }
+  }
+
   private static String replyRows(final ResultSet rs) {
     final StringBuilder sb = new StringBuilder("{\"ok\":true,\"rs\":0,");
     NativeCodec.appendBatch(sb, rs, Integer.MAX_VALUE);
@@ -824,15 +846,9 @@ public final class NativeExtras {
         ex.appendSamples((String) a.get("type"), stamps, columns);
       }
       case "insert_parallel" -> {
-        final long fid = ArcadeNative.IDS.getAndIncrement();
-        final AtomicLong count = new AtomicLong();
-        final AtomicReference<Throwable> first = new AtomicReference<>();
-        ASYNC_FAILS.put(fid, count);
-        ASYNC_FIRST.put(fid, first);
-        final ErrorCallback onError = t -> {
-          count.incrementAndGet();
-          first.compareAndSet(null, t);
-        };
+        final FailureToken token = new FailureToken();
+        final long fid = token.fid;
+        final ErrorCallback onError = token.onError;
         final String type = (String) a.get("type");
         try {
           final List<Object> rows = (List<Object>) a.get("rows");
@@ -846,8 +862,7 @@ public final class NativeExtras {
             ex.createRecord(doc, null, onError);
           }
         } catch (final Throwable t) {
-          ASYNC_FAILS.remove(fid); // the caller gets the error, not a token to read failures from
-          ASYNC_FIRST.remove(fid);
+          token.drop(); // the caller gets the error, not a token to read failures from
           throw t;
         }
         return ArcadeNative.out("{\"ok\":true,\"fid\":" + fid + "}");

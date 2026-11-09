@@ -2,7 +2,8 @@
 ints, floats and bools, lists of one value type (None is a null), strings (UTF-8 bytes plus offsets, as Arrow lays them out), float32
 vector columns and Arrow arrays are laid out by :mod:`.columnar`; anything else (nested values, mixed-type columns, date-times,
 decimals, integers past 64 bits) returns None and the caller uses the per-row JSON path. The documents are built image-side as
-``DocumentBatcher.insertColumns`` builds them on JPype. ``ARCADEDB_NATIVE_BULK=0`` turns the columnar path off.
+``DocumentBatcher.insertColumns`` builds them on JPype; with ``parallel`` they are handed to the async writers instead of a transaction
+(``DocumentBatcher.insertColumnsParallel``). ``ARCADEDB_NATIVE_BULK=0`` turns the columnar path off.
 """
 
 import os
@@ -21,20 +22,19 @@ def _usable():
     )
 
 
-def _send(db, type_name, packed, rows, commit_every, prefix):
+def _send(db, type_name, packed, rows, commit_every, prefix, parallel=False):
     from .database import _call
 
     spec = columnar.spec_of(packed)
-    reply = _call(
+    return _call(
         prefix,
         "arcadedb_n_insert_colp",
         db._h,
         lib.b(type_name),
-        lib.b(columnar.header_of(rows, commit_every, packed)),
+        lib.b(columnar.header_of(rows, commit_every, packed, parallel)),
         spec,
         len(spec),
     )  # `packed` holds the arrays the addresses point into until the call returns
-    return int(reply["n"])
 
 
 def insert_columns_fast(
@@ -51,7 +51,22 @@ def insert_columns_fast(
     if packed is None:
         return None
     rows, cols = packed
-    return _send(db, type_name, cols, rows, commit_every, prefix)
+    return int(_send(db, type_name, cols, rows, commit_every, prefix)["n"])
+
+
+def insert_columns_parallel(db, type_name, columns, declared=None):
+    """Hand ``columns`` (name -> column) to the async writers in one crossing: ``(rows, failure token)``, or None when a column cannot be
+    sent this way. The call does not wait for the writers: the caller waits for them and reads the failures for the token
+    (``Database._finish_parallel``), as for ``insert_many(parallel=True)``.
+    """
+    if not _usable():
+        return None
+    packed = columnar.pack(columns, columnar.Declared(db, type_name, declared))
+    if packed is None:
+        return None
+    rows, cols = packed
+    reply = _send(db, type_name, cols, rows, 0, "Failed to bulk-insert", parallel=True)
+    return int(reply["n"]), reply["fid"]
 
 
 def insert_rows_columnar(db, type_name, chunk):

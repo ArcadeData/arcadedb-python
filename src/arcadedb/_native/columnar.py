@@ -343,17 +343,20 @@ def spec_of(packed):
     return (ctypes.c_int64 * len(flat))(*flat)
 
 
-def header_of(rows, commit_every, packed):
-    """The JSON header text: row count, commit interval and ``[name, kind, dim]`` per column."""
+def header_of(rows, commit_every, packed, parallel=False):
+    """The JSON header text: row count, commit interval and ``[name, kind, dim]`` per column; ``"parallel": true`` hands the records to the
+    async executor (the image then ignores the commit interval and the reply carries the failure token).
+    """
     import json
 
-    return json.dumps(
-        {
-            "n": rows,
-            "commit": min(int(commit_every), 2**31 - 1),
-            "cols": [[c.name, c.kind, c.dim] for c in packed],
-        }
-    )
+    header = {
+        "n": rows,
+        "commit": min(int(commit_every), 2**31 - 1),
+        "cols": [[c.name, c.kind, c.dim] for c in packed],
+    }
+    if parallel:
+        header["parallel"] = True
+    return json.dumps(header)
 
 
 def rows_to_columns(rows):

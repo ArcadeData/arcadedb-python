@@ -561,7 +561,8 @@ public final class ArcadeNative {
    * Columnar insert by pointer: no copy of the columns into one buffer. spec points at 6 longs per column (data address and bytes, aux
    * address and bytes, null-bitmap address and bytes, see BulkOps.insertColumns) and nspec is their count. Kinds q d b f as
    * arcadedb_n_insert_cols, plus i (int32), e (float32) and s (Arrow UTF-8 string: int32 offsets and the bytes they index), and null bitmaps.
-   * The caller keeps every buffer alive and unchanged until the call returns. Returns {"ok":true,"n":rows}.
+   * The caller keeps every buffer alive and unchanged until the call returns. Returns {"ok":true,"n":rows}; with "parallel":true in the
+   * header the records go to the async executor and the reply also carries "fid" (see BulkOps.insertColumnsReply).
    */
   @CEntryPoint(name = "arcadedb_n_insert_colp")
   public static CCharPointer insertColp(final IsolateThread thread, final long h, final CCharPointer type, final CCharPointer header,
@@ -572,7 +573,7 @@ public final class ArcadeNative {
       final long[] table = new long[nspec];
       for (int i = 0; i < nspec; i++)
         table[i] = ((Pointer) spec).readLong(WordFactory.signed(8L * i));
-      return out("{\"ok\":true,\"n\":" + BulkOps.insertColumns(db(h), str(type), str(header), table) + "}");
+      return out(BulkOps.insertColumnsReply(db(h), str(type), str(header), table));
     } catch (final Throwable t) {
       return err(t);
     }
