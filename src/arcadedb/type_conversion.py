@@ -8,6 +8,7 @@ developer experience and integration with Python ecosystem (pandas, numpy, etc.)
 import itertools
 import json
 import math
+import operator
 import re
 import sys
 from datetime import date, datetime, time, timedelta, timezone
@@ -1077,11 +1078,10 @@ def classify_vertex_rows(rows: Any, declared: Any):
         odd = set(map(type, _column(rows, key))) - _BULK_SCALAR_TYPES
         if not odd:
             continue
-        if key in declared and all(
-            kind is list or (_np is not None and issubclass(kind, _np.ndarray))
-            for kind in odd
-        ):
+        if key in declared and all(_is_vector_kind(kind) for kind in odd):
             continue  # the vectors of a declared column
+        if all(_is_float_array_kind(kind) for kind in odd):
+            continue  # a column of arrays: take_vector_columns takes the float32 ones; a chunk it leaves goes the matrix way
         for value in _column(rows, key):
             if type(value) in _BULK_SCALAR_TYPES or (
                 key in declared and is_vector_candidate(value)
@@ -1142,23 +1142,135 @@ def declared_float_vectors(java_db, type_name):
     return [str(name) for name in vectors.declared(java_db, type_name)]
 
 
+_JAVA_VECTOR_ARRAYS = None  # (float[] class, double[] class) of JPype once the JVM runs; () where there is no JVM (the native wheel)
+
+
+def _java_vector_arrays():
+    """The JPype classes of a Java ``float[]`` and a ``double[]`` (what ``to_java_float_array`` returns on the JVM wheel), () without a JVM.
+
+    Resolved once the JVM has started: JPype builds an array class from a Java class, so it cannot be done at import.
+    """
+    global _JAVA_VECTOR_ARRAYS
+    if _JAVA_VECTOR_ARRAYS is None:
+        try:
+            if not jpype.isJVMStarted():
+                return ()
+            _JAVA_VECTOR_ARRAYS = (
+                jpype.JArray(jpype.JFloat),
+                jpype.JArray(jpype.JDouble),
+            )
+        except Exception:  # the native wheel's stand-in for jpype has no such classes
+            _JAVA_VECTOR_ARRAYS = ()
+    return _JAVA_VECTOR_ARRAYS
+
+
+def _is_vector_kind(kind):
+    """The type of a value that a declared ARRAY_OF_FLOATS column may hold as a vector: a list, a numpy array, a Java float[] or double[]."""
+    return (
+        kind is list
+        or (_np is not None and issubclass(kind, _np.ndarray))
+        or issubclass(kind, _java_vector_arrays())
+    )
+
+
+def _is_float_array_kind(kind):
+    """The type of a value that may be a float32 vector on any property: a numpy array or a Java float[]."""
+    arrays = _java_vector_arrays()
+    return (_np is not None and issubclass(kind, _np.ndarray)) or (
+        bool(arrays) and issubclass(kind, arrays[0])
+    )
+
+
 def is_vector_candidate(value):
-    """A value split_float_vectors may take out of the JSON: a list or a numpy array."""
-    return type(value) is list or (_np is not None and isinstance(value, _np.ndarray))
+    """A value split_float_vectors may take out of the JSON: a list, a numpy array, or a Java float[] or double[]."""
+    return _is_vector_kind(type(value))
 
 
-def split_float_vectors(java_db, type_name, rows, declared=None):
-    """Take the float vectors of `rows` out of the JSON text of a bulk load.
+def _is_float32_vector(value):
+    """A numpy float32 array or a Java float[]: the value the property-matrix path stores as a float[] on any property."""
+    if _np is not None and isinstance(value, _np.ndarray):
+        return value.dtype == _np.float32
+    arrays = _java_vector_arrays()
+    return bool(arrays) and isinstance(value, arrays[0])
+
+
+def _without_keys(rows, gone):
+    """`rows` (each one holds every name of `gone`) as new dicts without those keys; the values are the same objects.
+
+    Rows that all have the same keys in the same order are rebuilt from columns by C iterators (itemgetter, zip, dict), with no Python
+    code per row; any other rows take the dict comprehension.
+    """
+    if len(set(map(tuple, rows))) == 1:
+        keep = [key for key in rows[0] if key not in gone]
+        if not keep:
+            return list(map(dict, itertools.repeat((), len(rows))))
+        columns = [list(map(operator.itemgetter(key), rows)) for key in keep]
+        return list(map(dict, map(zip, itertools.repeat(keep), zip(*columns))))
+    gone = set(gone)
+    return [{k: v for k, v in row.items() if k not in gone} for row in rows]
+
+
+def take_vector_columns(rows, declared, undeclared=False):
+    """The float vector columns of `rows` as float32 matrices, and the rows without them (the one split of both wheels).
+
+    A declared (ARRAY_OF_FLOATS) property qualifies when its value in EVERY row is a list, a numpy array or a Java float[] or double[] of
+    numbers of one length: the engine converts the numbers to float for such a property, so a float32 matrix stores the same values.
+    With `undeclared`, any other property qualifies when its value in every row is a float32 numpy array or a Java float[] of one length
+    (the first row decides which names are tried, the stacked column must come out as float32): the property-matrix path stores such a
+    value as a float[], and so does the matrix. A float64 array, a list, a Java double[] on an undeclared property, a missing value, a
+    null, a ragged or non-numeric column does not qualify and stays in the rows.
+
+    Returns None when no column qualifies, else ``(names, matrices, rest)``: the matrices are C-contiguous float32 arrays of shape
+    ``(len(rows), dim)``, `rest` the rows without those properties.
+    """
+    if _np is None or not rows:
+        return None
+    declared = set(declared)
+    names = list(declared)
+    first = rows[0]
+    if undeclared and isinstance(first, dict):
+        names.extend(
+            key
+            for key, value in first.items()
+            if key not in declared and _is_float32_vector(value)
+        )
+    taken = []
+    matrices = []
+    for name in names:
+        try:
+            column = list(map(operator.itemgetter(name), rows))
+        except (KeyError, TypeError):
+            continue
+        if not is_vector_candidate(column[0]):
+            continue
+        try:
+            array = _np.array(column)
+        except (ValueError, TypeError):
+            continue
+        if array.ndim != 2 or array.shape[1] == 0 or array.dtype.kind not in "fiu":
+            continue
+        if name not in declared and array.dtype != _np.float32:
+            continue
+        with _np.errstate(
+            all="ignore"
+        ):  # a double beyond float32 becomes Infinity, as in the engine
+            matrix = _np.ascontiguousarray(array, dtype=_np.float32)
+        taken.append(name)
+        matrices.append(matrix)
+    if not taken:
+        return None
+    return taken, matrices, _without_keys(rows, taken)
+
+
+def split_float_vectors(java_db, type_name, rows, declared=None, undeclared=False):
+    """Take the float vectors of `rows` out of the JSON text of a bulk load (the JVM wheel).
 
     A list of floats costs Python about 450 ns a number to write as text and the
     engine about as much again to parse it, so a vector load spent most of its
-    time on the text. For each property of `type_name` that is declared
-    ARRAY_OF_FLOATS, whose value in EVERY row is a list or a numpy array of
-    numbers of one length, the vectors cross as one float32 matrix instead
-    (``FloatVectors.Matrix``, one buffer copy). The engine converts the numbers of a list to float for
-    such a property, so the float32 matrix stores the same values. Every other
-    property, and a column that is missing in a row, ragged, not numeric, or
-    null in a row, stays in the JSON.
+    time on the text. The vectors of the columns that take_vector_columns picks
+    cross as one float32 matrix per property instead (``FloatVectors.Matrix``,
+    one buffer copy). Every other property, and a column that is missing in a
+    row, ragged, not numeric, or null in a row, stays in the JSON.
 
     Returns ``(rest_rows, names, matrices)``: `rest_rows` are the rows without
     those properties, `names` a ``String[]`` and `matrices` an ``Object[]`` of
@@ -1172,39 +1284,18 @@ def split_float_vectors(java_db, type_name, rows, declared=None):
         return None
     if declared is None:
         declared = declared_float_vectors(java_db, type_name)
-    taken = []
-    matrices = []
-    for name in declared:
-        try:
-            column = [row[name] for row in rows]
-        except (KeyError, TypeError):
-            continue
-        if not is_vector_candidate(column[0]):
-            continue
-        try:
-            array = _np.array(column)
-        except (ValueError, TypeError):
-            continue
-        if array.ndim != 2 or array.shape[1] == 0 or array.dtype.kind not in "fiu":
-            continue
-        with _np.errstate(
-            all="ignore"
-        ):  # a double beyond float32 becomes Infinity, as in the engine
-            flat = _np.ascontiguousarray(array, dtype=_np.float32).reshape(-1)
-        taken.append(name)
-        matrices.append(
-            vectors.Matrix(jpype.JArray(jpype.JFloat)(flat), int(array.shape[1]))
-        )
-    if not taken:
+    taken = take_vector_columns(rows, declared, undeclared)
+    if taken is None:
         return None
-    if len(taken) == 1:
-        only = taken[0]
-        rest = [{k: v for k, v in row.items() if k != only} for row in rows]
-    else:
-        gone = set(taken)
-        rest = [{k: v for k, v in row.items() if k not in gone} for row in rows]
+    names, matrices, rest = taken
+    float_array = jpype.JArray(jpype.JFloat)
     return (
         rest,
-        jpype.JArray(jpype.JString)(taken),
-        jpype.JArray(jpype.JObject)(matrices),
+        jpype.JArray(jpype.JString)(names),
+        jpype.JArray(jpype.JObject)(
+            [
+                vectors.Matrix(float_array(matrix.reshape(-1)), int(matrix.shape[1]))
+                for matrix in matrices
+            ]
+        ),
     )

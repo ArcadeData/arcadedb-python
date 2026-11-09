@@ -192,9 +192,12 @@ class GraphBatch:
             count_or_properties: Either an integer vertex count or an iterable of
                 per-vertex property dictionaries. Use `None` or `{}` for vertices
                 without properties when passing an iterable. A property declared
-                ``ARRAY_OF_FLOATS`` whose value in every row is a list or a numpy
-                array of numbers of one length crosses as one binary float32
-                matrix instead of JSON text.
+                ``ARRAY_OF_FLOATS`` whose value in every row is a list, a numpy
+                array or a Java ``float[]`` or ``double[]`` of numbers of one length
+                crosses as one binary float32 matrix instead of JSON text, and so
+                does any other property whose value in every row is a float32
+                numpy array or a Java ``float[]`` (``to_java_float_array``) of one
+                length: one buffer per property and chunk, stored as a ``float[]``.
                 A list (not one of only numbers), tuple, dict, date-time, date,
                 Decimal or bytes value also stays on the bulk path: it crosses
                 inside the JSON as a tagged value and is stored as the
@@ -252,8 +255,9 @@ class GraphBatch:
     def _create_vertices_json_bulk(self, type_name, rows):
         """Bulk path: rows cross as one JSON string, RIDs return as one joined
         string (two bulk copies instead of per-value marshaling, measured
-        ~2.4x). The float vectors of ARRAY_OF_FLOATS properties cross as one
-        binary matrix beside the JSON instead of as text (split_float_vectors).
+        ~2.4x). The float vectors of ARRAY_OF_FLOATS properties, and the float32
+        arrays and Java float[] of any property, cross as one binary matrix
+        beside the JSON instead of as text (split_float_vectors).
         A list (not one of only numbers), tuple, dict, date-time, date, Decimal
         or bytes value crosses inside the JSON as the tagged value
         json_bulk_dumps_tagged writes and VertexBatcher decodes (the stored
@@ -284,7 +288,9 @@ class GraphBatch:
         rids = []
         for start in range(0, len(rows), self._BULK_CHUNK):
             chunk = rows[start : start + self._BULK_CHUNK]
-            split = split_float_vectors(self._java_db, type_name, chunk, declared)
+            split = split_float_vectors(
+                self._java_db, type_name, chunk, declared, undeclared=True
+            )
             rest = split[0] if split else chunk
             text = None
             if declared_scalars_ok(rest, declared):
