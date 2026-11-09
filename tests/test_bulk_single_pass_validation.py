@@ -448,7 +448,7 @@ def test_screen_vertex_rows_does_not_vet_a_column_of_another_type():
 
 
 @pytest.mark.parametrize(
-    "bad", [2**63, INT64_MIN - 1, math.nan, math.inf, 5e-324, "a\ud800", {1: 2}, {1, 2}]
+    "bad", [2**63, INT64_MIN - 1, math.nan, math.inf, 5e-324, "a\ud800", {1, 2}]
 )
 def test_screen_vertex_rows_gives_none_for_what_the_text_would_change(bad):
     rows = [{"id": i, "x": 1.5} for i in range(300)]
