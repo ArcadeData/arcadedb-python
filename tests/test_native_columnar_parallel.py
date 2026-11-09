@@ -45,9 +45,8 @@ def spy(monkeypatch):
 
 
 def _count(db, name):
-    return db.query("sql", f"SELECT count(*) AS n FROM {name}").to_list()[0][
-        "n"
-    ]  # nosec B608 - test-owned type name
+    sql = f"SELECT count(*) AS n FROM {name}"  # nosec B608 - test-owned type name
+    return db.query("sql", sql).to_list()[0]["n"]
 
 
 def _types(db, *names, kind="DOCUMENT", buckets=3, unique=False):
