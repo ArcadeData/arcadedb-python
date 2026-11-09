@@ -197,8 +197,8 @@ def table(temp_db):
     return db, rows
 
 
-def _sel(extra=""):
-    return "SELECT n, big, d, f, s, ok, ts, v3, v9, v128 FROM T ORDER BY big" + extra
+def _sel():
+    return "SELECT n, big, d, f, s, ok, ts, v3, v9, v128 FROM T ORDER BY big"
 
 
 def _same(have, want):
