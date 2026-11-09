@@ -43,6 +43,10 @@ _BLOB_KINDS = (
     "snx"  # the kinds laid out as int32 offsets[n + 1] plus the bytes they index
 )
 _TICKS = {"s": 1, "ms": 1_000, "us": 1_000_000, "ns": 1_000_000_000}
+# the seconds that java.time.LocalDateTime.ofEpochSecond takes (years -999999999 to 999999999): beyond them it throws in the image, in the
+# middle of a batch. Only a timestamp[s] can pass them: an int64 of milliseconds is at most 9.2e15 seconds
+_LDT_MIN_SECONDS = -31_557_014_167_219_200
+_LDT_MAX_SECONDS = 31_556_889_864_403_199
 
 
 class Packed:
@@ -349,6 +353,9 @@ def _arrow_column(name, arr, declared):
         )
     if types.is_timestamp(t):
         values = arr.cast(pa.int64()).fill_null(0).to_numpy(zero_copy_only=False)
+        if t.unit == "s" and values.size:
+            if values.min() < _LDT_MIN_SECONDS or values.max() > _LDT_MAX_SECONDS:
+                return None  # the row path raises its usual error for it, before anything is stored
         return Packed(
             name,
             "T",
@@ -360,6 +367,10 @@ def _arrow_column(name, arr, declared):
         if types.is_date64(t):  # milliseconds since the epoch, floor-divided to days
             raw = arr.cast(pa.int64()).fill_null(0).to_numpy(zero_copy_only=False)
             days = raw // 86_400_000
+            if days.size and (
+                days.min() < -(_INT32_MAX + 1) or days.max() > _INT32_MAX
+            ):
+                return None  # int32 days would wrap: the row path raises its usual error for it
         else:
             days = arr.cast(pa.int32()).fill_null(0).to_numpy(zero_copy_only=False)
         return Packed(
