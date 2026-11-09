@@ -5,17 +5,18 @@ Loads a pandas or Polars DataFrame, or an Arrow table, into a type in batches
 (``Database.insert_dataframe`` and ``Database.insert_arrow``). Arrow is the one
 internal form: a pandas frame becomes an Arrow table, a Polars frame is already
 one, and each Arrow column becomes the typed array ``Database.insert_columns``
-sends across the bridge (a document type), or the property rows
-``GraphBatch.create_vertices`` takes (a vertex type). No Java was added: both
-paths use the existing glue (``DocumentBatcher.insertColumns`` and the
-``GraphBatch`` vertex batcher).
+sends across the bridge, for a document type and for a vertex type alike (the
+vertex type gets vertices from the same ``DocumentBatcher.insertColumns``; it
+refuses to run inside a transaction the caller opened, as ``GraphBatch`` does).
+No Java was added.
 
 The native backend (the ``arcadedb`` wheel) shares everything but the
 last step: the checks, the type mapping, the batching and the error wording are
-the same code. A document batch goes over as one JSON text through
-``Database.insert_many`` (one crossing per 10,000 rows), a vertex batch through
-``GraphBatch.create_vertices``, and a value JSON cannot carry (a date-time, a
-decimal, bytes) travels as a tagged value the image decodes.
+the same code. A batch of documents or vertices goes over by address through
+the columnar entry (``arcadedb_n_insert_colp``) when every column can cross as
+memory, else as one JSON text through ``Database.insert_many`` (one crossing per
+10,000 rows), where a value JSON cannot carry (a date-time, a decimal, bytes)
+travels as a tagged value the image decodes.
 """
 
 import re
@@ -425,79 +426,61 @@ def insert_table(
     native = _is_native(db)
     written = 0
     # a document load inside the caller's own transaction joins it (insert_columns commits
-    # nothing then); a vertex load refuses to run inside one. parallel=True never joins it: the
-    # async writers commit the records themselves, so a rollback of the caller's transaction does
-    # not remove them
-    in_caller_transaction = (
-        (not is_vertex) and (not parallel) and bool(db.is_transaction_active())
-    )
-    graph_batch = db.graph_batch() if is_vertex else None
-    try:
-        for batch in table.to_batches(max_chunksize=batch_size):
-            if batch.num_rows == 0:
-                continue
-            columns = {
-                name: _column_values(
-                    name,
-                    batch.column(i),
-                    pa,
-                    native,
-                    arrow=native and not is_vertex,
+    # nothing then); a vertex load refuses to run inside one, as GraphBatch.createVertices does.
+    # parallel=True never joins it: the async writers commit the records themselves, so a rollback
+    # of the caller's transaction does not remove them
+    in_transaction = bool(db.is_transaction_active())
+    in_caller_transaction = in_transaction and not parallel
+    if is_vertex and in_transaction:
+        raise ArcadeDBError(
+            f"Failed to create batch vertices for type '{type_name}': a vertex load commits its own batches "
+            f"and cannot run inside a transaction the caller opened: commit or roll back that transaction first"
+        )
+    for batch in table.to_batches(max_chunksize=batch_size):
+        if batch.num_rows == 0:
+            continue
+        columns = {
+            name: _column_values(
+                name,
+                batch.column(i),
+                pa,
+                native,
+                arrow=native,
+            )
+            for i, name in enumerate(names)
+        }
+        try:
+            if native:
+                _insert_documents_native(
+                    db, type_name, names, columns, batch_size, parallel, declared
                 )
-                for i, name in enumerate(names)
-            }
-            try:
-                if is_vertex:
-                    _insert_vertices(
-                        graph_batch, type_name, names, columns, batch.num_rows
-                    )
-                elif native:
-                    _insert_documents_native(
-                        db, type_name, names, columns, batch_size, parallel, declared
-                    )
-                else:
-                    db.insert_columns(
-                        type_name, columns, commit_every=batch_size, parallel=parallel
-                    )
-            except ArcadeDBError as exc:
-                if written and in_caller_transaction:
-                    # the batches joined the caller's transaction: nothing is committed
-                    # until the caller commits, and a rollback removes them
-                    raise ArcadeDBError(
-                        f"{exc}; the {written} row(s) of the batches before this one "
-                        f"were written in your transaction, not committed"
-                    ) from exc
-                if written and parallel:
-                    # the async writers commit on their own, inside the caller's transaction or not
-                    raise ArcadeDBError(
-                        f"{exc}; the {written} row(s) of the batches before this one "
-                        f"were handed to the async writers, which commit on their own: "
-                        f"a rollback of your transaction does not remove them"
-                    ) from exc
-                if written:
-                    raise ArcadeDBError(
-                        f"{exc}; the {written} row(s) of the batches before this one "
-                        f"were committed"
-                    ) from exc
-                raise
-            written += batch.num_rows
-    finally:
-        if graph_batch is not None:
-            graph_batch.close()
+            else:
+                db.insert_columns(
+                    type_name, columns, commit_every=batch_size, parallel=parallel
+                )
+        except ArcadeDBError as exc:
+            if written and in_caller_transaction:
+                # the batches joined the caller's transaction: nothing is committed
+                # until the caller commits, and a rollback removes them
+                raise ArcadeDBError(
+                    f"{exc}; the {written} row(s) of the batches before this one "
+                    f"were written in your transaction, not committed"
+                ) from exc
+            if written and parallel:
+                # the async writers commit on their own, inside the caller's transaction or not
+                raise ArcadeDBError(
+                    f"{exc}; the {written} row(s) of the batches before this one "
+                    f"were handed to the async writers, which commit on their own: "
+                    f"a rollback of your transaction does not remove them"
+                ) from exc
+            if written:
+                raise ArcadeDBError(
+                    f"{exc}; the {written} row(s) of the batches before this one "
+                    f"were committed"
+                ) from exc
+            raise
+        written += batch.num_rows
     return written
-
-
-def _insert_vertices(
-    graph_batch, type_name: str, names: List[str], columns: Dict[str, Any], n: int
-):
-    """One batch of vertices: the columns as one property dict per row, through ``GraphBatch.create_vertices``."""
-    lists = []
-    for name in names:
-        values = columns[name]
-        lists.append(values.tolist() if hasattr(values, "tolist") else values)
-    graph_batch.create_vertices(
-        type_name, [dict(zip(names, row)) for row in zip(*lists)]
-    )
 
 
 def _arrow_row_values(col) -> list:

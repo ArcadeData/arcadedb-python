@@ -55,6 +55,8 @@ if BACKEND != "native":
     collect_ignore.append("test_native_columnar_temporal.py")
     # the review of the temporal kinds: a value the image cannot take is refused in Python, never wrapped or thrown mid-batch
     collect_ignore.append("test_native_columnar_temporal_review_fixes.py")
+    # a vertex load by insert_dataframe or insert_arrow crosses as columns, one crossing per batch, observed on the native library
+    collect_ignore.append("test_native_vertex_columnar.py")
     # the rows of an insert_many chunk with date-times, Decimals, bytes and numpy scalars are told apart by the entry points they cross
     collect_ignore.append("test_native_mixed_chunk.py")
     # the native build's ingest defaults (insert_many and graph_batch commit size), observed on the native library
