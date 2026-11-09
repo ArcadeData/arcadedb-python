@@ -276,7 +276,7 @@ class GraphBatch:
         except Exception:
             return None
 
-        tagged = classify_vertex_rows(rows, declared)
+        tagged = classify_vertex_rows(rows, declared, len(rows) > self._BULK_CHUNK)
         if tagged is None:
             # a property name that is not a str (json.dumps would write 1 as "1" where the matrix path refuses it), or a type the
             # tagged JSON does not carry (a set, a numpy or pandas value, any subclass, a list of only numbers: the matrix path

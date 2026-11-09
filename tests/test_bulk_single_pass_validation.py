@@ -232,6 +232,21 @@ def test_the_first_bad_row_of_a_large_batch_gives_the_old_error(kind, tagged):
 
 
 @pytest.mark.parametrize("tagged", [False, True], ids=["untagged", "tagged"])
+def test_the_first_bad_rows_error_carries_no_context(tagged):
+    # json.dumps refuses the NaN of the second row first; the error is still the walk's for the first row, as it was when the
+    # loop ran before json.dumps, and it does not show the NaN error as the context it was raised in
+    rows = [{"a": 2**70}, {"b": math.nan}]
+    new = tc.json_bulk_dumps_tagged if tagged else tc.json_bulk_dumps
+    with pytest.raises(ValueError) as caught:
+        new(rows)
+    assert str(caught.value) == _outcome(lambda r: _old_dumps(r, tagged), rows)[1]
+    assert caught.value.__context__ is None
+    # with nothing for the walk to find, json.dumps's own error is the one raised
+    with pytest.raises(ValueError, match="Out of range float"):
+        new([{"b": math.nan}])
+
+
+@pytest.mark.parametrize("tagged", [False, True], ids=["untagged", "tagged"])
 def test_a_clean_large_batch_is_the_plain_json_text(tagged):
     rows = _batch(20_000, {})
     new = tc.json_bulk_dumps_tagged if tagged else tc.json_bulk_dumps
@@ -417,3 +432,33 @@ def test_a_bad_row_inside_a_large_batch_is_refused(temp_db_path, entry, bad):
             else:
                 with db.graph_batch(parallel_flush=False) as batch:
                     batch.create_vertices("PartV", rows)
+
+
+def test_the_scalar_screen_flags_what_the_text_would_change_and_passes_the_rest():
+    # the whole-input screen of create_vertices: conservative, so a false alarm is allowed, a miss is not
+    clean = {
+        "str": ["a", "é中", "\U0001f600", "", None],
+        "int": [1, -1, INT64_MAX, INT64_MIN, None],
+        "float": [0.5, -0.0, 0.0, 1e-300, 1.7e308, None],
+        "bool": [True, False, None],
+        "nones": [None, None],
+    }
+    for name, column in clean.items():
+        assert tc._scalar_column_suspect(list(column)) is False, name
+    bad = {
+        "surrogate": ["ok", "a\ud800b"],
+        "above_max": [1, INT64_MAX + 1],
+        "below_min": [INT64_MIN - 1, 1],
+        "nan": [1.5, math.nan],
+        "inf": [math.inf],
+        "subnormal": [1.5, 5e-324],
+        "mixed": [1, "a"],
+        "int_float": [1, 2.5],
+    }
+    for name, column in bad.items():
+        assert tc._scalar_column_suspect(list(column)) is True, name
+    # the screen runs over blocks: a bad value in the last block of a large column is found
+    column = [{"x": i} for i in range(250_000)]
+    column[249_999] = {"x": INT64_MAX + 1}
+    assert tc.classify_vertex_rows(column, set(), True) is None
+    assert tc.classify_vertex_rows(column, set(), False) is False

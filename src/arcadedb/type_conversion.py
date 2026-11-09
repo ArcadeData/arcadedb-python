@@ -918,9 +918,17 @@ def _dumps_once(rows: Any, tagged: bool) -> str:
             if tagged
             else _dumps_checked(rows)
         )
-    except (TypeError, ValueError):
-        _check_rows(rows, tagged)
-        raise
+    except (TypeError, ValueError) as error:
+        refused = error
+    else:
+        refused = None
+    if refused is not None:
+        # outside the except block, so the walk's error does not carry json.dumps's as __context__ (the old loop ran first)
+        try:
+            _check_rows(rows, tagged)
+            raise refused
+        finally:
+            del refused
     if (
         _rows_need_walk(rows, tagged)
         or _SURROGATE_ESCAPE.search(text)
@@ -1055,14 +1063,70 @@ def _column(rows: Any, key: str):
     return map(dict.get, filter(None, rows), itertools.repeat(key))
 
 
-def classify_vertex_rows(rows: Any, declared: Any):
+_NONE_KIND = type(None)
+_SCREEN_BLOCK = 100_000  # rows per block of the scalar screen, so its transient lists and joined texts stay bounded
+
+
+def _scalar_column_suspect(column: list) -> bool:
+    """Whether one block of a column of exact scalar values may hold a value the JSON text would change.
+
+    Conservative (a false alarm only sends the column to the exact per-value judgement) and run in C: the type census, the joined
+    text of a str column (a lone surrogate has no UTF-8 form), min and max of an int column (the 64-bit range), and a float column as
+    one float64 array (NaN, Infinity, a subnormal). Columns of mixed kinds are suspect.
+    """
+    kinds = set(map(type, column))
+    if _NONE_KIND in kinds:
+        column = [value for value in column if value is not None]
+        kinds.discard(_NONE_KIND)
+    if kinds <= {bool}:
+        return False
+    if len(kinds) != 1:
+        return True
+    (kind,) = kinds
+    if kind is str:
+        text = "".join(column)
+        if text.isascii():
+            return False
+        try:
+            text.encode("utf-8")
+        except UnicodeEncodeError:
+            return True
+        return False
+    if kind is int:
+        return not (_INT64_MIN <= min(column) and max(column) <= _INT64_MAX)
+    if kind is float and _np is not None:
+        values = _np.fromiter(column, dtype=_np.float64, count=len(column))
+        if not _np.isfinite(values).all():
+            return True
+        values = values[values != 0.0]
+        return bool((_np.abs(values) < _FLOAT_NORMAL_MIN).any())
+    return True
+
+
+def _scalar_screen(rows: Any, key: str) -> bool:
+    """Whether the column `key` of all `rows`, which holds exact scalars only, may hold a value the JSON text would change."""
+    for start in range(0, len(rows), _SCREEN_BLOCK):
+        block = list(_column(rows[start : start + _SCREEN_BLOCK], key))
+        if _scalar_column_suspect(block):
+            return True
+    return False
+
+
+def classify_vertex_rows(rows: Any, declared: Any, screen_scalars: bool = False):
     """What GraphBatch.create_vertices must know about its rows before it writes any chunk, decided by types.
+
+    `screen_scalars` is for an input of more than one chunk. One chunk is decided by its own dumps before anything is sent, so a
+    value the text would change sends all of it the matrix way. Several chunks are sent one after the other, so such a value in
+    a late chunk would leave the earlier ones stored from the JSON text (an int as an Integer) and the late one from the matrix path
+    (a Long): the stored type of a property would depend on which chunk held a bad value. With `screen_scalars` the columns of exact
+    scalars are screened in C over the whole input first (`_scalar_screen`), and a column that may hold a bad value is judged value
+    by value as the code before did, so a bad scalar anywhere gives None for the whole input, as it always did.
 
     Returns None when the rows must all go the property-matrix way (a property name that is not a str, or a value of a type the
     tagged JSON does not carry: a set, a numpy or pandas value, a list or tuple of only numbers, any other object); otherwise True when
     some value needs the tagged text (json_bulk_dumps_tagged) and False when json_bulk_dumps carries every row. A value of an exact
-    scalar type is not judged here: whether the text carries it (a NaN, an integer beyond 64 bits, a lone surrogate) is decided in
-    the dumps of its chunk. The property of `declared` (ARRAY_OF_FLOATS) that holds a list or a numpy array is left to
+    scalar type is not judged here unless `screen_scalars`: whether the text carries it (a NaN, an integer beyond 64 bits, a lone
+    surrogate) is decided in the dumps of its chunk. The property of `declared` (ARRAY_OF_FLOATS) that holds a list or a numpy array is left to
     split_float_vectors. The census over the keys and the values runs in C; a Python-level loop runs only over a column that
     holds a type other than the exact scalars.
     """
@@ -1077,16 +1141,23 @@ def classify_vertex_rows(rows: Any, declared: Any):
     for key in keys:
         odd = set(map(type, _column(rows, key))) - _BULK_SCALAR_TYPES
         if not odd:
-            continue
-        if key in declared and all(_is_vector_kind(kind) for kind in odd):
+            if not screen_scalars or not _scalar_screen(rows, key):
+                continue  # exact scalars; with screen_scalars (several chunks) only a column that passes the screen
+        elif key in declared and all(_is_vector_kind(kind) for kind in odd):
             continue  # the vectors of a declared column
-        if all(_is_float_array_kind(kind) for kind in odd):
+        elif all(_is_float_array_kind(kind) for kind in odd):
             continue  # a column of arrays: take_vector_columns takes the float32 ones; a chunk it leaves goes the matrix way
         for value in _column(rows, key):
-            if type(value) in _BULK_SCALAR_TYPES or (
+            if (type(value) in _BULK_SCALAR_TYPES and not screen_scalars) or (
                 key in declared and is_vector_candidate(value)
             ):
                 continue
+            if (
+                screen_scalars
+                and type(value) is float
+                and 0.0 < abs(value) < _FLOAT_NORMAL_MIN
+            ):
+                return None  # a subnormal: the text is read back as a DECIMAL
             if not json_bulk_scalar_ok(value):
                 if not json_bulk_shape_ok(value):
                     return None
