@@ -7,7 +7,7 @@ declared property accepts and refuses, how many rows are converted at a time, wh
 and refuses, and what the readers return for nulls, dates, ``batch_size`` and a missing library. ``test_dataframe_ingest.py``,
 ``test_insert_columns.py``, ``test_resultset_arrow.py`` and ``test_columnar_readers.py`` pin the same calls in more depth; the tests here are
 the ones the page quotes, so that a change to a sentence of the page has one place to fail. They use no Java object, so they run on the JVM
-build and the native build alike (the two branches that differ test the backend they run on).
+build and the native build alike (what differs between the builds is tested on the backend it runs on).
 """
 
 import datetime as dt
@@ -523,29 +523,24 @@ def test_the_columns_do_not_depend_on_batch_size(readings):
         assert columns["k"] == ["a", "b"] and columns["n"][0] == 7.0
 
 
-def test_how_the_rows_reach_the_columns_differs_between_the_builds(
-    readings, monkeypatch
-):
-    """The JVM build reads the result in batches of ``batch_size`` rows from the engine's column buffer. The native build reads
-    every row into Python dicts first (``_drain_dicts``) and builds the columns from them, so ``batch_size`` is not used.
+def _watch_the_engine_requests(monkeypatch):
+    """The list of row limits that the readers ask the engine for, one entry per request, on the build this runs on. The seam differs
+    (the Java bridge's ``nextColumnBatch`` on the JVM build, the library's column frame call on the native build), the list means the same.
     """
-    from arcadedb import results
-
+    requests = []
     if arcadedb.__backend__ == "native":
-        resultset = type(readings.query("sql", QUERY))
-        drained = []
-        real = resultset._drain_dicts
+        from arcadedb._native import lib
 
-        def spy(self, *args, **kwargs):
-            rows = real(self, *args, **kwargs)
-            drained.append(len(rows))
-            return rows
+        real_frame = lib.call_frame
 
-        monkeypatch.setattr(resultset, "_drain_dicts", spy)
-        readings.query("sql", QUERY).to_columns(batch_size=1)
-        assert drained == [2]  # one read of all the rows, whatever batch_size says
+        def frame(rs_id, max_rows, *rest):
+            requests.append(int(max_rows))
+            return real_frame(rs_id, max_rows, *rest)
+
+        monkeypatch.setattr(lib, "call_frame", frame)
     else:
-        batches = []
+        from arcadedb import results
+
         real_bridge = results._bridge_class
 
         class Spy:
@@ -555,7 +550,7 @@ def test_how_the_rows_reach_the_columns_differs_between_the_builds(
             def nextColumnBatch(
                 self, java_rows, batch_size, *rest
             ):  # noqa: N802 - the Java name
-                batches.append(int(batch_size))
+                requests.append(int(batch_size))
                 return self._inner.nextColumnBatch(java_rows, batch_size, *rest)
 
         def bridge(name):
@@ -563,8 +558,31 @@ def test_how_the_rows_reach_the_columns_differs_between_the_builds(
             return Spy(inner) if name == "ColumnBatcher" else inner
 
         monkeypatch.setattr(results, "_bridge_class", bridge)
-        readings.query("sql", QUERY).to_columns(batch_size=1)
-        assert batches[:2] == [1, 1]
+    return requests
+
+
+def test_batch_size_is_how_many_rows_cross_at_a_time_on_both_builds(
+    temp_db, monkeypatch
+):
+    """``to_columns()`` and ``to_arrow()`` read the result from the engine as packed columns, ``batch_size`` rows per request, on the JVM
+    build and on the native build alike. The native build keeps in Python the rows that its first reply already holds (256 for a query),
+    so the result here has more rows than that: the request limit is what is asserted, not how many requests there are.
+    """
+    rows = 600
+    temp_db.command("sql", "CREATE DOCUMENT TYPE Wide")
+    assert temp_db.insert_columns("Wide", {"id": np.arange(rows)}) == rows
+    query = "SELECT id FROM Wide ORDER BY id"
+    requests = _watch_the_engine_requests(monkeypatch)
+    for reader in ("to_columns", "to_arrow"):
+        counts = {}
+        for size in (100, 1000):
+            requests.clear()
+            result = getattr(temp_db.query("sql", query), reader)(batch_size=size)
+            assert set(requests) == {size}, (reader, size, requests)
+            counts[size] = len(requests)
+            ids = result["id"] if reader == "to_columns" else result["id"].to_pylist()
+            assert list(ids) == list(range(rows))
+        assert counts[100] > counts[1000] >= 1, (reader, counts)
 
 
 def test_an_empty_result_has_no_columns(temp_db):
