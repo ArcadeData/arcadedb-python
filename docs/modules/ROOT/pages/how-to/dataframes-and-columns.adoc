@@ -271,7 +271,7 @@ refused: True
 [[reading]]
 == Reading columns
 
-The four readers take the whole result, so they hold every row in memory. For a result that is larger than memory read the rows one by one (xref:how-to/databases-and-queries.adoc[Databases and queries]) or write it with `export_to_csv`. A result set is read once (xref:how-to/databases-and-queries.adoc#a-result-set-is-read-once[A result set is read once]), so call one reader for each query.
+The four readers take the whole result, so they hold every row in memory. For a result that is larger than memory read the rows one by one (xref:how-to/databases-and-queries.adoc[Databases and queries]) or write it with `export_to_csv`. A result set is read once (xref:how-to/databases-and-queries.adoc#result-set-single-pass[A result set is read once]), so call one reader for each query.
 
 The next block stores one record with every value and one record with none, then reads them with each reader. The records are the same for all of them, and the readers differ in what they do with the gap:
 

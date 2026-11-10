@@ -8,7 +8,7 @@ Test suite for the ArcadeDB Python bindings. It runs against the built wheel, so
 
 ```bash
 # The wheel and its test extra go into a throwaway environment on every run, so there is no
-# environment to create. --reinstall-package, as a rebuild keeps the version (26.11.1.dev0)
+# environment to create. --reinstall-package, as a rebuild keeps the version (for example 26.12.1.dev0)
 
 # Run all tests
 uv run --no-project --reinstall-package arcadedb-jvm --with "$(ls dist/*.whl | head -1)[test]" python -m pytest
@@ -34,7 +34,7 @@ The server tests do not skip when the server stack is absent: the wheel always s
 
 ## The native build
 
-The same suite runs against the native `arcadedb` wheel (`native/wheel/parity_wheel.py`). A test is reported as a skip on the native build in two explicit ways, never by what its failure says:
+The same suite runs against the native `arcadedb` wheel (`native/wheel/parity_wheel.py`). A test file about the JVM itself, the JPype wheel or the JVM wheel's build tooling is not collected on the native build: it is a row of `NATIVE_NOT_APPLICABLE` in `tests/conftest.py` (on Windows, `WINDOWS_NOT_APPLICABLE`). A test is reported as a skip on the native build in two explicit ways, never by what its failure says:
 
 - `NotOnNativeYet`: the native code raised it because the feature needs a Java object API the library does not expose. The report says `NOTYET`, and a final release allows none. A call that is JVM-only by design (`get_java_database`, `get_java_document`, a Java object a `Schema` method returns) raises it with a message that names the `arcadedb-jvm` build; a shared test that reaches one is `NA-JVM`, or reads the value through a statement or the Python API instead.
 - A row of `NATIVE_NA_JVM_TESTS` in `tests/conftest.py`, keyed `<file>::[<Class>::]<test>`: the test reaches into the JVM on purpose (`jpype.JClass`, a Java array, `db._java_db`, counted bridge crossings). The report says `NA-JVM`. Add a row only for such a test, and give the reason. When the behaviour is shared, write a native test beside it (`test_native_*.py`, collected on the native build only).

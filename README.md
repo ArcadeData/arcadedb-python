@@ -96,13 +96,13 @@ Releases from this repository start with 26.11.1. The 26.10.x wheels were built 
 
 ## Documentation
 
-- Here: [`docs/`](https://github.com/ArcadeData/arcadedb-python/tree/main/docs/modules/ROOT/pages) is an Antora component (AsciiDoc) with Installation, [Which package?](https://github.com/ArcadeData/arcadedb-python/blob/main/docs/modules/ROOT/pages/which-package.adoc), Quickstart, Databases and queries, Vectors, Faceted queries, and Concurrency, processes and crashes. It covers only what is specific to the Python bindings.
+- Here: [`docs/`](https://github.com/ArcadeData/arcadedb-python/tree/main/docs/modules/ROOT/pages) is an Antora component (AsciiDoc) with Installation, [Which package?](https://github.com/ArcadeData/arcadedb-python/blob/main/docs/modules/ROOT/pages/which-package.adoc), Quickstart, the how-to pages (databases and queries, transactions, bulk loads, vectors, faceted queries, concurrency, durability, and more) and the development pages (Continuous integration, Release). It covers only what is specific to the Python bindings.
 - Published at [docs.arcadedb.com/arcadedb-python](https://docs.arcadedb.com/arcadedb-python/), the same site as the main ArcadeDB manual, rebuilt daily from `main` (ArcadeData/arcadedb-docs#505). The `Docs` workflow builds it as a site of its own on every change under `docs/` and attaches it as the `docs-site` artifact. To build it locally, run `npx -p @antora/cli@3.2.1 -p @antora/site-generator@3.2.1 antora docs/antora-playbook.yml` and open `docs/build/site/index.html`.
 - ArcadeDB itself (SQL, openCypher, schema, server): [docs.arcadedb.com](https://docs.arcadedb.com). It is not repeated here.
 
 ## Examples
 
-[`examples/`](https://github.com/ArcadeData/arcadedb-python/tree/main/examples) holds 30 runnable scripts, from a first document store to vector search, time series, graph algorithms and server mode. CI runs them ([`test-python-examples.yml`](https://github.com/ArcadeData/arcadedb-python/blob/main/.github/workflows/test-python-examples.yml)).
+[`examples/`](https://github.com/ArcadeData/arcadedb-python/tree/main/examples) holds 30 runnable scripts, from a first document store to vector search, time series, graph algorithms and server mode. CI runs them ([`test-python-examples.yml`](https://github.com/ArcadeData/arcadedb-python/blob/main/.github/workflows/test-python-examples.yml), and the `examples` job of [`test-native.yml`](https://github.com/ArcadeData/arcadedb-python/blob/main/.github/workflows/test-native.yml) for the native package).
 
 ## Build and test from source
 
@@ -110,17 +110,17 @@ Releases from this repository start with 26.11.1. The 26.10.x wheels were built 
 ./scripts/build.sh   # an arcadedb-jvm wheel for your platform in dist/
 ```
 
-The `arcadedb` (native) wheel is built from `native/` with GraalVM Community Edition; [`CLAUDE.md`](https://github.com/ArcadeData/arcadedb-python/blob/main/CLAUDE.md) has the commands. A native image build takes about 5 to 30 minutes per platform (macOS is the slowest).
+The `arcadedb` (native) wheel is built from `native/` with GraalVM Community Edition; [`CONTRIBUTING.md`](https://github.com/ArcadeData/arcadedb-python/blob/main/CONTRIBUTING.md) has the commands. A native image build takes about 5 to 30 minutes per platform (macOS is the slowest).
 
 The JVM build runs in Docker on Linux. macOS and Windows need a JDK 25 or later. The jars come from the `arcadedata/arcadedb` Docker image: `latest` by default, or the tag in `ARCADEDB_TAG` (for example `ARCADEDB_TAG=26.10.2 ./scripts/build.sh`). The package version is read from the engine jar in that image, so an `A.B.C-SNAPSHOT` image builds `A.B.C.devN`.
 
 The native build does not use the image. It resolves `arcadedb-engine` and `arcadedb-server` from Maven Central at `arcadedb.version` in `native/pom.xml` (release versions only, because a snapshot is not on Maven Central) and compiles them with GraalVM Community Edition. Neither build compiles the engine from source: the engine code is upstream's, unmodified.
 
-Tests run against the built wheel, not the source tree: install the wheel with its `test` extra into a virtual environment, then run `pytest`. [`CLAUDE.md`](https://github.com/ArcadeData/arcadedb-python/blob/main/CLAUDE.md) has the exact commands, the build options and the lint setup.
+Tests run against the built wheel, not the source tree: `uv run --no-project --with "$W[test]" python -m pytest` (`W` is the wheel in `dist/`) makes a throwaway environment from the wheel and its `test` extra. Use `python -m pytest`, not the `pytest` entry point. [`CONTRIBUTING.md`](https://github.com/ArcadeData/arcadedb-python/blob/main/CONTRIBUTING.md) has the exact commands, and [`CLAUDE.md`](https://github.com/ArcadeData/arcadedb-python/blob/main/CLAUDE.md) the build options and the lint setup.
 
 ## Contributing
 
-Open an [issue](https://github.com/ArcadeData/arcadedb-python/issues) or a pull request. Run `pre-commit run --all-files` first, and add a regression test with every fix. The rest of the bindings work from `humemai/arcadedb-embedded-python` is ported here one pull request at a time; [#19](https://github.com/ArcadeData/arcadedb-python/issues/19) lists what is done and what is next. <!-- allow-old-name -->
+Open an [issue](https://github.com/ArcadeData/arcadedb-python/issues) or a pull request. Run `uvx pre-commit run --all-files` first, and add a regression test with every fix. The rest of the bindings work from `humemai/arcadedb-embedded-python` is ported here one pull request at a time; [#19](https://github.com/ArcadeData/arcadedb-python/issues/19) lists what is done and what is next. <!-- allow-old-name -->
 
 ## Where this code comes from
 

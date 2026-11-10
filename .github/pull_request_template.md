@@ -8,7 +8,7 @@ A short description of the change.
 
 ## Performance changes
 
-For a change that claims a speed or memory difference: the timed A/B result (`ab.py`, with the noise run), or say why none applies. Leave this out otherwise.
+For a change that claims a speed or memory difference: the timed A/B result (interleaved runs of the new build against `main` and a control run of `main` against itself, see CONTRIBUTING.md), or say why none applies. Leave this out otherwise.
 
 ## Docs
 

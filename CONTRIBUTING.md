@@ -51,7 +51,7 @@ On Linux the build runs in Docker. On macOS and Windows it needs a JDK 25 or lat
 
 ```shell
 ./scripts/build.sh                                  # an arcadedb-jvm wheel for your platform in dist/
-ARCADEDB_TAG=26.11.1-SNAPSHOT ./scripts/build.sh    # pin the arcadedata/arcadedb image (default: latest)
+ARCADEDB_TAG=26.12.1-SNAPSHOT ./scripts/build.sh    # pin the arcadedata/arcadedb image (default: latest)
 ```
 
 Tests run against the built wheel, not the source tree. Use `python -m pytest`, not the `pytest` entry point: with `--with`, the entry point does not see the packages of the environment.
@@ -74,18 +74,20 @@ bash native/scripts/build-image.sh <outdir>
 uv run --no-project --python 3.12 python native/wheel/build_wheel.py --lib-dir <outdir> --version <version> --engine <engine> --out <wheeldir>
 ```
 
+`build-image.sh` takes GraalVM Community Edition 25.4.4.1.1 from `GRAALVM_HOME_P5`; set it to your install. `build_wheel.py` takes `--graalvm-home`.
+
 `native/wheel/parity_wheel.py` runs the test suite against the installed wheel; its arguments are in the "Run the parity suite" step of `test-native.yml`. See [Continuous integration](docs/modules/ROOT/pages/development/ci.adoc) for when each workflow runs.
 
 ### Tests
 
 - Every fix comes with a regression test. Write the test first and run every test the change could affect.
-- No skips: CI fails on a skipped test that is not listed in `scripts/check_test_skips.py`. A test that cannot run on a platform goes in `collect_ignore` in `tests/conftest.py`, and a known engine bug uses a strict `xfail`.
+- No skips: CI fails on a skipped test that is not listed in `scripts/check_test_skips.py`. A test file that cannot run on a platform is a row, with its reason, in `WINDOWS_NOT_APPLICABLE` or `NATIVE_NOT_APPLICABLE` in `tests/conftest.py` (both feed `collect_ignore`), and a known engine bug uses a strict `xfail`.
 - Never bind or address a hand-picked port in a test. Use `server.get_http_port()` or the `_free_ports()` pattern in `tests/test_server_wire_protocols.py`.
 - Never assert on raw wall-clock time. A JVM pause makes it flaky.
 
 ### Pre-commit
 
-This project uses [pre-commit](https://pre-commit.com/) (black, isort, shfmt, pretty-format-yaml, actionlint). Run it on the files you changed before you push, and again if it reformatted something:
+This project uses [pre-commit](https://pre-commit.com/) (black, isort, shfmt, pretty-format-yaml, actionlint, and a local check that the old package name does not come back). Run it on the files you changed before you push, and again if it reformatted something:
 
 ```shell
 uvx pre-commit run --files <changed files>

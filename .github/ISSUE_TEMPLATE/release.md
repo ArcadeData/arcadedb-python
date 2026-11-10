@@ -61,7 +61,7 @@ Every step says who does it: script (run the command, read the result), CI (a wo
   uv run --no-project python scripts/bump_engine.py --engine <VERSION> --dev-version <NEXT_DEV>
   ```
 
-- [ ] 8. script: refresh the notices the new engine needs. First refresh the kept engine NOTICE (`git -C <arcadedb clone> show <VERSION>:NOTICE > native/wheel/ARCADEDB_ENGINE_NOTICE`; the generated notices embed it). The first `Test native` run on the bump PR stops at the notices drift check on purpose and uploads the generated file. Download it, commit it, push, and wait for the run to go green.
+- [ ] 8. script: refresh the notices the new engine needs. First refresh the kept engine NOTICE (`git -C <arcadedb clone> show <VERSION>:NOTICE > native/wheel/ARCADEDB_ENGINE_NOTICE`; the generated notices embed it). The first `Test native (arcadedb)` run on the bump PR stops at the notices drift check on purpose and uploads the generated file. Download it, commit it, push, and wait for the run to go green.
 
   ```bash
   gh run list -R ArcadeData/arcadedb-python --workflow test-native.yml --branch <bump-branch> --limit 1
