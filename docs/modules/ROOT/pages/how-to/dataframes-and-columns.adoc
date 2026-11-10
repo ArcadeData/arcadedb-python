@@ -1,7 +1,7 @@
 = DataFrames, Arrow and columns
 :description: Load a pandas or Polars frame, an Arrow table or whole columns with insert_dataframe, insert_arrow and insert_columns, what each Arrow type becomes, how nulls and NaN are stored, what a declared property accepts, how many rows are converted at a time, what a failed load leaves, and what to_columns, to_arrow, to_dataframe and to_polars return, including the difference between the two builds.
 
-// Sources: src/arcadedb/core.py (insert_columns, insert_dataframe, insert_arrow), dataframe.py, results.py and _native/columns.py (to_columns, to_arrow, to_dataframe, to_polars). The statements below are pinned by tests/test_dataframe_columns_behavior.py, and for the Arrow types, the declared types, the column checks, the readers and the dates also by tests/test_dataframe_ingest.py, tests/test_insert_columns.py, tests/test_resultset_arrow.py, tests/test_columnar_readers.py and tests/test_resultset.py.
+// Sources: src/arcadedb/core.py (insert_columns, insert_dataframe, insert_arrow), dataframe.py, results.py, _columnar.py and _native/colframes.py (to_columns, to_arrow, to_dataframe, to_polars). The statements below are pinned by tests/test_dataframe_columns_behavior.py, and for the Arrow types, the declared types, the column checks, the readers and the dates also by tests/test_dataframe_ingest.py, tests/test_insert_columns.py, tests/test_resultset_arrow.py, tests/test_columnar_readers.py and tests/test_resultset.py.
 
 This page covers column-shaped data in and out of a database. Load it with `insert_dataframe` (a pandas or Polars frame), `insert_arrow` (an Arrow table) or `insert_columns` (numpy arrays and lists). Read a result as columns with `to_columns`, `to_arrow`, `to_dataframe` or `to_polars`. For a list of Python dicts use `insert_many`, and for a file use the importer: xref:how-to/bulk-loads.adoc[Bulk loads and commit size] and xref:how-to/import-export.adoc[Importing and exporting data]. The calls here are bindings calls and have no statement in SQL, so the main manual has nothing to say about them. The types that a stored value can have are the engine's: {arcadedb-docs-url}/reference/datatypes[Data types].
 
@@ -337,12 +337,7 @@ A missing library does not fail the same way everywhere. `to_columns()` returns 
 
 == Differences between the two builds
 
-The calls above, the types and the results are the same on `arcadedb` and `arcadedb-jvm`. Two things differ. The first is how the readers get the rows:
-
-* On `arcadedb-jvm`, `to_columns()` and `to_arrow()` read the result from the engine in batches of `batch_size` rows, as packed columns, so `batch_size` sets how many rows cross at a time.
-* On `arcadedb` (native), they read every row into Python dicts first and build the columns from them. `batch_size` is accepted and not used, and the rows exist as Python objects while the columns are built.
-
-The second is the message of a missing pandas: the JVM package adds the `uv add` hint to the `ImportError` of `to_dataframe()`, and the native package raises the plain `ImportError`.
+The calls above, the types and the results are the same on `arcadedb` and `arcadedb-jvm`, and so is how `to_columns()` and `to_arrow()` get the rows: both read the result from the engine as packed columns, in requests of at most `batch_size` rows, so `batch_size` sets how many rows cross at a time. One thing differs, the message of a missing pandas: the JVM package adds the `uv add` hint to the `ImportError` of `to_dataframe()`, and the native package raises the plain `ImportError`.
 
 == Related pages
 

@@ -6,6 +6,7 @@ Database and DatabaseFactory classes for embedded database access.
 
 import gc
 import itertools
+import operator
 from collections.abc import Mapping
 from datetime import date
 from decimal import Decimal
@@ -186,13 +187,61 @@ def _java_class(name):
     return cls
 
 
+_NONE_TYPE = type(None)
+_STR_OR_NONE = frozenset((str, _NONE_TYPE))
+
+
+def _string_column(values):
+    """A column of ``str`` and ``None`` as one ``StringColumn`` (the UTF-8 text of all rows in one ``byte[]``, one ``int[]`` of row + 1
+    offsets, and one ``boolean[]`` of the null rows when there is a null), or None when the column is not that: empty, or holding any
+    other type (a mixed column converts per element), or too large for an int offset, or a ``str`` with no UTF-8 form (a lone
+    surrogate), which the per-element path keeps handling as before. The blob crosses through ``bytes`` into ``JArray(JByte)``, a
+    copy; nothing relies on a JPype view of Python memory. The type census, the lengths and the join run in C.
+    """
+    n = len(values)
+    if _np is None or not n:
+        return None
+    kinds = set(map(type, values))
+    if str not in kinds or not kinds <= _STR_OR_NONE:
+        return None
+    mask = None
+    if _NONE_TYPE in kinds:
+        mask = _np.fromiter(
+            map(operator.is_, values, itertools.repeat(None)), dtype=_np.bool_, count=n
+        )
+        values = list(values)  # the caller's sequence is not touched
+        for i in _np.flatnonzero(mask).tolist():
+            values[i] = ""
+    if all(map(str.isascii, values)):
+        blob = "".join(values).encode("ascii")
+        lengths = _np.fromiter(map(len, values), dtype=_np.int64, count=n)
+    else:
+        try:
+            encoded = list(map(str.encode, values))
+        except UnicodeEncodeError:
+            return None
+        blob = b"".join(encoded)
+        lengths = _np.fromiter(map(len, encoded), dtype=_np.int64, count=n)
+        del encoded
+    if len(blob) > _JAVA_INT_MAX:
+        return None
+    offsets = _np.zeros(n + 1, dtype=_np.int32)
+    _np.cumsum(lengths, dtype=_np.int32, out=offsets[1:])
+    return _java_class("com.arcadedb.python.StringColumn")(
+        jpype.JArray(jpype.JByte)(blob),
+        jpype.JArray(jpype.JInt)(offsets),
+        None if mask is None else jpype.JArray(jpype.JBoolean)(mask),
+    )
+
+
 def _column_to_java(name, values):
     """One column of ``Database.insert_columns`` as ``(java array, length)``.
 
     A numpy array of an integer, float, or bool kind crosses as ONE buffer copy
     into a ``long[]``, ``double[]``, or ``boolean[]``; a string or object array
-    and any other sequence convert per element into an ``Object[]`` (a ``str``
-    reuses one Java String per distinct value, ``None`` is a null). A pandas
+    and any other sequence of mixed values convert per element into an ``Object[]`` (a ``str``
+    reuses one Java String per distinct value, ``None`` is a null); a column of nothing but ``str`` and ``None`` crosses instead as one
+    ``StringColumn`` (``_string_column``). A pandas
     ``Series`` is read through ``to_numpy``, with a nullable dtype's ``<NA>``
     as ``None``. A 2-D ``float32`` array is a column of vectors: it crosses as
     one ``float[]`` and each document gets one row of it. Kinds that do not cross natively raise ``TypeError`` rather
@@ -265,6 +314,9 @@ def _column_to_java(name, values):
         values = list(values.astype(object, copy=False))
     elif not isinstance(values, (list, tuple)):
         values = list(values)
+    column = _string_column(values)
+    if column is not None:
+        return column, len(values)
     converted = []
     seen = {}
     for value in values:
@@ -1082,7 +1134,10 @@ class Database:
                 bool as ``boolean[]``, one buffer copy each) or any sequence of
                 Python values (``str``, ``int``, ``float``, ``bool``, ``None``,
                 and the types ``insert_many``'s per-row fallback accepts), which
-                converts per element. ``None`` is a null; a float ``NaN`` in a
+                converts per element, except a sequence of nothing but ``str``
+                and ``None``, which crosses as one UTF-8 buffer with its offsets
+                (a string with no UTF-8 form, a lone surrogate, keeps the per-element
+                path). ``None`` is a null; a float ``NaN`` in a
                 numpy float column is stored as NaN, not as null (use a
                 sequence with ``None`` for nulls). A pandas nullable column
                 (``Int64``, ``string``) converts with its ``<NA>`` as null.
@@ -1211,7 +1266,8 @@ class Database:
         takes that table directly and has the type mapping, the declared-type
         rules, and the failure contract). Each column becomes a typed array
         that crosses the bridge once per batch: integers, floats, and booleans
-        without nulls as one buffer copy, anything else per element. A document
+        without nulls as one buffer copy, a string column as one UTF-8 buffer
+        with its offsets, anything else per element. A document
         type gets documents; a vertex type gets vertices. An edge type is
         refused: load the vertices, then buffer the edges with
         ``graph_batch().new_edges()``.
@@ -1287,9 +1343,10 @@ class Database:
 
         The Arrow counterpart of :meth:`insert_columns`: each Arrow column is
         converted to the typed array ``insert_columns`` sends across the bridge
-        (``DocumentBatcher.insertColumns``), so a document type loads at that
-        path's speed; a vertex type loads through ``GraphBatch``. Documents and
-        vertices only: an edge type is refused.
+        (``DocumentBatcher.insertColumns``), so a document type and a vertex
+        type load at that path's speed (a vertex type is not loaded through
+        ``GraphBatch``; a vertex load refuses to run inside a transaction the
+        caller opened). Documents and vertices only: an edge type is refused.
 
         A property the type does not declare takes the stored type below; a
         declared property converts to its declared type.

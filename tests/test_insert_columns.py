@@ -79,7 +79,7 @@ class TestTypedValuesLand:
         assert _count(temp_db, "Col", "WHERE label IS NULL") == 2
         assert _count(temp_db, "Col", "WHERE label = 'c'") == 1
 
-    def test_a_numpy_string_array_and_an_object_array_with_none_cross_per_element(
+    def test_a_numpy_string_array_and_an_object_array_with_none_are_stored(
         self, temp_db
     ):
         _make_type(temp_db)

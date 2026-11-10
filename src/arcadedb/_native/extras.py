@@ -19,8 +19,18 @@ from ..callbacks import EventHandle as _BaseEventHandle
 from ..callbacks import check_event, check_function
 from ..exceptions import ArcadeDBError
 from ..graph_batch import GraphBatch as _BaseGraphBatch
+from ..type_conversion import take_vector_columns
 from . import interrupts, lib, not_yet
-from .codec import _PLAIN, _default, _np, _prep, encode_gb_args, loads, sample_array
+from .codec import (
+    _PLAIN,
+    _default,
+    _np,
+    _prep,
+    encode_gb_args,
+    encode_vertex_args,
+    loads,
+    sample_array,
+)
 
 # -------------------------------------------------------------------------------------------------------- upcall
 
@@ -28,6 +38,7 @@ from .codec import _PLAIN, _default, _np, _prep, encode_gb_args, loads, sample_a
 _UPCALL_TYPE = ctypes.CFUNCTYPE(
     None, ctypes.c_longlong, ctypes.c_char_p, ctypes.c_void_p
 )
+_DICT_OR_NONE = frozenset((dict, type(None)))
 _callbacks: dict = {}
 _callback_ids = itertools.count(1)
 _callbacks_lock = threading.Lock()
@@ -180,6 +191,30 @@ class NativeGraphBatch(_BaseGraphBatch):
             return _call(prefix, "arcadedb_n_gb", self._gb, lib.b(op), lib.b(text))
         return _call(prefix, "arcadedb_n_gb", self._gb, lib.b(op), lib.b(_enc(args)))
 
+    def _create_chunk(self, prefix: str, type_name: str, rows: list) -> list:
+        """One crossing and one transaction for `rows` (dicts): the RIDs of the new vertices.
+
+        A property whose value in every row is a float32 numpy array of one length crosses as one float32 matrix in the side buffer
+        (``take_vector_columns``, ``encode_vertex_args``), with no tag, hook call or Python code per row; every other value is
+        written as :func:`encode_gb_args` writes it.
+        """
+        taken = take_vector_columns(rows, (), undeclared=True) if lib.GB_BIN else None
+        if taken is None:
+            return self._op(prefix, "create_vertices", type=type_name, rows=rows)[
+                "rids"
+            ]
+        names, matrices, rest = taken
+        text, buf, count = encode_vertex_args(type_name, rest, names, matrices)
+        return _call(
+            prefix,
+            "arcadedb_n_gb_bin",
+            self._gb,
+            lib.b("create_vertices"),
+            lib.b(text),
+            buf,
+            count,
+        )["rids"]
+
     def new_vertex(self, type_name: str):
         from .records import Vertex
 
@@ -229,27 +264,14 @@ class NativeGraphBatch(_BaseGraphBatch):
                 raise TypeError(f"property names must be str, got {key!r}")
         return properties
 
-    def _create_vertices_json_bulk(self, type_name: str, rows):
-        """The bulk path (JSON rows in, RIDs out): the RIDs, or None for rows JSON would change (the caller falls back)."""
-        from ..type_conversion import json_bulk_scalar_ok
-
-        for row in rows:
-            for key, value in (row or {}).items():
-                if type(key) is not str or not json_bulk_scalar_ok(value):
-                    return None
-        return self._op(
-            f"Failed to create batch vertices for type '{type_name}'",
-            "create_vertices",
-            type=type_name,
-            rows=[r or {} for r in rows],
-        )["rids"]
-
     def create_vertices(self, type_name: str, count_or_properties) -> list:
         """The RIDs of the new vertices. Rows go in chunks of the batch's ``commit_every`` (1000 unless graph_batch() got another value;
         0: 10,000), one crossing and one transaction per chunk: chunks that already went in stay stored if a later chunk fails.
 
-        A non-empty one-dimensional ``float32`` numpy array in a row crosses in a binary side buffer; a list or a ``float64`` array
-        crosses as number text (``new_edge`` and ``new_edges`` props follow the same rule).
+        A property whose value in every row is a non-empty one-dimensional ``float32`` numpy array of one length crosses as one
+        float32 matrix in a binary side buffer, one buffer per property and chunk; any other ``float32`` array of a row crosses in the side
+        buffer one array at a time, and a list or a ``float64`` array as number text (``new_edge`` and ``new_edges`` props follow the
+        one-array rule).
         """
         self._check_not_closed()
         db = self._db
@@ -274,23 +296,24 @@ class NativeGraphBatch(_BaseGraphBatch):
                     ]
                 return rids
             rows = list(count_or_properties)
-            for row in rows:
-                if row is not None and not isinstance(row, dict):
-                    raise TypeError(
-                        "create_vertices() property rows must be dicts or None"
-                    )
+            kinds = set(map(type, rows))
+            if (
+                not kinds <= _DICT_OR_NONE
+            ):  # exact types in C; only an odd row pays the isinstance loop
+                for row in rows:
+                    if row is not None and not isinstance(row, dict):
+                        raise TypeError(
+                            "create_vertices() property rows must be dicts or None"
+                        )
             # chunked, as the JPype wrapper does: one crossing, one JSON text and one reply per chunk, so a 1M-vertex load
             # never holds the text, the parsed rows and the reply of all of it at once (the Serial GC copies what lives)
             rids = []
+            has_none = type(None) in kinds
             for start in range(0, len(rows), chunk):
-                rids.extend(
-                    self._op(
-                        prefix,
-                        "create_vertices",
-                        type=type_name,
-                        rows=[r or {} for r in rows[start : start + chunk]],
-                    )["rids"]
-                )
+                part = rows[start : start + chunk]
+                if has_none:
+                    part = [r or {} for r in part]
+                rids.extend(self._create_chunk(prefix, type_name, part))
             if not rows:
                 rids = self._op(prefix, "create_vertices", type=type_name, rows=[])[
                     "rids"
@@ -913,6 +936,19 @@ def insert_parallel(database, type_name: str, rows) -> dict:
         b"insert_parallel",
         lib.b(_enc({"type": type_name, "rows": rows})),
     )
+
+
+def failure_token(database) -> int:
+    """A new failure token for one parallel load: the caller makes it before the load, hands its id to the load and reads it with
+    :func:`failures` after the final wait, so it holds the id whatever happens to the load (an interrupt included).
+    """
+    return _call(
+        "Failed to make a failure token",
+        "arcadedb_n_async",
+        database._h,
+        b"token",
+        lib.b(_enc({})),
+    )["fid"]
 
 
 def failures(database, token: int) -> dict:

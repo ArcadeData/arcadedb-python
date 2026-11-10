@@ -37,10 +37,14 @@ WINDOWS_NOT_APPLICABLE = {
     "test_release_preflight.py": "runs the workflows' bash step code",
     # runs the bash code of the plan step of test-native.yml (scripts/dev_engine_pin.py, #304)
     "test_dev_engine_pin.py": "runs the bash code of a workflow step",
+    # runs the awk program of the parity gate step of test-native.yml, which is code for the bash of a runner
+    "test_parity_gate_awk.py": "runs the workflows' awk step code",
 }
 if sys.platform == "win32":
     collect_ignore.extend(WINDOWS_NOT_APPLICABLE)
 if BACKEND != "native":
+    # the old JSON-row route that the native column frames are compared with (the module lives in the native package)
+    collect_ignore.append("test_native_column_frames_reference.py")
     # Java -> Python upcalls (Python functions in SQL) exist on the native build only
     collect_ignore.append("test_native_udf.py")
     # how find_nearest hands the query vector to the native library (the codec's side buffer)
@@ -49,6 +53,18 @@ if BACKEND != "native":
     collect_ignore.append("test_native_vector_hit_lazy.py")
     # the columnar insert's stored records are compared between the JSON and the columnar entry points of the native library
     collect_ignore.append("test_native_columnar_insert.py")
+    # insert_columns(parallel=True) takes the columnar entry and stores what the row path stores (arcadedb_n_insert_colp with "parallel")
+    collect_ignore.append("test_native_columnar_parallel.py")
+    # the review of the native parallel loads: no silent loss, an interrupt waits for the writers and reads the failure token
+    collect_ignore.append("test_native_columnar_parallel_review_fixes.py")
+    # a column of date-times, dates, Decimals or bytes crosses as a column (kinds T D n x), observed on the native library
+    collect_ignore.append("test_native_columnar_temporal.py")
+    # the review of the temporal kinds: a value the image cannot take is refused in Python, never wrapped or thrown mid-batch
+    collect_ignore.append("test_native_columnar_temporal_review_fixes.py")
+    # a vertex load by insert_dataframe or insert_arrow crosses as columns, one crossing per batch, observed on the native library
+    collect_ignore.append("test_native_vertex_columnar.py")
+    # a document or vertex load keeps its transient Python memory to one batch and a vector column is never turned into Python floats
+    collect_ignore.append("test_native_columnar_memory.py")
     # the rows of an insert_many chunk with date-times, Decimals, bytes and numpy scalars are told apart by the entry points they cross
     collect_ignore.append("test_native_mixed_chunk.py")
     # the native build's ingest defaults (insert_many and graph_batch commit size), observed on the native library
@@ -67,6 +83,10 @@ if BACKEND != "native":
     collect_ignore.append("test_native_async_callbacks.py")
     # the short call path of a point read (codec.encode_params, lib.exec_query, first()), observed on the native library
     collect_ignore.append("test_native_point_read.py")
+    # how a reply is read out of the library (lib._take): the copies and the frees, observed with spies on ctypes.string_at and arcadedb_free
+    collect_ignore.append("test_native_reply_reader.py")
+    # the crossings of save() and new_edge() (lib.cmd, lib.call, lib.call_bin, lib.exec_query are the native library's ctypes doors)
+    collect_ignore.append("test_native_one_row_crossings.py")
     # an RID built from an RID keeps the text, so the fast named-parameter path of codec.encode_params can encode it (#265)
     collect_ignore.append("test_native_rid_params.py")
     # to_json_list walks the rows with codec.json_native only when a reply restored a tagged value (#219), observed on the native library
@@ -85,8 +105,12 @@ if BACKEND != "native":
     collect_ignore.append("test_native_point_op_glue.py")
     # the address table of append_samples (arcadedb_n_async_bin), observed on the native library
     collect_ignore.append("test_native_timeseries_binary.py")
-    # arcadedb._native.columns builds the columnar readers' tables from the rows; the file compares it with the rules it replaced (#312)
+    # the drain of a native result set (_fill(into), _drain_dicts) against row-by-row iteration (#321; the columns module it once compared is gone, #331)
     collect_ignore.append("test_native_columns_reference.py")
+    # the crossings of GraphBatch.create_vertices with float32 columns (lib.call, the codec's per-row hooks), observed on the native library
+    collect_ignore.append("test_native_vertex_vector_crossings.py")
+    # the native columnar fast path (arcadedb._native.bulk.insert_columns_fast) with a rows-dropped fault in it, found by the ingest-integrity check (#336)
+    collect_ignore.append("test_native_ingest_integrity_faults.py")
 if not os.path.isfile(
     os.path.join(os.path.dirname(os.path.dirname(__file__)), "docs", "index.md")
 ):
@@ -114,6 +138,7 @@ NATIVE_NOT_APPLICABLE = {
     "test_server_packaging.py": "JVM wheel contents",
     "test_runtime_cache.py": "JRE runtime cache of the JVM wheel",
     "test_aot.py": "JVM class-data cache",
+    "test_jvm_cds.py": "class-data-sharing archive of the JVM wheel's bundled JRE",
     "test_stage_jars.py": "staging of the JVM wheel's jars",
     "test_extract_version.py": "version of the JVM wheel's engine jar",
     "test_extract_version_classifiers.py": "version of the JVM wheel's engine jar",
@@ -123,9 +148,14 @@ NATIVE_NOT_APPLICABLE = {
     "test_query_vector_params_jvm.py": "the java.util objects the JVM build's parameter conversion builds",
     "test_insert_many_gc_pause.py": "the cyclic collector pause is the JVM build's (the native insert_many allocates nothing the collector tracks)",
     "test_graph_batch_tagged_shapes.py": "the JVM wheel's graph batch bulk path (bridge VertexBatcher and EdgeBatcher, the property-matrix fallback)",
+    "test_graph_batch_single_pass.py": "the JVM wheel's graph batch bulk path (GraphBatch._create_vertices_json_bulk, the property-matrix fallback)",
+    "test_graph_batch_vector_crossings_jvm.py": "the JPype crossings of the JVM wheel's create_vertices vector path (the bridge classes, the property-matrix fallback)",
+    "test_insert_columns_string_blob.py": "the bridge's StringColumn and the JVM wheel's core._column_to_java (JPype arrays, a spy on the per-element conversion)",
+    "test_arrow_vector_column_jvm.py": "the JPype crossings of the JVM wheel's Arrow vector column (core.convert_python_to_java, the bridge's FloatVectors.Matrix) and its Python heap",
     "test_async_proxy_cache.py": "the JPype proxy classes of the JVM build's async executor",
     "test_read_crossings.py": "crossing counts of the JVM build's read path (JPype proxies of the Java objects and the bridge classes)",
     "test_reader_crossings.py": "crossing counts of the JVM build's record and row readers (JPype proxies of the Java objects and the bridge classes)",
+    "test_jvm_ingest_integrity_faults.py": "rows-dropped faults put into the JVM build's column conversion and bulk vertex path (core._column_to_java, GraphBatch._create_vertices_json_bulk)",
 }
 if BACKEND == "native" and not os.environ.get("NATIVE_PARITY_ALL"):
     collect_ignore.extend(NATIVE_NOT_APPLICABLE)
@@ -297,13 +327,33 @@ def pytest_configure(config):
     # pytest_configure, and a conftest hook otherwise runs before that.
     # This hook was dead from 2026-07-25 to 2026-09-29: a second
     # pytest_configure further down replaced it (test_jvm_args pins it now).
+    #
+    # That reason is the JVM's. The native wheel has no HotSpot in the process, so a
+    # fault there is a real one and the trace is what a crash leaves: with a stock run
+    # (faulthandler off, nothing in the log) the Windows parity legs lost a process in
+    # test_vector.py, test_free_threading.py and test_find_nearest_query_forms.py and
+    # nothing told which call it was (ArcadeData/arcadedb-python#295). native/wheel/parity_wheel.py names a
+    # file in ARCADEDB_TEST_FAULTHANDLER_FILE (it sets it on Windows only), and a native
+    # run on Windows then writes faulthandler's trace there, not to stderr. The JVM
+    # build ignores the variable and stays off.
     import sys
 
     if sys.platform == "win32":
         import faulthandler
 
-        if faulthandler.is_enabled():
+        trace = os.environ.get(FAULT_FILE_ENV)
+        if trace and BACKEND == "native":
+            global _fault_file
+            # kept open: faulthandler writes to its descriptor at the crash
+            _fault_file = open(trace, "w")
+            faulthandler.enable(file=_fault_file, all_threads=True)
+        elif faulthandler.is_enabled():
             faulthandler.disable()
+
+
+# The file the native run on Windows writes a faulthandler trace to (see pytest_configure above); set by native/wheel/parity_wheel.py.
+FAULT_FILE_ENV = "ARCADEDB_TEST_FAULTHANDLER_FILE"
+_fault_file = None
 
 
 # A test still running this long gets every Java thread's stack on stderr,
@@ -529,3 +579,30 @@ def pytest_sessionfinish(session, exitstatus):
 def pytest_terminal_summary(terminalreporter, exitstatus, config):
     """Terminal summary hook."""
     pass
+
+
+@pytest.fixture
+def store(temp_db_path):
+    """A database on disk that a test can close and open again (the ingest-integrity tests, ArcadeData/arcadedb-python#336)."""
+    from tests.ingest_integrity import Store
+
+    box = Store(temp_db_path)
+    yield box
+    box.close()
+
+
+@pytest.fixture
+def small_chunks(monkeypatch):
+    """insert_many reads 7 rows at a time and a graph batch crosses 7 rows at a time (the real chunks are 10,000 and 100,000)."""
+    from tests.ingest_integrity import CHUNK
+
+    if BACKEND == "native":
+        from arcadedb._native import database, extras
+
+        monkeypatch.setattr(database, "_INSERT_MANY_CHUNK", CHUNK)
+        monkeypatch.setattr(extras.NativeGraphBatch, "_BULK_CHUNK", CHUNK)
+    else:
+        from arcadedb import core
+
+        monkeypatch.setattr(core, "_INSERT_MANY_CHUNK", CHUNK)
+        monkeypatch.setattr(arcadedb.GraphBatch, "_BULK_CHUNK", CHUNK)

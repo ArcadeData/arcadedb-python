@@ -338,7 +338,7 @@ class _Mixin:
             from .extras import veto_count
 
             vetoes = veto_count()
-            row = db.command(
+            row = db._command_first_row(
                 "sql", self._CREATE.format(t=_q(self._type)), {"row": self._props}
             ).first()
             if row is None and veto_count() != vetoes:
@@ -388,11 +388,11 @@ class _Mixin:
         vetoes = veto_count()
         params = {"rid": RID(self._rid), "row": self._props}
         if exact:
-            row = db.command("sql", self._UPDATE_SENT, params).first()
+            row = db._command_first_row("sql", self._UPDATE_SENT, params).first()
             if row is not None and row.get("count") and veto_count() == vetoes:
                 self._base = sent
         else:
-            after = db.command("sql", self._UPDATE, params).first()
+            after = db._command_first_row("sql", self._UPDATE, params).first()
             if (
                 after is not None
             ):  # a veto or a record that is gone gives no row: nothing was written, the copy stays
@@ -450,7 +450,7 @@ class Vertex(_Mixin, _BaseVertex):
         if kwargs:
             sql += " CONTENT :row"
             params["row"] = kwargs
-        row = self._db.command("sql", sql, params).first()
+        row = self._db._command_first_row("sql", sql, params).first()
         edge = Edge(self._db, label, mutable=False)
         edge._adopt(row)
         return edge

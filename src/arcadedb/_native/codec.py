@@ -1,5 +1,7 @@
 """Python <-> native JSON: query parameters out, typed rows in."""
 
+import ctypes
+import itertools
 import json
 import os
 from collections.abc import Mapping
@@ -274,6 +276,64 @@ def encode_gb_args(args):
         return text, None, 0
     buf = arrays[0].tobytes() if len(arrays) == 1 else _np.concatenate(arrays).tobytes()
     return text, buf, state[1]
+
+
+_STR_TYPE = frozenset((str,))
+
+
+def _plain_rows(rows):
+    """True when every row is a dict whose keys are str and whose values are plain scalars: :func:`_prep` and the default hook would
+    change nothing, so ``json.dumps`` writes the rows as they are. The census runs in C (a set of types per level), not in Python per row.
+    """
+    if not set(map(type, set(itertools.chain.from_iterable(rows)))) <= _STR_TYPE:
+        return False
+    return (
+        set(map(type, itertools.chain.from_iterable(map(dict.values, rows)))) <= _PLAIN
+    )
+
+
+def _side_buffer(flat):
+    """The float32 array `flat` as the side-buffer argument of ``arcadedb_n_gb_bin``: a ctypes view of its memory (no copy), or its bytes
+    when the array is read-only or not contiguous."""
+    try:
+        return (ctypes.c_char * flat.nbytes).from_buffer(flat)
+    except (TypeError, ValueError):
+        return flat.tobytes()
+
+
+def encode_vertex_args(type_name, rows, names, matrices):
+    """The ``args`` of ``arcadedb_n_gb_bin`` for ``create_vertices`` whose vectors are float32 matrices: ``(text, side buffer, float count)``.
+
+    `rows` hold the properties other than `names`; matrices[c] is the ``(len(rows), dim)`` float32 array of the property names[c], one
+    row of it per vertex. The matrices are the front of the side buffer, back to back, and the text carries their names, dimensions and
+    float offsets (``"vecs"``): no tag and no Python call per row. A value of `rows` that needs the hook (a datetime, a float32 array that
+    did not qualify, a list of floats) is written as in :func:`encode_gb_args`, after the matrices in the buffer.
+    """
+    offs, total = [], 0
+    for matrix in matrices:
+        offs.append(total)
+        total += matrix.size
+    args = {
+        "type": type_name,
+        "rows": rows,
+        "vecs": {
+            "names": names,
+            "dims": [int(m.shape[1]) for m in matrices],
+            "offs": offs,
+        },
+    }
+    if _plain_rows(rows):
+        text, arrays = _dumps(args), list(matrices)
+    else:
+        state = [list(matrices), total]
+        text = json.dumps(_prep(args), default=lambda v: _gb_default(v, state))
+        arrays = state[0]
+    flat = (
+        arrays[0].reshape(-1)
+        if len(arrays) == 1
+        else _np.concatenate([a.reshape(-1) for a in arrays])
+    )
+    return text, _side_buffer(flat), flat.size
 
 
 _INT64_MAX = 2**63 - 1

@@ -157,6 +157,11 @@ WARNING: *One JVM configuration per process.* JVM options are locked after the J
 
 Each Python process starts its own JVM, and each JVM sees the whole container limit. With several Python processes in one container, give each process its own `heap_size`.
 
+[[jvm-cds]]
+=== Class-data sharing
+
+The bundled JRE ships the JVM's default class-data-sharing archive, dumped with `-XX:+UseCompactObjectHeaders`, the flag that `start_jvm` sets. The JVM finds the archive by itself and maps the JDK's classes from it instead of loading and verifying them at every start. You do nothing to use it. The JVM ignores the archive, and starts as it did before, when your `jvm_args` change a setting that the archive depends on (`-XX:-UseCompactObjectHeaders`, `-Xshare:off`) or when the heap is larger than 32 GB (the default is half of the RAM, so a machine with more than 64 GB of RAM starts without the archive unless you set `heap_size`). The archive holds the JDK's classes only, not the engine's jars.
+
 [[jvm-aot]]
 === Faster start-up with the AOT cache
 

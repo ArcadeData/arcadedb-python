@@ -5,17 +5,18 @@ Loads a pandas or Polars DataFrame, or an Arrow table, into a type in batches
 (``Database.insert_dataframe`` and ``Database.insert_arrow``). Arrow is the one
 internal form: a pandas frame becomes an Arrow table, a Polars frame is already
 one, and each Arrow column becomes the typed array ``Database.insert_columns``
-sends across the bridge (a document type), or the property rows
-``GraphBatch.create_vertices`` takes (a vertex type). No Java was added: both
-paths use the existing glue (``DocumentBatcher.insertColumns`` and the
-``GraphBatch`` vertex batcher).
+sends across the bridge, for a document type and for a vertex type alike (the
+vertex type gets vertices from the same ``DocumentBatcher.insertColumns``; it
+refuses to run inside a transaction the caller opened, as ``GraphBatch`` does).
 
 The native backend (the ``arcadedb`` wheel) shares everything but the
 last step: the checks, the type mapping, the batching and the error wording are
-the same code. A document batch goes over as one JSON text through
-``Database.insert_many`` (one crossing per 10,000 rows), a vertex batch through
-``GraphBatch.create_vertices``, and a value JSON cannot carry (a date-time, a
-decimal, bytes) travels as a tagged value the image decodes.
+the same code. A batch of documents or vertices goes over by address through
+the columnar entry (``arcadedb_n_insert_colp``) when every column can cross as
+memory (numbers, bools, strings, float vectors, date-times, dates, decimals and bytes),
+else as one JSON text through ``Database.insert_many`` (one crossing per 10,000 rows),
+where a value JSON cannot carry (a date-time, a decimal, bytes) travels as a tagged
+value the image decodes.
 """
 
 import re
@@ -321,12 +322,75 @@ def _scalars_to_tagged(kind: str, chunk):
     ]
 
 
-def _column_values(name: str, chunk, pa, native: bool = False, arrow: bool = False):
+def _is_number_list(pa, arrow_type) -> bool:
+    """A list, large list or fixed-size list of integers or floats: the column the columnar entry lays out as a float32 matrix."""
+    types = pa.types
+    if not (
+        types.is_list(arrow_type)
+        or types.is_large_list(arrow_type)
+        or types.is_fixed_size_list(arrow_type)
+    ):
+        return False
+    return types.is_floating(arrow_type.value_type) or types.is_integer(
+        arrow_type.value_type
+    )
+
+
+_JAVA_INT_MAX = 2**31 - 1
+
+
+def _float32_matrix(pa, chunk):
+    """A list, large list or fixed-size list column of float32 with no null row, no null element and one length, as one 2-D float32
+    numpy matrix (a view of Arrow's value buffer: ``flatten`` follows a slice's offset), else None. None means "not this shape" and
+    leaves the column to ``to_pylist``, which keeps what that route stored or refused: a null row stays null, a null element is
+    refused, vectors of different length are stored as given or refused by a vector index. Only float32 is taken: a float64 or integer
+    value is narrowed by the engine (and refused past the float range), which a cast here would not do.
+    """
+    types = pa.types
+    arrow_type = chunk.type
+    if not (
+        types.is_list(arrow_type)
+        or types.is_large_list(arrow_type)
+        or types.is_fixed_size_list(arrow_type)
+    ):
+        return None
+    n = len(chunk)
+    if not types.is_float32(arrow_type.value_type) or not n or chunk.null_count:
+        return None
+    flat = chunk.flatten()
+    if flat.null_count or len(flat) % n or len(flat) > _JAVA_INT_MAX:
+        return None
+    dim = len(flat) // n
+    if dim == 0:
+        return None
+    if not types.is_fixed_size_list(arrow_type):
+        import pyarrow.compute as pc
+
+        lengths = pc.list_value_length(chunk)
+        if pc.min(lengths).as_py() != dim or pc.max(lengths).as_py() != dim:
+            return None
+    return flat.to_numpy(zero_copy_only=False).reshape(n, dim)
+
+
+def _column_values(
+    name: str,
+    chunk,
+    pa,
+    native: bool = False,
+    arrow: bool = False,
+    float_vectors: bool = False,
+):
     """One Arrow array as what ``Database.insert_columns`` takes: a numpy array when the column crosses as one
     buffer (integers, floats and booleans without nulls), else a list of values (``None`` is a null).
 
-    ``arrow`` (the native backend's document load): a string column, and a numeric one with nulls, stay Arrow arrays, which
-    the columnar entry reads in place (the offsets, the bytes and the validity bitmap) instead of as Python values.
+    ``float_vectors`` (the JVM backend, a property declared ``ARRAY_OF_FLOATS``): a float32 vector column of one length and no null is
+    one 2-D float32 matrix, which ``insert_columns`` sends as one ``float[]``; ``to_pylist`` made one Python float per element and
+    ``insert_columns`` one ``ArrayList`` of boxed doubles per row (see ``_float32_matrix`` for what is left to it).
+
+    ``arrow`` (the native backend's document and vertex load): a string, binary, timestamp, date or decimal column, a list of
+    numbers (a vector) and a numeric column with nulls, stay Arrow arrays, which the columnar entry reads in place (the offsets,
+    the bytes, the integer ticks, the vector values and the validity bitmap) instead of as Python values; ``_insert_documents_native``
+    turns them into Python or tagged values for the row path when a batch cannot go columnar.
     """
     types = pa.types
     if types.is_dictionary(chunk.type):  # a pandas categorical or a Polars Categorical
@@ -361,6 +425,14 @@ def _column_values(name: str, chunk, pa, native: bool = False, arrow: bool = Fal
                 values = values.astype("float64")  # float16/32 widen exactly
             return values
         return chunk.to_pylist()
+    if arrow and kind in ("timestamp", "date", "decimal", "binary"):
+        return chunk
+    if arrow and kind == "list" and _is_number_list(pa, chunk.type):
+        return chunk  # a vector column: the columnar entry reads the values in place (to_pylist makes one Python float per element)
+    if float_vectors and kind == "list":
+        matrix = _float32_matrix(pa, chunk)
+        if matrix is not None:
+            return matrix
     if kind in ("timestamp", "date"):
         return (
             _temporal_to_tagged(chunk, pa) if native else _temporal_to_java(chunk, pa)
@@ -421,68 +493,80 @@ def insert_table(
     native = _is_native(db)
     written = 0
     # a document load inside the caller's own transaction joins it (insert_columns commits
-    # nothing then); a vertex load refuses to run inside one
-    in_caller_transaction = (not is_vertex) and bool(db.is_transaction_active())
-    graph_batch = db.graph_batch() if is_vertex else None
-    try:
-        for batch in table.to_batches(max_chunksize=batch_size):
-            if batch.num_rows == 0:
-                continue
-            columns = {
-                name: _column_values(
-                    name,
-                    batch.column(i),
-                    pa,
-                    native,
-                    arrow=native and not is_vertex and not parallel,
+    # nothing then); a vertex load refuses to run inside one, as GraphBatch.createVertices does.
+    # parallel=True never joins it: the async writers commit the records themselves, so a rollback
+    # of the caller's transaction does not remove them
+    in_transaction = bool(db.is_transaction_active())
+    in_caller_transaction = in_transaction and not parallel
+    if is_vertex and in_transaction:
+        raise ArcadeDBError(
+            f"Failed to create batch vertices for type '{type_name}': a vertex load commits its own batches "
+            f"and cannot run inside a transaction the caller opened: commit or roll back that transaction first"
+        )
+    for batch in table.to_batches(max_chunksize=batch_size):
+        if batch.num_rows == 0:
+            continue
+        columns = {
+            name: _column_values(
+                name,
+                batch.column(i),
+                pa,
+                native,
+                arrow=native,
+                float_vectors=not native and declared.get(name) == "ARRAY_OF_FLOATS",
+            )
+            for i, name in enumerate(names)
+        }
+        try:
+            if native:
+                _insert_documents_native(
+                    db, type_name, names, columns, batch_size, parallel, declared
                 )
-                for i, name in enumerate(names)
-            }
-            try:
-                if is_vertex:
-                    _insert_vertices(
-                        graph_batch, type_name, names, columns, batch.num_rows
-                    )
-                elif native:
-                    _insert_documents_native(
-                        db, type_name, names, columns, batch_size, parallel, declared
-                    )
-                else:
-                    db.insert_columns(
-                        type_name, columns, commit_every=batch_size, parallel=parallel
-                    )
-            except ArcadeDBError as exc:
-                if written and in_caller_transaction:
-                    # the batches joined the caller's transaction: nothing is committed
-                    # until the caller commits, and a rollback removes them
-                    raise ArcadeDBError(
-                        f"{exc}; the {written} row(s) of the batches before this one "
-                        f"were written in your transaction, not committed"
-                    ) from exc
-                if written:
-                    raise ArcadeDBError(
-                        f"{exc}; the {written} row(s) of the batches before this one "
-                        f"were committed"
-                    ) from exc
-                raise
-            written += batch.num_rows
-    finally:
-        if graph_batch is not None:
-            graph_batch.close()
+            else:
+                db.insert_columns(
+                    type_name, columns, commit_every=batch_size, parallel=parallel
+                )
+        except ArcadeDBError as exc:
+            if written and in_caller_transaction:
+                # the batches joined the caller's transaction: nothing is committed
+                # until the caller commits, and a rollback removes them
+                raise ArcadeDBError(
+                    f"{exc}; the {written} row(s) of the batches before this one "
+                    f"were written in your transaction, not committed"
+                ) from exc
+            if written and parallel:
+                # the async writers commit on their own, inside the caller's transaction or not
+                raise ArcadeDBError(
+                    f"{exc}; the {written} row(s) of the batches before this one "
+                    f"were handed to the async writers, which commit on their own: "
+                    f"a rollback of your transaction does not remove them"
+                ) from exc
+            if written:
+                raise ArcadeDBError(
+                    f"{exc}; the {written} row(s) of the batches before this one "
+                    f"were committed"
+                ) from exc
+            raise
+        written += batch.num_rows
+        del (
+            columns,
+            batch,
+        )  # sent: drop this batch's columns before the next batch is built, so two batches are never alive together
     return written
 
 
-def _insert_vertices(
-    graph_batch, type_name: str, names: List[str], columns: Dict[str, Any], n: int
-):
-    """One batch of vertices: the columns as one property dict per row, through ``GraphBatch.create_vertices``."""
-    lists = []
-    for name in names:
-        values = columns[name]
-        lists.append(values.tolist() if hasattr(values, "tolist") else values)
-    graph_batch.create_vertices(
-        type_name, [dict(zip(names, row)) for row in zip(*lists)]
-    )
+def _arrow_row_values(col) -> list:
+    """A column kept as an Arrow array, as the values the row path takes: Python values, or tagged values for a timestamp, date,
+    decimal or binary column (the form it had before the columnar entry took them, so the stored value is unchanged).
+    """
+    import pyarrow as pa
+
+    kind = _kind(pa, col.type)
+    if kind in ("timestamp", "date"):
+        return _temporal_to_tagged(col, pa)
+    if kind in ("decimal", "binary"):
+        return _scalars_to_tagged(kind, col)
+    return col.to_pylist()
 
 
 def _insert_documents_native(
@@ -494,12 +578,23 @@ def _insert_documents_native(
     parallel: bool,
     declared: Optional[Dict[str, str]] = None,
 ):
-    """One batch of documents on the native backend. When every column can cross as memory (numbers, bools, strings, nulls,
-    float vectors for an ``ARRAY_OF_FLOATS`` property) the batch goes through the columnar entry, no Python values and no JSON
-    text; otherwise the columns become one dict per row and go to ``insert_many`` (one crossing per 10,000 rows). Either way
-    the batch is one transaction, or joins the caller's.
+    """One batch of documents or vertices on the native backend. When every column can cross as memory (numbers, bools, strings,
+    nulls, date-times, dates, decimals, bytes, float vectors for an ``ARRAY_OF_FLOATS`` property) the batch goes through the
+    columnar entry, no Python values and no JSON text; otherwise the columns become one dict per row and go to ``insert_many`` (one crossing per 10,000 rows). Either way
+    the batch is one transaction, or joins the caller's. With ``parallel`` the same columnar entry hands the records to the async
+    writers (no transaction), and the call waits for them and raises when a record failed, as ``insert_many(parallel=True)`` does.
     """
-    if not parallel:
+    if parallel:
+        from ._native.bulk import insert_columns_parallel
+
+        if (
+            insert_columns_parallel(
+                db, type_name, columns, {} if declared is None else declared
+            )
+            is not None
+        ):
+            return
+    else:
         from ._native.bulk import insert_columns_fast
 
         if (
@@ -520,7 +615,7 @@ def _insert_documents_native(
         if hasattr(
             col, "to_pylist"
         ):  # a column kept as an Arrow array for the columnar entry
-            lists.append(col.to_pylist())
+            lists.append(_arrow_row_values(col))
         else:
             # jvm-payload: not-a-crossing -- no JVM here: insert_many serialises the rows to JSON text
             lists.append(col.tolist() if hasattr(col, "tolist") else col)

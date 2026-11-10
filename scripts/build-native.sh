@@ -275,6 +275,11 @@ if [[ "$PLATFORM" == windows/* ]]; then
     echo -e "${CYAN}📊 JRE size after Windows cleanup: ${YELLOW}${JRE_SIZE}${NC}"
 fi
 
+# The default class-data-sharing archive of the JRE, dumped last with the flags the wheel starts the JVM with (#313)
+bash "$SCRIPT_DIR/dump_cds_archive.sh" "$PY_BINDINGS_DIR/temp_jre"
+JRE_SIZE=$(du -sh "$PY_BINDINGS_DIR/temp_jre" | cut -f1)
+echo -e "${CYAN}📊 JRE size with the CDS archive: ${YELLOW}${JRE_SIZE}${NC}"
+
 # Step 3: Copy JRE to package (JARs already filtered in place)
 echo -e "${CYAN}📦 Preparing package...${NC}"
 
