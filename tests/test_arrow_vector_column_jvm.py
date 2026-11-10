@@ -10,7 +10,7 @@ float32 column with one length and no null stays an Arrow buffer, ``_float32_mat
 ``_column_to_java`` sends it as one ``float[]`` inside the bridge's ``FloatVectors.Matrix`` (the route a 2-D numpy column of
 ``insert_columns`` already took); the documents get a row each Java-side.
 
-Three tests fail on the code before (they count the per-row conversions, the matrix crossings and the Python heap of one batch); the others
+Three tests fail on the code before (they count the per-row conversions, the matrix crossings and look at what the conversion hands over: one float32 view, not per-row lists); the others
 pin what the old route stored, so the new one must store the same: count, an order-independent digest of every row's vector bytes read back
 through SQL and through the result API, both again after close and reopen, the special float32 values, a null row, a null element, vectors
 of different length, a wrong dimension against a vector index, float64 and integer lists (which are NOT taken: the old route refuses a
@@ -20,14 +20,13 @@ collect this file on the native wheel (whose vector columns stay Arrow arrays, t
 """
 
 import hashlib
-import tracemalloc
 
 import numpy as np
 import pyarrow as pa
 import pytest
 
 import arcadedb
-from arcadedb import core
+from arcadedb import core, dataframe
 from arcadedb.exceptions import ArcadeDBError
 
 F32 = np.float32
@@ -404,26 +403,26 @@ def test_a_vector_column_crosses_as_one_matrix_per_batch(temp_db, crossings):
     assert crossings["matrix"] == [500 * 24, 500 * 24, 300 * 24]
 
 
-def test_the_python_heap_of_one_batch_stays_below_twice_the_flat_buffer(temp_db):
-    """10,000 x 96 float32 is a 3.66 MiB buffer; the per-row Python lists of floats were 31.5 MiB at their peak (tracemalloc sees Python and
-    numpy allocations, not the Java heap and not Arrow's pool). The bound is the buffer twice, nothing about time.
+def test_the_vector_column_reaches_the_bridge_as_one_float32_view(temp_db, monkeypatch):
+    """10,000 x 96 float32 is a 3.66 MiB buffer. ``_column_values`` must hand it over as ONE 2-D float32 numpy array that is a view of Arrow's
+    value buffer (nothing copied, no Python float per element); the per-row lists of floats it returned before were 31.5 MiB of Python heap at
+    their peak. The memory shape is asserted on what the conversion returns, not with tracemalloc: starting and stopping tracemalloc around a
+    JPype float[] conversion crashed the interpreter now and then (SIGSEGV in a JVM thread) on Python 3.11 in CI, on Linux and Windows.
     """
+    seen = {}
+    real = dataframe._column_values
+
+    def spy(name, chunk, *args, **kwargs):
+        values = real(name, chunk, *args, **kwargs)
+        seen[name] = values
+        return values
+
+    monkeypatch.setattr(dataframe, "_column_values", spy)
     n, dim = 10_000, 96
-    table = _table(_matrix(n, dim, specials=False), "fixed_size")
     _make(temp_db, "Vec")
-    _make(temp_db, "Twin")
-    assert (
-        temp_db.insert_arrow("Twin", table.slice(0, 500)) == 500
-    )  # first-call imports and caches stay out of the measurement
-    flat = n * dim * 4
-    tracemalloc.start()
-    try:
-        tracemalloc.reset_peak()
-        base = tracemalloc.get_traced_memory()[0]
-        assert temp_db.insert_arrow("Vec", table, batch_size=n) == n
-        peak = tracemalloc.get_traced_memory()[1] - base
-    finally:
-        tracemalloc.stop()
-    assert (
-        peak < 2 * flat
-    ), f"{peak} bytes of Python heap for a {flat} byte vector column"
+    table = _table(_matrix(n, dim, specials=False), "fixed_size")
+    assert temp_db.insert_arrow("Vec", table, batch_size=n) == n
+    column = seen["embedding"]
+    assert isinstance(column, np.ndarray)
+    assert (column.shape, column.dtype) == ((n, dim), F32)
+    assert column.base is not None and not column.flags.owndata
