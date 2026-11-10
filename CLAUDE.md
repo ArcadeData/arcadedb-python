@@ -20,7 +20,7 @@ This repository builds two distributions that both import as `arcadedb`: `arcade
 ./scripts/build.sh                                  # current platform, auto-detected
 ./scripts/build.sh linux/amd64 3.12                 # Linux builds run in Docker (manylinux)
 ./scripts/build.sh linux/amd64 3.12 /path/to/lib    # embed local ArcadeDB jars instead of the image's
-ARCADEDB_TAG=26.11.1-SNAPSHOT ./scripts/build.sh    # pin the arcadedata/arcadedb image (default: latest)
+ARCADEDB_TAG=26.12.1-SNAPSHOT ./scripts/build.sh    # pin the arcadedata/arcadedb image (default: latest)
 ```
 
 - Linux builds use `scripts/Dockerfile.build`; macOS/Windows use `scripts/build-native.sh` with a native JDK 25+ (jlink).

@@ -68,7 +68,7 @@ Name the setting in the statement or in the call when you compare results or nee
 
 == Insert vectors
 
-A vector is a property value like any other. Bind it as a parameter of `INSERT`. A NumPy `float32` array crosses into the engine as one buffer. A list of Python floats also works, and a list that is the only parameter of a statement is read as the whole parameter list, so give a vector as a list only next to other parameters or by name. The details are in xref:how-to/databases-and-queries.adoc#_a_query_vector[A query vector].
+A vector is a property value like any other. Bind it as a parameter of `INSERT`. A NumPy `float32` array crosses into the engine as one buffer. A list of Python floats also works, and a list that is the only parameter of a statement is read as the whole parameter list, so give a vector as a list only next to other parameters or by name. The details are in xref:how-to/databases-and-queries.adoc#a-query-vector[A query vector].
 
 [source,python]
 ----
@@ -214,7 +214,7 @@ for statement in (inside, after):
 ['python']
 ----
 
-Three mistakes raise `ArcadeDBError`: a binding variable that is not a node variable of the `MATCH` pattern, `OPTIONAL MATCH` before `SEARCH`, and an index that does not exist. The last one surfaces while you read the rows, as any error of a lazy result does (see xref:how-to/databases-and-queries.adoc#_a_result_set_is_read_once[A result set is read once]).
+Three mistakes raise `ArcadeDBError`: a binding variable that is not a node variable of the `MATCH` pattern, `OPTIONAL MATCH` before `SEARCH`, and an index that does not exist. The last one surfaces while you read the rows, as any error of a lazy result does (see xref:how-to/databases-and-queries.adoc#result-set-single-pass[A result set is read once]).
 
 ==== CREATE VECTOR INDEX
 
@@ -455,13 +455,13 @@ INT8 True
 
 These rules hold for the quantization arguments of the method:
 
-* The `pq_*` and `fused_pq` arguments need `quantization="PRODUCT"`. `rerank_oversample` needs `"PRODUCT"` or, on ArcadeDB 26.11.1 and later, `"BINARY"`: a `BINARY` search scores the one-bit codes and re-ranks `k * rerank_oversample` candidates on the stored vectors (default 10), or the whole `efSearch` beam when that is larger (https://github.com/ArcadeData/arcadedb/issues/10968[ArcadeData/arcadedb#10968]). The call raises `ValueError` otherwise. The same keys are `METADATA` keys in a statement (`pqSubspaces`, `pqClusters`, `pqCenterGlobally`, `pqTrainingLimit`, `rerankOversample`, `fusedPQ`). With `PRODUCT`, every graph rebuild retrains the codebook and re-encodes every vector (https://github.com/ArcadeData/arcadedb/issues/10847[ArcadeData/arcadedb#10847]), so measure recall and rebuild time on your own data before you choose it.
+* The `pq_*` and `fused_pq` arguments need `quantization="PRODUCT"`. `rerank_oversample` needs `"PRODUCT"` or, on ArcadeDB 26.11.1 and later, `"BINARY"`: a `BINARY` search scores the one-bit codes and re-ranks `k * rerank_oversample` candidates on the stored vectors (default 10), or the whole `efSearch` beam when that is larger (https://github.com/ArcadeData/arcadedb/issues/10968[ArcadeData/arcadedb#10968]). The call raises `ValueError` otherwise. The same keys are `METADATA` keys in a statement (`pqSubspaces`, `pqClusters`, `pqCenterGlobally`, `pqTrainingLimit`, `rerankOversample`, `fusedPQ`). With `PRODUCT`, from ArcadeDB 26.11.1 a graph rebuild keeps the trained codebook and encodes only the vectors added since (https://github.com/ArcadeData/arcadedb/issues/10847[ArcadeData/arcadedb#10847]). The engine trains a new codebook and re-encodes every vector when the index has grown past `arcadedb.vectorIndex.pqRetrainGrowthFactor` times its size at training (default 2.0), or when the new vectors encode worse than the training ones (`arcadedb.vectorIndex.pqRetrainErrorRatio`, default 1.25). Setting the growth factor to 0 restores a retrain on every rebuild, which is what engines before 26.11.1 do. Measure recall and rebuild time on your own data before you choose `PRODUCT`.
 * `encoding="INT8"` is for a `BINARY` property that already holds INT8 bytes. Set `quantization` to `"NONE"` with it. The call raises `ValueError` when both are `INT8`, because the vector would be quantized twice.
 * A bucket that holds fewer vectors than `pq_clusters` is too small to train a codebook. The index still builds: the engine skips PQ for that bucket and searches it exactly, so `find_nearest_approximate` returns the exact neighbours with exact scores from it. A bucket with `pq_clusters` vectors or more is trained and answers approximately.
 
 == Rebuild the graph
 
-Inserts, updates and deletes collect as pending changes. When enough of them have collected, the engine rebuilds the graph in the background, and searches keep running. How many is enough comes from the database setting `arcadedb.vectorIndex.rebuildGraphRatio` and from `mutations_before_rebuild`; see xref:how-to/databases-and-queries.adoc#_database_settings[Database settings] for how to change the ratio.
+Inserts, updates and deletes collect as pending changes. When enough of them have collected, the engine rebuilds the graph in the background, and searches keep running. How many is enough comes from the database setting `arcadedb.vectorIndex.rebuildGraphRatio` and from `mutations_before_rebuild`; see xref:how-to/databases-and-queries.adoc#database-settings[Database settings] for how to change the ratio.
 
 The background rebuild starts on the first search after the threshold is reached, so an index that only takes writes rebuilds when it is next searched.
 

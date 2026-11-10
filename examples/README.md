@@ -11,10 +11,13 @@ This directory contains hands-on examples demonstrating ArcadeDB Python bindings
 cd examples
 
 # Then run the basic document store example
-python 01_simple_document_store.py
+uv run --with arcadedb python 01_simple_document_store.py
+# or install the package first: uv add arcadedb, then uv run python 01_simple_document_store.py
 ```
 
-The dataset downloader is [download_data.py](./download_data.py): its docstring lists the datasets, and `python download_data.py --help` the options.
+The dataset downloader is [download_data.py](./download_data.py): its docstring lists the datasets, and `uv run --no-project python download_data.py --help` the options.
+
+Examples 02, 03, 14, 15 and 25 use Java objects and run on `arcadedb-jvm` only (`scripts/native_examples_skip.txt`).
 
 ## Available Examples
 
@@ -75,7 +78,7 @@ High-performance CSV import for document data:
 - Batch processing for optimal performance
 - Index creation strategies
 
-**Note:** Download the MovieLens dataset first with `python download_data.py movielens-<size>`.
+**Note:** Download the MovieLens dataset first with `uv run --no-project python download_data.py movielens-<size>`.
 
 **Learn:** ETL patterns, bulk import, schema management, performance tuning
 
@@ -400,7 +403,7 @@ DataFrames and Arrow tables loaded straight into a type, and a result back out a
   column refused before a row is written
 - `to_polars()` on the result
 - synthetic data; flags: `--rows` (default 100,000) and `--db-path`
-- requires `uv add 'arcadedb-jvm[pandas,polars]'`
+- requires `uv add 'arcadedb[pandas,polars]'` (or `'arcadedb-jvm[pandas,polars]'`)
 
 **Learn:** How a DataFrame becomes documents or vertices without a row loop, and what each
 Arrow type is stored as
