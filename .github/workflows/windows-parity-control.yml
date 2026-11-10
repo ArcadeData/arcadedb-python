@@ -1,0 +1,198 @@
+name: Windows parity control (throwaway, issue 295)
+
+# Question: the full Windows parity leg of release run 42744219731 (Parity against the installed wheel, windows-x64, Python 3.11 and 3.14)
+# crashed silently inside ONE test file per Python (3.11 tests/test_free_threading.py, 3.14 tests/test_find_nearest_query_forms.py) in both
+# attempts, with the wheel of that run. A loop of those two files alone (run 42755661370, 30 processes per wheel and Python) never crashed.
+# So the crash needs the context of the full leg. This workflow runs the FULL leg, as test-native.yml runs it (same steps, same environment,
+# same native/wheel/parity_wheel.py call), against a DOWNLOADED wheel, three wheels, three repetitions each:
+#   release-run    artifact native-wheel-windows-x64 of run 42744219731 (the wheel the failing legs installed)
+#   dispatch-6     the same artifact of run 42733987254 (same commit, another native-image build; its Windows 3.12 and 3.14 legs passed)
+#   release-26111  the same artifact of run 42055597568 (the 26.11.1 wheel; the test files of this branch run against it)
+# Reading the 18 RESULT lines (one per job, the last line of its log):
+#   all OK                           -> not reproduced with 3 reps per cell: the crash is rare, raise the reps
+#   only release-run crashes         -> the DLL of that build
+#   release-run and dispatch-6 crash -> the post1 Python code or tests, the build of the DLL does not matter
+#   all three crash                  -> the runner or a defect older than post1
+# The diagnostics exist ONLY on this branch (tests/conftest.py keeps faulthandler on and writes a file per process, native/wheel/parity_wheel.py
+# records the return code of each file); they are not a proposal for main. A crash is recorded and the job still ends green, so all 18 finish.
+
+on:
+  push:
+    branches: [ci/win-crash-loop]
+    paths: ['.github/workflows/windows-parity-control.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read # download-artifact of another run of this repository
+
+env:
+  UV_VERSION: "0.12.0"
+  PYTHONUTF8: "1" # Windows defaults to cp1252; the notices contain non-ASCII author names
+
+jobs:
+  loop:
+    name: ${{ matrix.wheel.label }} wheel, Python ${{ matrix.python }}, rep ${{ matrix.rep }}
+    runs-on: windows-latest # the label of scripts/select_native_matrix.py for windows-x64
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.14"]
+        wheel:
+          - { label: release-run, run: "42744219731" }
+        rep: [1, 2, 3, 4, 5]
+    env:
+      KEY: windows-x64
+      PY: ${{ matrix.python }}
+      LABEL: ${{ matrix.wheel.label }}
+      REP: ${{ matrix.rep }}
+    steps:
+      - name: Keep LF line endings
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: 26.11.1.post1 # CONTROL: the tag's own tests and harness, no diagnostics at all
+          persist-credentials: false
+
+      - name: Paths
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then T="$(cygpath -m "$RUNNER_TEMP")"; else T="$RUNNER_TEMP"; fi
+          echo "T=$T" >> "$GITHUB_ENV"
+
+      - name: Install uv (Windows)
+        shell: pwsh
+        run: |
+          $env:UV_NO_MODIFY_PATH = "1"
+          Invoke-RestMethod "https://astral.sh/uv/$env:UV_VERSION/install.ps1" | Invoke-Expression
+          Add-Content -Path $env:GITHUB_PATH -Value "$env:USERPROFILE\.local\bin"
+
+      # the wheel of another run, not a fresh build
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: native-wheel-windows-x64
+          path: ${{ runner.temp }}/wheel
+          run-id: ${{ matrix.wheel.run }}
+          repository: ArcadeData/arcadedb-python
+          github-token: ${{ github.token }}
+
+      - name: Keep a Windows Error Reporting mini dump of every crash
+        shell: pwsh
+        run: |
+          $k = "HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps"
+          New-Item -Path $k -Force | Out-Null
+          New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\dumps" | Out-Null
+          New-ItemProperty -Path $k -Name DumpFolder -Value "$env:RUNNER_TEMP\dumps" -PropertyType ExpandString -Force | Out-Null
+          New-ItemProperty -Path $k -Name DumpType -Value 1 -PropertyType DWord -Force | Out-Null
+          New-ItemProperty -Path $k -Name DumpCount -Value 10 -PropertyType DWord -Force | Out-Null
+
+      # The step of test-native.yml (Run the parity suite) with two differences: no `set -e` (the exit code of the harness is written to
+      # harness.rc and the step ends green, so a crash does not stop the other 17 jobs), and FINAL is true as in the release run (post1 is final).
+      - name: Run the parity suite
+        env:
+          FINAL: "true"
+        run: |
+          set -uo pipefail
+          w="$(ls "$T"/wheel/*.whl)"
+          mkdir -p "$T/parity"
+          sha256sum "$w" | tee "$T/parity/wheel.sha256"
+          cores="$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 2)"
+          limit=()
+          if [ "$FINAL" = true ]; then limit=(--max-notyet 0); fi
+          # macOS runs bash 3.2: under set -u an empty "${limit[@]}" is "unbound variable", so expand it only when set
+          uv run --no-project --python "$PY" --with "$w" --with pytest --with setuptools --with numpy --with requests --with jpype1 --with pyarrow \
+            --with polars --with pandas --with duckdb --with networkx --with "psycopg[binary]" --with adbc-driver-postgresql \
+            --with redis --with neo4j --with ladybug \
+            python native/wheel/parity_wheel.py --repo "$GITHUB_WORKSPACE" \
+              --out "$T/parity/parity-wheel.tsv" --cores "0-$((cores - 1))" ${limit[@]+"${limit[@]}"} | tee "$T/parity/parity-wheel.run.log"
+          rc="${PIPESTATUS[0]}"
+          echo "$rc" > "$T/parity/harness.rc"
+          echo "harness exit code: $rc"
+          exit 0
+
+      - name: Summarize the files whose status is not OK
+        if: ${{ always() }}
+        run: |
+          set -uo pipefail
+          P="$T/parity"
+          tsv="$P/parity-wheel.tsv"
+          tag="$LABEL py$PY r$REP"
+          hrc="$(cat "$P/harness.rc" 2>/dev/null || echo unknown)"
+          if [ -f "$tsv" ]; then
+            bad="$(awk -F'\t' 'NR == 1 || $1 == "TOTAL" { next } $8 != "" { printf "%s%s(%s)", sep, $1, $8; sep = " " }' "$tsv")"
+            total="$(awk -F'\t' '$1 == "TOTAL" { printf "passed=%s failed=%s error=%s notyet=%s na_jvm=%s skipped=%s %s", $2, $3, $4, $5, $6, $7, $8 }' "$tsv")"
+            fe="$(awk -F'\t' '$1 == "TOTAL" { print $3 + $4 }' "$tsv")"
+          else
+            bad="NO-TSV(harness rc=$hrc)"
+            total="no TOTAL row"
+            fe=0
+          fi
+          if [ -n "$bad" ]; then
+            res="$bad"
+          elif [ "${fe:-0}" != 0 ]; then
+            res="OK (no crash; $fe tests failed or errored)"
+          else
+            res="OK"
+          fi
+          {
+            echo "### $LABEL, Python $PY, rep $REP"
+            echo
+            echo "wheel sha256: $(cat "$P/wheel.sha256" 2>/dev/null || echo unknown)"
+            echo
+            echo "$(grep -m1 '^WHEEL CHECK' "$P/parity-wheel.run.log" 2>/dev/null || echo 'no WHEEL CHECK line')"
+            echo
+            echo "harness exit code: $hrc; $total"
+            echo
+            fh="$(grep -l -E 'fatal exception|Fatal Python error' "$P"/faulthandler/*.log 2>/dev/null | xargs -r -n1 basename | tr '\n' ' ')"
+            echo "faulthandler reports in: ${fh:-none}"
+            echo
+            if [ -z "$bad" ]; then
+              echo "Files whose status is not OK: none"
+            else
+              echo "Files whose status is not OK: $bad"
+              if [ -f "$tsv" ]; then
+                while IFS= read -r f; do
+                  echo
+                  echo "#### $f"
+                  echo
+                  echo '```'
+                  for g in "$P"/faulthandler/faulthandler-"${f%.py}"-*.log; do
+                    if [ -f "$g" ]; then
+                      echo "--- $(basename "$g"): last TEST line"
+                      grep '^TEST' "$g" | tail -n 1
+                      echo "--- last fatal report, first 28 lines"
+                      awk '/fatal exception|Fatal Python error/ { n = NR } { a[NR] = $0 } END { if (n) for (i = n; i <= n + 28 && i <= NR; i++) print a[i] }' "$g"
+                    fi
+                  done
+                  echo "--- per-file log, last 12 lines"
+                  tail -n 12 "$P/parity-wheel-xml/$f.log" 2>/dev/null
+                  echo '```'
+                done < <(awk -F'\t' 'NR == 1 || $1 == "TOTAL" { next } $8 != "" { print $1 }' "$tsv")
+              fi
+            fi
+            echo
+            echo "RESULT $tag: $res"
+          } > "$P/summary.md"
+          cat "$P/summary.md" >> "$GITHUB_STEP_SUMMARY"
+          echo "RESULT $tag: $res" > "$P/RESULT.txt"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ always() }}
+        with:
+          name: parity-loop-${{ matrix.wheel.label }}-py${{ matrix.python }}-r${{ matrix.rep }}
+          path: |
+            ${{ runner.temp }}/parity
+            ${{ runner.temp }}/dumps
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Result
+        if: ${{ always() }}
+        run: |
+          cat "$T/parity/RESULT.txt" || echo "RESULT $LABEL py$PY r$REP: NO-RESULT-FILE"

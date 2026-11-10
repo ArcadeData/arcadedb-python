@@ -17,8 +17,6 @@ name: Windows parity loop (throwaway, issue 295)
 # records the return code of each file); they are not a proposal for main. A crash is recorded and the job still ends green, so all 18 finish.
 
 on:
-  push:
-    branches: [ci/win-crash-loop]
   workflow_dispatch:
 
 permissions:
