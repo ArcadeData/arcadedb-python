@@ -601,6 +601,36 @@ def test_to_dataframe_integers_up_to_2_53_next_to_floats_stay_float64(temp_db):
     assert df["x"].tolist() == [1.0, 1.5, 2.0**53, -(2.0**53)]
 
 
+def test_to_dataframe_keeps_the_integer_when_the_floats_are_in_a_later_frame(temp_db):
+    # docs, "What the column calls return": the integer stays exact also when it and the floats are in different frames of a
+    # large result. to_dataframe() reads 25,000 rows in one frame, so rows 0 to 24,999 are integers and the last 10 are floats
+    big = 2**60 + 1
+    want = [big + i for i in range(25_000)] + [0.5 + i for i in range(10)]
+    df = _mix_frame(temp_db, want)
+    assert df["x"].dtype == object
+    assert _same_values_and_types(df["x"].tolist(), want)
+    # the same column in to_columns() is a list of exact values, not a float64 array
+    columns = temp_db.query("sql", "SELECT i, x FROM Mix ORDER BY i").to_columns()
+    assert isinstance(columns["x"], list)
+    assert _same_values_and_types(columns["x"], want)
+
+
+def test_an_integer_beyond_2_53_in_a_column_with_a_null_is_rounded_but_in_arrow(
+    temp_db,
+):
+    # docs, "What the column calls return": the limit that stays. An integer column with a null is float64 with NaN in
+    # to_columns() and to_dataframe() (the pandas rule), which cannot hold 2**60 + 1; to_arrow() keeps int64 with a null
+    big = 2**60 + 1
+    df = _mix_frame(temp_db, [big, None])
+    assert df["x"].dtype == np.float64 and np.isnan(df["x"][1])
+    assert int(df["x"][0]) == 2**60  # rounded to the nearest double
+    query = "SELECT i, x FROM Mix ORDER BY i"
+    columns = temp_db.query("sql", query).to_columns()
+    assert columns["x"].dtype == np.float64 and int(columns["x"][0]) == 2**60
+    arrow = temp_db.query("sql", query).to_arrow()["x"]
+    assert arrow.type == pa.int64() and arrow.to_pylist() == [big, None]
+
+
 def test_to_dataframe_of_an_empty_result_is_an_empty_frame(temp_db):
     _mix_frame(temp_db, [2**60 + 1, 1.5])
     df = temp_db.query("sql", "SELECT i, x FROM Mix WHERE i < 0").to_dataframe()

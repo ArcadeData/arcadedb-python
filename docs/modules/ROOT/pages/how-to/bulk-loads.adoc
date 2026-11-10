@@ -1,5 +1,5 @@
 = Bulk loads and commit size
-:description: The default commit size of insert_many, graph_batch and create_vertices on the arcadedb (native) and arcadedb-jvm packages, what it means for a failed load, what to do after an interrupted graph batch, how to change it, how insert_many treats Python's cyclic garbage collector on arcadedb-jvm, which property shapes a graph batch loads in bulk on the JVM build, how to pass time-series columns to append_samples (the address path is native only), and a known limitation: a graph batch does not reuse the space of deleted edges.
+:description: The default commit size of insert_many, graph_batch and create_vertices on the arcadedb (native) and arcadedb-jvm packages, what it means for a failed load, what to do after an interrupted graph batch, how to change it, how insert_many treats Python's cyclic garbage collector on arcadedb-jvm, which property shapes a graph batch loads in bulk on the JVM build, how to pass time-series columns to append_samples (the address path is native only), a known limitation: a graph batch does not reuse the space of deleted edges, and how columnar loads, parallel loads and vertex loads through insert_dataframe and insert_arrow behave, including what a failed parallel load leaves behind.
 
 `insert_many`, `graph_batch` and `GraphBatch.create_vertices` load data in transactions. The commit size is the number of rows in one transaction. It decides how much work the engine holds in memory before it commits, and how many rows stay in the database when a load fails. Data that comes as a file, a DataFrame or an Arrow table has its own pages: xref:how-to/import-export.adoc[Importing and exporting data] and xref:how-to/dataframes-and-columns.adoc[DataFrames, Arrow and columns].
 
@@ -20,9 +20,17 @@
 | `batch.create_vertices(type_name, rows)`
 | 1000 rows for each call into the engine, one transaction for each call (the `commit_every` of the batch)
 | 100000 rows for each call into the engine
+
+| `db.insert_columns(type_name, columns)`
+| `commit_every=10000`
+| `commit_every=10000`
+
+| `db.insert_dataframe(type_name, df)` and `db.insert_arrow(type_name, table)`
+| `batch_size=10000`, one transaction for each batch
+| `batch_size=10000`, one transaction for each batch
 |===
 
-The JVM defaults are the same as before. They stay until someone measures them on the JVM build.
+The JVM defaults of `insert_many` and `graph_batch` are the same as before. They stay until someone measures them on the JVM build. A vertex type loaded with `insert_dataframe` or `insert_arrow` now commits every 10,000 rows on both packages: see <<vertex-loads>>.
 
 An explicit value always wins. `commit_every=0` gives one transaction for `insert_many` and one commit for each flush for `graph_batch`, on both packages. In a transaction that you open yourself, `insert_many` commits nothing. `graph_batch` refuses to run in one: see xref:how-to/transactions.adoc#graph-batch[GraphBatch inside a transaction]. The durability that a load gets is on xref:how-to/durability.adoc[Durability settings], and the async executor on xref:how-to/async-executor.adoc[The async executor].
 
@@ -57,6 +65,46 @@ Because the two packages have different defaults, the same program can keep diff
 
 On both packages, `insert_many` keeps rows with `datetime`, `date`, `Decimal`, `bytes`, numpy scalar, or pandas `NA` and `NaT` values on the bulk path. On the `arcadedb` (native) package, a row with a value the bulk text cannot carry (NaN or infinity, an integer beyond 64 bits, a date-time or `Decimal` inside a list or dict, or a `datetime.time`) goes in with its own statement, in the order given.
 
+`insert_many` and `create_vertices` check their rows while they write the JSON text, in one pass over the rows, not in a loop before it. The same rows fail the check as before, and they take the same fallback path as before. The check raises no error to your code.
+
+[[columnar-loads]]
+== Columnar loads
+
+`insert_columns` takes one column for each property. `insert_arrow` and `insert_dataframe` read an Arrow table or a pandas or Polars DataFrame as columns, in batches of `batch_size` rows.
+
+On the `arcadedb` (native) package, a batch whose columns the library's buffers can carry crosses in one call, with no Python dict per row and no JSON text. These columns stay columnar: integers, floats, bools, text, date-times (`datetime`, `pandas.Timestamp`, and Arrow timestamps of any unit), dates, `Decimal`, and `bytes` or `bytearray`. The stored values are the ones the row path stores.
+
+A column the buffers cannot carry makes the batch take the row path, which stores the same values through `insert_many`. These are a column that mixes types, a nested value, an integer beyond 64 bits, a string with a lone surrogate, a non-finite `Decimal`, and, in `insert_columns`, a numpy `datetime64` array or a list that holds pandas `NaT` or `NA`. A DataFrame goes through Arrow first, where a `NaT` or `NA` is a null, so it stays columnar. `ARCADEDB_NATIVE_BULK=0` in the environment turns the columnar path off.
+
+On the `arcadedb-jvm` package, a column of only `str` and `None` crosses as one UTF-8 buffer with its row offsets, and a mask when a row is null. A column that mixes types, is empty, or holds more than 2 GiB of text crosses value by value. A column with a lone surrogate also crosses value by value, and is refused with the error it always raised, before anything is written.
+
+[[parallel-inserts]]
+== Parallel and async inserts
+
+`insert_many(parallel=True)` and `insert_columns(parallel=True)` hand the records to the async executor's writers and wait for the writers before they return. `insert_arrow` and `insert_dataframe` do the same for a document type, one batch at a time. A vertex type refuses `parallel=True` there with a `ValueError`.
+
+A parallel call opens no transaction, so `commit_every` does not apply. Each writer commits every `arcadedb.asyncTxBatchSize` records (10,240 by default, and `async_executor().set_commit_every()` changes it). On the native package, `insert_columns(parallel=True)` sends the columns to the library in one call, and the library hands each record to the writers. A column set the buffers cannot carry goes as one dict per row through `insert_many(parallel=True)`.
+
+What a failure leaves behind:
+
+* A record that a writer cannot store, for example a duplicate key, abandons the whole batch that writer had open, up to 10,240 records. The valid records of that batch are not stored either.
+* The call waits for all writers, then raises `ArcadeDBError`. The message gives the number of failed records and the first failure.
+* Nothing is rolled back. Batches of other writers, and earlier batches of the same call, may have been stored. After such an error, count the stored rows with a query. Do not assume all or none.
+* On the native package, an interrupt (`KeyboardInterrupt`) during a parallel call waits for the writers before it propagates, so no writer still runs when the exception reaches you.
+* In a transaction you opened, `insert_arrow` and `insert_dataframe` with `parallel=True` do not join it. The writers commit on their own, and a rollback of your transaction does not remove those rows.
+
+For one record at a time, `db.async_executor().create_record(document, callback=..., error_callback=...)` queues the record. The writers call `error_callback` with the exception when they reject it (a duplicate key under a `UNIQUE` index, or a batch abandoned at a failed commit). Without an `error_callback`, the failure reaches only the executor-wide `on_error` handler, if you set one. Call `wait_completion()` before you read the records back.
+
+[[vertex-loads]]
+== Vertex types in `insert_dataframe` and `insert_arrow`
+
+On both packages, `insert_dataframe` and `insert_arrow` on a vertex type load through the same columnar insert as a document type. They no longer go through `GraphBatch.create_vertices`. Use `graph_batch()` when edges follow or when you need the RIDs of the vertices.
+
+* The load runs with the write-ahead log setting of the database. `graph_batch()` has its own `use_wal` argument.
+* Each batch of `batch_size` rows (10,000 by default) is one transaction. A failed batch is rolled back, earlier batches stay committed, and the error message says how many rows that is.
+* A batch whose save or commit raises a `NeedRetryException` (an MVCC conflict with another writer, a lock timeout) is rolled back and written again from its first row. It is tried up to 10 more times, after a wait that starts at 1 second and doubles up to 10 seconds. After the last try the error is raised unchanged. The columnar insert does this for every type it loads, not only for vertices, when no transaction of yours is open. A call with `parallel=True` does not retry, and on the native package neither does a batch that takes the row path.
+* A vertex load inside a transaction you opened is refused with `ArcadeDBError` before anything is written, because the load commits its own batches. A document load joins your transaction.
+
 == Change the commit size
 
 [source,python]
@@ -85,7 +133,11 @@ The `arcadedb` (native) package does not change the collector. In our measuremen
 
 On the `arcadedb-jvm` package, `GraphBatch.create_vertices` and `GraphBatch.new_edges` load these property values through the bulk path (the same tagged JSON text as `insert_many`): a list, a tuple, a dict, a `datetime`, a `date`, a `Decimal` and `bytes` (also `bytearray`). A value is stored as the one-by-one path stores it. A list or tuple of only `int` and `float` keeps the older path, which crosses it as one `double[]`.
 
-A value that the text cannot carry sends work to the older path on its own: a `NaN`, an integer beyond 64 bits, a `datetime` inside a list or a dict, or a dict key that is not a `str`. `create_vertices` falls back for the chunk of at most 100,000 rows that holds the value, and `new_edges` for the whole call. A value of another type (a `set`, a numpy or pandas value, a subclass of the types above) also takes the older path. Nothing is lost on a fallback, and the data is the same. Only the speed changes.
+A value that the text cannot carry sends work to the older path on its own. In `create_vertices`, a scalar that the text would change (a `NaN`, an integer beyond 64 bits, a lone surrogate, a subnormal float) sends the whole call to the older path, wherever in the input it sits. So does a property name that is not a `str`. A value inside a list or a dict that the text cannot carry (a `datetime` inside a list, a `NaN` in a list, a dict key that is not a `str`) sends only the chunk of at most 100,000 rows that holds it. `new_edges` falls back for the whole call. A value of another type (a `set`, a numpy or pandas value, a subclass of the types above) also takes the older path.
+
+Nothing is lost on a fallback and the values are the same, but the stored type of a property that the type does not declare can differ: the older path stores a Python `int` as a `Long`, and the text path as an `Integer`. That is why a bad scalar sends the whole call to the older path. The stored type of a property then does not depend on which chunk held the bad value.
+
+A property whose value in every row is a `float32` numpy array or a Java `float[]` of one length crosses as one binary matrix for each property and chunk, and is stored as a `float[]`. A declared `ARRAY_OF_FLOATS` property takes the same path for lists and `float64` arrays of numbers too. See xref:how-to/vectors.adoc[Vectors].
 
 The table is one laptop study of the `arcadedb-jvm` package: per-row time of this build against the build before it, 20,000 vertices and 20,000 edges for each shape in chunks of 5,000, one property on every row. Each cell is the median of the pair ratios (below 1 means faster) with its 95 % interval, from 11 to 12 clean ABBA pairs for each figure of `ab.py --noise`, with a clean A/A control. The `arcadedb` (native) package does not change.
 
@@ -172,7 +224,8 @@ This section is about a `graph_batch()` load that stops before `close()` returns
 
 === What is in the database
 
-* The vertices and edge records that a returned call committed are there. A load that is killed loses the work after the last commit and nothing before it.
+* The vertices and edge records that a returned call committed are there. A load that is killed loses the work after the last commit and nothing before it, with one exception: `create_vertices` on the `arcadedb-jvm` package (next point).
+* On the `arcadedb-jvm` package, a killed `create_vertices` load can leave part of a call in the database. `graph_batch()` relaxes the write-ahead log for the load, so a transaction is not atomic after a kill. In a kill probe of 240 cycles (`kill -9` at a random time during a load of 400,000 rows in calls of 50,000) on the released 26.11.1 package, 236 stored a whole number of calls and 4 stored another count, and in those 4 the stored keys were not a prefix of the input: some earlier rows were missing while later rows were present. No stored value was wrong, no row was stored twice, and the database reopened in every cycle. After an interrupted vertex load, compare the stored keys with the input and reload the type. The same probe on the `26.11.1.post1` candidate build stored another count in 2 of 240 cycles, and in both the stored keys were a prefix of the input. It has not been run on `26.11.1.post2`.
 * The edges are not traversable. The engine writes the edge records first and links them to their vertices (the head pointers and the incoming lists) in `close()`. Until `close()` has run, `outE()`, `inE()`, `out()` and `MATCH` find none of them, but `SELECT count(*) FROM E` counts them. In the example: 70,000 edge records, 0 reachable.
 * `CHECK DATABASE` reports each of these edges as an `ORPHAN RECORD` and counts them in `unreachableEdgeRecords`. It also uses the words "was not connected from", "is not referenced back by" and "missing from that vertex's OUT/IN list" for the same state. Read the statement in the {arcadedb-docs-url}/reference/sql/sql-database-admin#sql-check-database[`CHECK DATABASE` reference]; this page does not repeat it.
 
