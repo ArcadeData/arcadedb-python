@@ -104,6 +104,7 @@ On both packages, `insert_dataframe` and `insert_arrow` on a vertex type load th
 * Each batch of `batch_size` rows (10,000 by default) is one transaction. A failed batch is rolled back, earlier batches stay committed, and the error message says how many rows that is.
 * A batch whose save or commit raises a `NeedRetryException` (an MVCC conflict with another writer, a lock timeout) is rolled back and written again from its first row. It is tried up to 10 more times, after a wait that starts at 1 second and doubles up to 10 seconds. After the last try the error is raised unchanged. The columnar insert does this for every type it loads, not only for vertices, when no transaction of yours is open. A call with `parallel=True` does not retry, and on the native package neither does a batch that takes the row path.
 * A vertex load inside a transaction you opened is refused with `ArcadeDBError` before anything is written, because the load commits its own batches. A document load joins your transaction.
+* On `arcadedb-jvm`, a `float32` vector column of such a load crosses to Java as one matrix for each batch (see xref:how-to/vectors.adoc[Vectors]). This is faster than the route of 26.11.1, and the peak memory of the load is higher than on that route for the same data. The measurement is in https://github.com/ArcadeData/arcadedb-python/issues/348[issue 348], which stays open for the memory side.
 
 == Change the commit size
 
