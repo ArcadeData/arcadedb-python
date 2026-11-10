@@ -33,11 +33,11 @@ To help us triage quickly, please include:
 
 Security fixes are delivered in a new release of the package. Both packages follow the version of the ArcadeDB engine they ship:
 
-| Version | Meaning |
-| ------- | ------- |
-| `A.B.C` | The release. The wheels ship the `A.B.C` engine. |
+| Version       | Meaning                                                                                     |
+| ------------- | ------------------------------------------------------------------------------------------- |
+| `A.B.C`       | The release. The wheels ship the `A.B.C` engine.                                            |
 | `A.B.C.postN` | A fix in the Python code of the released `A.B.C`. The wheels still ship the `A.B.C` engine. |
-| `A.B.C.devN` | A preview of the engine release `A.B.C`, built from upstream snapshot jars. |
+| `A.B.C.devN`  | A preview of the engine release `A.B.C`, built from upstream snapshot jars.                 |
 
 The numbering rule is on the docs page [Release](docs/modules/ROOT/pages/development/release.adoc).
 

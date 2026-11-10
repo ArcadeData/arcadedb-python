@@ -22,9 +22,11 @@ Examples 02, 03, 14, 15 and 25 use Java objects and run on `arcadedb-jvm` only (
 ## Available Examples
 
 ### 📄 [01_simple_document_store.py](./01_simple_document_store.py)
+
 **Document Types | CRUD Operations | Rich Data Types | NULL Handling**
 
 Perfect introduction to ArcadeDB basics:
+
 - Creating embedded databases (no server needed)
 - Document types with comprehensive schema (STRING, BOOLEAN, DATE, DATETIME, DECIMAL, FLOAT, INTEGER, LIST, etc.)
 - CRUD operations with ArcadeDB SQL
@@ -38,9 +40,11 @@ Perfect introduction to ArcadeDB basics:
 ---
 
 ### 🔗 [02_social_network_graph.py](./02_social_network_graph.py)
+
 **Vertex Types | Edge Types | Graph Traversal | OpenCypher vs SQL MATCH | NULL Handling**
 
 Complete social network modeling with graph database:
+
 - Creating vertex types (Person) and edge types (FRIEND_OF) with rich properties
 - NULL value handling for optional fields (email, phone, reputation)
 - Bidirectional relationships with metadata (since, closeness)
@@ -53,9 +57,11 @@ Complete social network modeling with graph database:
 **Learn:** Graph schema design, relationship modeling, multi-language querying, NULL handling in graphs
 
 ### 🔍 [03_vector_search.py](./03_vector_search.py)
+
 **Vector Embeddings | HNSW (JVector) Index | Semantic Search | Performance Analysis**
 
 Semantic similarity search with AI/ML:
+
 - Creating vector-ready schema (`ARRAY_OF_FLOATS`) for embeddings
 - Generating mock embeddings clustered by category (seeded with `zlib.crc32`, so every
   run builds the same embeddings)
@@ -68,9 +74,11 @@ Semantic similarity search with AI/ML:
 ---
 
 ### 📄 [04_csv_import_documents.py](./04_csv_import_documents.py)
+
 **CSV Import | Schema Definition | Batch Processing | Explicit Schema Mapping**
 
 High-performance CSV import for document data:
+
 - Importing the MovieLens dataset (movies, ratings, links, and tags)
 - Explicit schema mapping (integer-like columns to LONG, decimals to DOUBLE, text to
   STRING) and batched parameterized `INSERT`
@@ -85,9 +93,11 @@ High-performance CSV import for document data:
 ---
 
 ### 🕸️ [05_csv_import_graph.py](./05_csv_import_graph.py)
+
 **Graph Import | Edge Creation | Foreign Keys | Performance Benchmarking**
 
 Complex graph construction from CSV data:
+
 - Importing Users, Movies, and Ratings
 - Creating edges (User-[RATED]->Movie) from foreign keys
 - Handling large-scale edge creation (millions of edges)
@@ -99,9 +109,11 @@ Complex graph construction from CSV data:
 ---
 
 ### 🎬 [06_vector_search_recommendations.py](./06_vector_search_recommendations.py)
+
 **Recommendation Engine | Vector Search vs Graph Traversal | Real-world Use Case**
 
 Building a movie recommendation engine:
+
 - Generating embeddings for movies (Title + Genres) with two sentence-transformers models
 - "More like this" recommendations for a given movie
 - Graph-based collaborative filtering (movies rated highly by users who liked the query
@@ -114,9 +126,11 @@ similarity differ on the same data
 ---
 
 ### 🗃️ [07_stackoverflow_tables_oltp.py](./07_stackoverflow_tables_oltp.py)
+
 **Table OLTP | Mixed CRUD Workload | Cross-DB Benchmarking**
 
 Table-oriented Stack Overflow OLTP benchmark:
+
 - Loads Stack Overflow XML tables and runs a mixed OLTP workload (CRUD)
 - CRUD operations are point-oriented and randomly target one table per operation
 - For cross-database comparability, running with `--threads 1` is recommended
@@ -126,9 +140,11 @@ Table-oriented Stack Overflow OLTP benchmark:
 ---
 
 ### 📉 [08_stackoverflow_tables_olap.py](./08_stackoverflow_tables_olap.py)
+
 **Table OLAP | Fixed Query Suite | Dockerized Runs**
 
 Table-oriented Stack Overflow OLAP benchmark:
+
 - Loads all Stack Overflow XML tables and runs a fixed OLAP query suite
 - Re-launches itself in a Docker container when `docker` is available (and, for
   ArcadeDB, a wheel is present in `dist`); otherwise it runs natively,
@@ -140,9 +156,11 @@ Table-oriented Stack Overflow OLAP benchmark:
 ---
 
 ### 📊 [09_stackoverflow_graph_oltp.py](./09_stackoverflow_graph_oltp.py)
+
 **Graph OLTP | Deterministic Verification | Cross-DB Benchmarking**
 
 Stack Overflow property-graph OLTP benchmark with mixed CRUD operations:
+
 - Supports deterministic single-thread verification through DB-scoped baselines
 - `--verify-single-thread-series` checks repeatability for one DB/mode, not strict
   cross-DB equality
@@ -156,9 +174,11 @@ Stack Overflow property-graph OLTP benchmark with mixed CRUD operations:
 ---
 
 ### 📈 [10_stackoverflow_graph_olap.py](./10_stackoverflow_graph_olap.py)
+
 **Graph OLAP | OpenCypher Query Suite | Cross-DB Benchmarking**
 
 Fixed query-suite benchmark for Stack Overflow graph analytics:
+
 - ArcadeDB preloads through `db.graph_batch(...)` with two-way edges
 - ArcadeDB query execution is Cypher-only in this example path
 
@@ -167,9 +187,11 @@ Fixed query-suite benchmark for Stack Overflow graph analytics:
 ---
 
 ### 🏗️ [11_vector_index_build.py](./11_vector_index_build.py)
+
 **Vector Index Build | Build-Only Benchmark | Multi-Backend Comparison**
 
 Build-only vector index benchmark:
+
 - Backends: ArcadeDB (embedded), pgvector, Qdrant, Milvus, FAISS, LanceDB
 - Datasets: MSMARCO and Stack Overflow embedding vectors
 - For client-server backends, peak RSS combines client process and server process tree
@@ -179,9 +201,11 @@ Build-only vector index benchmark:
 ---
 
 ### 🔎 [12_vector_search.py](./12_vector_search.py)
+
 **Vector Search | Search-Only Benchmark | ef_search Sweeps**
 
 Search-only vector benchmark that reuses Example 11 output:
+
 - Backends: ArcadeDB (embedded), FAISS, LanceDB, brute-force NumPy scan, pgvector, Qdrant, Milvus
 - Sweeps explicit `ef_search` values for HNSW-style backends
 - Measures client + server process RSS for client-server backends
@@ -191,10 +215,12 @@ Search-only vector benchmark that reuses Example 11 output:
 ---
 
 ### 🔀 [13_stackoverflow_hybrid_queries.py](./13_stackoverflow_hybrid_queries.py)
+
 **Hybrid SQL + Graph + Vector | Standalone Workflow**
 
 Standalone Stack Overflow workflow combining documents, graph edges, embeddings, and
 hybrid queries:
+
 - Preload uses synchronous transaction-batched ingest rather than `IMPORT DATABASE`
 - Graph edge creation uses RID-based directed endpoints
 
@@ -203,9 +229,11 @@ hybrid queries:
 ---
 
 ### ⏱️ [14_lifecycle_timing.py](./14_lifecycle_timing.py)
+
 **JVM Startup | DB Create/Open | Transaction Load | Query Phases | Reopen Timing**
 
 Lifecycle benchmark for embedded ArcadeDB with mixed workloads:
+
 - Measures JVM startup time in-process
 - Creates schema and loads table/graph/vector data
 - Runs query workload before and after reopen
@@ -217,9 +245,11 @@ Lifecycle benchmark for embedded ArcadeDB with mixed workloads:
 ---
 
 ### 🚚 [15_import_database_vs_transactional_table_ingest.py](./15_import_database_vs_transactional_table_ingest.py)
+
 **Transactional SQL vs Async SQL vs SQL Import | Table Ingest Benchmark**
 
 Synthetic multi-table ingest comparison harness:
+
 - Runs four modes against the same generated dataset shape
 - Modes: transactional SQL, async SQL, SQL `IMPORT DATABASE`, and `db.import_documents(...)`
 - Includes parity checks so final table counts must match before timing results should
@@ -234,9 +264,11 @@ Synthetic multi-table ingest comparison harness:
 ---
 
 ### 🌐 [16_import_database_vs_transactional_graph_ingest.py](./16_import_database_vs_transactional_graph_ingest.py)
+
 **Transactional SQL vs Async SQL vs SQL Import | Graph Ingest Benchmark**
 
 Synthetic graph ingest comparison harness:
+
 - Runs transactional SQL, GraphBatch, async SQL, and SQL import on equivalent
   vertex/edge data
 - Includes parity checks on final vertex and edge counts
@@ -248,9 +280,11 @@ Synthetic graph ingest comparison harness:
 ---
 
 ### ⏱️ [17_timeseries_end_to_end.py](./17_timeseries_end_to_end.py)
+
 **Time Series SQL | Tagged Points | Range Queries | Bucket Aggregation**
 
 SQL-first time-series workflow from Python bindings:
+
 - Creates a `TIMESERIES TYPE` with timestamp, tags, and numeric fields
 - Inserts tagged samples inside a transaction
 - Queries a time range for a single sensor
@@ -262,9 +296,11 @@ SQL-first time-series workflow from Python bindings:
 ---
 
 ### 🌍 [18_geo_predicates_wkt.py](./18_geo_predicates_wkt.py)
+
 **GEOSPATIAL Indexes | WKT Geometry | Indexed Predicates | Fallback Queries**
 
 SQL-first geospatial workflow:
+
 - stores points and polygons as WKT
 - builds a GEOSPATIAL index
 - runs indexed `within` and `intersects` predicates
@@ -275,9 +311,11 @@ SQL-first geospatial workflow:
 ---
 
 ### #️⃣ [19_hash_index_exact_match.py](./19_hash_index_exact_match.py)
+
 **HASH Index | Unique And Non-Unique Lookup | Schema Inspection | Duplicate Rejection**
 
 SQL-first exact-match workflow:
+
 - builds unique and non-unique HASH indexes
 - exercises exact-match lookup semantics for present and missing keys
 - inspects created indexes from schema metadata
@@ -288,9 +326,11 @@ SQL-first exact-match workflow:
 ---
 
 ### 🧭 [20_graph_algorithms_route_planning.py](./20_graph_algorithms_route_planning.py)
+
 **Graph Algorithms | shortestPath | dijkstra | astar | Route Comparison**
 
 SQL-first route-planning workflow:
+
 - creates a directed multi-modal transport graph
 - compares minimum-hop routing against weighted routing
 - optimizes for distance, duration, and risk
@@ -301,9 +341,11 @@ SQL-first route-planning workflow:
 ---
 
 ### 🕸️ [21_graph_analytical_view_sql.py](./21_graph_analytical_view_sql.py)
+
 **Graph Analytical View | SQL DDL | Schema Metadata | Rebuild Lifecycle**
 
 SQL-first Graph Analytical View workflow:
+
 - generates a larger synthetic transport graph with 100,000 base cities by default
 - creates a named GAV with vertex and edge property filters
 - polls `schema:graphAnalyticalViews` until the async build is `READY`
@@ -316,9 +358,11 @@ SQL-first Graph Analytical View workflow:
 ---
 
 ### 🔢 [22_numpy_bulk_io.py](./22_numpy_bulk_io.py)
+
 **numpy Bulk I/O | insert_many | append_samples | Columnar Export**
 
 Batched Python/Java boundary crossings for bulk workloads:
+
 - Bulk document ingest with `Database.insert_many` (rows as one JSON batch), transactional and `parallel=True`
 - Time-series ingest straight from numpy arrays via `AsyncExecutor.append_samples`
 - Time-bucketed aggregation over the native `TIMESERIES` type
@@ -329,9 +373,11 @@ Batched Python/Java boundary crossings for bulk workloads:
 ---
 
 ### 🌐 [23_server_mode_http_access.py](./23_server_mode_http_access.py)
+
 **Server Mode | HTTP API | Bearer Auth | Mixed Access Pattern**
 
 Embedded-first server workflow, all in one process:
+
 - starts ArcadeDB server mode from the Python package
 - reads server metadata over HTTP
 - creates a database through the server-managed Java API
@@ -345,10 +391,12 @@ instead
 ---
 
 ### 🔁 [24_server_http_transactions_timeseries.py](./24_server_http_transactions_timeseries.py)
+
 **Server HTTP API | Multi-Request Transactions | Database Commands | Line Protocol**
 
 Three server features that belong to the HTTP API, shown against the server that
 `create_server()` starts in this process:
+
 - one transaction spanning several requests through the `arcadedb-session-id` header
   returned by `/api/v1/begin/{db}`, ended by `/commit` or `/rollback`
 - server-level database commands (`close database`, `open database`) sent to `/api/v1/server`
@@ -362,9 +410,11 @@ HTTP only
 ---
 
 ### 🧮 [25_sparse_quantization_and_compact.py](./25_sparse_quantization_and_compact.py)
+
 **Sparse Vectors | LSM_SPARSE_VECTOR | Weight Precision | COMPACT INDEX**
 
 Two decisions a sparse-retrieval workload should make on purpose:
+
 - weight precision: `LSM_SPARSE_VECTOR` quantizes posting weights to INT8 by default;
   `"weightQuantization": "FP32"` keeps them exact
 - the settle step: `COMPACT INDEX` merges the LSM segments a bulk load leaves behind
@@ -378,9 +428,11 @@ Two decisions a sparse-retrieval workload should make on purpose:
 ---
 
 ### ⚛️ [26_cross_model_transaction_atomicity.py](./26_cross_model_transaction_atomicity.py)
+
 **Cross-Model Transaction | Vector + Graph + Document | Failure Injection**
 
 One operation that touches three models in one transaction:
+
 - a vector search finds the nearest products, a graph hop expands to related products,
   and a document update bumps a counter on all of them
 - injects a failure between the writes N times, inside a transaction (rolled back, never
@@ -394,9 +446,11 @@ half-applied after an interruption
 ---
 
 ### 🐼 [27_dataframe_arrow_ingest.py](./27_dataframe_arrow_ingest.py)
+
 **DataFrame And Arrow Ingest | pandas | Polars | Arrow | Declared Types**
 
 DataFrames and Arrow tables loaded straight into a type, and a result back out as Polars:
+
 - a pandas DataFrame into a document type (timestamps, nulls, a list column), in batches
 - a Polars DataFrame into a vertex type, then edges through `graph_batch().new_edges()`
 - an Arrow table into declared `INTEGER` and `DATETIME_MICROS` properties, and a float
@@ -409,9 +463,11 @@ DataFrames and Arrow tables loaded straight into a type, and a result back out a
 Arrow type is stored as
 
 ### 🧩 [28_python_functions_and_record_events.py](./28_python_functions_and_record_events.py)
+
 **Python Functions | Record Events | SQL + openCypher**
 
 Two things no query language can express:
+
 - `db.register_function()` makes a Python `slugify` callable from SQL (SELECT and WHERE) and,
   as `py.slugify`, from openCypher; an exception in the function is a query error
 - measures the cost of one call on your machine against the same SQL expression
@@ -425,9 +481,11 @@ errors, threads, and unregistering behave
 ---
 
 ### 🧠 [29_hybrid_memory_retrieval.py](./29_hybrid_memory_retrieval.py)
+
 **Agent Memory | Tenant Pre-filter | Vector + Full-Text + Graph | `vector.fuse`**
 
 Hybrid retrieval for an agent memory in one SQL statement instead of three stores:
+
 - `vector.neighbors` restricted to one tenant BEFORE the top-k (`where`, ArcadeDB 26.11.1,
   or `filter` with a RID subquery, 26.10.2 and later), a `SEARCH_INDEX` full-text match on
   the same tenant, both fused by reciprocal rank fusion with `vector.fuse`, then graph hops
@@ -445,9 +503,11 @@ full-text and graph context in a single query
 ---
 
 ### 🔎 [30_columnar_facets.py](./30_columnar_facets.py)
+
 **Faceted Queries | COLUMNAR Index | `FACETS` Clause | `result_set.facets`**
 
 The counts of a search sidebar next to the rows of a query:
+
 - `CREATE INDEX ... COLUMNAR` on the properties that the facets count
 - one query with a `TERMS` facet (the 3 biggest categories) and a `RANGES` facet (price
   bands) next to a page of 5 rows, then `STATS` with `DISTINCT`, then a calendar `HISTOGRAM`
@@ -469,7 +529,7 @@ rows, and how to read them from the result set as a dict
 - **Use directed graph assumptions** - Graph examples keep edge direction semantics.
   Every graph example stores both directions of each edge (the engine default). Load
   one-way edges only into an edge type declared one-way (`CREATE EDGE TYPE ...
-  UNIDIRECTIONAL`): a one-way load into a two-way type makes any query the planner walks
+UNIDIRECTIONAL`): a one-way load into a two-way type makes any query the planner walks
   from the target end return 0 rows with no error (ArcadeData/arcadedb#8625)
 - **Database files persist** - Examples preserve data for inspection
 - **Output is educational** - Check console output to understand operations
@@ -483,4 +543,4 @@ rows, and how to read them from the result set as a dict
 
 ---
 
-*Examples are designed to be educational, and each includes detailed comments and step-by-step explanations. Most run on their own; 05 reads Example 04's database, 06 reads Example 05's, and 12 reuses Example 11's.*
+_Examples are designed to be educational, and each includes detailed comments and step-by-step explanations. Most run on their own; 05 reads Example 04's database, 06 reads Example 05's, and 12 reuses Example 11's._

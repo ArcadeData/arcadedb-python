@@ -104,7 +104,6 @@ uvx pre-commit run --all-files
 
 shellcheck and hadolint run as `docker_image` hooks (Docker pulls the images automatically, both locally and in CI). CI runs the same hooks on every pull request and push.
 
-
 ### Workflow
 
 1. An [issue](https://github.com/ArcadeData/arcadedb-python/issues) states the problem.
