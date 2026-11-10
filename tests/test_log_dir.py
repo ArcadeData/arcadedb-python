@@ -72,7 +72,7 @@ def _run_child(tmp_path, env_overrides, jvm_args=()):
     finally:
         cwd.chmod(0o755)
     assert result.returncode == 0, result.stdout + result.stderr
-    line = next(l for l in result.stdout.splitlines() if l.startswith("LOGDIR="))
+    line = next(ln for ln in result.stdout.splitlines() if ln.startswith("LOGDIR="))
     return cwd, Path(line[len("LOGDIR=") :]), home
 
 
