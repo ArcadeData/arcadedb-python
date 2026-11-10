@@ -41,13 +41,11 @@ Usage:
 """
 
 import argparse
-import os
 import shutil
 import sys
 import time
 from pathlib import Path
 
-import numpy as np
 
 import arcadedb
 

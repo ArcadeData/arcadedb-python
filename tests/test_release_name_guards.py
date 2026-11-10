@@ -8,7 +8,6 @@ Windows has CRLF line endings, which left a carriage return on the Name value an
 from __future__ import annotations
 
 import os
-import re
 import subprocess  # nosec B404 - test-controlled child processes, no untrusted input
 import sys
 import textwrap

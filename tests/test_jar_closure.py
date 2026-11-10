@@ -37,7 +37,6 @@ import shutil
 import struct
 import zipfile
 
-import pytest
 
 from arcadedb.jvm import get_jar_path
 

@@ -4,7 +4,6 @@ import threading
 
 import pytest
 
-import arcadedb
 from arcadedb import ArcadeDBError
 
 

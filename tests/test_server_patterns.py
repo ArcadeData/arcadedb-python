@@ -349,7 +349,7 @@ def test_pattern1_embedded_first_requires_close(cleanup_test_dirs):
     print("\n7. Dual access now available...")
     rows = _http_query(server, db_name, "SELECT count(*) AS count FROM Person")
     assert rows[0]["count"] == 3
-    print(f"   💡 Embedded access: db.query() works")
+    print("   💡 Embedded access: db.query() works")
     print(f"   💡 HTTP access: http://localhost:{server.get_http_port()} works")
     print("   💡 Note: Server-managed databases are closed by server.stop()")
 

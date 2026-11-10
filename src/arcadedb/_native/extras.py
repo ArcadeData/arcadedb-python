@@ -13,16 +13,15 @@ import json
 import threading
 import weakref
 from collections.abc import Mapping
-from typing import Any, Callable, Iterable, Optional
+from typing import Callable, Optional
 
 from ..callbacks import EventHandle as _BaseEventHandle
 from ..callbacks import check_event, check_function
 from ..exceptions import ArcadeDBError
 from ..graph_batch import GraphBatch as _BaseGraphBatch
 from ..type_conversion import take_vector_columns
-from . import interrupts, lib, not_yet
+from . import interrupts, lib
 from .codec import (
-    _PLAIN,
     _default,
     _np,
     _prep,

@@ -10,7 +10,6 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
 
 from arcadedb import _logdir, jvm
 from arcadedb._native import lib as native_lib

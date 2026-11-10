@@ -4,7 +4,6 @@ import threading
 
 import pytest
 
-import arcadedb
 
 TIMEOUT = 30
 
