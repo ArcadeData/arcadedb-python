@@ -8,8 +8,9 @@ each has one text for every record. ``lookup_by_rid`` keeps the id in the text: 
 
 import re
 
-import arcadedb as arcadedb
 import pytest
+
+import arcadedb as arcadedb
 from arcadedb._native.database import NativeDatabase
 
 RID_IN_TEXT = re.compile(r"#-?\d+:-?\d+")

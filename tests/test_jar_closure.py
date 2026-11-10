@@ -37,7 +37,6 @@ import shutil
 import struct
 import zipfile
 
-
 from arcadedb.jvm import get_jar_path
 
 # Packages the JDK provides. The first test checks the jars only. The bundled JRE

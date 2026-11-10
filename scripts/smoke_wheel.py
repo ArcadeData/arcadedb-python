@@ -9,7 +9,9 @@ import tempfile
 
 import arcadedb
 
-print(f"arcadedb {arcadedb.__version__}, backend {arcadedb.__backend__}, engine {arcadedb.ENGINE_VERSION}")
+print(
+    f"arcadedb {arcadedb.__version__}, backend {arcadedb.__backend__}, engine {arcadedb.ENGINE_VERSION}"
+)
 assert arcadedb.__backend__ == "native", arcadedb.__backend__
 with tempfile.TemporaryDirectory() as d:
     with arcadedb.create_database(os.path.join(d, "smoke")) as db:
@@ -17,5 +19,10 @@ with tempfile.TemporaryDirectory() as d:
         with db.transaction():
             db.command("sql", "CREATE VERTEX TYPE P")
             db.command("sql", "CREATE VERTEX P SET name = 'Ada'")
-        assert db.query("opencypher", "MATCH (n:P) RETURN n.name AS name").to_list()[0]["name"] == "Ada"
+        assert (
+            db.query("opencypher", "MATCH (n:P) RETURN n.name AS name").to_list()[0][
+                "name"
+            ]
+            == "Ada"
+        )
 print("smoke ok")

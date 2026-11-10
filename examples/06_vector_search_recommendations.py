@@ -46,7 +46,6 @@ import sys
 import time
 from pathlib import Path
 
-
 import arcadedb
 
 # Try to import sentence_transformers

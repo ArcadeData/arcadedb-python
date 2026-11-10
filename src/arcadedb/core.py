@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any, Callable, List, Optional
 
 if TYPE_CHECKING:
     from .vector import VectorIndex
-    
+
 import jpype
 
 from ._logging import get_logger

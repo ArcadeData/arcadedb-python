@@ -4,7 +4,6 @@ import threading
 
 import pytest
 
-
 TIMEOUT = 30
 
 
