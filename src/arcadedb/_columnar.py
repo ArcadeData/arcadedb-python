@@ -319,12 +319,33 @@ def _is_all_none(part, count: int) -> bool:
     )
 
 
+# float64 holds every integer in +-2**53 exactly, and not every one beyond it
+_TWO53 = 1 << 53
+
+
+def _int64_beyond_2_53_next_to_float64(parts) -> bool:
+    """True when the parts of one column hold an int64 array with a value beyond +-2**53 and a float64 array: ``np.concatenate``
+    would make the integers doubles and round them. One frame of such a column is a list of exact Python values (the writer's
+    ``json`` column); the merge of frames does the same, so the column does not depend on where the frames end.
+    """
+    import numpy as np
+
+    arrays = [p for p in parts if isinstance(p, np.ndarray) and p.ndim == 1]
+    if not any(a.dtype.kind == "f" for a in arrays):
+        return False
+    return any(
+        a.dtype.kind == "i" and a.size and (a.max() > _TWO53 or a.min() < -_TWO53)
+        for a in arrays
+    )
+
+
 def merge_columns(
     names: List[str], batches: List[Tuple[int, Dict[str, Any]]], columns=None
 ) -> Dict[str, Any]:
     """The ``to_columns`` dict of the parts of every frame. The type of a column belongs to the whole result, not to where the frames
     end: a frame that lacks the column, or holds only nulls for it, takes the type of the frames that have values (NaN, NaT or None
-    in its rows). With no rows at all the result is :func:`empty_columns`."""
+    in its rows). An int64 frame with a value beyond +-2**53 next to a float64 frame makes a list of exact Python values, not a
+    float64 array. With no rows at all the result is :func:`empty_columns`."""
     import numpy as np
 
     if not batches or not names:
@@ -344,7 +365,11 @@ def merge_columns(
             for c, p in batches
         ]
         np_parts = [p for p in parts if not isinstance(p, list)]
-        if parts and len(np_parts) == len(parts):
+        if (
+            parts
+            and len(np_parts) == len(parts)
+            and not _int64_beyond_2_53_next_to_float64(typed)
+        ):
             try:
                 out[name] = np.concatenate(parts) if len(parts) > 1 else parts[0]
                 continue
@@ -355,6 +380,30 @@ def merge_columns(
             column.extend(p if isinstance(p, list) else p.tolist())
         out[name] = column
     return out
+
+
+def _pandas_would_round(values) -> bool:
+    """True for a list that holds an integer beyond +-2**53 next to a float: pandas infers float64 for a list of ints and floats,
+    and an integer that is not an exact double comes out rounded."""
+    kinds = set(map(type, values))  # one C-speed pass: a text column ends here
+    if int not in kinds or float not in kinds:
+        return False
+    return any(type(v) is int and not -_TWO53 <= v <= _TWO53 for v in values)
+
+
+def dataframe_from_columns(columns):
+    """The ``pandas.DataFrame`` of the ``to_columns`` dict ``columns`` (what both wheels' ``to_dataframe`` builds). A column that is a
+    list holding an integer beyond +-2**53 next to a float is an ``object`` column of the exact Python values, as ``to_columns()``
+    returns them: pandas would make it float64 and round the integer (#340). Every other column is handed to pandas as it was.
+    """
+    import pandas as pd
+
+    exact = {
+        name: pd.Series(values, dtype=object)
+        for name, values in columns.items()
+        if isinstance(values, list) and _pandas_would_round(values)
+    }
+    return pd.DataFrame({**columns, **exact} if exact else columns)
 
 
 def decode_arrow_frame(

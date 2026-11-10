@@ -13,6 +13,7 @@ import jpype as _jpype
 from jpype import JException
 
 from ._columnar import (
+    dataframe_from_columns,
     decode_arrow_frame,
     decode_columns_frame,
     empty_arrow,
@@ -556,7 +557,10 @@ class ResultSet:
         and a ``Decimal`` stays one. A column of ``float[]`` vectors holds one
         numpy ``float32`` array per cell (a row of the matrix ``to_columns()``
         returns, no copy into a Python list per row) and None for a null;
-        ``to_list()`` gives lists of floats.
+        ``to_list()`` gives lists of floats. A column that holds an integer
+        beyond +-2**53 next to a float is an ``object`` column of the exact
+        Python values (``float64`` would round the integer), as ``to_columns()``
+        returns them; ``to_arrow()`` gives the exact text.
 
         Args:
             convert_types: Convert Java types to Python (default: True)
@@ -589,7 +593,7 @@ class ResultSet:
             columns = self._read_columns(25_000, None, micros=True)
             if columns is not None:
                 # a vector column is already one numpy array per cell, None for a null
-                return pd.DataFrame(columns)
+                return dataframe_from_columns(columns)
 
         return pd.DataFrame(self.to_list(convert_types=convert_types))
 
