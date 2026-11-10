@@ -14,6 +14,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 import xml.etree.ElementTree as ET
 
 p = argparse.ArgumentParser()
@@ -80,6 +81,10 @@ assert chk.returncode == 0, "tests would not run against the installed wheel"
 a.out = os.path.abspath(a.out)
 xmldir = os.path.splitext(a.out)[0] + "-xml"
 os.makedirs(xmldir, exist_ok=True)
+# THROWAWAY BRANCH ONLY (ci/win-crash-loop, issue 295): the return code of every file's process, one line at a time so a killed run keeps them.
+rcpath = os.path.splitext(a.out)[0] + "-rc.tsv"
+with open(rcpath, "w") as fh:
+    fh.write("file\trc\tstatus\tseconds\n")
 rows, tot = [], dict.fromkeys(
     ["passed", "failed", "error", "notyet", "na_jvm", "skipped", "timeout"], 0
 )
@@ -111,20 +116,25 @@ for f in files:
         "-o",
         "junit_family=xunit1",
     ]
+    rc, t0 = None, time.time()
     try:
         r = subprocess.run(
             cmd, cwd=pkg, env=env, capture_output=True, text=True, timeout=a.timeout
         )
         status = ""
+        rc = r.returncode & 0xFFFFFFFF  # Windows: 0xc0000005 access violation, 0xc0000374 heap corruption, 0xc0000409 fail fast
         open(os.path.join(xmldir, name + ".log"), "w").write(
-            r.stdout[-20000:] + "\n" + r.stderr[-5000:]
+            r.stdout[-20000:] + "\n" + r.stderr[-5000:] + "\nRETURNCODE 0x%08x\n" % rc
         )
     except subprocess.TimeoutExpired as e:
         status = "TIMEOUT"
         open(os.path.join(xmldir, name + ".log"), "w").write(
-            ((e.stdout or b"")[-8000:]).decode()
-            if isinstance(e.stdout, bytes)
-            else str(e.stdout)[-8000:]
+            (
+                ((e.stdout or b"")[-8000:]).decode()
+                if isinstance(e.stdout, bytes)
+                else str(e.stdout)[-8000:]
+            )
+            + "\nRETURNCODE none (timeout)\n"
         )
     c = dict.fromkeys(["passed", "failed", "error", "notyet", "na_jvm", "skipped"], 0)
     fails = []
@@ -151,7 +161,16 @@ for f in files:
         except ET.ParseError:
             status = status or "BADXML"
     else:
-        status = status or "CRASH"
+        status = status or (
+            "CRASH(rc=0x%08x)" % rc if rc is not None else "CRASH"
+        )
+    if rc is not None and rc > 5 and not status:
+        # pytest exits 0 to 5; anything else after a written XML is the process dying (for instance at exit)
+        status = "EXITCODE(rc=0x%08x)" % rc
+    with open(rcpath, "a") as fh:
+        fh.write(
+            f"{name}\t{'0x%08x' % rc if rc is not None else 'none'}\t{status}\t{time.time() - t0:.1f}\n"
+        )
     for k in c:
         tot[k] += c[k]
     if status == "TIMEOUT":

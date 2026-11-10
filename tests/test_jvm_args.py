@@ -258,7 +258,8 @@ print("ok")
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "ok"
 
-    if sys.platform == "win32":
+    # the crash-loop branch (issue 295) keeps faulthandler on in the session when ARCADEDB_FAULT_DIR is set
+    if sys.platform == "win32" and not os.environ.get("ARCADEDB_FAULT_DIR"):
         assert not faulthandler.is_enabled()
 
 

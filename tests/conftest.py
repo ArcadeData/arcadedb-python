@@ -13,6 +13,30 @@ import pytest
 # a test that should have run, and scripts/check_test_skips.py fails the CI job on any skip.
 collect_ignore = []
 
+# THROWAWAY BRANCH ONLY (ci/win-crash-loop, issue 295; never a proposal for main). With ARCADEDB_FAULT_DIR set, faulthandler stays enabled
+# on Windows and writes to one file per process in that directory, together with one TEST line per test as it starts, so the last
+# TEST line of a file that died silently names the test that was running. The file object is kept referenced here for the whole run.
+_FAULT_FILE = None
+
+
+def _enable_fault_file():
+    global _FAULT_FILE
+    directory = os.environ.get("ARCADEDB_FAULT_DIR")
+    if not directory:
+        return
+    import faulthandler
+
+    if _FAULT_FILE is None:
+        os.makedirs(directory, exist_ok=True)
+        stems = "_".join(os.path.basename(a)[:-3] for a in sys.argv[1:] if a.endswith(".py")) or "pytest"
+        _FAULT_FILE = open(
+            os.path.join(directory, f"faulthandler-{stems}-{os.getpid()}.log"), "w", buffering=1, encoding="utf-8", errors="replace"
+        )
+    faulthandler.enable(file=_FAULT_FILE, all_threads=True)
+
+
+_enable_fault_file()  # before `import arcadedb`: a crash while the library loads is covered too
+
 import arcadedb  # noqa: E402  (the build under test decides which tests apply)
 
 # "jvm" for the arcadedb-jvm distribution, "native" for the arcadedb distribution (the GraalVM native-image library).
@@ -325,6 +349,24 @@ def pytest_configure(config):
 
         if faulthandler.is_enabled():
             faulthandler.disable()
+
+
+# THROWAWAY BRANCH ONLY: put the per-process fault file back after pytest's own plugin and the hook above replaced or disabled
+# faulthandler, and again at interpreter exit (pytest's plugin disables it in its pytest_unconfigure).
+@pytest.hookimpl(trylast=True)
+def pytest_sessionstart(session):
+    import atexit
+
+    _enable_fault_file()
+    if _FAULT_FILE is not None:
+        atexit.register(_enable_fault_file)
+
+
+def pytest_runtest_logstart(nodeid, location):
+    if _FAULT_FILE is not None:
+        import time
+
+        _FAULT_FILE.write(f"TEST {time.strftime('%H:%M:%S')} {nodeid}\n")
 
 
 # A test still running this long gets every Java thread's stack on stderr,

@@ -17,8 +17,7 @@ name: Windows crash loop (throwaway, issue 295)
 # pytest's capture file, which is lost when the process dies. A Windows Error Reporting local dump is kept for every crash.
 
 on:
-  push:
-    branches: [ci/win-crash-loop]
+  # no push trigger any more: its run 42755661370 is done, and a push of windows-parity-loop.yml must start that workflow only
   workflow_dispatch:
     inputs:
       reps:
