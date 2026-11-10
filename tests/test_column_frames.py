@@ -423,7 +423,11 @@ def test_two_cursors_open_at_once_and_a_cursor_closed_early(table):
 
 def test_a_cursor_with_nothing_read_closed_many_times_over(table):
     db, _ = table
-    cursors = [db.query("sql", _sel()) for _ in range(300)]
+    # No ORDER BY: a sorted query holds its whole sorted buffer in the engine's query heap budget (2 GB by default) from the moment
+    # it starts, so 300 of them open at once exhausted it (macOS arm64 CI and a laptop, 2026-11-10). This test is about cursors that
+    # were never read, so the query streams.
+    unsorted = "SELECT n, big, d, f, s, ok, ts, v3, v9, v128 FROM T"
+    cursors = [db.query("sql", unsorted) for _ in range(300)]
     for cursor in cursors:
         cursor.close()
     assert db.query("sql", _sel() + " LIMIT 3").to_arrow().num_rows == 3
