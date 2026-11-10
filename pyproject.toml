@@ -192,5 +192,6 @@ select = ["E4", "E7", "E9", "F"]
 [tool.ruff.lint.per-file-ignores]
 # pytest fixtures whose names shadow the fixture are a normal pattern (issue #270 lists 8 such
 # F811s). The one real duplicate (TestInsertManyVertexType in tests/test_bulk_insert.py) is removed
-# with the ruff-fixes commit, so nothing F811 should catch in tests remains except this pattern.
+# pytest fixtures whose names shadow the fixture are a normal pattern (issue #270 lists 8 such
+# F811s). The duplicate TestInsertManyVertexType in tests/test_bulk_insert.py has been removed.
 "tests/**" = ["F811"]
