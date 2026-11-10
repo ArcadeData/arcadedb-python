@@ -33,6 +33,12 @@
 #
 # A leg that passes uploads a marker (native-passed-<platform>-py<version>) and the wheel (native-wheel-<platform>); release-native.yml
 # reads them to decide what may be published. Do not rename these artifacts without changing release-native.yml.
+#
+# Crashes (ArcadeData/arcadedb-python#295): a test file whose process dies without a result is a CRASH row with its exit code, and fails the leg.
+# On the Windows legs only, the harness runs such a file once more in a fresh process (--retry-crash): a retry that produces a result is a
+# FLAKY-CRASH row, the leg may pass, and the `crash-report` job makes it loud (the job summary, and on a release or a dispatch one comment on
+# issue 295); a second crash, a failing test, a timeout and every Linux or macOS crash stay failures. Each Windows test process also writes a
+# faulthandler trace into the parity artifact (parity-wheel-xml/<file>.attemptN.fault.txt).
 name: Test native (arcadedb)
 
 on:
@@ -568,12 +574,16 @@ jobs:
           cores="$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 2)"
           limit=()
           if [ "$FINAL" = true ]; then limit=(--max-notyet 0); fi
+          # A file whose process dies without a result is run once more on Windows only (the crashes of issue 295 are Windows only);
+          # Linux and macOS stay strict. The harness marks a passing retry FLAKY-CRASH and the crash-report job logs it.
+          retry=()
+          if [ "$RUNNER_OS" = Windows ]; then retry=(--retry-crash); fi
           # macOS runs bash 3.2: under set -u an empty "${limit[@]}" is "unbound variable", so expand it only when set
           uv run --no-project --python "$PY" --with "$w" --with pytest --with setuptools --with numpy --with requests --with jpype1 --with pyarrow \
             --with polars --with pandas --with duckdb --with networkx --with "psycopg[binary]" --with adbc-driver-postgresql \
             --with redis --with neo4j --with ladybug \
             python native/wheel/parity_wheel.py --repo "$GITHUB_WORKSPACE" \
-              --out "$T/parity/parity-wheel.tsv" --cores "0-$((cores - 1))" ${limit[@]+"${limit[@]}"} | tee "$T/parity/parity-wheel.run.log"
+              --out "$T/parity/parity-wheel.tsv" --cores "0-$((cores - 1))" ${limit[@]+"${limit[@]}"} ${retry[@]+"${retry[@]}"} | tee "$T/parity/parity-wheel.run.log"
 
       - name: "Gate: no failure, error, crash, timeout or uncounted skip"
         run: |
@@ -583,10 +593,13 @@ jobs:
           awk -F'\t' '
             NR == 1 { next }
             $1 == "TOTAL" { passed = $2; failed = $3; err = $4; notyet = $5; na = $6; skipped = $7; tot = 1; next }
+            $8 ~ /^FLAKY-CRASH/ { flaky = flaky " " $1 "(" $8 ")"; next }
             $8 != "" { bad = bad " " $1 "(" $8 ")" }
             END {
               if (!tot) { print "no TOTAL row" > "/dev/stderr"; exit 1 }
               printf "parity %s py%s: passed=%s failed=%s error=%s notyet=%s na_jvm=%s skipped=%s\n", ENVIRON["KEY"], ENVIRON["PY"], passed, failed, err, notyet, na, skipped
+              # a file that crashed and passed when run once more: the leg may pass, the summary says it did only because of the retry
+              if (flaky != "") printf "FLAKY-CRASH (died without a result, passed on the one retry; first exit code in brackets):%s\n", flaky
               if (bad != "") { print "files with a status:" bad > "/dev/stderr"; exit 1 }
               if (passed + 0 == 0 || failed + 0 != 0 || err + 0 != 0) exit 1
               # this repository accepts no skips; NOTYET and NA-JVM are the two counted kinds of the native build
@@ -614,10 +627,43 @@ jobs:
           name: native-parity-${{ matrix.key }}-py${{ matrix.python }}
           path: |
             ${{ runner.temp }}/parity/parity-wheel.tsv
+            ${{ runner.temp }}/parity/parity-wheel.meta.json
             ${{ runner.temp }}/parity/parity-wheel.run.log
             ${{ runner.temp }}/parity/parity-wheel-xml/
           if-no-files-found: warn
           retention-days: 30
+
+  # The one job that may write to an issue: after the parity legs it reads their meta files (parity-wheel.meta.json in each native-parity-*
+  # artifact) and lists every FLAKY-CRASH and CRASH in the job summary; on a release (a tag push) or a dispatch it also posts ONE comment on
+  # issue 295 (native/wheel/report_flaky_crash.py decides: never on a pull request, only in ArcadeData/arcadedb-python). A log is not a gate: a token
+  # that cannot write issues, a missing artifact or a gh failure print a warning and the job still ends green. release-native.yml grants the
+  # issues permission to its call of this workflow, because a called workflow cannot hold more permission than its caller gives it.
+  crash-report:
+    name: Report parity crashes
+    needs: [plan, test]
+    if: ${{ !cancelled() && needs.plan.outputs.run == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    continue-on-error: true
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        continue-on-error: true
+        with:
+          pattern: native-parity-*
+          path: ${{ runner.temp }}/parity-artifacts
+
+      - name: List the crashes and log them on issue 295
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -I native/wheel/report_flaky_crash.py --artifacts "$RUNNER_TEMP/parity-artifacts"
 
   # The examples of examples/ against the INSTALLED native wheel, so the scripts a new user copies are run on what `uv add arcadedb` installs.
   # Nothing is built here: the wheel is the one the build job uploaded (native-wheel-<key>), the file the parity job installs. The platforms are
@@ -949,10 +995,13 @@ jobs:
           awk -F'\t' '
             NR == 1 { next }
             $1 == "TOTAL" { passed = $2; failed = $3; err = $4; notyet = $5; na = $6; skipped = $7; tot = 1; next }
+            $8 ~ /^FLAKY-CRASH/ { flaky = flaky " " $1 "(" $8 ")"; next }
             $8 != "" { bad = bad " " $1 "(" $8 ")" }
             END {
               if (!tot) { print "no TOTAL row" > "/dev/stderr"; exit 1 }
               printf "parity %s py%s: passed=%s failed=%s error=%s notyet=%s na_jvm=%s skipped=%s\n", ENVIRON["KEY"], ENVIRON["PY"], passed, failed, err, notyet, na, skipped
+              # a file that crashed and passed when run once more: the leg may pass, the summary says it did only because of the retry
+              if (flaky != "") printf "FLAKY-CRASH (died without a result, passed on the one retry; first exit code in brackets):%s\n", flaky
               if (bad != "") { print "files with a status:" bad > "/dev/stderr"; exit 1 }
               if (passed + 0 == 0 || failed + 0 != 0 || err + 0 != 0) exit 1
               # this repository accepts no skips; NOTYET and NA-JVM are the two counted kinds of the native build

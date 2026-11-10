@@ -35,6 +35,8 @@ WINDOWS_NOT_APPLICABLE = {
     # the release preflight is a maintainer tool for a POSIX shell: its check (f) runs the workflows' bash step code,
     # and on Windows it reports a SKIP, which its own tests cover on Linux and macOS (ArcadeData/arcadedb-python#208)
     "test_release_preflight.py": "runs the workflows' bash step code",
+    # runs the awk program of the parity gate step of test-native.yml, which is code for the bash of a runner
+    "test_parity_gate_awk.py": "runs the workflows' awk step code",
 }
 if sys.platform == "win32":
     collect_ignore.extend(WINDOWS_NOT_APPLICABLE)
@@ -318,13 +320,32 @@ def pytest_configure(config):
     # pytest_configure, and a conftest hook otherwise runs before that.
     # This hook was dead from 2026-07-25 to 2026-09-29: a second
     # pytest_configure further down replaced it (test_jvm_args pins it now).
+    #
+    # That reason is the JVM's. The native wheel has no HotSpot in the process, so a
+    # fault there is a real one and the trace is what a crash leaves: with a stock run
+    # (faulthandler off, nothing in the log) the Windows parity legs lost a process in
+    # test_vector.py, test_free_threading.py and test_find_nearest_query_forms.py and
+    # nothing told which call it was (ArcadeData/arcadedb-python#295). native/wheel/parity_wheel.py names a
+    # file in ARCADEDB_TEST_FAULTHANDLER_FILE (it sets it on Windows only), and a native
+    # run on Windows then writes faulthandler's trace there, not to stderr. The JVM
+    # build ignores the variable and stays off.
     import sys
 
     if sys.platform == "win32":
         import faulthandler
 
-        if faulthandler.is_enabled():
+        trace = os.environ.get(FAULT_FILE_ENV)
+        if trace and BACKEND == "native":
+            global _fault_file
+            _fault_file = open(trace, "w")  # kept open: faulthandler writes to its descriptor at the crash
+            faulthandler.enable(file=_fault_file, all_threads=True)
+        elif faulthandler.is_enabled():
             faulthandler.disable()
+
+
+# The file the native run on Windows writes a faulthandler trace to (see pytest_configure above); set by native/wheel/parity_wheel.py.
+FAULT_FILE_ENV = "ARCADEDB_TEST_FAULTHANDLER_FILE"
+_fault_file = None
 
 
 # A test still running this long gets every Java thread's stack on stderr,
