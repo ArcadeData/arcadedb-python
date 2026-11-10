@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import re
 import signal
 import subprocess  # nosec B404 - test-controlled child processes
@@ -303,6 +304,16 @@ FIXTURE_FILES = {
     "test_dies_always.py": f"import os\n\n\ndef test_a():\n    os._exit({HIGH_ARG})\n",
 }
 
+# a process that dies in shutdown, after pytest wrote its XML (pytest_sessionfinish runs before pytest_unconfigure)
+DIRTY_CONFTEST = f"""
+import os
+
+
+def pytest_unconfigure(config):
+    if any("test_dirty" in str(a) for a in config.args):
+        os._exit({HIGH_ARG})
+"""
+
 IDENT = (
     "/x/site-packages/arcadedb/__init__.py 26.11.1.post2 native 26.11.1 abc1234\n"
     'META {"python": "3.14.0", "wheel_version": "26.11.1.post2", "engine_version": "26.11.1", "source_commit": "abc1234"}\n'
@@ -325,12 +336,24 @@ def harness(tmp_path, monkeypatch):
     monkeypatch.delenv("PYTHONPATH", raising=False)
     counter = iter(range(100))
 
-    def go(*flags):
+    def go(*flags, dirty=False, seed=None):
+        """`dirty` adds test_dirty.py and a conftest whose process dies after the XML; `seed` puts files into the XML directory first
+        ({name: text} or {name: (text, age in seconds)})."""
         repo = tmp_path / f"repo{next(counter)}"
         (repo / "tests").mkdir(parents=True)
-        (repo / "tests" / "conftest.py").write_text("# fixture\n")
-        for name, text in FIXTURE_FILES.items():
+        files = dict(FIXTURE_FILES)
+        if dirty:
+            files["test_dirty.py"] = "def test_a():\n    pass\n"
+        (repo / "tests" / "conftest.py").write_text(DIRTY_CONFTEST if dirty else "# fixture\n")
+        for name, text in files.items():
             (repo / "tests" / name).write_text(text)
+        for name, item in (seed or {}).items():
+            text, age = item if isinstance(item, tuple) else (item, 0)
+            path = repo / "out" / "parity-wheel-xml" / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text)
+            if age:
+                os.utime(path, (path.stat().st_mtime - age, path.stat().st_mtime - age))
         monkeypatch.setenv("DIES_ONCE_MARKER", str(repo / "marker"))
         monkeypatch.setenv("KEY", "windows-x64")
         out = repo / "out" / "parity-wheel.tsv"
@@ -491,7 +514,7 @@ FLAKY_EVENT = {
     "file": "test_free_threading.py",
     "kind": "FLAKY-CRASH",
     "first_rc": "0xC0000005,3221225477",
-    "retry_rc": "",
+    "retry_rc": "0x00000000,0",
     "retry": "passed",
     "status": "FLAKY-CRASH(rc=0xC0000005,3221225477)",
     "trace1": "test_free_threading.py.attempt1.fault.txt",
@@ -567,7 +590,7 @@ def test_a_release_posts_one_comment_listing_every_event_and_the_summary_has_the
     md = summary.read_text()
     assert md.startswith("### Parity crashes")
     assert "**FLAKY-CRASH: 1 file(s)" in md and "**CRASH: 1 file(s)" in md
-    assert "| windows-x64 | 3.11.9 | 26.11.1.post2 | `test_free_threading.py` | FLAKY-CRASH 0xC0000005,3221225477 | passed |" in md
+    assert "| windows-x64 | 3.11.9 | 26.11.1.post2 | `test_free_threading.py` | FLAKY-CRASH 0xC0000005,3221225477 | passed (0x00000000,0) |" in md
     assert EM_DASH not in md
 
 
@@ -660,3 +683,155 @@ def test_issues_write_is_held_by_the_crash_report_job_and_the_release_call_only(
 def test_the_flaky_comment_text_has_no_em_dash_in_any_source_that_writes_it():
     for path in (WHEEL_DIR / "report_flaky_crash.py", WHEEL_DIR / "parity_crash.py", WHEEL_DIR / "parity_wheel.py"):
         assert EM_DASH not in path.read_text(encoding="utf-8"), path.name
+
+
+# ---------------------------------------------------------------------------------------------------------------------------------
+# a process that dies after its result, a stale XML, a locked log: the harness records, stays strict where it must and never fails on housekeeping
+# ---------------------------------------------------------------------------------------------------------------------------------
+
+STALE_XML = '<?xml version="1.0"?><testsuites><testsuite name="pytest" tests="1"><testcase classname="x" name="test_a"/></testsuite></testsuites>'
+
+
+def lock(monkeypatch, name, suffix, times):
+    """os.<name> raises PermissionError for a path ending in `suffix`: `times` times (None: always). Returns the list of the calls it saw."""
+    real, left, seen = getattr(os, name), [times], []
+
+    def wrapper(*args, **kwargs):
+        target = str(args[1] if name == "replace" else args[0])
+        if target.endswith(suffix):
+            seen.append(target)
+            if left[0] is None or left[0] > 0:
+                if left[0] is not None:
+                    left[0] -= 1
+                raise PermissionError(13, "locked by a virus scanner", target)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(os, name, wrapper)
+    return seen
+
+
+def test_a_process_that_dies_after_its_result_is_a_dirty_exit_and_fails_nothing(harness, tmp_path):
+    rows, meta, xmldir = harness("--files", "test_dirty.py", "--retry-crash", dirty=True)
+    row = rows["test_dirty.py"]
+    # the XML says one passed test: the status stays clean, the file is not retried (even with the retry on), the exit code is kept
+    assert (row["status"], row["passed"], row["failed"], row["attempts"], row["exit"]) == ("", "1", "0", "1", HIGH_TEXT)
+    assert rows["TOTAL"]["status"] == "timeouts=0 flaky_crash=0 crash=0"
+    assert [(e["kind"], e["file"], e["first_rc"], e["attempt"], e["log"]) for e in meta["crash_events"]] == [
+        ("DIRTY-EXIT", "test_dirty.py", HIGH_TEXT, 1, "test_dirty.py.log")
+    ]
+    assert not (xmldir / "test_dirty.py.attempt1.log").exists()
+    # the report lists it in the job summary and in the comment on issue 295
+    root = tmp_path / "artifacts"
+    (root / "native-parity-windows-x64-py3.14").mkdir(parents=True)
+    (root / "native-parity-windows-x64-py3.14" / "parity-wheel.meta.json").write_text(json.dumps(meta))
+    gh, summary = FakeGh(), tmp_path / "summary.md"
+    assert report.report(report.load_events(str(root)), RELEASE_ENV, str(summary), run=gh) == 0
+    md = summary.read_text()
+    assert md.startswith("### Parity crashes")
+    assert "**DIRTY-EXIT: 1 file(s) wrote their result and then the process died in shutdown.**" in md
+    assert f"| windows-x64 | 3.14.0 | 26.11.1.post2 | `test_dirty.py` | DIRTY-EXIT {HIGH_TEXT} | not retried, result kept |" in md
+    assert "`test_dirty.py.log`" in md and "attempt1" not in md
+    assert len(gh.calls) == 1
+    body = gh.calls[0][1]
+    assert body.startswith("DIRTY-EXIT in a native parity run.")
+    assert f"DIRTY-EXIT {HIGH_TEXT}" in body and "not retried, result kept" in body and "did not fail the leg" in body
+    assert EM_DASH not in body and EM_DASH not in md
+
+
+def test_a_stale_xml_cannot_pass_for_the_result_of_a_file_that_crashes(harness):
+    rows, meta, xmldir = harness("--files", "test_dies_always.py", seed={"test_dies_always.py.xml": STALE_XML})
+    row = rows["test_dies_always.py"]
+    assert row["status"] == f"CRASH(rc={HIGH_TEXT})"
+    assert (row["passed"], row["attempts"]) == ("0", "1")
+    assert not (xmldir / "test_dies_always.py.xml").exists()
+
+
+def test_a_stale_xml_that_cannot_be_removed_is_still_not_the_result_of_this_run(harness, monkeypatch, capsys):
+    seen = lock(monkeypatch, "remove", ".xml", None)
+    monkeypatch.setattr(parity_wheel, "HOUSEKEEPING_PAUSE", 0)
+    rows, meta, xmldir = harness("--files", "test_dies_always.py", seed={"test_dies_always.py.xml": (STALE_XML, 600)})
+    row = rows["test_dies_always.py"]
+    assert row["status"] == f"CRASH(rc={HIGH_TEXT})" and row["passed"] == "0"
+    assert len(seen) == 2  # one try and one more after the pause
+    assert "::warning::removing a stale test_dies_always.py.xml was skipped: PermissionError" in capsys.readouterr().out
+
+
+def test_housekeeping_tries_twice_waits_once_and_never_raises(monkeypatch, capsys):
+    sleeps = []
+    monkeypatch.setattr(parity_wheel, "HOUSEKEEPING_PAUSE", 0.25)
+    monkeypatch.setattr(parity_wheel.time, "sleep", sleeps.append)
+    calls = []
+
+    def once():
+        calls.append(1)
+        if len(calls) < 2:
+            raise PermissionError("locked")
+
+    assert parity_wheel.housekeeping("a log", once) is True
+    assert (len(calls), sleeps, capsys.readouterr().out) == (2, [0.25], "")
+    calls.clear()
+    sleeps.clear()
+
+    def always():
+        calls.append(1)
+        raise PermissionError("locked")
+
+    assert parity_wheel.housekeeping("keeping a log", always) is False
+    assert (len(calls), sleeps) == (2, [0.25])
+    assert capsys.readouterr().out.startswith("::warning::keeping a log was skipped: PermissionError")
+
+
+def test_a_log_that_is_locked_once_is_kept_after_a_short_wait(harness, monkeypatch, capsys):
+    monkeypatch.setattr(parity_wheel, "HOUSEKEEPING_PAUSE", 0)
+    seen = lock(monkeypatch, "replace", ".attempt1.log", 1)
+    rows, meta, xmldir = harness("--files", "test_dies_once.py", "--retry-crash")
+    assert rows["test_dies_once.py"]["status"] == f"FLAKY-CRASH(rc={HIGH_TEXT})"
+    assert len(seen) == 2
+    assert (xmldir / "test_dies_once.py.attempt1.log").exists()
+    assert "::warning::" not in capsys.readouterr().out
+
+
+def test_a_log_that_stays_locked_is_a_warning_and_the_result_still_counts(harness, monkeypatch, capsys):
+    monkeypatch.setattr(parity_wheel, "HOUSEKEEPING_PAUSE", 0)
+    seen = lock(monkeypatch, "replace", ".attempt1.log", None)
+    rows, meta, xmldir = harness("--files", "test_dies_once.py", "--retry-crash")
+    once = rows["test_dies_once.py"]
+    assert (once["status"], once["passed"], once["failed"], once["attempts"]) == (f"FLAKY-CRASH(rc={HIGH_TEXT})", "1", "0", "2")
+    assert len(seen) == 2
+    assert not (xmldir / "test_dies_once.py.attempt1.log").exists()
+    assert "::warning::keeping the log of the first attempt of test_dies_once.py was skipped: PermissionError" in capsys.readouterr().out
+
+
+def test_an_empty_trace_that_cannot_be_deleted_is_a_warning_and_not_a_failure(harness, monkeypatch, capsys):
+    monkeypatch.setattr(parity_wheel, "HOUSEKEEPING_PAUSE", 0)
+    seen = lock(monkeypatch, "remove", ".fault.txt", None)
+    rows, meta, xmldir = harness("--files", "test_ok.py", seed={"test_ok.py.attempt1.fault.txt": ""})
+    assert (rows["test_ok.py"]["status"], rows["test_ok.py"]["passed"]) == ("", "2")
+    assert len(seen) == 2 and (xmldir / "test_ok.py.attempt1.fault.txt").exists()
+    assert "::warning::removing the empty trace of test_ok.py was skipped: PermissionError" in capsys.readouterr().out
+
+
+NOT_RETRIED_EVENT = {
+    "file": "test_find_nearest_query_forms.py",
+    "kind": "CRASH",
+    "first_rc": "-11,SIGSEGV",
+    "retry_rc": "",
+    "retry": "not retried",
+    "status": "CRASH(rc=-11,SIGSEGV)",
+}
+
+
+def test_the_report_names_the_log_that_exists(tmp_path):
+    root = tmp_path / "a"
+    write_meta(root, "native-parity-linux-x86_64-py3.12", "linux-x86_64", "3.12.7", "26.11.1.post2", [NOT_RETRIED_EVENT], retry=False)
+    write_meta(root, "native-parity-windows-x64-py3.11", "windows-x64", "3.11.9", "26.11.1.post2", [FLAKY_EVENT])
+    write_meta(root, "native-parity-windows-x64-py3.14", "windows-x64", "3.14.0", "26.11.1.post2", [CRASH_EVENT])
+    events = report.load_events(str(root))
+    where = {line.split("`")[1]: line for line in report._where(events)}
+    # a crash that was not retried (Linux, macOS, a spent budget) has name.log alone; attempt1.log exists only after a retry
+    assert "`test_find_nearest_query_forms.py.log`" in where["test_find_nearest_query_forms.py"]
+    assert "attempt1.log" not in where["test_find_nearest_query_forms.py"]
+    assert "`test_free_threading.py.attempt1.log`" in where["test_free_threading.py"]
+    assert "`test_vector.py.attempt1.log`" in where["test_vector.py"]
+    body = report.comment_md(events, "https://example.invalid/run", "1", "push", "26.11.1.post2")
+    assert "`test_find_nearest_query_forms.py.log`" in body and "test_find_nearest_query_forms.py.attempt1.log" not in body
