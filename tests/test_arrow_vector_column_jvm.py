@@ -81,9 +81,8 @@ def _make(db, name, kind="VERTEX", embedding="ARRAY_OF_FLOATS", index=None):
 
 
 def _count(db, name):
-    return (
-        db.query("sql", f"SELECT count(*) AS c FROM {name}").first().get("c")
-    )  # nosec B608 - test-owned name
+    sql = f"SELECT count(*) AS c FROM {name}"  # nosec B608 - test-owned name
+    return db.query("sql", sql).first().get("c")
 
 
 def _key(k, vector_bytes):
@@ -103,9 +102,8 @@ def _expected_digest(matrix, start=0):
 
 def _sql_digest(db, name):
     h, n = 0, 0
-    for row in db.query(
-        "sql", f"SELECT k, embedding FROM {name}"
-    ).to_list():  # nosec B608 - test-owned name
+    sql = f"SELECT k, embedding FROM {name}"  # nosec B608 - test-owned name
+    for row in db.query("sql", sql).to_list():
         h ^= _key(
             row["k"],
             np.asarray(row["embedding"], dtype=np.float64).astype(F32).tobytes(),
