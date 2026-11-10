@@ -151,16 +151,22 @@ public final class ColumnBatcher {
       final byte[] nulls = new byte[(count + 7) / 8];
       // detect the column type across ALL values; mixed/unsupported -> json
       String type = null;
+      boolean sawInt = false, sawFloating = false, bigInt = false;
       for (int r = 0; r < count; r++) {
         final Object v = rows.get(r)[c];
         if (v == null)
           continue;
         final String t;
-        if (v instanceof Long || v instanceof Integer || v instanceof Short || v instanceof Byte)
+        if (v instanceof Long || v instanceof Integer || v instanceof Short || v instanceof Byte) {
           t = "i8";
-        else if (v instanceof Double || v instanceof Float)
+          sawInt = true;
+          final long l = ((Number) v).longValue();
+          if (l > (1L << 53) || l < -(1L << 53))
+            bigInt = true;
+        } else if (v instanceof Double || v instanceof Float) {
           t = "f8";
-        else if (v instanceof Boolean)
+          sawFloating = true;
+        } else if (v instanceof Boolean)
           t = "b1";
         else if (v instanceof Date || v instanceof Calendar || v instanceof LocalDateTime
             || v instanceof LocalDate || v instanceof Instant
@@ -198,6 +204,9 @@ public final class ColumnBatcher {
       }
       if (type == null)
         type = "str"; // all-null column
+      // an integer beyond 2**53 next to a floating value has no exact double: the values stay what they are, in a json column
+      if (type.equals("f8") && sawInt && sawFloating && bigInt)
+        type = "json";
 
       int vdim = -1;
       if (type.equals("f4v") || type.equals("f8v")) {

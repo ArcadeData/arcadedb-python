@@ -1,7 +1,8 @@
 """GraphBatch float32 vectors cross the native library in a binary side buffer, not as number text.
 
 ``create_vertices`` rows and ``new_edges`` props that hold a float32 ``ndarray`` go through ``arcadedb_n_gb_bin`` (the float32 buffer is
-read in Java through the ``["B", offset, count]`` tag, as ``arcadedb_n_exec_bin`` reads query parameters); everything else keeps the text
+read in Java through the ``["B", offset, count]`` tag, as ``arcadedb_n_exec_bin`` reads query parameters; a ``create_vertices`` column of
+float32 arrays of one length crosses as one matrix described by ``"vecs"`` instead, see test_native_vertex_vector_crossings.py); everything else keeps the text
 of ``arcadedb_n_gb``: a vector given as a list, a float64 array, a row with no vector. The stored values do not change: the same float32
 as the ``"F"``-tagged text gave, bit for bit. A library without the entry (``lib.GB_BIN`` false) keeps the text path.
 
@@ -95,9 +96,11 @@ def test_float32_vectors_take_the_binary_entry_and_are_stored_bit_equal(db, call
     assert calls.entries("create_vertices") == ["arcadedb_n_gb_bin"]
     _, _, text, count = next(c for c in calls.calls if c[1] == "create_vertices")
     assert count == N * dim
-    assert '"B"' in text and '"F"' not in text
+    assert (
+        '"vecs"' in text and '"B"' not in text and '"F"' not in text
+    )  # one matrix, no tag per row (#337)
     assert str(float(x[2, 0])) not in text  # the numbers are not in the text
-    assert len(text) < N * 80  # a vector is a tag, not dim numbers
+    assert len(text) < N * 80  # a row is its other properties, not dim numbers
     _assert_bit_equal(_stored(db, "Vx"), x)
 
 

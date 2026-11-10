@@ -9,6 +9,7 @@ from collections import deque
 from datetime import date, datetime
 from typing import Any, Dict, Iterator, List, Optional
 
+from .. import _columnar
 from .._params import refuse_surplus_positionals
 from ..exceptions import ArcadeDBError
 from ..transactions import TransactionContext
@@ -40,6 +41,7 @@ _RID_RE = re.compile(r"#?-?\d+:-?\d+")
 _FIRST_BATCH = 256
 _EPOCH_DAY_ORDINAL = date(1970, 1, 1).toordinal()
 _NEXT_BATCH = 2048
+_EAGER = 8  # a flag of _exec that never reaches the library: the statement's first rows come back in its own reply
 _wrap_record = None
 _KIND = {"v": "v", "e": "e", "d": "d"}
 
@@ -210,6 +212,10 @@ class NativeResultSet:
         self._rs = reply["rs"]
         self._buf = deque(zip(reply["rows"], reply["meta"]))
         self._more = not reply["drained"]
+        # the properties that were float[] ("f") or double[] ("d") in the rows read so far: a JSON row cannot tell them from a list of
+        # doubles, and a columnar read types them as vector columns (colframes.py)
+        self._vectors: Dict[str, str] = {}
+        self._note_vectors(reply)
         self._closed = False
         self._exhausted = False
         # the engine computes lazily: an error met while the first rows were read is raised when the rows before it
@@ -228,6 +234,7 @@ class NativeResultSet:
         self._rs = rs_id
         self._buf = deque()
         self._tagged = False
+        self._vectors = {}
         self._more = rs_id > 0
         self._closed = False
         self._exhausted = False
@@ -303,6 +310,7 @@ class NativeResultSet:
             self._facets = reply["facets"]
         if "ferr" in reply:
             self._facets_error = reply["ferr"]
+        self._note_vectors(reply)
         return has_rows or self._pending_error is not None
 
     @property
@@ -378,6 +386,12 @@ class NativeResultSet:
         self._rs = 0
         self._finish()
         return facets
+
+    def _note_vectors(self, reply: dict) -> None:
+        for name in reply.get("fv", ()):
+            self._vectors[name] = "f"
+        for name in reply.get("dv", ()):
+            self._vectors[name] = "d"
 
     def _finish(self) -> None:
         self._exhausted = True
@@ -505,33 +519,105 @@ class NativeResultSet:
             # returns as it is. The flag is read after the batch is built, so it covers every reply the batch's rows came from
             yield [json_native(row) for row in batch] if self._tagged else batch
 
-    def to_dataframe(self, convert_types: bool = True):
-        import pandas as pd
+    def _read_frames(self, batch_size, columns, decode, flags=0):
+        """The rows still to be read, in the two forms a result has: ``(head_rows, batches)``.
 
-        return pd.DataFrame(self._drain_dicts())
+        ``head_rows`` are the rows this object holds as dicts (the first reply, and any reply the caller read by row): they are
+        not in the cursor any more. ``batches`` is the list of ``(count, parts)`` that ``decode(frame_bytes)`` makes of each column
+        frame the cursor yields (about 1 MiB of values each, ``batch_size`` rows at most; ``flags`` 1 asks for datetimes as
+        microseconds). The result is finished when this returns.
+        """
+        size = _columnar.frame_rows(batch_size)
+        head_rows: list = []
+        batches: list = []
+        if not self._readable():
+            return head_rows, batches
+        spec = json.dumps(list(columns)).encode("utf-8") if columns is not None else b""
+        head_rows = [props for props, _ in self._buf]
+        self._buf.clear()
+        if self._pending_error is not None:
+            self._fill()  # the rows before the error are consumed: raise it
+        while self._more and self._rs:
+            try:
+                raw = lib.call_frame(self._rs, size, spec, flags)
+            except lib.ColumnFrameError as exc:
+                # the library closed the cursor
+                self._more = False
+                self._rs = 0
+                self._closed = True
+                self._exhausted = True
+                raise _read_error(exc.reply) from None
+            count, parts, header = decode(raw)
+            if header.get("done"):
+                self._more = False  # the library closed the cursor with the frame that ended the rows
+                self._rs = 0
+            elif count == 0:
+                # an open cursor must give a row per frame: never loop on a library that does not
+                self._more = False
+                self.close()
+                raise ArcadeDBError(
+                    "The native library returned an empty column frame for a cursor with rows left (frame row limit "
+                    f"{size}). This is a bug in the library or in the wheel."
+                )
+            if count:
+                batches.append((count, parts))
+        self._finish()
+        return head_rows, batches
+
+    def to_dataframe(self, convert_types: bool = True):
+        """The rows as a ``pandas.DataFrame``, read as column frames (no dict per row). The values are the ones ``to_list()`` returns,
+        with two exceptions that are the same on both builds. A DATETIME keeps its microseconds (a ``datetime64[us]`` column, where
+        ``to_columns()`` and ``to_arrow()`` carry milliseconds), a DATE is a ``datetime.date`` in an object column, and a ``Decimal``
+        stays one. A column of ``float[]`` vectors holds one numpy ``float32`` array per cell (a row of the matrix ``to_columns()``
+        returns, not a Python list per row) and None for a null; ``to_list()`` gives lists of floats. A column that holds an integer
+        beyond +-2**53 next to a float is an ``object`` column of the exact Python values (``float64`` would round the integer), as
+        ``to_columns()`` returns them; ``to_arrow()`` gives the exact text.
+        """
+        # availability check: a missing pandas raises before the cursor is read
+        __import__("pandas")
+        return _columnar.dataframe_from_columns(self._columns(25_000, None, True))
+
+    def _columns(self, batch_size, columns, micros):
+        from . import colframes
+
+        head_rows, batches = self._read_frames(
+            batch_size,
+            columns,
+            lambda raw: colframes.decode_columns(raw, micros),
+            1 if micros else 0,
+        )
+        return colframes.columns_result(
+            head_rows, columns, micros, batches, self._vectors
+        )
 
     def to_columns(self, batch_size: int = 25_000, columns=None):
-        """Columns as the JPype path returns them (numpy int64/float64/bool/datetime64[ms] arrays, lists for text and
-        JSON-typed values, an object array of Decimal), built in Python from the rows: a columnar JSON path, no
-        binary buffer. None when numpy is missing."""
+        """Columns as the JVM build returns them (numpy int64/float64/bool/datetime64[ms] arrays, lists for text and JSON-typed
+        values, an object array of Decimal), decoded from column frames by the decoder both builds share. The arrays are writable,
+        and a column's type belongs to the whole result, not to where a batch ends. A column is a float32 matrix when the property is
+        a ``float[]`` (ARRAY_OF_FLOATS), and a list of lists when it is a LIST of numbers whatever the values; a null vector is a row of
+        NaN in the matrix (``to_dataframe()`` and ``to_arrow()`` keep it a null). An empty result is
+        ``{}``, or the ``columns`` asked for as empty lists. None when numpy is missing.
+        """
         try:
-            import numpy  # noqa: F401
+            __import__("numpy")  # availability check
         except ImportError:
             return None
-        from .columns import to_columns
-
-        return to_columns(self._drain_dicts(), columns)
+        return self._columns(batch_size, columns, False)
 
     def to_arrow(self, batch_size: int = 25_000, columns=None):
-        """A ``pyarrow.Table`` with the types of :meth:`to_columns` but nulls kept (None when pyarrow is missing)."""
+        """A ``pyarrow.Table`` with the types of :meth:`to_columns` but nulls kept (None when pyarrow is missing), decoded from
+        column frames by the decoder both builds share."""
         try:
-            import numpy  # noqa: F401
-            import pyarrow  # noqa: F401
+            __import__("numpy")  # availability check
+            __import__("pyarrow")
         except ImportError:
             return None
-        from .columns import to_arrow
+        from . import colframes
 
-        return to_arrow(self._drain_dicts(), columns)
+        head_rows, batches = self._read_frames(
+            batch_size, columns, colframes.decode_arrow
+        )
+        return colframes.arrow_result(head_rows, columns, batches, self._vectors)
 
     def to_polars(self, batch_size: int = 25_000, columns=None):
         try:
@@ -706,12 +792,14 @@ class NativeDatabase:
         self, flags: int, prefix: str, language: str, command: str, args
     ) -> NativeResultSet:
         self._check_not_closed()
+        eager = flags & _EAGER
+        flags &= ~_EAGER
         if args:
             refuse_surplus_positionals(
                 "command" if flags & 1 else "query", language, command, args
             )
         interrupts.clear()
-        if flags & 1 and _LAZY_COMMAND_ROWS and lib.CMD_PATH:
+        if flags & 1 and _LAZY_COMMAND_ROWS and lib.CMD_PATH and not eager:
             # phase 8: the cursor id comes back as a long (no reply text to free and decode); the rows are read late or never
             text, buf, count = encode_params(args, binary=True)
             rid = lib.cmd(
@@ -728,7 +816,7 @@ class NativeDatabase:
                 raise _error(prefix, json.loads(lib.last_error()))
             return NativeResultSet._lazy(self, rid)
         # phase 7 (arcadedb_n_exec flags): 2 = a command's rows are pulled but encoded only when read, 4 = float arrays come back as a float32 tail
-        if flags & 1 and _LAZY_COMMAND_ROWS:
+        if flags & 1 and _LAZY_COMMAND_ROWS and not eager:
             flags |= 2
         if _BINARY_REPLY:
             flags |= 4
@@ -777,6 +865,15 @@ class NativeDatabase:
     def command(self, language: str, command: str, *args) -> NativeResultSet:
         """Run a statement that may write."""
         return self._exec(1, "Command failed", language, command, args)
+
+    def _command_first_row(self, language: str, command: str, *args) -> NativeResultSet:
+        """:meth:`command` for a caller that reads the first row right away (a create or an update that returns its row): the statement runs
+        and its first rows come back in the same crossing (``arcadedb_n_exec`` without the lazy bit) instead of a cursor id that a second
+        crossing (``arcadedb_n_next_bin``) reads. The rows, the values and the errors are those of :meth:`command`, at the same moment:
+        an error the engine raises while it runs the statement (an INSERT or an UPDATE) is raised by this call, as by :meth:`command`;
+        one met while rows are computed lazily comes in the reply (``rerr``) and is raised when the row is read, as on the lazy path.
+        """
+        return self._exec(1 | _EAGER, "Command failed", language, command, args)
 
     # -- transactions
 
@@ -975,7 +1072,8 @@ class NativeDatabase:
         a newDocument/set/save loop inside the image, as ``DocumentBatcher.insertManyJson`` on the JPype path). A ``datetime`` (also
         ``pandas.Timestamp`` and ``numpy.datetime64``), ``date``, ``Decimal``, ``bytes``/``bytearray``, numpy scalar, ``pandas.NA`` or
         ``pandas.NaT`` sitting directly in a row crosses in that text as a tagged value (``{"\\u0001": [kind, payload]}``, decoded by
-        ``Json.java``), so it does not move the chunk off this path; such a chunk loses the columnar entry. A row with a value the JSON
+        ``Json.java``), so it does not move the chunk off this path; but when a column holds only date-times, dates, Decimals or
+        bytes (None is a null) the chunk goes as columns, the same stored objects. A row with a value the JSON
         text cannot carry unchanged (NaN or Infinity, an integer beyond 64 bits, a date-time or decimal inside a list or map, a non-str
         key, a lone surrogate, a ``datetime.time``) goes through ``INSERT INTO t CONTENT :row`` on its own, in one crossing for a run of
         such rows; the rows around it keep the bulk path and every row is inserted in the order given. Inside the caller's
@@ -1093,20 +1191,50 @@ class NativeDatabase:
             raise _error("Command failed", reply)
         return reply["n"]
 
-    def _parallel_load_failed(self, type_name, error) -> ArcadeDBError:
+    def _drain_parallel(self, tokens):
+        """Waits for the async writers, then reads, and so removes, the failure token of every parallel load handed in. Returns
+        ``(problem, failed, first)``: the error of the wait or of a read (or None), the failed records the writers reported on all the
+        tokens and the first failure's text. The tokens are read whatever the wait did: an unread token keeps its entries for good.
+        """
+        from . import extras
+
+        problem = None
+        try:
+            self._async().wait_completion()
+        except Exception as e:
+            problem = e
+        failed, first = 0, None
+        for token in tokens:
+            try:
+                result = extras.failures(self, token)
+            except Exception as e:
+                problem = problem or e
+                continue
+            if result["count"] and first is None:
+                first = result["first"]
+            failed += result["count"]
+        return problem, failed, first
+
+    def _abandon_parallel(self, tokens):
+        """A parallel load that is being interrupted: waits for the writers (they run on) and removes the tokens; the error that is on its
+        way out is the one to report.
+        """
+        self._drain_parallel(tokens)
+
+    def _parallel_load_failed(self, type_name, error, tokens=()) -> ArcadeDBError:
         """The error for a parallel load that failed while handing rows to the writers: waits for the queue to drain first, so
         the caller sees a final state, and says that the rows handed over before the failure may have been stored.
         """
-        try:
-            self._async().wait_completion()
-        except Exception:  # nosec B110 - the original error is the one to report
-            pass
+        _, failed, _ = self._drain_parallel(tokens)
         text = str(error)
         prefix = "Failed to bulk-insert: "
         if text.startswith(prefix):
             text = text[len(prefix) :]
+        reported = (
+            f"; the writers had reported {failed} failed record(s)" if failed else ""
+        )
         return ArcadeDBError(
-            f"Failed to bulk-insert into '{type_name}': {text}; the rows handed to the "
+            f"Failed to bulk-insert into '{type_name}': {text}{reported}; the rows handed to the "
             f"parallel writers before the failure may have been stored (the call waited "
             f"for them before raising)"
         )
@@ -1128,26 +1256,28 @@ class NativeDatabase:
                     tokens.append(extras.insert_parallel(self, type_name, chunk)["fid"])
                 except ArcadeDBError as e:
                     # as the JPype path: the rows handed to the writers before the failure are written whatever this call does
-                    raise self._parallel_load_failed(type_name, e) from e
+                    raise self._parallel_load_failed(type_name, e, tokens) from e
                 n += len(chunk)
         except ArcadeDBError:
             raise
         except BaseException:
-            try:
-                self._async().wait_completion()
-            except Exception:  # nosec B110 - the original error is the one to report
-                pass
+            self._abandon_parallel(tokens)
             raise
+        return self._finish_parallel(type_name, tokens, n)
+
+    def _finish_parallel(self, type_name, tokens, n) -> int:
+        """The end of a parallel load: wait for the async writers, then read the failure count of every token and raise when a record failed."""
         try:
-            self._async().wait_completion()
-        except Exception as e:
-            raise ArcadeDBError(f"Failed to bulk-insert into '{type_name}': {e}") from e
-        n_failed, first = 0, None
-        for token in tokens:
-            result = extras.failures(self, token)
-            if result["count"] and first is None:
-                first = result["first"]
-            n_failed += result["count"]
+            problem, n_failed, first = self._drain_parallel(tokens)
+        except BaseException:
+            self._abandon_parallel(
+                tokens
+            )  # a ^C in the wait: finish it, and remove the tokens
+            raise
+        if problem is not None:
+            raise ArcadeDBError(
+                f"Failed to bulk-insert into '{type_name}': {problem}"
+            ) from problem
         if n_failed:
             raise ArcadeDBError(
                 f"Failed to bulk-insert into '{type_name}': the parallel writers reported {n_failed} failed record(s) "
@@ -1412,7 +1542,11 @@ class NativeDatabase:
     def insert_columns(
         self, type_name, columns, commit_every: int = 10_000, parallel: bool = False
     ) -> int:
-        """Bulk insert from whole columns (dict of name -> numpy array or list), as rows through :meth:`insert_many`."""
+        """Bulk insert from whole columns (dict of name -> numpy array or list): columns the buffers can carry cross in one call
+        (``arcadedb_n_insert_colp``), any other column set goes as rows through :meth:`insert_many`. With ``parallel=True`` the
+        same one call hands the records to the async writers (no transaction, ``commit_every`` does not apply, the call waits for the
+        writers and raises when a record failed), as ``insert_many(parallel=True)`` does for rows.
+        """
         self._check_not_closed()
         items = list(columns.items()) if hasattr(columns, "items") else None
         if not items:
@@ -1428,7 +1562,13 @@ class NativeDatabase:
         known = {n: len(v) for n, v in items if hasattr(v, "__len__")}
         if len(set(known.values())) > 1:
             raise ValueError(f"columns differ in length: {known}")
-        if not parallel:
+        if parallel:
+            from .bulk import insert_columns_parallel
+
+            done = insert_columns_parallel(self, type_name, columns)
+            if done is not None:
+                return done
+        else:
             from .bulk import insert_columns_fast
 
             done = insert_columns_fast(self, type_name, columns, commit_every)
@@ -1448,8 +1588,9 @@ class NativeDatabase:
         self, type_name, df, *, batch_size: int = 10_000, parallel: bool = False
     ) -> int:
         """A pandas or Polars DataFrame into a type, in batches: the strict Arrow loading of ``Database.insert_dataframe``
-        (dtype refusals, declared types, NaN rules, the committed-rows message), batches through :meth:`insert_many` for a
-        document type and ``GraphBatch.create_vertices`` for a vertex type (``arcadedb/dataframe.py``).
+        (dtype refusals, declared types, NaN rules, the committed-rows message), batches through the columnar insert
+        (:meth:`insert_columns`; :meth:`insert_many` for a batch whose columns cannot cross as memory) for a document type and a
+        vertex type alike (a vertex load refuses to run inside a transaction the caller opened; ``arcadedb/dataframe.py``).
         """
         from ..dataframe import insert_table, to_arrow_table
 

@@ -14,11 +14,14 @@ from .graph import Document, Vertex
 from .type_conversion import (
     convert_python_to_java,
     declared_float_vectors,
-    is_vector_candidate,
+    declared_scalars_ok,
+    json_bulk_dumps,
     json_bulk_dumps_tagged,
     json_bulk_scalar_ok,
     json_bulk_shape_ok,
+    screen_vertex_rows,
     split_float_vectors,
+    vector_width,
 )
 
 _LOGGER = get_logger(__name__)
@@ -190,9 +193,12 @@ class GraphBatch:
             count_or_properties: Either an integer vertex count or an iterable of
                 per-vertex property dictionaries. Use `None` or `{}` for vertices
                 without properties when passing an iterable. A property declared
-                ``ARRAY_OF_FLOATS`` whose value in every row is a list or a numpy
-                array of numbers of one length crosses as one binary float32
-                matrix instead of JSON text.
+                ``ARRAY_OF_FLOATS`` whose value in every row is a list, a numpy
+                array or a Java ``float[]`` or ``double[]`` of numbers of one length
+                crosses as one binary float32 matrix instead of JSON text, and so
+                does any other property whose value in every row is a float32
+                numpy array or a Java ``float[]`` (``to_java_float_array``) of one
+                length: one buffer per property and chunk, stored as a ``float[]``.
                 A list (not one of only numbers), tuple, dict, date-time, date,
                 Decimal or bytes value also stays on the bulk path: it crosses
                 inside the JSON as a tagged value and is stored as the
@@ -246,68 +252,80 @@ class GraphBatch:
             ) from e
 
     _BULK_CHUNK = 100_000  # rows per boundary crossing in bulk paths
+    # Rows with vector columns cross in blocks of about this many floats (1 MiB of float32) over all their vector columns, at least
+    # _VECTOR_BLOCK_MIN_ROWS rows: 10,000 rows of 96 floats cross in 4 blocks, not in one. The engine builds the vertices of a crossing
+    # from the JSON text, one float[] buffer and one copy of every row's vector, and a smaller crossing keeps less of that alive when
+    # a collection runs (the peak RSS of a load of Java float[] vectors was 1.1 to 1.3 times the 26.11.1 wheel's, which never copies them).
+    _VECTOR_BLOCK_FLOATS = 262_144
+    _VECTOR_BLOCK_MIN_ROWS = 512
 
     def _create_vertices_json_bulk(self, type_name, rows):
         """Bulk path: rows cross as one JSON string, RIDs return as one joined
         string (two bulk copies instead of per-value marshaling, measured
-        ~2.4x). The float vectors of ARRAY_OF_FLOATS properties cross as one
-        binary matrix beside the JSON instead of as text (split_float_vectors).
+        ~2.4x). The float vectors of ARRAY_OF_FLOATS properties, and the float32
+        arrays and Java float[] of any property, cross as one binary matrix
+        beside the JSON instead of as text (split_float_vectors).
         A list (not one of only numbers), tuple, dict, date-time, date, Decimal
         or bytes value crosses inside the JSON as the tagged value
         json_bulk_dumps_tagged writes and VertexBatcher decodes (the stored
         value is what the property-matrix path stores). An input whose values
-        are all scalars takes the untagged json.dumps path as before. A chunk
-        holding a value the text cannot carry (a NaN, an integer beyond 64
-        bits or a date-time inside a list, a subnormal) goes through the
-        property-matrix path on its own. Returns None when
-        unavailable/unsuitable so the caller falls back to the property-matrix
-        path for the whole input."""
+        are all scalars is written by json_bulk_dumps. The values are checked
+        by their types and columns, in C (type_conversion.screen_vertex_rows),
+        not in a loop over the rows: a scalar the text would change (a NaN, an
+        integer beyond 64 bits, a lone surrogate, a subnormal) anywhere in the
+        input sends the whole input through the property-matrix path, and
+        rows of exact scalars only are then written with no further check.
+        Other rows are checked in the one json.dumps pass of each chunk (see
+        type_conversion._dumps_once); a chunk holding a date-time inside a
+        list, or a vector column the matrix cannot carry, goes through the
+        property-matrix path on its own. Returns None when unavailable/unsuitable
+        (a property name that is not a str, a type the text does not carry) so
+        the caller falls back to the property-matrix path for the whole input."""
         try:
             vertex_batcher = jpype.JClass("com.arcadedb.python.VertexBatcher")
             declared = set(declared_float_vectors(self._java_db, type_name))
         except Exception:
             return None
 
-        tagged = False  # a value that needs the tagged text; False keeps the untagged code of before
-        for row in rows:
-            if row:
-                for key, value in row.items():
-                    if type(key) is not str:
-                        # a property name that is not a str, which json.dumps would
-                        # write as text ({1: "a"} as "1") where the matrix path
-                        # refuses it
-                        return None
-                    if key in declared and is_vector_candidate(value):
-                        continue  # the vector split below takes it, or its chunk goes the matrix way
-                    if not json_bulk_scalar_ok(value):
-                        if not json_bulk_shape_ok(value):
-                            # a type the tagged JSON does not carry (a set, a numpy
-                            # or pandas value, any subclass, a list of only numbers:
-                            # the matrix path converts those), or a scalar JSON
-                            # would change: an integer beyond 64 bits, NaN or
-                            # Infinity, a lone surrogate
-                            return None
-                        tagged = True
+        verdict = screen_vertex_rows(rows, declared)
+        if verdict is None:
+            # a property name that is not a str (json.dumps would write 1 as "1" where the matrix path refuses it), or a type the
+            # tagged JSON does not carry (a set, a numpy or pandas value, any subclass, a list of only numbers: the matrix path
+            # converts those)
+            return None
+        tagged, vetted = verdict
 
-        import json
+        if vetted:
+            # every value is an exact scalar the text carries unchanged (screened in C above): the chunks are written without a check
+            def dumps(chunk_rows):
+                return json_bulk_dumps(chunk_rows, vetted=True)
 
-        # chunked so huge ingests never materialize one giant JSON string
+        else:
+            dumps = json_bulk_dumps_tagged if tagged else json_bulk_dumps
+        # chunked so huge ingests never materialize one giant JSON string; rows that hold vectors cross in blocks of about
+        # _VECTOR_BLOCK_FLOATS floats per crossing, so the float[] buffer of a matrix and what the engine builds from it stay small
+        step = self._BULK_CHUNK
+        width = vector_width(rows, declared)
+        if width:
+            step = min(
+                step,
+                max(self._VECTOR_BLOCK_MIN_ROWS, self._VECTOR_BLOCK_FLOATS // width),
+            )
         rids = []
-        for start in range(0, len(rows), self._BULK_CHUNK):
-            chunk = rows[start : start + self._BULK_CHUNK]
-            split = split_float_vectors(self._java_db, type_name, chunk, declared)
+        for start in range(0, len(rows), step):
+            # the previous chunk's rest rows, text and matrices go before this chunk's are built: two float[] buffers were alive at once
+            split = rest = text = None
+            chunk = rows[start : start + step]
+            split = split_float_vectors(
+                self._java_db, type_name, chunk, declared, undeclared=True
+            )
             rest = split[0] if split else chunk
-            if not tagged:
-                text = None
-                if not declared or self._json_bulk_ok(rest):
-                    text = json.dumps([row or {} for row in rest])
-            else:
-                text = None
-                if self._json_bulk_declared_ok(rest, declared):
-                    try:
-                        text = json_bulk_dumps_tagged([row or {} for row in rest])
-                    except (TypeError, ValueError):
-                        text = None  # a value the text cannot carry, see the docstring
+            text = None
+            if declared_scalars_ok(rest, declared):
+                try:
+                    text = dumps([row or {} for row in rest])
+                except (TypeError, ValueError):
+                    text = None  # a value the text cannot carry, see the docstring
             if text is None:
                 # a list the matrix cannot carry (ragged, a null, not numbers)
                 # is left in this chunk, or a value the text would change: the
@@ -329,25 +347,6 @@ class GraphBatch:
             if joined:
                 rids.extend(joined.split(";"))
         return rids
-
-    @staticmethod
-    def _json_bulk_ok(rows):
-        for row in rows:
-            if row:
-                for value in row.values():
-                    if not json_bulk_scalar_ok(value):
-                        return False
-        return True
-
-    @staticmethod
-    def _json_bulk_declared_ok(rows, declared):
-        """False when a declared ARRAY_OF_FLOATS property still holds a list (or any non-scalar) after the vector split."""
-        for row in rows:
-            if row:
-                for key in declared:
-                    if key in row and not json_bulk_scalar_ok(row[key]):
-                        return False
-        return True
 
     def new_edge(
         self,

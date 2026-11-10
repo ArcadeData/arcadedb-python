@@ -232,6 +232,7 @@ def _load():
             "arcadedb_n_insert_colp": [P, L, S, S, P, I],
             "arcadedb_n_next": [P, L, I],
             "arcadedb_n_next_bin": [P, L, I],
+            "arcadedb_n_next_col": [P, L, I, S, I],
             "arcadedb_n_rs_close": [P, L],
             "arcadedb_n_facets": [P, L],
             "arcadedb_n_cmd": [P, L, I, S, S, S, S, L, I],
@@ -328,16 +329,60 @@ def _thread_handle():
     return t.handle
 
 
+# One reply is read straight from its address: the text becomes a ``str`` in one copy (no ``bytes`` in between), and the library's
+# memory is freed in the ``finally`` of the same call, once, whatever the decode does (a reply never outlives the call that took it,
+# so no view of it can). ``PyUnicode_FromStringAndSize`` decodes UTF-8 as ``bytes.decode("utf-8")`` does, and raises the same
+# UnicodeDecodeError; the function pointers are the ones of this module, ``ctypes.pythonapi`` itself is not changed.
+_str_from_utf8 = ctypes.PYFUNCTYPE(ctypes.py_object, ctypes.c_void_p, ctypes.c_ssize_t)(
+    ("PyUnicode_FromStringAndSize", ctypes.pythonapi)
+)
+_strlen = ctypes.CFUNCTYPE(ctypes.c_size_t, ctypes.c_void_p)(
+    (
+        "strlen",
+        ctypes.cdll.msvcrt if sys.platform == "win32" else ctypes.CDLL(None),
+    )
+)
+_TAIL_KEY = b',"bin":'
+_TAIL_WINDOW = 40
+
+
+def _take(lib, th, ptr, tail: bool):
+    """Read the reply at ``ptr`` as ``(text, floats)`` and free it: ``floats`` is None unless ``tail`` and the reply ends with
+    ``,"bin":N}`` (then N float32 follow the text's NUL, 4-byte aligned, and the text is returned without the ``,"bin":N`` part).
+    """
+    if not ptr:
+        raise ArcadeDBError("The native library returned no reply")
+    try:
+        end = _strlen(ptr)
+        floats = None
+        if tail:
+            # only the last bytes can hold the marker: peek at them (at most 40 bytes), never at the whole reply
+            start = end - _TAIL_WINDOW if end > _TAIL_WINDOW else 0
+            peek = ctypes.string_at(ptr + start, end - start)
+            if peek.endswith(b"}"):
+                i = peek.rfind(_TAIL_KEY)
+                if i >= 0:
+                    n = int(peek[i + 7 : -1])
+                    import numpy as np
+
+                    off = (end + 1 + 3) & ~3
+                    floats = np.frombuffer(
+                        ctypes.string_at(ptr + off, 4 * n), dtype=np.float32
+                    )
+                    # the text ends at the marker, closed by the "}" that the JSON object needs: written over the marker's comma
+                    # in the reply's own memory (it is freed below), so the decode reads the JSON as it stands
+                    ctypes.c_char.from_address(ptr + start + i).value = b"}"
+                    end = start + i + 1
+        return _str_from_utf8(ptr, end), floats
+    finally:
+        lib.arcadedb_free(th, ptr)
+
+
 def call(name: str, *args) -> dict:
     """Run one entry point; returns the decoded reply, raises ArcadeDBError-free (callers map errors)."""
     lib = _lib or _load()
     th = _thread_handle()
-    ptr = getattr(lib, name)(th, *args)
-    try:
-        text = ctypes.string_at(ptr).decode("utf-8")
-    finally:
-        lib.arcadedb_free(th, ptr)
-    return text
+    return _take(lib, th, getattr(lib, name)(th, *args), False)[0]
 
 
 def call_bin(name: str, *args):
@@ -346,24 +391,43 @@ def call_bin(name: str, *args):
     """
     lib = _lib or _load()
     th = _thread_handle()
-    ptr = getattr(lib, name)(th, *args)
-    try:
-        raw = ctypes.string_at(ptr)
-        floats = None
-        if raw.endswith(b"}"):
-            i = raw.rfind(b',"bin":', max(0, len(raw) - 40))
-            if i >= 0:
-                n = int(raw[i + 7 : -1])
-                import numpy as np
+    return _take(lib, th, getattr(lib, name)(th, *args), True)
 
-                off = (len(raw) + 1 + 3) & ~3
-                floats = np.frombuffer(
-                    ctypes.string_at(ptr + off, 4 * n), dtype=np.float32
-                )
-                raw = raw[:i] + b"}"
+
+def call_frame(rs_id: int, max_rows: int, spec: bytes, flags: int) -> bytes:
+    """One column frame of an open cursor (``arcadedb_n_next_col``): its bytes, in the layout ``arcadedb._columnar`` reads.
+
+    The reply is an int64 byte count and the frame. A negative count is the negated length of an error JSON: it is raised as
+    :class:`ColumnFrameError` with the decoded reply (the cursor is already closed on the Java side then). ``max_rows`` is a C int:
+    callers clamp it (``arcadedb._columnar.frame_rows``).
+    """
+    lib = _lib or _load()
+    if getattr(lib, "arcadedb_n_next_col", None) is None:
+        raise ArcadeDBError(
+            "The native library is older than this wheel: it has no arcadedb_n_next_col entry point, which to_arrow, to_columns, "
+            "to_dataframe and to_polars need. Reinstall the arcadedb wheel (a library and its Python files ship together)."
+        )
+    th = _thread_handle()
+    ptr = lib.arcadedb_n_next_col(th, rs_id, max_rows, spec, flags)
+    if not ptr:
+        raise ArcadeDBError(
+            "The native library returned no reply to a column frame request"
+        )
+    try:
+        n = int.from_bytes(ctypes.string_at(ptr, 8), "little", signed=True)
+        if n < 0:
+            raise ColumnFrameError(json.loads(ctypes.string_at(ptr + 8, -n)))
+        return ctypes.string_at(ptr + 8, n)
     finally:
         lib.arcadedb_free(th, ptr)
-    return raw.decode("utf-8"), floats
+
+
+class ColumnFrameError(Exception):
+    """The error reply (the dict ``errorJson`` writes) of a failed ``arcadedb_n_next_col``."""
+
+    def __init__(self, reply: dict):
+        super().__init__(reply.get("error"))
+        self.reply = reply
 
 
 def alloc(size: int):
@@ -384,22 +448,12 @@ def exec_query(handle, flags, language, command, params, count):
     lib = _lib or _load()
     t = _local.__dict__.get("thread")
     th = t.handle if t is not None else _thread_handle()
-    ptr = lib.arcadedb_n_exec(th, handle, flags, language, command, params, count)
-    try:
-        raw = ctypes.string_at(ptr)
-        floats = None
-        # a negative start counts from the end and stops at 0 for a short reply
-        i = raw.rfind(b',"bin":', -40)
-        if i >= 0 and raw.endswith(b"}"):
-            n = int(raw[i + 7 : -1])
-            import numpy as np
-
-            off = (len(raw) + 1 + 3) & ~3
-            floats = np.frombuffer(ctypes.string_at(ptr + off, 4 * n), dtype=np.float32)
-            raw = raw[:i] + b"}"
-    finally:
-        lib.arcadedb_free(th, ptr)
-    return raw.decode("utf-8"), floats
+    return _take(
+        lib,
+        th,
+        lib.arcadedb_n_exec(th, handle, flags, language, command, params, count),
+        True,
+    )
 
 
 def call_void(name: str, *args) -> None:

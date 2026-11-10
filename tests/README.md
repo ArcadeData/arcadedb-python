@@ -39,6 +39,8 @@ The same suite runs against the native `arcadedb` wheel (`native/wheel/parity_wh
 - `NotOnNativeYet`: the native code raised it because the feature needs a Java object API the library does not expose. The report says `NOTYET`, and a final release allows none. A call that is JVM-only by design (`get_java_database`, `get_java_document`, a Java object a `Schema` method returns) raises it with a message that names the `arcadedb-jvm` build; a shared test that reaches one is `NA-JVM`, or reads the value through a statement or the Python API instead.
 - A row of `NATIVE_NA_JVM_TESTS` in `tests/conftest.py`, keyed `<file>::[<Class>::]<test>`: the test reaches into the JVM on purpose (`jpype.JClass`, a Java array, `db._java_db`, counted bridge crossings). The report says `NA-JVM`. Add a row only for such a test, and give the reason. When the behaviour is shared, write a native test beside it (`test_native_*.py`, collected on the native build only).
 
+A test file whose process dies without a result is a `CRASH` row with its exit code. On Windows the parity harness runs such a file once more (`--retry-crash`, set by `test-native.yml` on Windows legs only) and marks a retry that produced a result `FLAKY-CRASH`; the job summary and issue 295 record it. A failing test is never retried, and a crash on Linux or macOS is a failure. A process that wrote its result and then died in shutdown is only recorded (`DIRTY-EXIT`). The decision is `native/wheel/parity_crash.py`, tested by `tests/test_parity_crash_retry.py`.
+
 A test that fails on the native build for any other reason is a failure. Fix the native code, or mark a known engine bug with a strict `xfail`. Do not add a row to hide it.
 
 ## Need Help?

@@ -181,6 +181,10 @@ RUN echo "🔍 Analyzing JARs with jdeps..." && \
         exit 1; \
     fi
 
+# The default class-data-sharing archive of the JRE, dumped last with the flags the wheel starts the JVM with (#313)
+COPY scripts/dump_cds_archive.sh /build/dump_cds_archive.sh
+RUN bash /build/dump_cds_archive.sh /build/jre
+
 # Stage 3: Build Python wheel
 
 FROM python:${PYTHON_VERSION}-slim AS python-builder

@@ -315,15 +315,18 @@ def test_rows_with_different_keys_fall_back_to_json(temp_db, spy, monkeypatch):
     _fallback_case(temp_db, spy, monkeypatch, rows, ROWS)
 
 
-def test_a_datetime_leaves_the_columnar_entry_but_stays_on_the_json_entry(
-    temp_db, spy, monkeypatch
-):
-    """columnar.pack refuses a date-time, so the chunk takes the JSON entry, which carries it as a tagged value
-    (test_native_mixed_chunk.py compares what it stores with INSERT ... CONTENT)."""
+def test_a_datetime_column_stays_on_the_columnar_entry(temp_db, spy, monkeypatch):
+    """A column of date-times is the kind T of the columnar entry (#316): the stored value is the one the JSON entry stores as a tagged
+    value (tests/test_native_columnar_temporal.py has the full comparison, test_native_mixed_chunk.py the rows that stay on JSON).
+    """
     when = datetime.datetime(2024, 5, 6, 7, 8, 9)
     rows = [{"id": i, "txt": "t%d" % i, "when": when} for i in range(10)]
-    _fallback_case(temp_db, spy, monkeypatch, rows, ROWS)
-    assert spy.count(MANY) == 0
+    _types(temp_db, "Ref", "Col")
+    _json_reference(temp_db, "Ref", rows, monkeypatch)
+    spy.calls.clear()
+    temp_db.insert_many("Col", rows)
+    assert spy.count(COLP) == 1 and spy.count(ROWS) == 0 and spy.count(MANY) == 0
+    assert _stored(temp_db, "Col") == _stored(temp_db, "Ref")
 
 
 def test_values_json_cannot_carry_still_go_row_by_row_in_one_crossing(
@@ -344,9 +347,7 @@ def test_an_integer_past_64_bits_is_refused_on_both_paths(temp_db, spy):
         temp_db.insert_columns("Col", {"id": np.array([2**63], dtype=np.uint64)})
 
 
-def test_a_dataframe_with_a_column_the_buffers_cannot_carry_falls_back(
-    temp_db, spy, monkeypatch
-):
+def test_a_dataframe_with_a_timestamp_column_stays_columnar(temp_db, spy, monkeypatch):
     import pandas as pd
     import pyarrow as pa
 
@@ -362,7 +363,7 @@ def test_a_dataframe_with_a_column_the_buffers_cannot_carry_falls_back(
         }
     )
     temp_db.insert_arrow("Col", table)
-    assert spy.count(COLP) == 0
+    assert spy.count(COLP) == 1 and spy.count(ROWS) == 0
     assert pd is not None
     rows = temp_db.query("sql", "SELECT id, txt FROM Col ORDER BY id").to_list()
     assert [(r["id"], r["txt"]) for r in rows] == [(1, "a"), (2, "b"), (3, "c")]

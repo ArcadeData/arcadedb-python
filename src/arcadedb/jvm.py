@@ -889,7 +889,9 @@ def _build_jvm_args(
     ):
         merged_args.append("-Darcadedb.polyglotEngineEnabled=false")
 
-    # Enable compact object headers (JDK 25+) to reduce heap footprint
+    # Enable compact object headers (JDK 25+) to reduce heap footprint.
+    # The bundled JRE's class-data-sharing archive is dumped with this flag (scripts/dump_cds_archive.sh, #313): the JVM ignores an
+    # archive dumped with another setting of it, so a change here is a change there, and tests/test_jvm_cds.py fails when they differ.
     if not any("UseCompactObjectHeaders" in arg for arg in merged_args):
         merged_args.append("-XX:+UseCompactObjectHeaders")
 

@@ -5,8 +5,10 @@ Handles automatic conversion of Java objects to native Python types for better
 developer experience and integration with Python ecosystem (pandas, numpy, etc.).
 """
 
+import itertools
 import json
 import math
+import operator
 import re
 import sys
 from datetime import date, datetime, time, timedelta, timezone
@@ -804,16 +806,21 @@ def _dumps_checked(rows: Any, **kwargs: Any) -> str:
     return text
 
 
-def json_bulk_dumps(rows: Any) -> str:
-    """json.dumps for the bulk paths: raises ValueError (or TypeError) when
-    any value in `rows` would change on the way to the engine.
+_DICT_ONLY = frozenset((dict,))
+# the kinds of a column whose text json.dumps itself decides: a NaN or Infinity it refuses (allow_nan=False), a subnormal `_dumps_checked` refuses
+_TEXT_SAFE = frozenset((type(None), bool, float))
+_STR_ONLY = frozenset((str,))
 
-    `rows` is a list of dicts (one per record). The common value types are
-    checked in this loop without a call per value, because every value of a
-    large load passes through it; floats need no check here, since
-    `allow_nan=False` makes json.dumps itself refuse NaN and the infinities.
+
+def _check_rows(rows: Any, tagged: bool) -> None:
+    """The per-row walk: raise ValueError (or TypeError) for the first row, in row order, that holds a value the JSON text would change.
+
+    This is the exact reference. The bulk dumps do not run it on every call: `_dumps_once` runs it only when the text or the types of
+    the rows show that a value may be bad, and when json.dumps itself refused the rows, so the error is always the walk's.
+    `tagged` is insert_many's format (see json_bulk_dumps_tagged), where the kinds bulk_tag_default writes are allowed in a row.
     """
     int_min, int_max = _INT64_MIN, _INT64_MAX
+    kinds = _TAGGED_KINDS
     for row in rows:
         for key in row:
             if type(key) is not str:
@@ -832,11 +839,107 @@ def json_bulk_dumps(rows: Any) -> str:
                     )
             elif kind is float or kind is bool or value is None:
                 continue
+            elif tagged and kind in kinds:
+                continue  # bulk_tag_default checks it as json.dumps writes it
+            elif tagged and kind is dict and _TAG in value:
+                raise ValueError(
+                    "a map keyed by the tag marker cannot go through the JSON bulk path"
+                )
+            elif tagged and (
+                isinstance(value, (datetime, date, Decimal, bytes, bytearray))
+                or (_np is not None and isinstance(value, _np.generic))
+                or _is_pandas_null(kind)
+            ):
+                continue  # a subclass (pandas.Timestamp), a numpy scalar, pandas NA or NaT
             else:
                 _json_bulk_check(
                     value
                 )  # nested lists and dicts, and subclasses of the types above
-    return _dumps_checked(rows)
+
+
+def _kind_is_tagged(kind: type) -> bool:
+    """Whether bulk_tag_default (not the walk) checks a value of this type: the kinds `_check_rows` lets through in tagged mode."""
+    return (
+        kind in _TAGGED_KINDS
+        or issubclass(kind, (datetime, date, Decimal, bytes, bytearray))
+        or (_np is not None and issubclass(kind, _np.generic))
+        or _is_pandas_null(kind)
+    )
+
+
+def _rows_need_walk(rows: Any, tagged: bool) -> bool:
+    """Whether the rows may hold a value the JSON text would change, decided from their types and their columns, in C.
+
+    Only exact dict rows with str keys can be decided here. Each column is one list of its values and one census of their types;
+    a column of the exact scalar types is screened (`_scalar_column_suspect`: the 64-bit range of its ints, the UTF-8 form of its
+    strs), a column of the kinds bulk_tag_default writes (tagged) holds nothing the walk has to see, and any other type, or a
+    column of mixed kinds, sends the rows to the walk. A false alarm costs the walk and changes nothing else. This replaces two
+    scans of the JSON text with regular expressions (a lone surrogate, an integer token of 2**63 and above): the one for the
+    integer token cost 2.5 microseconds a row of a three-column table (12 ms of a 5,000-row call), a column screen about 0.2.
+    """
+    if not set(map(type, rows)) <= _DICT_ONLY:
+        return True
+    keys = set(itertools.chain.from_iterable(rows))
+    if not set(map(type, keys)) <= _STR_ONLY:
+        return True
+    for key in keys:
+        column = list(map(dict.get, rows, itertools.repeat(key)))
+        kinds = set(map(type, column))
+        extra = kinds - _BULK_SCALAR_TYPES
+        if extra:
+            if not (tagged and all(map(_kind_is_tagged, extra))):
+                return True
+            if kinds - extra - {_NONE_KIND}:
+                return True  # tagged kinds beside scalars in one column: the walk judges each value
+            continue  # bulk_tag_default checks these as json.dumps writes them
+        if not kinds <= _TEXT_SAFE and _scalar_column_suspect(column, kinds):
+            return True
+    return False
+
+
+def _dumps_once(rows: Any, tagged: bool, vetted: bool = False) -> str:
+    """One json.dumps pass for the bulk paths, with the checks of `_check_rows` decided from the types and columns of the rows.
+
+    A str or int the text would change cannot be seen by a json.dumps hook (the encoder writes both itself), so the rows decide:
+    `_rows_need_walk` screens their columns in C and sends the rows to the walk when a value may be bad or its type is one it cannot
+    vouch for. When json.dumps itself refuses the rows (NaN, an unknown type, a subnormal, a hook error) the walk runs first, as the
+    validation loop used to run before json.dumps, so the error of the first bad row in row order is still the walk's; if the walk
+    finds nothing, json.dumps's own error stands. A false alarm costs the walk and changes nothing else.
+
+    `vetted` is for a caller that has already screened these rows with the same census (`screen_vertex_rows`: every value an exact
+    scalar, no NaN, Infinity, subnormal, integer beyond 64 bits or lone surrogate): the text is written without a second look.
+    """
+    try:
+        if vetted:
+            text = json.dumps(rows, allow_nan=False)
+        elif tagged:
+            text = _dumps_checked(rows, default=bulk_tag_default)
+        else:
+            text = _dumps_checked(rows)
+    except (TypeError, ValueError) as error:
+        refused = error
+    else:
+        refused = None
+    if refused is not None:
+        # outside the except block, so the walk's error does not carry json.dumps's as __context__ (the old loop ran first)
+        try:
+            _check_rows(rows, tagged)
+            raise refused
+        finally:
+            del refused
+    if not vetted and _rows_need_walk(rows, tagged):
+        _check_rows(rows, tagged)
+    return text
+
+
+def json_bulk_dumps(rows: Any, vetted: bool = False) -> str:
+    """json.dumps for the bulk paths: raises ValueError (or TypeError) when
+    any value in `rows` would change on the way to the engine.
+
+    `rows` is a list of dicts (one per record). The rows are written once; see `_dumps_once` for how the values are checked and
+    for `vetted`.
+    """
+    return _dumps_once(rows, False, vetted)
 
 
 # ---------------------------------------------------------------------------
@@ -933,43 +1036,7 @@ def json_bulk_dumps_tagged(rows: Any) -> str:
     through, written by bulk_tag_default. Raises TypeError or ValueError exactly where json_bulk_dumps does for every other value
     (a datetime inside a list or map included), so the caller can send that row down the per-row path.
     """
-    int_min, int_max = _INT64_MIN, _INT64_MAX
-    tagged = _TAGGED_KINDS
-    for row in rows:
-        for key in row:
-            if type(key) is not str:
-                raise ValueError("a non-str key cannot go through the JSON bulk path")
-        for value in row.values():
-            kind = type(value)
-            if kind is str:
-                if not value.isascii() and not _str_survives_json(value):
-                    raise ValueError(
-                        "a string with a lone surrogate cannot go through the JSON bulk path"
-                    )
-            elif kind is int:
-                if not int_min <= value <= int_max:
-                    raise ValueError(
-                        f"an integer beyond 64 bits cannot go through the JSON bulk path: {value}"
-                    )
-            elif kind is float or kind is bool or value is None:
-                continue
-            elif kind in tagged:
-                continue  # bulk_tag_default checks it as json.dumps writes it
-            elif kind is dict and _TAG in value:
-                raise ValueError(
-                    "a map keyed by the tag marker cannot go through the JSON bulk path"
-                )
-            elif (
-                isinstance(value, (datetime, date, Decimal, bytes, bytearray))
-                or (_np is not None and isinstance(value, _np.generic))
-                or _is_pandas_null(kind)
-            ):
-                continue  # a subclass (pandas.Timestamp), a numpy scalar, pandas NA or NaT
-            else:
-                _json_bulk_check(
-                    value
-                )  # nested lists and dicts, and subclasses of the types above
-    return _dumps_checked(rows, default=bulk_tag_default)
+    return _dumps_once(rows, True)
 
 
 def bulk_row_ok(row: Any, skip=()) -> bool:
@@ -980,6 +1047,178 @@ def bulk_row_ok(row: Any, skip=()) -> bool:
         json_bulk_dumps_tagged((row,))
     except (TypeError, ValueError):
         return False
+    return True
+
+
+_ROWS_OR_NONE = frozenset((dict, type(None)))
+
+
+def _column(rows: Any, key: str):
+    """The value of `key` in every non-empty row (None where the row lacks it), as one C-level iterator."""
+    return map(dict.get, filter(None, rows), itertools.repeat(key))
+
+
+_NONE_KIND = type(None)
+_SCREEN_BLOCK = 100_000  # rows per block of the scalar screen, so its transient lists and joined texts stay bounded
+
+
+def _scalar_column_suspect(column: list, kinds: Any = None) -> bool:
+    """Whether one block of a column of exact scalar values may hold a value the JSON text would change.
+
+    Conservative (a false alarm only sends the column to the exact per-value judgement) and run in C: the type census, the joined
+    text of a str column (a lone surrogate has no UTF-8 form), min and max of an int column (the 64-bit range), and a float column as
+    one float64 array (NaN, Infinity, a subnormal). Columns of mixed kinds are suspect. `kinds` is the set of the types of `column`
+    when the caller has taken that census already (it is not changed).
+    """
+    kinds = set(map(type, column)) if kinds is None else set(kinds)
+    if _NONE_KIND in kinds:
+        column = [value for value in column if value is not None]
+        kinds.discard(_NONE_KIND)
+    if kinds <= {bool}:
+        return False
+    if len(kinds) != 1:
+        return True
+    (kind,) = kinds
+    if kind is str:
+        text = "".join(column)
+        if text.isascii():
+            return False
+        try:
+            text.encode("utf-8")
+        except UnicodeEncodeError:
+            return True
+        return False
+    if kind is int:
+        return not (_INT64_MIN <= min(column) and max(column) <= _INT64_MAX)
+    if kind is float and _np is not None:
+        values = _np.fromiter(column, dtype=_np.float64, count=len(column))
+        if not _np.isfinite(values).all():
+            return True
+        values = values[values != 0.0]
+        return bool((_np.abs(values) < _FLOAT_NORMAL_MIN).any())
+    return True
+
+
+def _screen_key(rows: Any, key: str, screen: bool):
+    """(odd, suspect) for the column `key` of all `rows`: the types in it beyond the exact scalars, and, with `screen`, whether a column
+    of exact scalars only may hold a value the JSON text would change. One list and one census per block of `_SCREEN_BLOCK` rows.
+    """
+    odd = set()
+    suspect = False
+    for start in range(0, len(rows), _SCREEN_BLOCK):
+        block = (
+            rows if len(rows) <= _SCREEN_BLOCK else rows[start : start + _SCREEN_BLOCK]
+        )
+        column = list(_column(block, key))
+        kinds = set(map(type, column))
+        extra = kinds - _BULK_SCALAR_TYPES
+        if extra:
+            odd |= extra
+        elif screen and not suspect:
+            suspect = _scalar_column_suspect(column, kinds)
+    return odd, suspect
+
+
+def _classify_rows(rows: Any, declared: Any, screen_scalars: bool):
+    """The verdict of classify_vertex_rows and screen_vertex_rows: None, or ``(tagged, vetted)``.
+
+    `vetted` is True when every column of the rows holds exact scalars only and `screen_scalars` found nothing the text would change
+    in it (a column the screen flagged counts when every value passed the judgement by value): then no chunk of these rows needs a
+    check of its own."""
+    if not set(map(type, rows)) <= _ROWS_OR_NONE:
+        tagged = _classify_walk(rows, declared)
+        return (
+            None if tagged is None else (tagged, False)
+        )  # a row that is no dict: the walk raises what it always raised
+    keys = set(itertools.chain.from_iterable(filter(None, rows)))
+    if not set(map(type, keys)) <= _STR_ONLY:
+        return None
+    tagged = False
+    vetted = screen_scalars
+    for key in keys:
+        odd, suspect = _screen_key(rows, key, screen_scalars)
+        if odd:
+            vetted = False
+            if key in declared and all(_is_vector_kind(kind) for kind in odd):
+                continue  # the vectors of a declared column
+            if all(_is_float_array_kind(kind) for kind in odd):
+                continue  # a column of arrays: take_vector_columns takes the float32 ones; a chunk it leaves goes the matrix way
+        elif not suspect:
+            continue  # exact scalars; with screen_scalars a column that passed the screen
+        for value in _column(rows, key):
+            if (type(value) in _BULK_SCALAR_TYPES and not screen_scalars) or (
+                key in declared and is_vector_candidate(value)
+            ):
+                continue
+            if (
+                screen_scalars
+                and type(value) is float
+                and 0.0 < abs(value) < _FLOAT_NORMAL_MIN
+            ):
+                return None  # a subnormal: the text is read back as a DECIMAL
+            if not json_bulk_scalar_ok(value):
+                if not json_bulk_shape_ok(value):
+                    return None
+                tagged = True
+    return tagged, vetted and not tagged
+
+
+def classify_vertex_rows(rows: Any, declared: Any, screen_scalars: bool = False):
+    """What GraphBatch.create_vertices must know about its rows before it writes any chunk, decided by types.
+
+    `screen_scalars` is for an input of several chunks, which are sent one after the other: a value the text would change in a late
+    chunk would leave the earlier ones stored from the JSON text (an int as an Integer) and the late one from the matrix path (a Long),
+    so the stored type of a property would depend on which chunk held it. With `screen_scalars` the columns of exact scalars are
+    screened in C over the whole input first (`_screen_key`), and a column that may hold a bad value is judged value by value, so a
+    bad scalar anywhere gives None for the whole input.
+
+    Returns None when the rows must all go the property-matrix way (a property name that is not a str, or a value of a type the
+    tagged JSON does not carry: a set, a numpy or pandas value, a list or tuple of only numbers, any other object); otherwise True when
+    some value needs the tagged text (json_bulk_dumps_tagged) and False when json_bulk_dumps carries every row. A value of an exact
+    scalar type is not judged here unless `screen_scalars`: whether the text carries it (a NaN, an integer beyond 64 bits, a lone
+    surrogate) is then decided in the dumps of its chunk. The property of `declared` (ARRAY_OF_FLOATS) that holds a list or a numpy
+    array is left to split_float_vectors. The census over the keys and the values runs in C; a Python-level loop runs only over a
+    column that holds a type other than the exact scalars, or that the screen flagged.
+    """
+    verdict = _classify_rows(rows, declared, screen_scalars)
+    return None if verdict is None else verdict[0]
+
+
+def screen_vertex_rows(rows: Any, declared: Any):
+    """classify_vertex_rows with the whole-input screen, for any number of chunks: None, or ``(tagged, vetted)``.
+
+    `vetted` says that every value of every row is an exact scalar the JSON text carries unchanged (a column holding any other type,
+    a vector or a tagged kind, is not vetted). The chunks of such rows are then written by ``json_bulk_dumps(chunk, vetted=True)``
+    with no check of their own. One chunk is screened here too, so its values are looked at once, as columns in C, and not again in
+    the text: a value the text would change sends all of it the property-matrix way, which is what its own dumps did before.
+    """
+    return _classify_rows(rows, declared, True)
+
+
+def _classify_walk(rows: Any, declared: Any):
+    tagged = False
+    for row in rows:
+        if row:
+            for key, value in row.items():
+                if type(key) is not str:
+                    return None
+                if key in declared and is_vector_candidate(value):
+                    continue
+                if not json_bulk_scalar_ok(value):
+                    if not json_bulk_shape_ok(value):
+                        return None
+                    tagged = True
+    return tagged
+
+
+def declared_scalars_ok(rows: Any, declared: Any) -> bool:
+    """False when a declared ARRAY_OF_FLOATS property still holds a list (or any non-scalar) after the vector split."""
+    for key in declared:
+        if set(map(type, _column(rows, key))) <= _BULK_SCALAR_TYPES:
+            continue  # scalars: the dumps of the chunk decides whether the text carries them
+        for row in rows:
+            if row and key in row and not json_bulk_scalar_ok(row[key]):
+                return False
     return True
 
 
@@ -1004,23 +1243,154 @@ def declared_float_vectors(java_db, type_name):
     return [str(name) for name in vectors.declared(java_db, type_name)]
 
 
+_JAVA_VECTOR_ARRAYS = None  # (float[] class, double[] class) of JPype once the JVM runs; () where there is no JVM (the native wheel)
+
+
+def _java_vector_arrays():
+    """The JPype classes of a Java ``float[]`` and a ``double[]`` (what ``to_java_float_array`` returns on the JVM wheel), () without a JVM.
+
+    Resolved once the JVM has started: JPype builds an array class from a Java class, so it cannot be done at import.
+    """
+    global _JAVA_VECTOR_ARRAYS
+    if _JAVA_VECTOR_ARRAYS is None:
+        try:
+            if not jpype.isJVMStarted():
+                return ()
+            _JAVA_VECTOR_ARRAYS = (
+                jpype.JArray(jpype.JFloat),
+                jpype.JArray(jpype.JDouble),
+            )
+        except Exception:  # the native wheel's stand-in for jpype has no such classes
+            _JAVA_VECTOR_ARRAYS = ()
+    return _JAVA_VECTOR_ARRAYS
+
+
+def _is_vector_kind(kind):
+    """The type of a value that a declared ARRAY_OF_FLOATS column may hold as a vector: a list, a numpy array, a Java float[] or double[]."""
+    return (
+        kind is list
+        or (_np is not None and issubclass(kind, _np.ndarray))
+        or issubclass(kind, _java_vector_arrays())
+    )
+
+
+def _is_float_array_kind(kind):
+    """The type of a value that may be a float32 vector on any property: a numpy array or a Java float[]."""
+    arrays = _java_vector_arrays()
+    return (_np is not None and issubclass(kind, _np.ndarray)) or (
+        bool(arrays) and issubclass(kind, arrays[0])
+    )
+
+
 def is_vector_candidate(value):
-    """A value split_float_vectors may take out of the JSON: a list or a numpy array."""
-    return type(value) is list or (_np is not None and isinstance(value, _np.ndarray))
+    """A value split_float_vectors may take out of the JSON: a list, a numpy array, or a Java float[] or double[]."""
+    return _is_vector_kind(type(value))
 
 
-def split_float_vectors(java_db, type_name, rows, declared=None):
-    """Take the float vectors of `rows` out of the JSON text of a bulk load.
+def _is_float32_vector(value):
+    """A numpy float32 array or a Java float[]: the value the property-matrix path stores as a float[] on any property."""
+    if _np is not None and isinstance(value, _np.ndarray):
+        return value.dtype == _np.float32
+    arrays = _java_vector_arrays()
+    return bool(arrays) and isinstance(value, arrays[0])
+
+
+def _without_keys(rows, gone):
+    """`rows` (each one holds every name of `gone`) as new dicts without those keys; the values are the same objects.
+
+    Rows that all have the same keys in the same order are rebuilt from columns by C iterators (itemgetter, zip, dict), with no Python
+    code per row; any other rows take the dict comprehension.
+    """
+    if len(set(map(tuple, rows))) == 1:
+        keep = [key for key in rows[0] if key not in gone]
+        if not keep:
+            return list(map(dict, itertools.repeat((), len(rows))))
+        columns = [list(map(operator.itemgetter(key), rows)) for key in keep]
+        return list(map(dict, map(zip, itertools.repeat(keep), zip(*columns))))
+    gone = set(gone)
+    return [{k: v for k, v in row.items() if k not in gone} for row in rows]
+
+
+def take_vector_columns(rows, declared, undeclared=False):
+    """The float vector columns of `rows` as float32 matrices, and the rows without them (the one split of both wheels).
+
+    A declared (ARRAY_OF_FLOATS) property qualifies when its value in EVERY row is a list, a numpy array or a Java float[] or double[] of
+    numbers of one length: the engine converts the numbers to float for such a property, so a float32 matrix stores the same values.
+    With `undeclared`, any other property qualifies when its value in every row is a float32 numpy array or a Java float[] of one length
+    (the first row decides which names are tried, the stacked column must come out as float32): the property-matrix path stores such a
+    value as a float[], and so does the matrix. A float64 array, a list, a Java double[] on an undeclared property, a missing value, a
+    null, a ragged or non-numeric column does not qualify and stays in the rows.
+
+    Returns None when no column qualifies, else ``(names, matrices, rest)``: the matrices are C-contiguous float32 arrays of shape
+    ``(len(rows), dim)``, `rest` the rows without those properties.
+    """
+    if _np is None or not rows:
+        return None
+    declared = set(declared)
+    names = list(declared)
+    first = rows[0]
+    if undeclared and isinstance(first, dict):
+        names.extend(
+            key
+            for key, value in first.items()
+            if key not in declared and _is_float32_vector(value)
+        )
+    taken = []
+    matrices = []
+    for name in names:
+        try:
+            column = list(map(operator.itemgetter(name), rows))
+        except (KeyError, TypeError):
+            continue
+        if not is_vector_candidate(column[0]):
+            continue
+        try:
+            array = _np.array(column)
+        except (ValueError, TypeError):
+            continue
+        if array.ndim != 2 or array.shape[1] == 0 or array.dtype.kind not in "fiu":
+            continue
+        if name not in declared and array.dtype != _np.float32:
+            continue
+        with _np.errstate(
+            all="ignore"
+        ):  # a double beyond float32 becomes Infinity, as in the engine
+            matrix = _np.ascontiguousarray(array, dtype=_np.float32)
+        taken.append(name)
+        matrices.append(matrix)
+    if not taken:
+        return None
+    return taken, matrices, _without_keys(rows, taken)
+
+
+def vector_width(rows, declared):
+    """How many floats the vector columns of the first row hold (0 when it holds none): a list, array, Java ``float[]`` or ``double[]``
+    in a declared property, or a float32 array or Java ``float[]`` in any property. GraphBatch.create_vertices sizes its crossings by it.
+    """
+    first = rows[0] if rows else None
+    if not isinstance(first, dict):
+        return 0
+    width = 0
+    for key, value in first.items():
+        if (key in declared and is_vector_candidate(value)) or _is_float32_vector(
+            value
+        ):
+            try:
+                width += len(value)
+            except TypeError:  # a 0-dimensional array
+                pass
+    return width
+
+
+def split_float_vectors(java_db, type_name, rows, declared=None, undeclared=False):
+    """Take the float vectors of `rows` out of the JSON text of a bulk load (the JVM wheel).
 
     A list of floats costs Python about 450 ns a number to write as text and the
     engine about as much again to parse it, so a vector load spent most of its
-    time on the text. For each property of `type_name` that is declared
-    ARRAY_OF_FLOATS, whose value in EVERY row is a list or a numpy array of
-    numbers of one length, the vectors cross as one float32 matrix instead
-    (``FloatVectors.Matrix``, one buffer copy). The engine converts the numbers of a list to float for
-    such a property, so the float32 matrix stores the same values. Every other
-    property, and a column that is missing in a row, ragged, not numeric, or
-    null in a row, stays in the JSON.
+    time on the text. The vectors of the columns that take_vector_columns picks
+    cross as one float32 matrix per property instead (``FloatVectors.Matrix``,
+    one buffer copy). Every other property, and a column that is missing in a
+    row, ragged, not numeric, or null in a row, stays in the JSON.
 
     Returns ``(rest_rows, names, matrices)``: `rest_rows` are the rows without
     those properties, `names` a ``String[]`` and `matrices` an ``Object[]`` of
@@ -1034,39 +1404,18 @@ def split_float_vectors(java_db, type_name, rows, declared=None):
         return None
     if declared is None:
         declared = declared_float_vectors(java_db, type_name)
-    taken = []
-    matrices = []
-    for name in declared:
-        try:
-            column = [row[name] for row in rows]
-        except (KeyError, TypeError):
-            continue
-        if not is_vector_candidate(column[0]):
-            continue
-        try:
-            array = _np.array(column)
-        except (ValueError, TypeError):
-            continue
-        if array.ndim != 2 or array.shape[1] == 0 or array.dtype.kind not in "fiu":
-            continue
-        with _np.errstate(
-            all="ignore"
-        ):  # a double beyond float32 becomes Infinity, as in the engine
-            flat = _np.ascontiguousarray(array, dtype=_np.float32).reshape(-1)
-        taken.append(name)
-        matrices.append(
-            vectors.Matrix(jpype.JArray(jpype.JFloat)(flat), int(array.shape[1]))
-        )
-    if not taken:
+    taken = take_vector_columns(rows, declared, undeclared)
+    if taken is None:
         return None
-    if len(taken) == 1:
-        only = taken[0]
-        rest = [{k: v for k, v in row.items() if k != only} for row in rows]
-    else:
-        gone = set(taken)
-        rest = [{k: v for k, v in row.items() if k not in gone} for row in rows]
+    names, matrices, rest = taken
+    float_array = jpype.JArray(jpype.JFloat)
     return (
         rest,
-        jpype.JArray(jpype.JString)(taken),
-        jpype.JArray(jpype.JObject)(matrices),
+        jpype.JArray(jpype.JString)(names),
+        jpype.JArray(jpype.JObject)(
+            [
+                vectors.Matrix(float_array(matrix.reshape(-1)), int(matrix.shape[1]))
+                for matrix in matrices
+            ]
+        ),
     )
