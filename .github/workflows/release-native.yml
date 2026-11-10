@@ -25,7 +25,8 @@ name: Release native (arcadedb)
 #
 # Nothing here stores a token: the publish job authenticates with PyPI trusted publishing (OIDC), and only that job has the id-token
 # permission. The guard in the publish job refuses to publish anything that is not `arcadedb`, so this workflow cannot publish the
-# JVM `arcadedb-jvm` by accident.
+# JVM `arcadedb-jvm` by accident. The test call carries issues: write too, for the one job of test-native.yml that logs a crash retry
+# on issue 295 (see the comment at that call).
 
 on:
   push:
@@ -89,6 +90,12 @@ jobs:
     name: Native build and parity
     needs: validate-version
     uses: ./.github/workflows/test-native.yml
+    # issues: write is for the `crash-report` job of test-native.yml alone (one comment on issue 295 when a Windows test file crashed and
+    # passed on its retry). A called workflow cannot hold more permission than its caller gives it, so without this line the whole release
+    # run would refuse to start; the called workflow's own `permissions: contents: read` keeps every other job read-only.
+    permissions:
+      contents: read
+      issues: write
     with:
       version: ${{ needs.validate-version.outputs.version }}
       release: true
