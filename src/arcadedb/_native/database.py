@@ -485,12 +485,13 @@ class NativeResultSet:
         with two exceptions that are the same on both builds. A DATETIME keeps its microseconds (a ``datetime64[us]`` column, where
         ``to_columns()`` and ``to_arrow()`` carry milliseconds), a DATE is a ``datetime.date`` in an object column, and a ``Decimal``
         stays one. A column of ``float[]`` vectors holds one numpy ``float32`` array per cell (a row of the matrix ``to_columns()``
-        returns, not a Python list per row) and None for a null; ``to_list()`` gives lists of floats.
+        returns, not a Python list per row) and None for a null; ``to_list()`` gives lists of floats. A column that holds an integer
+        beyond +-2**53 next to a float is an ``object`` column of the exact Python values (``float64`` would round the integer), as
+        ``to_columns()`` returns them; ``to_arrow()`` gives the exact text.
         """
-        import pandas as pd
-
-        columns = self._columns(25_000, None, True)
-        return pd.DataFrame(columns)
+        # availability check: a missing pandas raises before the cursor is read
+        __import__("pandas")
+        return _columnar.dataframe_from_columns(self._columns(25_000, None, True))
 
     def _columns(self, batch_size, columns, micros):
         from . import colframes

@@ -523,6 +523,108 @@ def test_an_integer_beyond_2_53_next_to_a_float_stays_exact(temp_db, rows):
     ]  # no common numeric type: exact text, as across batches
 
 
+# --- to_dataframe and an integer beyond 2**53 (#340) -----------------------------------------------------------------------
+# to_columns() gives the exact Python list and to_arrow() the exact text; to_dataframe() handed that list to pandas, which infers
+# float64 for ints and floats and rounded the integer. Each test reads the frame, so the same literal holds on both wheels.
+
+
+def _mix_frame(db, values):
+    """The ``to_dataframe()`` of ``values`` stored in property ``x`` of one document each, in order (None = the row lacks ``x``)."""
+    db.command("sql", "CREATE DOCUMENT TYPE Mix")
+    db.command("sql", "CREATE PROPERTY Mix.i INTEGER")
+    db.insert_many(
+        "Mix",
+        [{"i": i} if v is None else {"i": i, "x": v} for i, v in enumerate(values)],
+    )
+    return db.query("sql", "SELECT i, x FROM Mix ORDER BY i").to_dataframe()
+
+
+def _same_values_and_types(have, want):
+    return list(have) == list(want) and all(
+        type(a) is type(b) for a, b in zip(have, want)
+    )
+
+
+@pytest.mark.parametrize("layout", ["alternating", "blocks"])
+@pytest.mark.parametrize("rows", [10, 300])
+def test_to_dataframe_keeps_an_integer_beyond_2_53_next_to_a_float(
+    temp_db, rows, layout
+):
+    big = 2**60 + 1
+    if layout == "alternating":
+        want = [big if i % 2 == 0 else 1.5 for i in range(rows)]
+    else:
+        want = [big if i < rows // 2 else 1.5 for i in range(rows)]
+    df = _mix_frame(temp_db, want)
+    assert df["x"].dtype == object  # float64 would round the integer
+    assert _same_values_and_types(df["x"].tolist(), want)  # an int stays an int
+    assert df["i"].dtype == np.int64 and df["i"].tolist() == list(range(rows))
+
+
+@pytest.mark.parametrize(
+    "big", [2**53 + 1, -(2**53) - 1, 2**63 - 1, -(2**63) + 1, -(2**63)]
+)
+def test_to_dataframe_keeps_the_ends_of_int64_next_to_a_float(temp_db, big):
+    want = [big, 1.5, big, -0.25]
+    df = _mix_frame(temp_db, want)
+    assert df["x"].dtype == object
+    assert _same_values_and_types(df["x"].tolist(), want)
+
+
+def test_to_dataframe_mixed_column_with_a_null_keeps_the_null_as_none(temp_db):
+    big = 2**60 + 1
+    df = _mix_frame(temp_db, [big, None, 1.5, -(2**63)])
+    assert df["x"].dtype == object
+    assert df["x"].tolist() == [big, None, 1.5, -(2**63)]
+    assert df["x"][1] is None  # not NaN: a missing value is None as in a text column
+    assert type(df["x"][0]) is int and type(df["x"][2]) is float
+
+
+def test_to_dataframe_integer_beyond_2_53_next_to_text_and_a_float(temp_db):
+    want = [2**60 + 1, "text", 1.5, -(2**63)]
+    df = _mix_frame(temp_db, want)
+    assert df["x"].dtype == object
+    assert _same_values_and_types(df["x"].tolist(), want)
+
+
+def test_to_dataframe_integers_alone_stay_int64_even_beyond_2_53(temp_db):
+    want = [2**60 + 1, -(2**63), 2**63 - 1, 7]
+    df = _mix_frame(temp_db, want)
+    assert df["x"].dtype == np.int64  # unchanged: exact, no float in the column
+    assert df["x"].tolist() == want
+
+
+def test_to_dataframe_integers_up_to_2_53_next_to_floats_stay_float64(temp_db):
+    # every integer here is an exact double, so the usual numeric column is kept (the dtype does not change for this shape)
+    df = _mix_frame(temp_db, [1, 1.5, 2**53, -(2**53)])
+    assert df["x"].dtype == np.float64
+    assert df["x"].tolist() == [1.0, 1.5, 2.0**53, -(2.0**53)]
+
+
+def test_to_dataframe_of_an_empty_result_is_an_empty_frame(temp_db):
+    _mix_frame(temp_db, [2**60 + 1, 1.5])
+    df = temp_db.query("sql", "SELECT i, x FROM Mix WHERE i < 0").to_dataframe()
+    assert len(df) == 0 and list(df.columns) == []
+
+
+def test_frames_of_an_integer_beyond_2_53_and_frames_of_floats_merge_exactly():
+    # the column's type belongs to the whole result: two frames, one of int64 (beyond 2**53) and one of float64, must not go
+    # through float64 when they merge (np.concatenate would round the integers), and to_dataframe must keep the exact values
+    ints = _frame(2, [("n", "i8", [], struct.pack("<2q", 2**60 + 1, -(2**63)))])
+    floats = _frame(2, [("n", "f8", [], struct.pack("<2d", 0.5, 1.5))])
+    columns = _columnar.merge_columns(["n"], [_columns(ints), _columns(floats)])
+    want = [2**60 + 1, -(2**63), 0.5, 1.5]
+    assert _same_values_and_types(columns["n"], want)
+    df = _columnar.dataframe_from_columns(columns)
+    assert df["n"].dtype == object
+    assert _same_values_and_types(df["n"].tolist(), want)
+    # integers within 2**53 next to floats keep the numeric column of the merge (float64), and so does the frame
+    small = _frame(2, [("n", "i8", [], struct.pack("<2q", 1, -(2**53)))])
+    columns = _columnar.merge_columns(["n"], [_columns(small), _columns(floats)])
+    assert columns["n"].dtype == np.float64
+    assert _columnar.dataframe_from_columns(columns)["n"].dtype == np.float64
+
+
 def test_vectors_whose_dimension_changes_between_frames_are_one_list_column(temp_db):
     db = temp_db
     db.command("sql", "CREATE DOCUMENT TYPE Dim")
