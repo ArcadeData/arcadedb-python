@@ -609,8 +609,9 @@ def test_to_dataframe_keeps_the_integer_when_the_floats_are_in_a_later_frame(tem
     df = _mix_frame(temp_db, want)
     assert df["x"].dtype == object
     assert _same_values_and_types(df["x"].tolist(), want)
+    # the same column in to_columns() is a list of exact values, not a float64 array
     columns = temp_db.query("sql", "SELECT i, x FROM Mix ORDER BY i").to_columns()
-    assert isinstance(columns["x"], list)  # the same column in to_columns(), not a float64 array
+    assert isinstance(columns["x"], list)
     assert _same_values_and_types(columns["x"], want)
 
 
