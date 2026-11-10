@@ -382,7 +382,7 @@ class TestVectorSQL:
         assert len(neighbors) == 1
 
         vertex = neighbors[0]
-        vec_data = arcadedb.to_python_array(vertex.get("vec"))
+        assert vertex is not None
         # The returned vector's values are not checked: the content assert
         # below is disabled, so this test asserts only that the INT8 index
         # answers with one neighbour.
@@ -801,7 +801,6 @@ class TestVectorSQL:
                 "sql", "SELECT name FROM schema:indexes WHERE typeName = 'Item'"
             ).to_list()
         ]
-        index_name = indexes[0]
 
         query_vec = [0.9, 0.1]
 
@@ -867,7 +866,7 @@ class TestVectorSQL:
             ).to_list()
         ]
         # Filter for our index if multiple exist
-        index_name = next(idx for idx in indexes if "DocSql" in idx)
+        assert any("DocSql" in idx for idx in indexes), indexes
 
         # Generate 100 random vectors
         num_vectors = 100

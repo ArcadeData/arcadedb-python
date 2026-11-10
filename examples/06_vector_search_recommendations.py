@@ -111,7 +111,6 @@ def generate_embeddings(
 
     # Check if embeddings already exist
     try:
-        count = db.count_type("Movie")
         # Check if property exists and has values
         query = (
             f"SELECT count(*) as count FROM Movie WHERE {embedding_prop} IS NOT NULL"

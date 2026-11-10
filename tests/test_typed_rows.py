@@ -163,7 +163,6 @@ def _in_memory(rows):
     """A result set over rows built in Java, for values SQL cannot produce."""
     internal = jpype.JClass("com.arcadedb.query.sql.executor.InternalResultSet")()
     result_internal = jpype.JClass("com.arcadedb.query.sql.executor.ResultInternal")
-    hash_map = jpype.JClass("java.util.LinkedHashMap")
     for row in rows:
         java_row = result_internal()
         for key, value in row.items():

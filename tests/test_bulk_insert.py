@@ -801,7 +801,7 @@ class TestVectorColumnsDataFrame:
     def test_vector_column_to_dataframe(self, temp_db):
         import arcadedb
 
-        pd = __import__("pytest").importorskip("pandas")
+        pytest.importorskip("pandas")
         temp_db.command("sql", "CREATE DOCUMENT TYPE EmbDf")
         temp_db.command("sql", "CREATE PROPERTY EmbDf.v ARRAY_OF_FLOATS")
         with temp_db.transaction():

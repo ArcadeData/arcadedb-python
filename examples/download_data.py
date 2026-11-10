@@ -2097,7 +2097,6 @@ def download_msmarco(count: int, data_dir: Path) -> Path:
     """Download MSMARCO v2.1 parquet parts and convert to shard files."""
     size_label = f"{count // 1_000_000}M"
     out_dir = data_dir / f"MSMARCO-{size_label}"
-    meta_path = out_dir / f"msmarco-passages-{count}.meta.json"
 
     ensure_clean_dir(out_dir, f"MSMARCO {size_label}")
 

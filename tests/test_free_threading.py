@@ -347,7 +347,8 @@ def test_threads(scenario, tmp):
 
 
 if __name__ == "__main__":
-    gil = lambda: getattr(sys, "_is_gil_enabled", lambda: True)()
+    def gil() -> bool:
+        return getattr(sys, "_is_gil_enabled", lambda: True)()
     print(
         f"FTSTRESS python={sys.version.split()[0]} gil={gil()} backend={'native' if NATIVE else 'jpype'} "
         f"threads={THREADS} repeat={REPEAT} rows={ROWS}",

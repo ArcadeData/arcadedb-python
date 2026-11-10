@@ -1079,14 +1079,6 @@ class TestLSMVectorIndex:
         ), f"Orthogonal distance should be ~1.0, got {distance}"
 
     def test_lsm_euclidean_distance(self, test_db):
-        """Test Euclidean distance metric (JVector implementation)."""
-        try:
-            import numpy as np
-
-            use_numpy = True
-        except ImportError:
-            use_numpy = False
-
         test_db.command("sql", "CREATE VERTEX TYPE VectorTestEuclidean")
         test_db.command("sql", "CREATE PROPERTY VectorTestEuclidean.name STRING")
         test_db.command(
