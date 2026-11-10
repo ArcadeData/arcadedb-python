@@ -1,7 +1,6 @@
 ## zlib v1.3.2
 
 ### zlib License
-
 <pre>
 
 Copyright (C) 1995-2026 Jean-loup Gailly and Mark Adler

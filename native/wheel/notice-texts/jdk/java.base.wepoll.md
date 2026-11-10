@@ -1,7 +1,6 @@
 ## Bert Belder: wepoll v 1.5.8
 
 ### wepoll License
-
 ```
 wepoll - epoll for Windows
 https://github.com/piscisaureus/wepoll
