@@ -1,0 +1,163 @@
+name: Windows crash loop (throwaway, issue 295)
+
+# Question: is the silent Windows crash of release run 42744219731 (3.11 test_free_threading.py, 3.14 test_find_nearest_query_forms.py)
+# a property of the wheel that run built (the DLL), of the post1 Python code, or of the runner and chance?
+#
+# Same Python code (tag 26.11.1.post1 = dbe16709), three wheels:
+#   release-run   the wheel the failing legs installed (artifact digest 849b59f5...), DLL built in the release run
+#   dispatch-6    the wheel of dispatch run 42733987254 (same commit, other native-image build, its Windows 3.12 and 3.14 legs passed)
+#   release-26111 the 26.11.1 wheel of run 42055597568 (older Python and Java code; its Windows 3.11 and 3.14 legs passed)
+# Reading: crash only with release-run          -> the DLL build (native image layout or miscompile);
+#          crash with release-run and dispatch-6 -> the post1 code, the wheel build does not matter;
+#          crash with all three                  -> the runner or a defect older than post1 (issue 295 family);
+#          crash with none                       -> rare event, rerun luck; raise reps.
+# Each file runs in its own process, as native/wheel/parity_wheel.py does, with pytest's default fd capture (capture=fd) so the
+# conditions equal the parity leg. The return code of every process is recorded (0xC0000005 access violation, 0xC0000374 heap
+# corruption, 0xC0000409 fail fast, 0xC00000FD stack overflow). capture=no (-s) lets native stderr text reach the log instead of
+# pytest's capture file, which is lost when the process dies. A Windows Error Reporting local dump is kept for every crash.
+
+on:
+  push:
+    branches: [ci/win-crash-loop]
+  workflow_dispatch:
+    inputs:
+      reps:
+        description: "Repetitions of the two files per leg"
+        default: "30"
+      capture:
+        description: "fd (as the parity leg) or no (-s: native stderr reaches the log)"
+        default: "fd"
+
+permissions:
+  contents: read
+  actions: read # download-artifact of another run of this repository
+
+env:
+  UV_VERSION: 0.12.0
+  PYTHONUTF8: 1
+
+jobs:
+  loop:
+    name: ${{ matrix.wheel.label }} wheel, Python ${{ matrix.python }}
+    runs-on: windows-latest # the label of scripts/select_native_matrix.py for windows-x64
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.14"]
+        wheel:
+          - { label: release-run, run: "42744219731" }
+          - { label: dispatch-6, run: "42733987254" }
+          - { label: release-26111, run: "42055597568" }
+    env:
+      PY: ${{ matrix.python }}
+      REPS: ${{ inputs.reps || '30' }}
+      CAPTURE: ${{ inputs.capture || 'fd' }}
+      LABEL: ${{ matrix.wheel.label }}
+    steps:
+      - name: Keep LF line endings
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: 26.11.1.post1
+          persist-credentials: false
+
+      - name: Paths
+        run: |
+          T="$(cygpath -m "$RUNNER_TEMP")"
+          echo "T=$T" >> "$GITHUB_ENV"
+
+      - name: Install uv (Windows)
+        shell: pwsh
+        run: |
+          $env:UV_NO_MODIFY_PATH = "1"
+          Invoke-RestMethod "https://astral.sh/uv/$env:UV_VERSION/install.ps1" | Invoke-Expression
+          Add-Content -Path $env:GITHUB_PATH -Value "$env:USERPROFILE\.local\bin"
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: native-wheel-windows-x64
+          path: ${{ runner.temp }}/wheel
+          run-id: ${{ matrix.wheel.run }}
+          repository: ArcadeData/arcadedb-python
+          github-token: ${{ github.token }}
+
+      - name: Keep a Windows Error Reporting mini dump of every crash
+        shell: pwsh
+        run: |
+          $k = "HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps"
+          New-Item -Path $k -Force | Out-Null
+          New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\dumps" | Out-Null
+          New-ItemProperty -Path $k -Name DumpFolder -Value "$env:RUNNER_TEMP\dumps" -PropertyType ExpandString -Force | Out-Null
+          New-ItemProperty -Path $k -Name DumpType -Value 1 -PropertyType DWord -Force | Out-Null
+          New-ItemProperty -Path $k -Name DumpCount -Value 10 -PropertyType DWord -Force | Out-Null
+
+      - name: Loop the two files, one process each
+        run: |
+          set -euo pipefail
+          w="$(ls "$T"/wheel/*.whl)"
+          sha256sum "$w" | tee "$T/wheel.sha256"
+          mkdir -p "$T/out"
+          cat > "$T/loop.py" <<'PY'
+          import os
+          import subprocess
+          import sys
+          import time
+
+          reps = int(os.environ["REPS"])
+          files = ["test_free_threading.py", "test_find_nearest_query_forms.py"]
+          out = os.path.join(os.environ["T"], "out")
+          extra = ["-s"] if os.environ.get("CAPTURE") == "no" else []
+          env = dict(os.environ, PYTHONUNBUFFERED="1")
+          for k in ("PYTHONPATH", "ARCADEDB_BACKEND", "ARCADEDB_NATIVE_LIB"):
+              env.pop(k, None)
+          import arcadedb  # the installed wheel, not a source tree
+
+          head = f"{arcadedb.__version__} {arcadedb.__backend__} python {sys.version.split()[0]} {arcadedb.__file__}"
+          print("WHEEL", head, flush=True)
+          bad = {f: 0 for f in files}
+          rows = ["rep\tfile\trc\tseconds"]
+          for i in range(1, reps + 1):
+              for f in files:
+                  t = time.time()
+                  r = subprocess.run(
+                      [sys.executable, "-m", "pytest", f"tests/{f}", "-q", "-p", "no:cacheprovider",
+                       f"--junitxml={out}/{f}.{i}.xml", "-o", "junit_family=xunit1", *extra],
+                      env=env, capture_output=True, text=True, timeout=900,
+                  )
+                  rc = r.returncode & 0xFFFFFFFF
+                  row = f"{i}\t{f}\t{rc:#010x}\t{time.time() - t:.1f}"
+                  rows.append(row)
+                  print(row, flush=True)
+                  if rc != 0:
+                      bad[f] += 1
+                      with open(f"{out}/{f}.{i}.log", "w") as fh:
+                          fh.write(r.stdout[-20000:] + "\n--stderr--\n" + r.stderr[-5000:])
+          with open(f"{out}/rc.tsv", "w") as fh:
+              fh.write("\n".join(rows) + "\n")
+          summary = "\n".join(f"{os.environ['LABEL']} py{os.environ['PY']} {f}: {bad[f]} of {reps} processes failed" for f in files)
+          print(summary, flush=True)
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as fh:
+              fh.write(f"### {os.environ['LABEL']}, Python {os.environ['PY']}\n\n{head}\n\n" + summary.replace("\n", "\n\n") + "\n")
+          PY
+          uv run --no-project --python "$PY" --with "$w" --with pytest --with setuptools --with numpy --with requests --with jpype1 --with pyarrow \
+            --with polars --with pandas --with duckdb --with networkx --with "psycopg[binary]" --with adbc-driver-postgresql \
+            --with redis --with neo4j --with ladybug \
+            python "$T/loop.py"
+
+      - name: Upload the return codes, logs and dumps
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # the pin test-native.yml uses
+        with:
+          name: crash-loop-${{ matrix.wheel.label }}-py${{ matrix.python }}
+          path: |
+            ${{ runner.temp }}/out
+            ${{ runner.temp }}/dumps
+            ${{ runner.temp }}/wheel.sha256
+          if-no-files-found: ignore
