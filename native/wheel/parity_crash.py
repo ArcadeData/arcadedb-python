@@ -60,7 +60,9 @@ def format_rc(rc: Optional[int], windows: Optional[bool] = None) -> str:
 class Attempt:
     """The facts about one run of one test file."""
 
-    rc: Optional[int]  # the exit code; None when the harness killed the process (timed_out)
+    rc: Optional[
+        int
+    ]  # the exit code; None when the harness killed the process (timed_out)
     result: bool  # the junit XML was written and parses
     timed_out: bool = False
     bad_xml: bool = False  # the XML exists and does not parse
@@ -73,7 +75,11 @@ def is_crash(attempt: Attempt) -> bool:
 
 def dirty_exit(attempt: Attempt) -> bool:
     """The XML was written but the process ended with a code pytest never returns: it died in shutdown, after the tests."""
-    return attempt.result and attempt.rc is not None and attempt.rc not in PYTEST_EXIT_CODES
+    return (
+        attempt.result
+        and attempt.rc is not None
+        and attempt.rc not in PYTEST_EXIT_CODES
+    )
 
 
 def dirty_events(name: str, outcome: "Outcome") -> list:
@@ -143,7 +149,9 @@ def run_file(run_attempt: Callable[[int], Attempt], policy: RetryPolicy) -> Outc
     """Run one test file by `run_attempt(1)` and, only for a crash and only when the policy allows, once more by `run_attempt(2)`."""
     first = run_attempt(1)
     if not is_crash(first):
-        return Outcome((first,), TIMEOUT if first.timed_out else BADXML if first.bad_xml else "")
+        return Outcome(
+            (first,), TIMEOUT if first.timed_out else BADXML if first.bad_xml else ""
+        )
     crash = f"rc={format_rc(first.rc)}"
     if not policy.take():
         why = ";retry budget spent" if policy.enabled else ""

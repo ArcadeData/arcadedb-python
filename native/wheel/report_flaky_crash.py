@@ -74,7 +74,9 @@ def _where(events: list[dict]) -> list[str]:
     for e in events:
         files = [e[k] for k in ("trace1", "trace2") if e.get(k)]
         # name.attempt1.log exists only when a retry ran (the retry's own log is name.log); a crash that was not retried has name.log alone
-        log = e.get("log") or (f"{e['file']}.attempt1.log" if e.get("retry_rc") else f"{e['file']}.log")
+        log = e.get("log") or (
+            f"{e['file']}.attempt1.log" if e.get("retry_rc") else f"{e['file']}.log"
+        )
         names = ", ".join(f"`{n}`" for n in [*files, log])
         lines.append(
             f"- `{e['file']}` ({e['leg']}, Python {e['python']}): artifact `{e['artifact']}`, folder `parity-wheel-xml/`: {names}"
@@ -113,7 +115,9 @@ def summary_md(events: list[dict]) -> str:
     return "\n".join(out) + "\n"
 
 
-def comment_md(events: list[dict], run_url: str, attempt: str, event: str, ref: str) -> str:
+def comment_md(
+    events: list[dict], run_url: str, attempt: str, event: str, ref: str
+) -> str:
     """The comment for issue 295: one per run, every event in it."""
     kinds = sorted({e["kind"] for e in events})
     out = [
@@ -148,13 +152,30 @@ def may_post(event: str, ref_type: str, repo: str) -> str:
 
 def post_comment(body: str, run=subprocess.run) -> tuple[bool, str]:
     """POST the comment with the gh CLI and GH_TOKEN; (True, '') or (False, why). Never raises."""
-    cmd = ["gh", "api", "--method", "POST", f"repos/{REPO}/issues/{ISSUE}/comments", "--input", "-"]
+    cmd = [
+        "gh",
+        "api",
+        "--method",
+        "POST",
+        f"repos/{REPO}/issues/{ISSUE}/comments",
+        "--input",
+        "-",
+    ]
     try:
-        r = run(cmd, input=json.dumps({"body": body}), capture_output=True, text=True, timeout=120)  # nosec B603
+        r = run(
+            cmd,
+            input=json.dumps({"body": body}),
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )  # nosec B603
     except (OSError, subprocess.SubprocessError) as err:
         return False, f"{type(err).__name__}: {err}"
     if r.returncode != 0:
-        return False, (r.stderr or r.stdout or f"gh exited {r.returncode}").strip()[:300]
+        return (
+            False,
+            (r.stderr or r.stdout or f"gh exited {r.returncode}").strip()[:300],
+        )
     return True, ""
 
 
@@ -178,7 +199,9 @@ def report(events, env, summary_path="", dry_run=False, run=subprocess.run) -> i
         env.get("GITHUB_EVENT_NAME", ""),
         env.get("GITHUB_REF_NAME", ""),
     )
-    why = may_post(env.get("GITHUB_EVENT_NAME", ""), env.get("GITHUB_REF_TYPE", ""), repo)
+    why = may_post(
+        env.get("GITHUB_EVENT_NAME", ""), env.get("GITHUB_REF_TYPE", ""), repo
+    )
     if why:
         print(f"issue #{ISSUE}: no comment posted ({why})", flush=True)
         return 0
@@ -186,13 +209,19 @@ def report(events, env, summary_path="", dry_run=False, run=subprocess.run) -> i
         print(f"issue #{ISSUE}: dry run, the comment would be:\n{body}", flush=True)
         return 0
     if not (env.get("GH_TOKEN") or env.get("GITHUB_TOKEN")):
-        print(f"::warning::the FLAKY-CRASH comment on #{ISSUE} was skipped: no GH_TOKEN", flush=True)
+        print(
+            f"::warning::the FLAKY-CRASH comment on #{ISSUE} was skipped: no GH_TOKEN",
+            flush=True,
+        )
         return 0
     ok, err = post_comment(body, run=run)
     if ok:
         print(f"issue #{ISSUE}: comment posted", flush=True)
     else:
-        print(f"::warning::the FLAKY-CRASH comment on #{ISSUE} was skipped, the token cannot write issues or gh failed: {err}", flush=True)
+        print(
+            f"::warning::the FLAKY-CRASH comment on #{ISSUE} was skipped, the token cannot write issues or gh failed: {err}",
+            flush=True,
+        )
     return 0
 
 
@@ -205,7 +234,10 @@ def main(argv=None) -> int:
     try:
         return report(load_events(a.artifacts), os.environ, a.summary, a.dry_run)
     except Exception as err:  # noqa: BLE001 - a log is never a gate
-        print(f"::warning::the crash report failed: {type(err).__name__}: {err}", flush=True)
+        print(
+            f"::warning::the crash report failed: {type(err).__name__}: {err}",
+            flush=True,
+        )
         return 0
 
 

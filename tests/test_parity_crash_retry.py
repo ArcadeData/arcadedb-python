@@ -155,10 +155,16 @@ def test_the_retry_budget_of_a_leg_is_spent_by_the_files_not_the_crashes():
         out = pc.run_file(run, policy)
         statuses.append((out.status.split("(")[0], calls))
     # two files retried and flaky, the third crashes where the budget is spent: a wheel that crashes everywhere cannot pass on retries
-    assert statuses == [("FLAKY-CRASH", [1, 2]), ("FLAKY-CRASH", [1, 2]), ("CRASH", [1])]
+    assert statuses == [
+        ("FLAKY-CRASH", [1, 2]),
+        ("FLAKY-CRASH", [1, 2]),
+        ("CRASH", [1]),
+    ]
     assert policy.used == 2
     run, _ = attempts(DIED)
-    assert pc.run_file(run, policy).status == f"CRASH(rc={HIGH_TEXT};retry budget spent)"
+    assert (
+        pc.run_file(run, policy).status == f"CRASH(rc={HIGH_TEXT};retry budget spent)"
+    )
 
 
 def test_exit_codes_are_written_as_ntstatus_and_decimal_or_as_a_signal():
@@ -167,7 +173,8 @@ def test_exit_codes_are_written_as_ntstatus_and_decimal_or_as_a_signal():
     assert pc.format_rc(-1073741819, windows=True) == "0xC0000005,3221225477"
     assert pc.format_rc(139, windows=False) == "0x0000008B,139"
     assert pc.format_rc(0, windows=False) == "0x00000000,0"
-    assert pc.format_rc(-signal.SIGABRT, windows=False) == "-6,SIGABRT"
+    # the number of SIGABRT is the platform's (6 on POSIX, 22 on Windows)
+    assert pc.format_rc(-signal.SIGABRT, windows=False) == f"{-signal.SIGABRT},SIGABRT"
     assert pc.format_rc(-250, windows=False) == "-250,signal 250"
     assert pc.format_rc(None) == "none"
 
@@ -185,7 +192,11 @@ def test_a_crash_event_names_the_kind_and_what_the_retry_did():
     }
     run, _ = attempts(DIED, DIED_AGAIN)
     ev = pc.event_of("a.py", pc.run_file(run, ON()), final_failed=0)
-    assert (ev["kind"], ev["retry"], ev["retry_rc"]) == ("CRASH", "crashed again", OTHER_TEXT)
+    assert (ev["kind"], ev["retry"], ev["retry_rc"]) == (
+        "CRASH",
+        "crashed again",
+        OTHER_TEXT,
+    )
     run, _ = attempts(DIED)
     ev = pc.event_of("a.py", pc.run_file(run, pc.RetryPolicy()), final_failed=0)
     assert (ev["kind"], ev["retry"], ev["retry_rc"]) == ("CRASH", "not retried", "")
@@ -251,7 +262,9 @@ def real_runner(code, d):
     return run
 
 
-def test_a_real_process_that_exits_with_a_high_code_is_recorded_with_that_code(tmp_path):
+def test_a_real_process_that_exits_with_a_high_code_is_recorded_with_that_code(
+    tmp_path,
+):
     out = pc.run_file(real_runner(EXIT_ALWAYS, tmp_path), pc.RetryPolicy())
     assert out.final.rc == HIGH
     assert out.status == f"CRASH(rc={HIGH_TEXT})"
@@ -264,7 +277,7 @@ def test_a_real_process_killed_by_a_fault_is_recorded_as_one(tmp_path):
         assert out.status == "CRASH(rc=0xC0000005,3221225477)"
     else:
         assert out.final.rc == -signal.SIGSEGV
-        assert out.status == "CRASH(rc=-11,SIGSEGV)"
+        assert out.status == f"CRASH(rc={-signal.SIGSEGV},SIGSEGV)"
 
 
 def test_the_retry_of_a_real_crash_is_a_new_process_and_a_pass_is_flaky(tmp_path):
@@ -289,8 +302,7 @@ def test_a_real_file_that_crashes_every_time_fails_after_one_retry(tmp_path):
 FIXTURE_FILES = {
     "test_ok.py": "def test_a():\n    pass\n\n\ndef test_b():\n    pass\n",
     "test_fails.py": "def test_a():\n    assert False, 'a real failure'\n",
-    "test_dies_once.py": textwrap.dedent(
-        f"""
+    "test_dies_once.py": textwrap.dedent(f"""
         import os, pathlib
 
 
@@ -299,8 +311,7 @@ FIXTURE_FILES = {
             if not marker.exists():
                 marker.write_text("1")
                 os._exit({HIGH_ARG})
-        """
-    ),
+        """),
     "test_dies_always.py": f"import os\n\n\ndef test_a():\n    os._exit({HIGH_ARG})\n",
 }
 
@@ -344,7 +355,9 @@ def harness(tmp_path, monkeypatch):
         files = dict(FIXTURE_FILES)
         if dirty:
             files["test_dirty.py"] = "def test_a():\n    pass\n"
-        (repo / "tests" / "conftest.py").write_text(DIRTY_CONFTEST if dirty else "# fixture\n")
+        (repo / "tests" / "conftest.py").write_text(
+            DIRTY_CONFTEST if dirty else "# fixture\n"
+        )
         for name, text in files.items():
             (repo / "tests" / name).write_text(text)
         for name, item in (seed or {}).items():
@@ -357,7 +370,19 @@ def harness(tmp_path, monkeypatch):
         monkeypatch.setenv("DIES_ONCE_MARKER", str(repo / "marker"))
         monkeypatch.setenv("KEY", "windows-x64")
         out = repo / "out" / "parity-wheel.tsv"
-        parity_wheel.main(["--repo", str(repo), "--python", sys.executable, "--out", str(out), "--timeout", "120", *flags])
+        parity_wheel.main(
+            [
+                "--repo",
+                str(repo),
+                "--python",
+                sys.executable,
+                "--out",
+                str(out),
+                "--timeout",
+                "120",
+                *flags,
+            ]
+        )
         lines = [ln.split("\t") for ln in out.read_text().splitlines()]
         header = lines[0]
         rows = {ln[0]: dict(zip(header, ln)) for ln in lines[1:]}
@@ -370,7 +395,9 @@ def harness(tmp_path, monkeypatch):
 def test_the_harness_is_strict_without_the_flag(harness):
     rows, meta, xmldir = harness()
     assert rows["test_ok.py"]["status"] == "" and rows["test_ok.py"]["passed"] == "2"
-    assert rows["test_fails.py"]["failed"] == "1" and rows["test_fails.py"]["status"] == ""
+    assert (
+        rows["test_fails.py"]["failed"] == "1" and rows["test_fails.py"]["status"] == ""
+    )
     # both crashing files are CRASH rows with the exit code, one attempt each, no retry
     for name in ("test_dies_once.py", "test_dies_always.py"):
         assert rows[name]["status"] == f"CRASH(rc={HIGH_TEXT})", name
@@ -386,7 +413,10 @@ def test_the_harness_retries_only_the_crashes_with_the_flag(harness):
     rows, meta, xmldir = harness("--retry-crash")
     # a clean file and a file with a failing test run once, whatever the flag says
     assert (rows["test_ok.py"]["attempts"], rows["test_ok.py"]["status"]) == ("1", "")
-    assert (rows["test_fails.py"]["attempts"], rows["test_fails.py"]["status"]) == ("1", "")
+    assert (rows["test_fails.py"]["attempts"], rows["test_fails.py"]["status"]) == (
+        "1",
+        "",
+    )
     assert rows["test_fails.py"]["failed"] == "1"
     # the file that died once passes on the retry: FLAKY-CRASH with the first exit code, counted from the second run
     once = rows["test_dies_once.py"]
@@ -414,7 +444,12 @@ def test_the_harness_retries_only_the_crashes_with_the_flag(harness):
 
 def test_the_harness_retry_is_off_unless_asked_for():
     assert parity_wheel.parse_args(["--repo", "r", "--out", "o"]).retry_crash is False
-    assert parity_wheel.parse_args(["--repo", "r", "--out", "o", "--retry-crash"]).retry_crash is True
+    assert (
+        parity_wheel.parse_args(
+            ["--repo", "r", "--out", "o", "--retry-crash"]
+        ).retry_crash
+        is True
+    )
     assert parity_wheel.parse_args(["--repo", "r", "--out", "o"]).max_crash_retries == 3
 
 
@@ -471,7 +506,9 @@ faulthandler._read_null()  # a read of address 0: an access violation on Windows
 """
 
 
-def test_a_native_run_on_windows_keeps_a_faulthandler_trace_and_nothing_else_does(tmp_path):
+def test_a_native_run_on_windows_keeps_a_faulthandler_trace_and_nothing_else_does(
+    tmp_path,
+):
     trace = tmp_path / "fault.txt"
     r = subprocess.run(  # nosec B603 - fixed argument list, no shell
         [sys.executable, "-c", FAULT_CHILD, str(ROOT), str(trace)],
@@ -482,8 +519,11 @@ def test_a_native_run_on_windows_keeps_a_faulthandler_trace_and_nothing_else_doe
     # every assert of the child passed (a failed one would end the child before it printed) and it then died of the fault
     assert "AssertionError" not in r.stderr, r.stderr
     assert "configured" in r.stdout, r.stderr
-    assert r.returncode == (0xC0000005 if WIN else -signal.SIGSEGV), (r.returncode, r.stderr)
-    text = trace.read_text()
+    assert r.returncode == (0xC0000005 if WIN else -signal.SIGSEGV), (
+        r.returncode,
+        r.stderr,
+    )
+    text = trace.read_text(encoding="utf-8")
     assert "Segmentation fault" in text or "access violation" in text
     assert "most recent call first" in text
 
@@ -535,16 +575,37 @@ RELEASE_ENV = {
     "GITHUB_REF_TYPE": "tag",
     "GITHUB_REF_NAME": "26.11.1.post2",
     "GITHUB_SERVER_URL": "https://github.com",
-    "GH_TOKEN": "token",
+    "GH_TOKEN": "token",  # nosec B105 - a made-up token in a test environment, it reaches no service
 }
 
 
 @pytest.fixture
 def artifacts(tmp_path):
     root = tmp_path / "artifacts"
-    write_meta(root, "native-parity-windows-x64-py3.11", "windows-x64", "3.11.9", "26.11.1.post2", [FLAKY_EVENT])
-    write_meta(root, "native-parity-windows-x64-py3.12", "windows-x64", "3.12.7", "26.11.1.post2", [])
-    write_meta(root, "native-parity-windows-x64-py3.14", "windows-x64", "3.14.0", "26.11.1.post2", [CRASH_EVENT])
+    write_meta(
+        root,
+        "native-parity-windows-x64-py3.11",
+        "windows-x64",
+        "3.11.9",
+        "26.11.1.post2",
+        [FLAKY_EVENT],
+    )
+    write_meta(
+        root,
+        "native-parity-windows-x64-py3.12",
+        "windows-x64",
+        "3.12.7",
+        "26.11.1.post2",
+        [],
+    )
+    write_meta(
+        root,
+        "native-parity-windows-x64-py3.14",
+        "windows-x64",
+        "3.14.0",
+        "26.11.1.post2",
+        [CRASH_EVENT],
+    )
     return root
 
 
@@ -554,10 +615,14 @@ class FakeGh:
 
     def __call__(self, cmd, **kwargs):
         self.calls.append((cmd, json.loads(kwargs["input"])["body"]))
-        return subprocess.CompletedProcess(cmd, self.returncode, stdout="", stderr=self.stderr)
+        return subprocess.CompletedProcess(
+            cmd, self.returncode, stdout="", stderr=self.stderr
+        )
 
 
-def test_the_events_of_every_leg_are_collected_with_the_identity_of_their_leg(artifacts):
+def test_the_events_of_every_leg_are_collected_with_the_identity_of_their_leg(
+    artifacts,
+):
     events = report.load_events(str(artifacts))
     assert [(e["file"], e["python"], e["wheel"]) for e in events] == [
         ("test_free_threading.py", "3.11.9", "26.11.1.post2"),
@@ -566,13 +631,23 @@ def test_the_events_of_every_leg_are_collected_with_the_identity_of_their_leg(ar
     assert report.load_events(str(artifacts / "none")) == []
 
 
-def test_a_release_posts_one_comment_listing_every_event_and_the_summary_has_the_table(artifacts, tmp_path, capsys):
+def test_a_release_posts_one_comment_listing_every_event_and_the_summary_has_the_table(
+    artifacts, tmp_path, capsys
+):
     gh, summary = FakeGh(), tmp_path / "summary.md"
-    code = report.report(report.load_events(str(artifacts)), RELEASE_ENV, str(summary), run=gh)
+    code = report.report(
+        report.load_events(str(artifacts)), RELEASE_ENV, str(summary), run=gh
+    )
     assert code == 0
     assert len(gh.calls) == 1
     cmd, body = gh.calls[0]
-    assert cmd[:5] == ["gh", "api", "--method", "POST", "repos/ArcadeData/arcadedb-python/issues/295/comments"]
+    assert cmd[:5] == [
+        "gh",
+        "api",
+        "--method",
+        "POST",
+        "repos/ArcadeData/arcadedb-python/issues/295/comments",
+    ]
     for text in (
         "https://github.com/ArcadeData/arcadedb-python/actions/runs/42744219731",
         "attempt 2",
@@ -587,10 +662,13 @@ def test_a_release_posts_one_comment_listing_every_event_and_the_summary_has_the
         assert text in body, text
     assert body.startswith("CRASH and FLAKY-CRASH in a native parity run.")
     assert EM_DASH not in body
-    md = summary.read_text()
+    md = summary.read_text(encoding="utf-8")
     assert md.startswith("### Parity crashes")
     assert "**FLAKY-CRASH: 1 file(s)" in md and "**CRASH: 1 file(s)" in md
-    assert "| windows-x64 | 3.11.9 | 26.11.1.post2 | `test_free_threading.py` | FLAKY-CRASH 0xC0000005,3221225477 | passed (0x00000000,0) |" in md
+    assert (
+        "| windows-x64 | 3.11.9 | 26.11.1.post2 | `test_free_threading.py` | FLAKY-CRASH 0xC0000005,3221225477 | passed (0x00000000,0) |"
+        in md
+    )
     assert EM_DASH not in md
 
 
@@ -598,20 +676,46 @@ def test_a_dispatch_posts_and_a_pull_request_a_branch_push_and_a_fork_do_not(art
     events = report.load_events(str(artifacts))
     posted = {}
     for name, env in {
-        "dispatch": {**RELEASE_ENV, "GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_REF_TYPE": "branch"},
-        "pull_request": {**RELEASE_ENV, "GITHUB_EVENT_NAME": "pull_request", "GITHUB_REF_TYPE": "branch"},
-        "branch push": {**RELEASE_ENV, "GITHUB_EVENT_NAME": "push", "GITHUB_REF_TYPE": "branch"},
-        "schedule": {**RELEASE_ENV, "GITHUB_EVENT_NAME": "schedule", "GITHUB_REF_TYPE": "branch"},
+        "dispatch": {
+            **RELEASE_ENV,
+            "GITHUB_EVENT_NAME": "workflow_dispatch",
+            "GITHUB_REF_TYPE": "branch",
+        },
+        "pull_request": {
+            **RELEASE_ENV,
+            "GITHUB_EVENT_NAME": "pull_request",
+            "GITHUB_REF_TYPE": "branch",
+        },
+        "branch push": {
+            **RELEASE_ENV,
+            "GITHUB_EVENT_NAME": "push",
+            "GITHUB_REF_TYPE": "branch",
+        },
+        "schedule": {
+            **RELEASE_ENV,
+            "GITHUB_EVENT_NAME": "schedule",
+            "GITHUB_REF_TYPE": "branch",
+        },
         "fork": {**RELEASE_ENV, "GITHUB_REPOSITORY": "humemai/arcadedb-python"},
     }.items():
         gh = FakeGh()
         assert report.report(events, env, run=gh) == 0
         posted[name] = len(gh.calls)
-    assert posted == {"dispatch": 1, "pull_request": 0, "branch push": 0, "schedule": 0, "fork": 0}
+    assert posted == {
+        "dispatch": 1,
+        "pull_request": 0,
+        "branch push": 0,
+        "schedule": 0,
+        "fork": 0,
+    }
 
 
-def test_a_token_that_cannot_write_issues_is_a_visible_warning_and_never_a_failure(artifacts, capsys):
-    gh = FakeGh(returncode=1, stderr="gh: Resource not accessible by integration (HTTP 403)")
+def test_a_token_that_cannot_write_issues_is_a_visible_warning_and_never_a_failure(
+    artifacts, capsys
+):
+    gh = FakeGh(
+        returncode=1, stderr="gh: Resource not accessible by integration (HTTP 403)"
+    )
     assert report.report(report.load_events(str(artifacts)), RELEASE_ENV, run=gh) == 0
     out = capsys.readouterr().out
     assert len(gh.calls) == 1
@@ -619,16 +723,30 @@ def test_a_token_that_cannot_write_issues_is_a_visible_warning_and_never_a_failu
     assert "HTTP 403" in out
     # no token at all: gh is not even called
     gh = FakeGh()
-    assert report.report(report.load_events(str(artifacts)), {**RELEASE_ENV, "GH_TOKEN": ""}, run=gh) == 0
+    no_token = {k: v for k, v in RELEASE_ENV.items() if k != "GH_TOKEN"}
+    assert report.report(report.load_events(str(artifacts)), no_token, run=gh) == 0
     assert gh.calls == []
-    assert "::warning::the FLAKY-CRASH comment on #295 was skipped: no GH_TOKEN" in capsys.readouterr().out
+    assert (
+        "::warning::the FLAKY-CRASH comment on #295 was skipped: no GH_TOKEN"
+        in capsys.readouterr().out
+    )
 
 
 def test_a_run_without_a_crash_writes_nothing_and_posts_nothing(tmp_path, capsys):
     root = tmp_path / "a"
-    write_meta(root, "native-parity-windows-x64-py3.12", "windows-x64", "3.12.7", "26.11.1.post2", [])
+    write_meta(
+        root,
+        "native-parity-windows-x64-py3.12",
+        "windows-x64",
+        "3.12.7",
+        "26.11.1.post2",
+        [],
+    )
     gh, summary = FakeGh(), tmp_path / "summary.md"
-    assert report.report(report.load_events(str(root)), RELEASE_ENV, str(summary), run=gh) == 0
+    assert (
+        report.report(report.load_events(str(root)), RELEASE_ENV, str(summary), run=gh)
+        == 0
+    )
     assert gh.calls == [] and not summary.exists()
 
 
@@ -653,10 +771,14 @@ def jobs_of(text):
 
 def test_the_workflow_passes_the_retry_flag_on_windows_legs_only():
     text = (WORKFLOWS / "test-native.yml").read_text(encoding="utf-8")
-    assert text.count("--retry-crash") == 2  # once in the comment of the header, once in the Windows branch
-    assert re.search(r'if \[ "\$RUNNER_OS" = Windows \]; then retry=\(--retry-crash\); fi', text)
+    assert (
+        text.count("--retry-crash") == 2
+    )  # once in the comment of the header, once in the Windows branch
+    assert re.search(
+        r'if \[ "\$RUNNER_OS" = Windows \]; then retry=\(--retry-crash\); fi', text
+    )
     jobs = jobs_of(text)
-    assert 'retry=(--retry-crash)' in jobs["test"]
+    assert "retry=(--retry-crash)" in jobs["test"]
     assert '${retry[@]+"${retry[@]}"}' in jobs["test"]
     # the other jobs that run the harness never pass it
     for name, job in jobs.items():
@@ -681,7 +803,11 @@ def test_issues_write_is_held_by_the_crash_report_job_and_the_release_call_only(
 
 
 def test_the_flaky_comment_text_has_no_em_dash_in_any_source_that_writes_it():
-    for path in (WHEEL_DIR / "report_flaky_crash.py", WHEEL_DIR / "parity_crash.py", WHEEL_DIR / "parity_wheel.py"):
+    for path in (
+        WHEEL_DIR / "report_flaky_crash.py",
+        WHEEL_DIR / "parity_crash.py",
+        WHEEL_DIR / "parity_wheel.py",
+    ):
         assert EM_DASH not in path.read_text(encoding="utf-8"), path.name
 
 
@@ -710,50 +836,87 @@ def lock(monkeypatch, name, suffix, times):
     return seen
 
 
-def test_a_process_that_dies_after_its_result_is_a_dirty_exit_and_fails_nothing(harness, tmp_path):
-    rows, meta, xmldir = harness("--files", "test_dirty.py", "--retry-crash", dirty=True)
+def test_a_process_that_dies_after_its_result_is_a_dirty_exit_and_fails_nothing(
+    harness, tmp_path
+):
+    rows, meta, xmldir = harness(
+        "--files", "test_dirty.py", "--retry-crash", dirty=True
+    )
     row = rows["test_dirty.py"]
     # the XML says one passed test: the status stays clean, the file is not retried (even with the retry on), the exit code is kept
-    assert (row["status"], row["passed"], row["failed"], row["attempts"], row["exit"]) == ("", "1", "0", "1", HIGH_TEXT)
+    assert (
+        row["status"],
+        row["passed"],
+        row["failed"],
+        row["attempts"],
+        row["exit"],
+    ) == ("", "1", "0", "1", HIGH_TEXT)
     assert rows["TOTAL"]["status"] == "timeouts=0 flaky_crash=0 crash=0"
-    assert [(e["kind"], e["file"], e["first_rc"], e["attempt"], e["log"]) for e in meta["crash_events"]] == [
-        ("DIRTY-EXIT", "test_dirty.py", HIGH_TEXT, 1, "test_dirty.py.log")
-    ]
+    assert [
+        (e["kind"], e["file"], e["first_rc"], e["attempt"], e["log"])
+        for e in meta["crash_events"]
+    ] == [("DIRTY-EXIT", "test_dirty.py", HIGH_TEXT, 1, "test_dirty.py.log")]
     assert not (xmldir / "test_dirty.py.attempt1.log").exists()
     # the report lists it in the job summary and in the comment on issue 295
     root = tmp_path / "artifacts"
     (root / "native-parity-windows-x64-py3.14").mkdir(parents=True)
-    (root / "native-parity-windows-x64-py3.14" / "parity-wheel.meta.json").write_text(json.dumps(meta))
+    (root / "native-parity-windows-x64-py3.14" / "parity-wheel.meta.json").write_text(
+        json.dumps(meta)
+    )
     gh, summary = FakeGh(), tmp_path / "summary.md"
-    assert report.report(report.load_events(str(root)), RELEASE_ENV, str(summary), run=gh) == 0
-    md = summary.read_text()
+    assert (
+        report.report(report.load_events(str(root)), RELEASE_ENV, str(summary), run=gh)
+        == 0
+    )
+    md = summary.read_text(encoding="utf-8")
     assert md.startswith("### Parity crashes")
-    assert "**DIRTY-EXIT: 1 file(s) wrote their result and then the process died in shutdown.**" in md
-    assert f"| windows-x64 | 3.14.0 | 26.11.1.post2 | `test_dirty.py` | DIRTY-EXIT {HIGH_TEXT} | not retried, result kept |" in md
+    assert (
+        "**DIRTY-EXIT: 1 file(s) wrote their result and then the process died in shutdown.**"
+        in md
+    )
+    assert (
+        f"| windows-x64 | 3.14.0 | 26.11.1.post2 | `test_dirty.py` | DIRTY-EXIT {HIGH_TEXT} | not retried, result kept |"
+        in md
+    )
     assert "`test_dirty.py.log`" in md and "attempt1" not in md
     assert len(gh.calls) == 1
     body = gh.calls[0][1]
     assert body.startswith("DIRTY-EXIT in a native parity run.")
-    assert f"DIRTY-EXIT {HIGH_TEXT}" in body and "not retried, result kept" in body and "did not fail the leg" in body
+    assert (
+        f"DIRTY-EXIT {HIGH_TEXT}" in body
+        and "not retried, result kept" in body
+        and "did not fail the leg" in body
+    )
     assert EM_DASH not in body and EM_DASH not in md
 
 
 def test_a_stale_xml_cannot_pass_for_the_result_of_a_file_that_crashes(harness):
-    rows, meta, xmldir = harness("--files", "test_dies_always.py", seed={"test_dies_always.py.xml": STALE_XML})
+    rows, meta, xmldir = harness(
+        "--files", "test_dies_always.py", seed={"test_dies_always.py.xml": STALE_XML}
+    )
     row = rows["test_dies_always.py"]
     assert row["status"] == f"CRASH(rc={HIGH_TEXT})"
     assert (row["passed"], row["attempts"]) == ("0", "1")
     assert not (xmldir / "test_dies_always.py.xml").exists()
 
 
-def test_a_stale_xml_that_cannot_be_removed_is_still_not_the_result_of_this_run(harness, monkeypatch, capsys):
+def test_a_stale_xml_that_cannot_be_removed_is_still_not_the_result_of_this_run(
+    harness, monkeypatch, capsys
+):
     seen = lock(monkeypatch, "remove", ".xml", None)
     monkeypatch.setattr(parity_wheel, "HOUSEKEEPING_PAUSE", 0)
-    rows, meta, xmldir = harness("--files", "test_dies_always.py", seed={"test_dies_always.py.xml": (STALE_XML, 600)})
+    rows, meta, xmldir = harness(
+        "--files",
+        "test_dies_always.py",
+        seed={"test_dies_always.py.xml": (STALE_XML, 600)},
+    )
     row = rows["test_dies_always.py"]
     assert row["status"] == f"CRASH(rc={HIGH_TEXT})" and row["passed"] == "0"
     assert len(seen) == 2  # one try and one more after the pause
-    assert "::warning::removing a stale test_dies_always.py.xml was skipped: PermissionError" in capsys.readouterr().out
+    assert (
+        "::warning::removing a stale test_dies_always.py.xml was skipped: PermissionError"
+        in capsys.readouterr().out
+    )
 
 
 def test_housekeeping_tries_twice_waits_once_and_never_raises(monkeypatch, capsys):
@@ -778,10 +941,14 @@ def test_housekeeping_tries_twice_waits_once_and_never_raises(monkeypatch, capsy
 
     assert parity_wheel.housekeeping("keeping a log", always) is False
     assert (len(calls), sleeps) == (2, [0.25])
-    assert capsys.readouterr().out.startswith("::warning::keeping a log was skipped: PermissionError")
+    assert capsys.readouterr().out.startswith(
+        "::warning::keeping a log was skipped: PermissionError"
+    )
 
 
-def test_a_log_that_is_locked_once_is_kept_after_a_short_wait(harness, monkeypatch, capsys):
+def test_a_log_that_is_locked_once_is_kept_after_a_short_wait(
+    harness, monkeypatch, capsys
+):
     monkeypatch.setattr(parity_wheel, "HOUSEKEEPING_PAUSE", 0)
     seen = lock(monkeypatch, "replace", ".attempt1.log", 1)
     rows, meta, xmldir = harness("--files", "test_dies_once.py", "--retry-crash")
@@ -791,24 +958,41 @@ def test_a_log_that_is_locked_once_is_kept_after_a_short_wait(harness, monkeypat
     assert "::warning::" not in capsys.readouterr().out
 
 
-def test_a_log_that_stays_locked_is_a_warning_and_the_result_still_counts(harness, monkeypatch, capsys):
+def test_a_log_that_stays_locked_is_a_warning_and_the_result_still_counts(
+    harness, monkeypatch, capsys
+):
     monkeypatch.setattr(parity_wheel, "HOUSEKEEPING_PAUSE", 0)
     seen = lock(monkeypatch, "replace", ".attempt1.log", None)
     rows, meta, xmldir = harness("--files", "test_dies_once.py", "--retry-crash")
     once = rows["test_dies_once.py"]
-    assert (once["status"], once["passed"], once["failed"], once["attempts"]) == (f"FLAKY-CRASH(rc={HIGH_TEXT})", "1", "0", "2")
+    assert (once["status"], once["passed"], once["failed"], once["attempts"]) == (
+        f"FLAKY-CRASH(rc={HIGH_TEXT})",
+        "1",
+        "0",
+        "2",
+    )
     assert len(seen) == 2
     assert not (xmldir / "test_dies_once.py.attempt1.log").exists()
-    assert "::warning::keeping the log of the first attempt of test_dies_once.py was skipped: PermissionError" in capsys.readouterr().out
+    assert (
+        "::warning::keeping the log of the first attempt of test_dies_once.py was skipped: PermissionError"
+        in capsys.readouterr().out
+    )
 
 
-def test_an_empty_trace_that_cannot_be_deleted_is_a_warning_and_not_a_failure(harness, monkeypatch, capsys):
+def test_an_empty_trace_that_cannot_be_deleted_is_a_warning_and_not_a_failure(
+    harness, monkeypatch, capsys
+):
     monkeypatch.setattr(parity_wheel, "HOUSEKEEPING_PAUSE", 0)
     seen = lock(monkeypatch, "remove", ".fault.txt", None)
-    rows, meta, xmldir = harness("--files", "test_ok.py", seed={"test_ok.py.attempt1.fault.txt": ""})
+    rows, meta, xmldir = harness(
+        "--files", "test_ok.py", seed={"test_ok.py.attempt1.fault.txt": ""}
+    )
     assert (rows["test_ok.py"]["status"], rows["test_ok.py"]["passed"]) == ("", "2")
     assert len(seen) == 2 and (xmldir / "test_ok.py.attempt1.fault.txt").exists()
-    assert "::warning::removing the empty trace of test_ok.py was skipped: PermissionError" in capsys.readouterr().out
+    assert (
+        "::warning::removing the empty trace of test_ok.py was skipped: PermissionError"
+        in capsys.readouterr().out
+    )
 
 
 NOT_RETRIED_EVENT = {
@@ -823,15 +1007,45 @@ NOT_RETRIED_EVENT = {
 
 def test_the_report_names_the_log_that_exists(tmp_path):
     root = tmp_path / "a"
-    write_meta(root, "native-parity-linux-x86_64-py3.12", "linux-x86_64", "3.12.7", "26.11.1.post2", [NOT_RETRIED_EVENT], retry=False)
-    write_meta(root, "native-parity-windows-x64-py3.11", "windows-x64", "3.11.9", "26.11.1.post2", [FLAKY_EVENT])
-    write_meta(root, "native-parity-windows-x64-py3.14", "windows-x64", "3.14.0", "26.11.1.post2", [CRASH_EVENT])
+    write_meta(
+        root,
+        "native-parity-linux-x86_64-py3.12",
+        "linux-x86_64",
+        "3.12.7",
+        "26.11.1.post2",
+        [NOT_RETRIED_EVENT],
+        retry=False,
+    )
+    write_meta(
+        root,
+        "native-parity-windows-x64-py3.11",
+        "windows-x64",
+        "3.11.9",
+        "26.11.1.post2",
+        [FLAKY_EVENT],
+    )
+    write_meta(
+        root,
+        "native-parity-windows-x64-py3.14",
+        "windows-x64",
+        "3.14.0",
+        "26.11.1.post2",
+        [CRASH_EVENT],
+    )
     events = report.load_events(str(root))
     where = {line.split("`")[1]: line for line in report._where(events)}
     # a crash that was not retried (Linux, macOS, a spent budget) has name.log alone; attempt1.log exists only after a retry
-    assert "`test_find_nearest_query_forms.py.log`" in where["test_find_nearest_query_forms.py"]
+    assert (
+        "`test_find_nearest_query_forms.py.log`"
+        in where["test_find_nearest_query_forms.py"]
+    )
     assert "attempt1.log" not in where["test_find_nearest_query_forms.py"]
     assert "`test_free_threading.py.attempt1.log`" in where["test_free_threading.py"]
     assert "`test_vector.py.attempt1.log`" in where["test_vector.py"]
-    body = report.comment_md(events, "https://example.invalid/run", "1", "push", "26.11.1.post2")
-    assert "`test_find_nearest_query_forms.py.log`" in body and "test_find_nearest_query_forms.py.attempt1.log" not in body
+    body = report.comment_md(
+        events, "https://example.invalid/run", "1", "push", "26.11.1.post2"
+    )
+    assert (
+        "`test_find_nearest_query_forms.py.log`" in body
+        and "test_find_nearest_query_forms.py.attempt1.log" not in body
+    )
