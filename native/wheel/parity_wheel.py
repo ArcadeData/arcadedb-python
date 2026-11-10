@@ -84,7 +84,10 @@ def housekeeping(what, op, *args):
             if attempt == 1:
                 time.sleep(HOUSEKEEPING_PAUSE)
             else:
-                print(f"::warning::{what} was skipped: {type(err).__name__}: {err}", flush=True)
+                print(
+                    f"::warning::{what} was skipped: {type(err).__name__}: {err}",
+                    flush=True,
+                )
     return False
 
 
@@ -156,8 +159,12 @@ def main(argv=None):
         want = set(a.files.split(","))
         files = [f for f in files if os.path.basename(f) in want]
     env = dict(os.environ, PYTHONUNBUFFERED="1")
-    env.pop("PYTHONPATH", None)  # the wheel, not a source tree, must be what is imported
-    env.pop("ARCADEDB_BACKEND", None)  # the backend comes from the installed distribution
+    env.pop(
+        "PYTHONPATH", None
+    )  # the wheel, not a source tree, must be what is imported
+    env.pop(
+        "ARCADEDB_BACKEND", None
+    )  # the backend comes from the installed distribution
     env.pop("ARCADEDB_NATIVE_LIB", None)  # the library comes from the installed wheel
     env.pop(FAULT_FILE_ENV, None)  # set per attempt below, on Windows only
     chk = subprocess.run(
@@ -274,7 +281,9 @@ def main(argv=None):
                 housekeeping(f"removing the empty trace of {name}", os.remove, trace)
             result, bad_xml = False, False
             # an XML that could not be removed and was not written again by this attempt is not its result
-            if os.path.exists(xml) and not (stale and os.path.getmtime(xml) < started - 2):
+            if os.path.exists(xml) and not (
+                stale and os.path.getmtime(xml) < started - 2
+            ):
                 got = count_xml(xml)
                 if got is None:
                     bad_xml = True

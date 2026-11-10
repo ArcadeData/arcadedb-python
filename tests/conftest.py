@@ -337,7 +337,8 @@ def pytest_configure(config):
         trace = os.environ.get(FAULT_FILE_ENV)
         if trace and BACKEND == "native":
             global _fault_file
-            _fault_file = open(trace, "w")  # kept open: faulthandler writes to its descriptor at the crash
+            # kept open: faulthandler writes to its descriptor at the crash
+            _fault_file = open(trace, "w")
             faulthandler.enable(file=_fault_file, all_threads=True)
         elif faulthandler.is_enabled():
             faulthandler.disable()
