@@ -540,6 +540,40 @@ jobs:
           path: examples/my_test_databases/
           retention-days: 3
 
+      # A JVM crash (ArcadeData/arcadedb-python#352) leaves two kinds of file: the HotSpot report hs_err_pid<pid>.log, which the
+      # package writes to its per-user log directory (-XX:ErrorFile, src/arcadedb/jvm.py and _logdir.py), and on Windows the minidump
+      # hs_err_pid<pid>.mdmp, which HotSpot writes to the working directory of the process (examples/, see scripts/run_examples.sh).
+      # Neither is under examples/*.log, so neither was uploaded. They go in two artifacts because the action keeps one root directory
+      # per artifact and on Windows the log directory (C:) and the workspace (D:) share none. One pattern list names the directory of
+      # each platform; the others do not exist on that runner and match nothing. Hidden files are included for the Linux directory
+      # (.local); the patterns name only hs_err_pid files. Nothing is uploaded, and no error is raised, when there is no such file.
+      - name: Upload JVM crash reports (log directory)
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: jvm-crash-logdir-${{ matrix.platform == 'linux/amd64' && 'linux-amd64' || matrix.platform == 'linux/arm64' && 'linux-arm64' || matrix.platform == 'darwin/amd64' && 'darwin-amd64' || matrix.platform == 'darwin/arm64' && 'darwin-arm64' || matrix.platform == 'windows/amd64' && 'windows-amd64' || 'windows-arm64' }}-py${{ matrix.python-version }}
+          path: |
+            ~/.local/state/arcadedb/log/hs_err_pid*.log
+            ~/.local/state/arcadedb/log/hs_err_pid*.mdmp
+            ~/Library/Logs/arcadedb/log/hs_err_pid*.log
+            ~/Library/Logs/arcadedb/log/hs_err_pid*.mdmp
+            ~/AppData/Local/arcadedb/log/hs_err_pid*.log
+            ~/AppData/Local/arcadedb/log/hs_err_pid*.mdmp
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Upload JVM crash reports (working directory)
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: jvm-crash-cwd-${{ matrix.platform == 'linux/amd64' && 'linux-amd64' || matrix.platform == 'linux/arm64' && 'linux-arm64' || matrix.platform == 'darwin/amd64' && 'darwin-amd64' || matrix.platform == 'darwin/arm64' && 'darwin-arm64' || matrix.platform == 'windows/amd64' && 'windows-amd64' || 'windows-arm64' }}-py${{ matrix.python-version }}
+          path: |
+            examples/hs_err_pid*.log
+            examples/hs_err_pid*.mdmp
+          if-no-files-found: ignore
+          retention-days: 14
+
   # Summary job that checks all platforms
   test-examples-summary:
     name: Examples Test Summary
