@@ -219,30 +219,32 @@ def _load():
         lib.graal_get_current_thread.restype = ctypes.c_void_p
         lib.graal_detach_thread.argtypes = [ctypes.c_void_p]
         lib.graal_detach_thread.restype = ctypes.c_int
-        # a Java long is 64 bits on every platform; C long is 32 bits on Windows, so L is long long (the same size as c_long elsewhere)
-        P, L, I, S = ctypes.c_void_p, ctypes.c_longlong, ctypes.c_int, ctypes.c_char_p
+        # One-letter ctypes aliases used in the sigs table below:
+        # P = c_void_p (pointer), L = c_longlong (Java long, 64 bits everywhere;
+        # C long is 32 bits on Windows), N = c_int (integer), S = c_char_p (string).
+        P, L, N, S = ctypes.c_void_p, ctypes.c_longlong, ctypes.c_int, ctypes.c_char_p
         sigs = {
-            "arcadedb_n_open": [P, S, I],
-            "arcadedb_n_close": [P, L, I],
+            "arcadedb_n_open": [P, S, N],
+            "arcadedb_n_close": [P, L, N],
             "arcadedb_n_info": [P, L],
-            "arcadedb_n_tx": [P, L, I],
-            "arcadedb_n_exec": [P, L, I, S, S, S, I],
-            "arcadedb_n_exec_bin": [P, L, I, S, S, S, I, S, L],
+            "arcadedb_n_tx": [P, L, N],
+            "arcadedb_n_exec": [P, L, N, S, S, S, N],
+            "arcadedb_n_exec_bin": [P, L, N, S, S, S, N, S, L],
             "arcadedb_n_insert_cols": [P, L, S, S, S, L],
-            "arcadedb_n_insert_colp": [P, L, S, S, P, I],
-            "arcadedb_n_next": [P, L, I],
-            "arcadedb_n_next_bin": [P, L, I],
-            "arcadedb_n_next_col": [P, L, I, S, I],
+            "arcadedb_n_insert_colp": [P, L, S, S, P, N],
+            "arcadedb_n_next": [P, L, N],
+            "arcadedb_n_next_bin": [P, L, N],
+            "arcadedb_n_next_col": [P, L, N, S, N],
             "arcadedb_n_rs_close": [P, L],
             "arcadedb_n_facets": [P, L],
-            "arcadedb_n_cmd": [P, L, I, S, S, S, S, L, I],
+            "arcadedb_n_cmd": [P, L, N, S, S, S, S, L, N],
             "arcadedb_n_last_error": [P],
-            "arcadedb_n_rs_close_many": [P, P, I],
+            "arcadedb_n_rs_close_many": [P, P, N],
             "arcadedb_n_exec_many": [P, L, S, S, S],
             "arcadedb_n_insert_rows": [P, L, S, S],
             "arcadedb_n_server_start": [P, S],
             "arcadedb_n_server_stop": [P, L],
-            "arcadedb_n_server_db": [P, L, S, I],
+            "arcadedb_n_server_db": [P, L, S, N],
             "arcadedb_n_diag": [P],
             "arcadedb_n_sample_dump": [P],
             "arcadedb_n_dbset": [P, L, S, S],
@@ -251,10 +253,10 @@ def _load():
             "arcadedb_n_gb": [P, L, S, S],
             "arcadedb_n_gb_bin": [P, L, S, S, S, L],
             "arcadedb_n_async": [P, L, S, S],
-            "arcadedb_n_async_bin": [P, L, S, S, P, I],
+            "arcadedb_n_async_bin": [P, L, S, S, P, N],
             "arcadedb_n_vindex": [P, L, S, S],
             "arcadedb_n_import": [P, L, S],
-            "arcadedb_n_export": [P, L, S, S, I, S],
+            "arcadedb_n_export": [P, L, S, S, N, S],
             "arcadedb_n_cb": [P, S, S],
             "arcadedb_n_alloc": [P, L],
             "arcadedb_n_set_upcall": [P, P],

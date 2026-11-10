@@ -11,8 +11,11 @@ from collections.abc import Mapping
 from datetime import date
 from decimal import Decimal
 from os import PathLike
-from typing import Any, Callable, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, List, Optional
 
+if TYPE_CHECKING:
+    from .vector import VectorIndex
+    
 import jpype
 
 from ._logging import get_logger
