@@ -336,9 +336,56 @@ def _is_number_list(pa, arrow_type) -> bool:
     )
 
 
-def _column_values(name: str, chunk, pa, native: bool = False, arrow: bool = False):
+_JAVA_INT_MAX = 2**31 - 1
+
+
+def _float32_matrix(pa, chunk):
+    """A list, large list or fixed-size list column of float32 with no null row, no null element and one length, as one 2-D float32
+    numpy matrix (a view of Arrow's value buffer: ``flatten`` follows a slice's offset), else None. None means "not this shape" and
+    leaves the column to ``to_pylist``, which keeps what that route stored or refused: a null row stays null, a null element is
+    refused, vectors of different length are stored as given or refused by a vector index. Only float32 is taken: a float64 or integer
+    value is narrowed by the engine (and refused past the float range), which a cast here would not do.
+    """
+    types = pa.types
+    arrow_type = chunk.type
+    if not (
+        types.is_list(arrow_type)
+        or types.is_large_list(arrow_type)
+        or types.is_fixed_size_list(arrow_type)
+    ):
+        return None
+    n = len(chunk)
+    if not types.is_float32(arrow_type.value_type) or not n or chunk.null_count:
+        return None
+    flat = chunk.flatten()
+    if flat.null_count or len(flat) % n or len(flat) > _JAVA_INT_MAX:
+        return None
+    dim = len(flat) // n
+    if dim == 0:
+        return None
+    if not types.is_fixed_size_list(arrow_type):
+        import pyarrow.compute as pc
+
+        lengths = pc.list_value_length(chunk)
+        if pc.min(lengths).as_py() != dim or pc.max(lengths).as_py() != dim:
+            return None
+    return flat.to_numpy(zero_copy_only=False).reshape(n, dim)
+
+
+def _column_values(
+    name: str,
+    chunk,
+    pa,
+    native: bool = False,
+    arrow: bool = False,
+    float_vectors: bool = False,
+):
     """One Arrow array as what ``Database.insert_columns`` takes: a numpy array when the column crosses as one
     buffer (integers, floats and booleans without nulls), else a list of values (``None`` is a null).
+
+    ``float_vectors`` (the JVM backend, a property declared ``ARRAY_OF_FLOATS``): a float32 vector column of one length and no null is
+    one 2-D float32 matrix, which ``insert_columns`` sends as one ``float[]``; ``to_pylist`` made one Python float per element and
+    ``insert_columns`` one ``ArrayList`` of boxed doubles per row (see ``_float32_matrix`` for what is left to it).
 
     ``arrow`` (the native backend's document and vertex load): a string, binary, timestamp, date or decimal column, a list of
     numbers (a vector) and a numeric column with nulls, stay Arrow arrays, which the columnar entry reads in place (the offsets,
@@ -382,6 +429,10 @@ def _column_values(name: str, chunk, pa, native: bool = False, arrow: bool = Fal
         return chunk
     if arrow and kind == "list" and _is_number_list(pa, chunk.type):
         return chunk  # a vector column: the columnar entry reads the values in place (to_pylist makes one Python float per element)
+    if float_vectors and kind == "list":
+        matrix = _float32_matrix(pa, chunk)
+        if matrix is not None:
+            return matrix
     if kind in ("timestamp", "date"):
         return (
             _temporal_to_tagged(chunk, pa) if native else _temporal_to_java(chunk, pa)
@@ -462,6 +513,7 @@ def insert_table(
                 pa,
                 native,
                 arrow=native,
+                float_vectors=not native and declared.get(name) == "ARRAY_OF_FLOATS",
             )
             for i, name in enumerate(names)
         }
