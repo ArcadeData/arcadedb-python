@@ -1974,6 +1974,7 @@ def run_olap_postgresql(
 
         def pid_provider() -> List[int]:
             return list_postgres_pids(pgdata)
+
         stop_event, rss_state, rss_thread = start_combined_rss_sampler(pid_provider)
 
         print("Creating schema...")
