@@ -14,6 +14,8 @@ a fresh process. If the second run produces a result the file is marked FLAKY-CR
 test failure in it still fails the leg); if it crashes again the status is CRASH(rc=<first>;retry rc=<second>) and the leg fails. A
 retry budget per leg (default 3 files) keeps a wheel that crashes everywhere from passing on retries.
 
+A process that wrote its result and then died in shutdown (DIRTY-EXIT) is recorded, never retried and never failed.
+
 Everything here takes the facts of an attempt (Attempt) and returns the status and the attempts; the harness runs the processes.
 """
 
@@ -26,6 +28,7 @@ from typing import Callable, Optional, Tuple
 
 CRASH = "CRASH"
 FLAKY_CRASH = "FLAKY-CRASH"
+DIRTY_EXIT = "DIRTY-EXIT"
 TIMEOUT = "TIMEOUT"
 BADXML = "BADXML"
 
@@ -71,6 +74,28 @@ def is_crash(attempt: Attempt) -> bool:
 def dirty_exit(attempt: Attempt) -> bool:
     """The XML was written but the process ended with a code pytest never returns: it died in shutdown, after the tests."""
     return attempt.result and attempt.rc is not None and attempt.rc not in PYTEST_EXIT_CODES
+
+
+def dirty_events(name: str, outcome: "Outcome") -> list:
+    """One DIRTY-EXIT record per attempt that wrote its result and then died in shutdown (the metadata, the summary and the issue comment list it).
+
+    It is a record and nothing else: the status of the file is what its XML says (the outcome is not retried and the leg is not failed).
+    The log of such an attempt is the file's final log, name.log.
+    """
+    return [
+        {
+            "file": name,
+            "kind": DIRTY_EXIT,
+            "first_rc": format_rc(a.rc),
+            "retry_rc": "",
+            "retry": "not retried, result kept",
+            "status": outcome.status,
+            "attempt": n,
+            "log": f"{name}.log",
+        }
+        for n, a in enumerate(outcome.attempts, 1)
+        if dirty_exit(a)
+    ]
 
 
 @dataclass

@@ -3,7 +3,8 @@
 
 native/wheel/parity_wheel.py retries a test file whose process died without a result (Windows legs only) and writes
 <out stem>.meta.json beside its table, with one crash event per file: FLAKY-CRASH (the retry produced a result, so the leg may pass)
-or CRASH (it died again, or no retry was allowed, so the leg fails). This script reads the meta files of every leg (the downloaded
+or CRASH (it died again, or no retry was allowed, so the leg fails), or DIRTY-EXIT (the file wrote its result and the process then
+died in shutdown: recorded, never retried, the leg is not failed). This script reads the meta files of every leg (the downloaded
 `native-parity-*` artifacts), then
 
   1. appends a table to the job summary ($GITHUB_STEP_SUMMARY), and
@@ -72,7 +73,9 @@ def _where(events: list[dict]) -> list[str]:
     lines = []
     for e in events:
         files = [e[k] for k in ("trace1", "trace2") if e.get(k)]
-        names = ", ".join(f"`{n}`" for n in [*files, f"{e['file']}.attempt1.log"])
+        # name.attempt1.log exists only when a retry ran (the retry's own log is name.log); a crash that was not retried has name.log alone
+        log = e.get("log") or (f"{e['file']}.attempt1.log" if e.get("retry_rc") else f"{e['file']}.log")
+        names = ", ".join(f"`{n}`" for n in [*files, log])
         lines.append(
             f"- `{e['file']}` ({e['leg']}, Python {e['python']}): artifact `{e['artifact']}`, folder `parity-wheel-xml/`: {names}"
         )
@@ -84,7 +87,8 @@ def summary_md(events: list[dict]) -> str:
     if not events:
         return ""
     flaky = [e for e in events if e["kind"] == "FLAKY-CRASH"]
-    hard = [e for e in events if e["kind"] != "FLAKY-CRASH"]
+    hard = [e for e in events if e["kind"] == "CRASH"]
+    dirty = [e for e in events if e["kind"] == "DIRTY-EXIT"]
     out = ["### Parity crashes", ""]
     if flaky:
         out += [
@@ -98,7 +102,13 @@ def summary_md(events: list[dict]) -> str:
             f"**CRASH: {len(hard)} file(s) died without a result and the leg failed.**",
             "",
         ]
-    out += [*_table(events), "", "Crash traces and logs of the first attempt:", ""]
+    if dirty:
+        out += [
+            f"**DIRTY-EXIT: {len(dirty)} file(s) wrote their result and then the process died in shutdown.** "
+            "The result stands: the file was not retried and the leg was not failed by this.",
+            "",
+        ]
+    out += [*_table(events), "", "Crash traces and logs:", ""]
     out += _where(events)
     return "\n".join(out) + "\n"
 
@@ -115,9 +125,10 @@ def comment_md(events: list[dict], run_url: str, attempt: str, event: str, ref: 
         "",
         "A test file died without a result and the harness ran it once more in a fresh process (`parity_wheel.py --retry-crash`, Windows legs only). "
         "A retry that says `passed` made its leg green: without the retry that leg would have failed. "
-        "`CRASH` means the file died again (or no retry was left) and the leg failed.",
+        "`CRASH` means the file died again (or no retry was left) and the leg failed. "
+        "`DIRTY-EXIT` means the file wrote its result and the process then died in shutdown: it was not retried and did not fail the leg.",
         "",
-        "The faulthandler trace and the log of the first attempt are in the uploaded parity artifact of each leg:",
+        "The faulthandler trace and the log are in the uploaded parity artifact of each leg:",
         "",
         *_where(events),
     ]

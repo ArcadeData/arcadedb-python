@@ -108,3 +108,10 @@ def test_a_timeout_an_unreadable_xml_a_failure_and_a_skip_still_fail_the_gate(pr
     assert run_gate(program, tmp_path, row("test_a.py", failed=1), total(failed=1)).returncode == 1
     assert run_gate(program, tmp_path, row("test_a.py"), total(skipped=1)).returncode == 1
     assert run_gate(program, tmp_path, row("test_a.py")).returncode == 1  # no TOTAL row
+
+
+def test_a_file_that_died_after_its_result_does_not_fail_the_gate(program, tmp_path):
+    # DIRTY-EXIT is a record in the metadata, not a status: the row is clean and only its exit column differs
+    r = run_gate(program, tmp_path, row("test_a.py", exit_="0x0000008B,139"), total())
+    assert r.returncode == 0, r.stderr
+    assert "FLAKY-CRASH" not in r.stdout

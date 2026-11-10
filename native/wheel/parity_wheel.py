@@ -23,6 +23,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 import xml.etree.ElementTree as ET
 
 import parity_crash as pc  # the directory of this script is sys.path[0]
@@ -66,9 +67,40 @@ def parse_args(argv=None):
     return p.parse_args(argv)
 
 
+# A file that was closed a moment ago can still be locked on Windows (Defender, the indexer). Housekeeping on logs and traces waits this long once.
+HOUSEKEEPING_PAUSE = 0.5
+
+
+def housekeeping(what, op, *args):
+    """op(*args); on an OSError once more after a short pause; a second failure prints a ::warning:: and returns False. Never raises.
+
+    Only for the files the harness keeps for people (logs, traces, a stale XML): losing one of them must never fail the leg or hide a result.
+    """
+    for attempt in (1, 2):
+        try:
+            op(*args)
+            return True
+        except OSError as err:
+            if attempt == 1:
+                time.sleep(HOUSEKEEPING_PAUSE)
+            else:
+                print(f"::warning::{what} was skipped: {type(err).__name__}: {err}", flush=True)
+    return False
+
+
 def write_text(path, text):
     with open(path, "w") as fh:
         fh.write(text)
+
+
+def traces_of(name, xmldir, attempts):
+    """{'trace1': file name, ...} for the faulthandler trace files that exist (an empty one was deleted)."""
+    found = {}
+    for n in attempts:
+        trace = f"{name}.attempt{n}.fault.txt"
+        if os.path.exists(os.path.join(xmldir, trace)):
+            found[f"trace{n}"] = trace
+    return found
 
 
 def count_xml(xml):
@@ -169,9 +201,17 @@ def main(argv=None):
         def attempt(n):
             if n > 1:
                 # keep the log of the first attempt: the retry writes name.log
-                os.replace(log, os.path.join(xmldir, name + ".attempt1.log"))
+                housekeeping(
+                    f"keeping the log of the first attempt of {name}",
+                    os.replace,
+                    log,
+                    os.path.join(xmldir, name + ".attempt1.log"),
+                )
+            stale = False
             if os.path.exists(xml):
-                os.remove(xml)  # a stale XML of an earlier run must not pass for a result
+                # a stale XML of an earlier run must not pass for a result
+                stale = not housekeeping(f"removing a stale {name}.xml", os.remove, xml)
+            started = time.time()
             trace = os.path.join(xmldir, f"{name}.attempt{n}.fault.txt")
             env_n = dict(env)
             if sys.platform == "win32":
@@ -212,10 +252,17 @@ def main(argv=None):
                     timeout=a.timeout,
                 )
                 rc = r.returncode
-                write_text(log, r.stdout[-20000:] + "\n" + r.stderr[-5000:])
+                housekeeping(
+                    f"writing the log of {name}",
+                    write_text,
+                    log,
+                    r.stdout[-20000:] + "\n" + r.stderr[-5000:],
+                )
             except subprocess.TimeoutExpired as e:
                 timed_out = True
-                write_text(
+                housekeeping(
+                    f"writing the log of {name}",
+                    write_text,
                     log,
                     (
                         ((e.stdout or b"")[-8000:]).decode()
@@ -224,9 +271,10 @@ def main(argv=None):
                     ),
                 )
             if os.path.exists(trace) and os.path.getsize(trace) == 0:
-                os.remove(trace)
+                housekeeping(f"removing the empty trace of {name}", os.remove, trace)
             result, bad_xml = False, False
-            if os.path.exists(xml):
+            # an XML that could not be removed and was not written again by this attempt is not its result
+            if os.path.exists(xml) and not (stale and os.path.getmtime(xml) < started - 2):
                 got = count_xml(xml)
                 if got is None:
                     bad_xml = True
@@ -245,11 +293,12 @@ def main(argv=None):
         tot["crash"] += out.hard_crash
         ev = pc.event_of(name, out, c["failed"] + c["error"])
         if ev:
-            for n in range(1, len(out.attempts) + 1):
-                trace = f"{name}.attempt{n}.fault.txt"
-                if os.path.exists(os.path.join(xmldir, trace)):
-                    ev[f"trace{n}"] = trace
+            ev.update(traces_of(name, xmldir, range(1, len(out.attempts) + 1)))
             events.append(ev)
+        # a process that wrote its result and then died in shutdown: recorded, never retried, never failed
+        for dirty in pc.dirty_events(name, out):
+            dirty.update(traces_of(name, xmldir, [dirty["attempt"]]))
+            events.append(dirty)
         rows.append((name, c, out.status, fails, len(out.attempts), out.final.rc))
         print(
             f"{name:45s} pass={c['passed']:4d} fail={c['failed']:3d} err={c['error']:3d} notyet={c['notyet']:3d} na_jvm={c['na_jvm']:3d} skip={c['skipped']:3d} {out.status}",
