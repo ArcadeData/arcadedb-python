@@ -146,7 +146,7 @@ class TestInsertMany:
         temp_db.insert_many("Tx", [{"k": 1}, {"k": 2}], commit_every=0)
         temp_db.commit()
         assert _count(temp_db, "Tx") == 2
-        
+
 
 class TestInsertManyVertexType:
     """insert_many and insert_columns into a VERTEX type store real vertices.
