@@ -41,13 +41,10 @@ Usage:
 """
 
 import argparse
-import os
 import shutil
 import sys
 import time
 from pathlib import Path
-
-import numpy as np
 
 import arcadedb
 
@@ -114,7 +111,6 @@ def generate_embeddings(
 
     # Check if embeddings already exist
     try:
-        count = db.count_type("Movie")
         # Check if property exists and has values
         query = (
             f"SELECT count(*) as count FROM Movie WHERE {embedding_prop} IS NOT NULL"

@@ -32,26 +32,42 @@ def problems(wheel: Path) -> list[str]:
     # name-version(-build)-python-abi-platform.whl
     parts = wheel.name[: -len(".whl")].split("-")
     if len(parts) not in (5, 6):
-        return [f"{wheel.name}: not a wheel file name (name-version-python-abi-platform.whl)"]
+        return [
+            f"{wheel.name}: not a wheel file name (name-version-python-abi-platform.whl)"
+        ]
     python, abi, platform = parts[-3:]
     if (python, abi) != ("py3", "none"):
         found.append(f"{wheel.name}: tagged {python}-{abi}, expected py3-none")
     if platform == "any" or not platform:
-        found.append(f"{wheel.name}: platform tag {platform!r}; the wheel bundles a platform-specific JRE")
+        found.append(
+            f"{wheel.name}: platform tag {platform!r}; the wheel bundles a platform-specific JRE"
+        )
     tag = f"{python}-{abi}-{platform}"
 
     with zipfile.ZipFile(wheel) as zf:
         names = [n for n in zf.namelist() if n.endswith(".dist-info/WHEEL")]
         if len(names) != 1:
-            return found + [f"{wheel.name}: expected one .dist-info/WHEEL, found {names}"]
+            return found + [
+                f"{wheel.name}: expected one .dist-info/WHEEL, found {names}"
+            ]
         # strip: a wheel built on Windows has CRLF line endings
-        lines = [line.strip() for line in zf.read(names[0]).decode("utf-8").splitlines()]
+        lines = [
+            line.strip() for line in zf.read(names[0]).decode("utf-8").splitlines()
+        ]
     tags = [line.split(":", 1)[1].strip() for line in lines if line.startswith("Tag:")]
     if tags != [tag]:
-        found.append(f"{wheel.name}: the WHEEL file says Tag {tags}, the file name says {tag}")
-    purelib = [line.split(":", 1)[1].strip().lower() for line in lines if line.startswith("Root-Is-Purelib:")]
+        found.append(
+            f"{wheel.name}: the WHEEL file says Tag {tags}, the file name says {tag}"
+        )
+    purelib = [
+        line.split(":", 1)[1].strip().lower()
+        for line in lines
+        if line.startswith("Root-Is-Purelib:")
+    ]
     if purelib != ["false"]:
-        found.append(f"{wheel.name}: Root-Is-Purelib is {purelib}, expected false (a platform wheel)")
+        found.append(
+            f"{wheel.name}: Root-Is-Purelib is {purelib}, expected false (a platform wheel)"
+        )
     return found
 
 
@@ -72,7 +88,9 @@ def main(argv: list[str] | None = None) -> int:
             for line in found:
                 print(f"ERROR: {line}", file=sys.stderr)
         else:
-            print(f"OK: {wheel.name} is tagged {'-'.join(wheel.name[: -len('.whl')].split('-')[-3:])}")
+            print(
+                f"OK: {wheel.name} is tagged {'-'.join(wheel.name[: -len('.whl')].split('-')[-3:])}"
+            )
     if status:
         print(
             "   The wheel must be py3-none-<platform>: see setup.py (bdist_wheel.get_tag). Do not publish it.",

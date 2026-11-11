@@ -105,7 +105,7 @@ run_examples() {
 
     # Create results file
     results_file="example-results.txt"
-    > $results_file
+    true > "$results_file"
 
     # Select example files by pattern(s) in EXAMPLES (space-separated globs)
     examples=$(ls $EXAMPLES 2> /dev/null | sort)

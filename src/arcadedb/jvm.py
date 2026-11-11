@@ -21,11 +21,9 @@ import jpype
 import jpype.imports
 
 from . import aot as _aot
-from ._logdir import LOG_DIR_ENV as _LOG_DIR_ENV
 from ._logdir import console_enabled as _console_enabled
 from ._logdir import default_log_dir as _default_log_dir
 from ._logdir import logging_config_name as _logging_config_name
-from ._logdir import render_logging_config as _render_logging_config
 from ._logdir import stdio_log_path as _stdio_log_path
 from ._logdir import usable_log_dir as _usable_log_dir
 from ._logdir import write_logging_config as _write_logging_config

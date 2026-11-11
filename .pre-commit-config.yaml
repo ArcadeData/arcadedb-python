@@ -1,4 +1,19 @@
 repos:
+  # Basic file hygiene (validate and normalize), matching upstream ArcadeDB's pre-commit-hooks set.
+- repo: https://github.com/pre-commit/pre-commit-hooks
+  rev: v6.0.0
+  hooks:
+  - id: trailing-whitespace
+  - id: end-of-file-fixer
+  - id: check-merge-conflict
+  - id: check-added-large-files
+  - id: detect-private-key
+  - id: check-yaml
+    args: [--allow-multiple-documents]
+  - id: check-toml
+  - id: check-json
+  - id: check-xml
+  # Python formatting (unchanged): black + isort with the black profile.
 - repo: https://github.com/psf/black
   rev: 26.10.1
   hooks:
@@ -9,6 +24,32 @@ repos:
   hooks:
   - id: isort
     args: [--profile, black]
+  # Python linting: ruff with its default rules (E4, E7, E9, F) at line length 88 (pyproject.toml).
+  # Check only - fixes land in their own commit; black and isort remain the formatters.
+- repo: https://github.com/astral-sh/ruff-pre-commit
+  rev: v0.17.4
+  hooks:
+  - id: ruff-check
+  # Java, XML, Markdown and JSON formatting, matching upstream ArcadeDB (printWidth 160 for
+  # Java/XML is set in .prettierrc.json; Markdown prose is not hard-wrapped). types_or (OR) is
+  # required: types (AND) of [java, xml] would match no file.
+- repo: https://github.com/rbubley/mirrors-prettier
+  rev: v3.9.10
+  hooks:
+  - id: prettier
+    types_or: [java, xml, markdown, json]
+    additional_dependencies:
+    - prettier@3.9.10
+    - prettier-plugin-java@2.11.0
+    - prettier-plugin-xml
+    args: [--write, --list-different, --ignore-unknown]
+  # Shell formatting (unchanged).
+- repo: https://github.com/scop/pre-commit-shfmt
+  rev: v3.14.1-1
+  hooks:
+  - id: shfmt
+    args: [-i, '4', -ci, -sr, -w]
+  # YAML formatting (unchanged): workflows are linted by actionlint, not reformatted (as upstream).
 - repo: https://github.com/macisamuele/language-formatters-pre-commit-hooks
   rev: v2.16.0
   hooks:
@@ -16,18 +57,22 @@ repos:
     args:
     - --autofix
     - --indent=2
-        # Workflows are linted by actionlint, not reformatted (as upstream).
     exclude: ^\.github/
-- repo: https://github.com/scop/pre-commit-shfmt
-  rev: v3.14.1-1
+  # Shell linting (.sh files). Runs in Docker; actionlint already runs shellcheck over workflow run: blocks.
+- repo: https://github.com/koalaman/shellcheck-precommit
+  rev: v0.11.0
   hooks:
-  - id: shfmt
-    args: [-i, '4', -ci, -sr, -w]
-  # actionlint runs shellcheck over every `run:` block; per-file ignores live in .github/actionlint.yaml.
+  - id: shellcheck
+  # actionlint runs shellcheck over every run: block; per-file ignores live in .github/actionlint.yaml.
 - repo: https://github.com/rhysd/actionlint
   rev: v1.7.12
   hooks:
   - id: actionlint
+  # Dockerfile linting (scripts/Dockerfile.build). Runs in Docker.
+- repo: https://github.com/hadolint/hadolint
+  rev: v2.15.1
+  hooks:
+  - id: hadolint-docker
 - repo: local
   hooks:
   - id: no-old-package-name

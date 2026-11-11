@@ -10,9 +10,8 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
-
 from arcadedb import _logdir, jvm
+from arcadedb._logdir import render_logging_config as _render_logging_config
 from arcadedb._native import lib as native_lib
 from arcadedb.jvm import _build_jvm_args, _default_log_dir
 
@@ -73,7 +72,7 @@ def _run_child(tmp_path, env_overrides, jvm_args=()):
     finally:
         cwd.chmod(0o755)
     assert result.returncode == 0, result.stdout + result.stderr
-    line = next(l for l in result.stdout.splitlines() if l.startswith("LOGDIR="))
+    line = next(ln for ln in result.stdout.splitlines() if ln.startswith("LOGDIR="))
     return cwd, Path(line[len("LOGDIR=") :]), home
 
 
@@ -177,7 +176,7 @@ def test_rendered_config_keeps_the_engine_settings_and_moves_the_file_log():
         "java.util.logging.FileHandler.pattern=./log/arcadedb.log\n"
         "java.util.logging.FileHandler.count=10\n"
     )
-    rendered = jvm._render_logging_config(engine)
+    rendered = _render_logging_config(engine)
     assert "./log" not in rendered
     assert "FileHandler.count=10" in rendered
     assert rendered.count("FileHandler.pattern") == 1

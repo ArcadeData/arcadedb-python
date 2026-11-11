@@ -5,6 +5,7 @@ This is `arcadedb`, the native build of the ArcadeDB Python bindings, and the de
 ArcadeDB (SQL, openCypher, document, graph, vector, time series) runs in your Python process **without a JVM and without JPype**. The engine is compiled ahead of time with GraalVM Community Edition into a shared library (`libarcadedb.so`, `.dylib` or `.dll`), and Python loads it with `ctypes`. It starts in milliseconds and has a small memory footprint.
 
 <!-- REMOVE WHEN: the old arcadedb-embedded* shims are retired and two releases have shipped with the two-package layout allow-old-name -->
+
 > Release note: the first release of this layout is 26.11.1, and `arcadedb` has a final release on PyPI. A plain `uv add arcadedb` installs the final, and a later pre-release (`A.B.C.devN`) needs `uv add --prerelease allow arcadedb`. Report problems at <https://github.com/ArcadeData/arcadedb-python/issues> and say that you use the native build.
 
 ## Install
@@ -16,6 +17,7 @@ uv add arcadedb
 Optional extras for the columnar helpers: `[numpy]`, `[arrow]`, `[pandas]`, `[polars]`.
 
 <!-- REMOVE WHEN: the old arcadedb-embedded* shims are retired and two releases have shipped with the two-package layout allow-old-name -->
+
 Old names: this package was formerly `arcadedb-embedded-native`, imported as `arcadedb_native`. The old project is archived on PyPI: it gets no new releases and no shim. The last release of the JVM project `arcadedb-embedded`, 26.11.1, is a shim that installs this package and warns once at import.
 
 If `arcadedb-jvm` is installed in the same environment, `import arcadedb` raises an `ImportError` that names both packages. Run `uv remove arcadedb arcadedb-jvm`, then install the one you want.
@@ -47,12 +49,12 @@ with arcadedb.create_database("/tmp/demo") as db:
 
 CPython 3.11 to 3.15. One wheel per platform serves every Python version, because the library is loaded with `ctypes` and is not compiled against CPython. The images are built for the baseline CPU of the platform (`-march=compatibility`), so they do not need a special instruction set. On 3.15 the CI runs a subset of the tests, because jpype1 and ladybug, two dependencies of the full test suite, have no 3.15 wheel yet.
 
-| Platform | Wheel tag | Note |
-| --- | --- | --- |
-| Linux x86-64, glibc 2.28+ | `manylinux_2_28_x86_64` | RHEL 8 and Rocky 8, Debian 10, Ubuntu 20.04 and newer |
-| Linux arm64, glibc 2.28+ | `manylinux_2_28_aarch64` | |
-| macOS arm64 | `macosx_<minos>_arm64` | |
-| Windows x64 | `win_amd64` | The newest wheel. It is built in CI, and its test run is the least proven of the four |
+| Platform                  | Wheel tag                | Note                                                                                  |
+| ------------------------- | ------------------------ | ------------------------------------------------------------------------------------- |
+| Linux x86-64, glibc 2.28+ | `manylinux_2_28_x86_64`  | RHEL 8 and Rocky 8, Debian 10, Ubuntu 20.04 and newer                                 |
+| Linux arm64, glibc 2.28+  | `manylinux_2_28_aarch64` |                                                                                       |
+| macOS arm64               | `macosx_<minos>_arm64`   |                                                                                       |
+| Windows x64               | `win_amd64`              | The newest wheel. It is built in CI, and its test run is the least proven of the four |
 
 Intel macOS, Windows arm64 and musl-based Linux (Alpine) are not built and not supported. On an Intel Mac use Docker or a Linux virtual machine; on Alpine use a glibc image such as `python:3.12-slim`.
 

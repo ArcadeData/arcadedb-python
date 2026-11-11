@@ -70,6 +70,5 @@ Every step says who does it: script (run the command, read the result), CI (a wo
   uv run --no-project python scripts/bump_engine.py --engine <VERSION> --dev-version <NEXT_DEV> --check
   ```
 
-
 - [ ] 9. CI, then owner: merge the bump PR when every check is green, and delete the branch and the worktree. Then remove the tests and skip-list lines that waited for the new engine: `git grep -n -i "native build links\|native image links"`.
 - [ ] 10. owner: check the GitHub Release (notes, pre-release flag) and, after a final release, that the milestone is closed and what was still open in it moved to the next milestone (the open one due next, or one the workflow created named after the next upstream engine version). If the run failed with a message about the next milestone, create it with a due date and re-run `GitHub Release` (Actions, `workflow_dispatch`, the tag). Close this issue with the two run ids and the two PyPI links.

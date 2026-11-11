@@ -1944,7 +1944,7 @@ def run_hybrid_queries(
             "cypher_expand_users",
             lambda: run_cypher(
                 db,
-                f"""
+                """
                 MATCH (q:Question)-[:HAS_ANSWER]->(a:Answer)<-[:ANSWERED]-(u:User)
                 WHERE q.Id IN $ids
                 RETURN DISTINCT u.Id AS user_id

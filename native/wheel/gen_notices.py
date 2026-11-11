@@ -82,7 +82,7 @@ def sha(b):
 def text(b):
     # trailing whitespace is stripped per line (the repository's pre-commit hook does the same to the committed copy)
     s = b.decode("utf-8", "replace").replace("\r\n", "\n").replace("\r", "\n")
-    return "\n".join(l.rstrip() for l in s.split("\n")).rstrip() + "\n"
+    return "\n".join(ln.rstrip() for ln in s.split("\n")).rstrip() + "\n"
 
 
 def parse_classpath(build_log):
@@ -103,8 +103,8 @@ def pom_licenses(pom, depth=0):
     root = ET.parse(pom).getroot()
     ns = {"m": root.tag.split("}")[0][1:]}
     names = [
-        l.findtext("m:name", namespaces=ns)
-        for l in root.findall("m:licenses/m:license", ns)
+        ln.findtext("m:name", namespaces=ns)
+        for ln in root.findall("m:licenses/m:license", ns)
     ]
     if names:
         return names
@@ -770,8 +770,8 @@ def main():
                     lineterm="",
                 )
             )
-            for l in diff[:80]:
-                print(l[:300], file=sys.stderr)
+            for ln in diff[:80]:
+                print(ln[:300], file=sys.stderr)
             if len(diff) > 80:
                 print(f"... {len(diff) - 80} more diff lines", file=sys.stderr)
             status = 1
@@ -786,14 +786,14 @@ def main():
                 f"run gen_notices.py ... --notice {a.notice} --notice-out {a.notice}",
                 file=sys.stderr,
             )
-            for l in difflib.unified_diff(
+            for ln in difflib.unified_diff(
                 nhave.splitlines(),
                 nnew.splitlines(),
                 "committed",
                 "generated",
                 lineterm="",
             ):
-                print(l[:400], file=sys.stderr)
+                print(ln[:400], file=sys.stderr)
             status = 1
     for what, why in review:
         print(f"licence review: {what}: {why}", file=sys.stderr)

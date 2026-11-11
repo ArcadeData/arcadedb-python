@@ -1,0 +1,8 @@
+# Files that prettier must not reformat.
+# The notices file and the two JDK notice texts are produced by
+# native/wheel/gen_notices.py; reachability-metadata.json is produced by
+# the GraalVM native-image build. Reformatting them would cause the
+# notices drift check (native wheel build) to fail.
+native/wheel/THIRD_PARTY_NOTICES.md
+native/wheel/notice-texts/
+native/src/main/resources/META-INF/native-image/

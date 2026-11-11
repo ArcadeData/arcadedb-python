@@ -4,8 +4,9 @@ Tests for the Pythonic Graph API wrappers.
 Tests Document, Vertex, and Edge wrapper classes and their methods.
 """
 
-import arcadedb
 import pytest
+
+import arcadedb
 from arcadedb import ArcadeDBError
 from arcadedb.graph import Document, Edge, Vertex
 

@@ -265,7 +265,7 @@ class TestVectorParams:
         total_memory = runtime.totalMemory()
         free_memory = runtime.freeMemory()
 
-        print(f"\n=== JVM Memory Stats ===")
+        print("\n=== JVM Memory Stats ===")
         print(f"Max Memory:   {max_memory / (1024**3):.2f} GB ({max_memory} bytes)")
         print(f"Total Memory: {total_memory / (1024**2):.2f} MB")
         print(f"Free Memory:  {free_memory / (1024**2):.2f} MB")

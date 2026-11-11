@@ -13,7 +13,6 @@ from datetime import datetime
 import numpy as np
 import pytest
 
-import arcadedb
 from arcadedb import type_conversion
 
 DIM = 8

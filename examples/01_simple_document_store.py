@@ -35,7 +35,6 @@ import os
 import shutil
 import time
 import uuid
-from datetime import date, datetime
 
 import arcadedb
 
@@ -277,7 +276,7 @@ with arcadedb.create_database(db_path) as db:
     if not tasks:
         print("      (none found)")
     else:
-        print(f"      💡 Used to_list() for efficient bulk conversion")
+        print("      💡 Used to_list() for efficient bulk conversion")
 
     print()
 

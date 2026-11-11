@@ -45,7 +45,15 @@ def _build(tmp_path: Path, *plat_args: str) -> Path:
     shutil.copy(PYTHON_DIR / "README.md", project)
     dist = tmp_path / "dist"
     subprocess.run(  # nosec B603 - fixed argv (sys.executable setup.py bdist_wheel), no shell
-        [sys.executable, "setup.py", "-q", "bdist_wheel", "--dist-dir", str(dist), *plat_args],
+        [
+            sys.executable,
+            "setup.py",
+            "-q",
+            "bdist_wheel",
+            "--dist-dir",
+            str(dist),
+            *plat_args,
+        ],
         cwd=project,
         check=True,
         capture_output=True,
@@ -76,7 +84,9 @@ def test_the_build_without_a_platform_name_keeps_the_hosts(tmp_path):
     if not (PYTHON_DIR / "setup.py").exists():
         return
     wheel = _build(tmp_path)
-    assert "-py3-none-" in wheel.name and not wheel.name.endswith("-any.whl"), wheel.name
+    assert "-py3-none-" in wheel.name and not wheel.name.endswith(
+        "-any.whl"
+    ), wheel.name
 
 
 def test_the_verifier_refuses_the_old_per_python_tag_and_the_any_tag(tmp_path):

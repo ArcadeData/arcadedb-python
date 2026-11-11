@@ -87,19 +87,22 @@ uv run --no-project --python 3.12 python native/wheel/build_wheel.py --lib-dir <
 
 ### Pre-commit
 
-This project uses [pre-commit](https://pre-commit.com/) (black, isort, shfmt, pretty-format-yaml, actionlint, and a local check that the old package name does not come back). Run it on the files you changed before you push, and again if it reformatted something:
+This project uses [pre-commit](https://pre-commit.com/): ruff (lint, default rules E4/E7/E9/F at line length 88), black and isort (Python formatting), prettier (Java, XML, Markdown, JSON), shfmt and shellcheck (shell), hadolint (Dockerfile), pretty-format-yaml and the basic hygiene hooks (trailing whitespace, end-of-file, merge-conflict markers, large files, private keys), and actionlint (GitHub Actions). The settings live in `pyproject.toml` (`[tool.ruff]`) and `.prettierrc.json`.
+
+Install the hooks once so they run on every commit:
+
+```shell
+uvx pre-commit install
+```
+
+Run them on the files you changed before you push, and again if something was reformatted:
 
 ```shell
 uvx pre-commit run --files <changed files>
 uvx pre-commit run --all-files
 ```
 
-CI also runs Bandit, which must be clean:
-
-```shell
-uvx bandit==1.9.4 -c pyproject.toml -r src tests --severity-level low --confidence-level low
-uvx bandit==1.9.4 -c pyproject.toml -r examples --severity-level medium --confidence-level high
-```
+shellcheck and hadolint run as `docker_image` hooks (Docker pulls the images automatically, both locally and in CI). CI runs the same hooks on every pull request and push.
 
 ### Workflow
 

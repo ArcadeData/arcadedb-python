@@ -151,12 +151,14 @@ def test_sigint_loop_in_a_fresh_process_ends_cleanly():
     """The same loop in its own process. A Ctrl-C raised as the Python callback is entered used to leave the engine a stale
     reply pointer, and the process aborted in ``free()`` (nonzero exit); pytest's own hooks hid it inside a test run.
     """
-    result = subprocess.run(  # nosec B603 - fixed argv, no shell, test-owned code string
-        [sys.executable, "-c", _SIGINT_LOOP],
-        capture_output=True,
-        text=True,
-        timeout=600,
-        check=False,
+    result = (
+        subprocess.run(  # nosec B603 - fixed argv, no shell, test-owned code string
+            [sys.executable, "-c", _SIGINT_LOOP],
+            capture_output=True,
+            text=True,
+            timeout=600,
+            check=False,
+        )
     )
     assert result.returncode == 0, result.stderr[-2000:]
     assert int(result.stdout.split()[-1]) >= 1, result.stdout

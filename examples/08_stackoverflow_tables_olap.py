@@ -1972,7 +1972,9 @@ def run_olap_postgresql(
 
         conn = psycopg.connect("dbname=bench user=postgres host=127.0.0.1")
 
-        pid_provider = lambda: list_postgres_pids(pgdata)
+        def pid_provider() -> List[int]:
+            return list_postgres_pids(pgdata)
+
         stop_event, rss_state, rss_thread = start_combined_rss_sampler(pid_provider)
 
         print("Creating schema...")

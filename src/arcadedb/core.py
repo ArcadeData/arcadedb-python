@@ -11,7 +11,10 @@ from collections.abc import Mapping
 from datetime import date
 from decimal import Decimal
 from os import PathLike
-from typing import Any, Callable, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, List, Optional
+
+if TYPE_CHECKING:
+    from .vector import VectorIndex
 
 import jpype
 
@@ -37,7 +40,6 @@ from .type_conversion import (
     bulk_row_ok,
     convert_python_to_java,
     declared_float_vectors,
-    json_bulk_dumps,
     json_bulk_dumps_tagged,
     split_float_vectors,
 )
