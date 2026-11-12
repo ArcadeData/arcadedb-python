@@ -26,11 +26,17 @@ def _rows(n):
     ]
 
 
+@pytest.mark.parametrize("numpy_present", [True, False], ids=["numpy", "no_numpy"])
 @pytest.mark.parametrize("chunk", [100_000, 500], ids=["one_chunk", "screened"])
-def test_scalar_rows_are_not_judged_value_by_value(temp_db_path, monkeypatch, chunk):
+def test_scalar_rows_are_not_judged_value_by_value(
+    temp_db_path, monkeypatch, chunk, numpy_present
+):
+    # the float column of `_rows` is screened in C with numpy or without it (#371: without numpy it was judged by a call per value)
     def refuse(value):
         raise AssertionError("a per-value gate ran over a scalar table")
 
+    if not numpy_present:
+        monkeypatch.setattr(tc, "_np", None)
     monkeypatch.setattr(GraphBatch, "_BULK_CHUNK", chunk)
     monkeypatch.setattr(tc, "json_bulk_scalar_ok", refuse)
     monkeypatch.setattr(gbm, "json_bulk_scalar_ok", refuse)

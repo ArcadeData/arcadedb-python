@@ -603,3 +603,246 @@ def test_the_scalar_screen_flags_what_the_text_would_change_and_passes_the_rest(
     column[249_999] = {"x": INT64_MAX + 1}
     assert tc.classify_vertex_rows(column, set(), True) is None
     assert tc.classify_vertex_rows(column, set(), False) is False
+
+
+# ---------------------------------------------------------------------------
+# #371: the step before json.dumps is no slower than the 26.11.1 loop, with numpy and without it. The screens of a float column no longer
+# need numpy, the text is searched for a subnormal exponent by a substring first, the column screens run over blocks of rows, and rows with no
+# list, tuple or dict are written without the encoder's cycle bookkeeping. None of it may change a text or an error.
+
+CLEAN_FLOAT_COLUMNS = {
+    "plain": [0.5, -3.25, 1 / 3, 1e5],
+    "zeros": [0.0, -0.0, 0.0],
+    "all_zero": [0.0] * 5,
+    "tiny_normal": [1e-300, 2.2250738585072014e-308, -2.2250738585072014e-308],
+    "huge": [1.7976931348623157e308, 2.5],
+    "huge_negative": [-1.7976931348623157e308],
+    "with_none": [None, 1.5, None],
+}
+BAD_FLOAT_COLUMNS = {
+    "nan": [1.5, math.nan, 2.5],
+    "inf": [math.inf],
+    "minus_inf": [1.5, -math.inf],
+    "smallest_subnormal": [1.5, 5e-324],
+    "largest_subnormal": [2.2250738585072009e-308, 1.5],
+    "negative_subnormal": [-5e-324, 0.0, 2.5],
+    "subnormal_among_zeros": [0.0, 0.0, 5e-324, 0.0],
+    "subnormal_only": [5e-324],
+}
+
+
+@pytest.mark.parametrize("numpy_present", [True, False], ids=["numpy", "no_numpy"])
+def test_the_float_screen_gives_the_same_verdict_with_and_without_numpy(
+    monkeypatch, numpy_present
+):
+    if not numpy_present:
+        monkeypatch.setattr(tc, "_np", None)
+    for name, column in CLEAN_FLOAT_COLUMNS.items():
+        assert tc._scalar_column_suspect(list(column)) is False, name
+        rows = [{"id": i, "x": value} for i, value in enumerate(column)]
+        assert tc.screen_vertex_rows(rows, set()) == (False, True), name
+    for name, column in BAD_FLOAT_COLUMNS.items():
+        assert tc._scalar_column_suspect(list(column)) is True, name
+        rows = [{"id": i, "x": value} for i, value in enumerate(column)]
+        assert tc.screen_vertex_rows(rows, set()) is None, name
+        assert tc.classify_vertex_rows(rows, set(), True) is None, name
+    # two finite values whose sum overflows: the screen may flag them, and the judgement by value then passes them
+    overflow = [{"x": 1.7976931348623157e308}, {"x": 1.7976931348623157e308}]
+    assert tc.screen_vertex_rows(overflow, set()) == (False, True)
+
+
+@pytest.mark.parametrize("numpy_present", [True, False], ids=["numpy", "no_numpy"])
+def test_a_clean_float_column_is_not_judged_value_by_value(monkeypatch, numpy_present):
+    # without numpy the old screen gave up on every float column and judged it by a function call per value
+    if not numpy_present:
+        monkeypatch.setattr(tc, "_np", None)
+
+    def refuse(value):
+        raise AssertionError("a per-value gate ran over a clean float column")
+
+    monkeypatch.setattr(tc, "json_bulk_scalar_ok", refuse)
+    monkeypatch.setattr(tc, "json_bulk_shape_ok", refuse)
+    rows = [
+        {"id": i, "x": i * 0.5 + 0.25, "y": 0.0 if i % 9 == 0 else i / 3.0}
+        for i in range(5_000)
+    ]
+    assert tc.screen_vertex_rows(rows, set()) == (False, True)
+
+
+def test_the_subnormal_search_runs_the_expression_only_when_the_text_has_e_minus_3(
+    monkeypatch,
+):
+    calls = []
+    real = tc._SUBNORMAL_EXPONENT
+
+    class Spy:
+        def search(self, text):
+            calls.append(text[:20])
+            return real.search(text)
+
+    monkeypatch.setattr(tc, "_SUBNORMAL_EXPONENT", Spy())
+    walks = []
+    real_has = tc._has_subnormal
+    monkeypatch.setattr(tc, "_has_subnormal", lambda v: walks.append(1) or real_has(v))
+    plain = _batch(200, {})
+    assert tc.json_bulk_dumps(plain) == json.dumps(plain)
+    assert calls == [], "a text without 'e-3' is not searched by the expression"
+    # ordinary text with the substring reaches the expression and is turned back by it: no walk over the rows
+    named = [{"id": i, "name": f"node-3{i}", "w": 1.5} for i in range(50)]
+    assert tc.json_bulk_dumps(named) == json.dumps(named)
+    assert len(calls) == 1 and walks == []
+    # a subnormal is still refused, with the message it always had
+    got = _outcome(tc.json_bulk_dumps, [{"id": 1}, {"x": 5e-324}])
+    assert got == _outcome(lambda r: _old_dumps(r, False), [{"id": 1}, {"x": 5e-324}])
+    assert got[0] == "ValueError" and "subnormal" in got[1]
+
+
+@pytest.mark.parametrize("tagged", [False, True], ids=["untagged", "tagged"])
+@pytest.mark.parametrize(
+    "column, bad",
+    [
+        ("id", 2**63),
+        ("id", INT64_MIN - 1),
+        ("s", "a\ud800b"),
+        ("x", 5e-324),
+        ("x", math.nan),
+        ("x", {1, 2}),
+        ("x", [2**70]),
+    ],
+    ids=["above", "below", "surrogate", "subnormal", "nan", "set", "list_big"],
+)
+@pytest.mark.parametrize("where", [0, 12, 13, 51, 99], ids=lambda w: f"row{w}")
+def test_a_bad_value_is_found_in_any_block_of_the_column_screens(
+    monkeypatch, tagged, column, bad, where
+):
+    # 40 values a block of 3 columns is 13 rows: the rows 12 and 13 are the last of one block and the first of the next
+    monkeypatch.setattr(tc, "_SCREEN_CELLS", 40)
+    monkeypatch.setattr(tc, "_SCREEN_MIN_ROWS", 4)
+    new = tc.json_bulk_dumps_tagged if tagged else tc.json_bulk_dumps
+    rows = [{"id": i, "x": i + 0.5, "s": f"n{i}"} for i in range(100)]
+    assert _outcome(new, rows) == ("text", json.dumps(rows))
+    rows[where][column] = bad
+    got = _outcome(new, rows)
+    assert got == _outcome(lambda r: _old_dumps(r, tagged), rows)
+    assert got[0] in ("ValueError", "TypeError"), got
+
+
+def test_the_column_screens_over_blocks_cover_ragged_rows_none_rows_and_late_keys(
+    monkeypatch,
+):
+    monkeypatch.setattr(tc, "_SCREEN_CELLS", 40)
+    monkeypatch.setattr(tc, "_SCREEN_MIN_ROWS", 4)
+    rows = [{"id": i, "x": i * 0.25} for i in range(60)]
+    rows[0] = None
+    rows[1] = {}
+    assert tc.screen_vertex_rows(rows, set()) == (False, True)
+    # a key that first appears in the last block, a non-str key in the last block, a bad int in a column of a late key
+    late = rows + [{"id": 60, "late": 7}, {"id": 61, "late": 2**63}]
+    assert tc.screen_vertex_rows(late, set()) is None
+    assert tc.screen_vertex_rows(rows + [{"id": 60, 5: "x"}], set()) is None
+    assert tc.screen_vertex_rows(rows + [{"id": 60, "late": "a\ud800"}], set()) is None
+    clean_late = rows + [{"id": 60, "late": 7}, {"id": 61, "late": -7}]
+    assert tc.screen_vertex_rows(clean_late, set()) == (False, True)
+    # the same rows through json_bulk_dumps: text equal to json.dumps, or the old error
+    base = [row for row in rows if row]
+    ragged = base + [{"id": 60, "late": 7}, {"id": 61, "late": -7}]
+    assert tc.json_bulk_dumps(ragged) == json.dumps(ragged)
+    for bad in (
+        base + [{"id": 60, "late": 7}, {"id": 61, "late": 2**63}],
+        base + [{5: "x"}],
+    ):
+        got = _outcome(tc.json_bulk_dumps, bad)
+        assert got == _outcome(lambda r: _old_dumps(r, False), bad)
+        assert got[0] == "ValueError"
+
+
+@pytest.mark.parametrize("tagged", [False, True], ids=["untagged", "tagged"])
+def test_rows_without_a_container_are_written_without_the_cycle_check(
+    monkeypatch, tagged
+):
+    seen = []
+    real = json.dumps
+
+    def spy(obj, *args, **kwargs):
+        seen.append(kwargs.get("check_circular", True))
+        return real(obj, *args, **kwargs)
+
+    monkeypatch.setattr(tc.json, "dumps", spy)
+    new = tc.json_bulk_dumps_tagged if tagged else tc.json_bulk_dumps
+    scalars = _batch(300, {})
+    assert new(scalars) == real(scalars)
+    assert seen == [False]
+    seen.clear()
+    assert tc.json_bulk_dumps(scalars, vetted=True) == real(scalars)
+    assert seen == [False]
+    seen.clear()
+    # a list, a tuple or a dict is a container that may hold itself: the encoder keeps its check, and the walk comes first
+    nested = [{"id": 1, "l": [1, 2, [3]]}, {"id": 2, "d": {"k": [1]}}]
+    assert new(nested) == real(nested)
+    assert seen == [True]
+
+
+@pytest.mark.parametrize("tagged", [False, True], ids=["untagged", "tagged"])
+def test_a_row_that_holds_itself_still_raises_what_it_raised(tagged):
+    cycle = []
+    cycle.append(cycle)
+    for rows in ([{"id": 1, "l": cycle}], [{"id": 1, "d": {"again": cycle}}]):
+        new = tc.json_bulk_dumps_tagged if tagged else tc.json_bulk_dumps
+        got = _outcome(new, rows)
+        expected = _outcome(lambda r: _old_dumps(r, tagged), rows)
+        assert got[0] == expected[0] == "RecursionError"
+
+
+def _digest(rows):
+    import hashlib
+
+    return hashlib.sha256(
+        "\n".join(repr(row) for row in sorted(rows)).encode("utf-8")
+    ).hexdigest()
+
+
+def _mixed_rows(n, subnormal_at=None):
+    # every kind of scalar the screens judge, in a table that spans several blocks of the column screens
+    rows = []
+    for i in range(n):
+        rows.append(
+            {
+                "k": i,
+                "x": [0.5, 0.0, 1e-300, 1.7e308, i / 7.0][i % 5],
+                "n": [INT64_MAX, INT64_MIN, 0, 1_700_000_000_123_456_789, -i][i % 5],
+                "s": ["plain", "한글 中文", "\U0001f600 pair", "", f"user-{i}"][i % 5],
+                "b": i % 2 == 0,
+                "z": None if i % 4 == 0 else "value",
+            }
+        )
+    if subnormal_at is not None:
+        rows[subnormal_at]["x"] = 5e-324
+    return rows
+
+
+def _stored_digest(db, type_name):
+    query = f"SELECT FROM {type_name}"  # nosec B608 - test-controlled
+    got = db.query("sql", query).to_list()
+    return len(got), _digest(
+        [(r["k"], r["x"], r["n"], r["s"], r["b"], r.get("z")) for r in got]
+    )
+
+
+@pytest.mark.parametrize("subnormal_at", [None, 7_000], ids=["clean", "one_subnormal"])
+@pytest.mark.parametrize("entry", ["insert_many", "create_vertices"])
+def test_a_scalar_batch_keeps_its_count_and_digest_and_survives_a_reopen(
+    temp_db_path, entry, subnormal_at
+):
+    rows = _mixed_rows(12_000, subnormal_at)
+    want = (len(rows), _digest([(r["k"], r["x"], r["n"], r["s"], r["b"], r["z"]) for r in rows]))  # fmt: skip
+    type_name = "Part" if entry == "insert_many" else "PartV"
+    with arcadedb.create_database(temp_db_path) as db:
+        _types(db)
+        if entry == "insert_many":
+            assert db.insert_many("Part", rows) == len(rows)
+        else:
+            with db.graph_batch(parallel_flush=False) as batch:
+                assert len(batch.create_vertices("PartV", rows)) == len(rows)
+        assert _stored_digest(db, type_name) == want
+    with arcadedb.open_database(temp_db_path) as db:
+        assert _stored_digest(db, type_name) == want
