@@ -23,7 +23,8 @@ WAIT_S = (
 
 
 def _count(db, type_name="Note"):
-    return db.query("sql", f"SELECT count(*) AS n FROM {type_name}").first().get("n")
+    sql = f"SELECT count(*) AS n FROM `{type_name}`"  # nosec B608 - a fixed type name of these tests, backtick-quoted, no values
+    return db.query("sql", sql).first().get("n")
 
 
 @pytest.fixture
