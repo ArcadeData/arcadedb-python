@@ -3,7 +3,7 @@
 
 // Sources: ArcadeDB 26.12.1: GlobalConfiguration.java (COLUMNAR_*), AlterDatabaseStatement.java, ColumnarGroupByStep.java, ColumnarCrashRecoveryTest.java. The statements about Python are pinned by tests/test_columnar_index.py, which runs on arcadedb-jvm and on the native arcadedb.
 
-A `COLUMNAR` index keeps a column projection of a type next to its records. The engine applies, flushes and merges it in threads of its own, and the `FACETS` clause and `GROUP BY` read it. It needs engine 26.12.1 or later: an older engine refuses `CREATE INDEX ... COLUMNAR` with `Index type 'COLUMNAR' is not supported`. The facets themselves are read with `ResultSet.facets`, which xref:how-to/facets.adoc[Faceted queries] shows kind by kind.
+A `COLUMNAR` index keeps a column projection of a type next to its records. The engine applies, flushes and merges it in threads of its own, and the `FACETS` clause and `GROUP BY` read it. It needs engine 26.12.1 or later: an older engine refuses `CREATE INDEX ... COLUMNAR` with `Index type 'COLUMNAR' is not supported`. Until 26.12.1 is released, a pre-release wheel brings such an engine: see xref:how-to/facets.adoc#older-engine[An older engine]. The facets themselves are read with `ResultSet.facets`, which xref:how-to/facets.adoc[Faceted queries] shows kind by kind.
 
 The index is a statement, so it is the same on both builds:
 

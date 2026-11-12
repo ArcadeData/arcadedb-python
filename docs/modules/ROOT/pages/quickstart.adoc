@@ -20,8 +20,7 @@ This page builds a small database from scratch. You need one of the two packages
 
 See xref:which-package.adoc[Which package?] if you are not sure. If you are not sure, take `{native-pkg-name}`.
 
-// REMOVE WHEN: the old arcadedb-embedded* shims are retired and two releases have shipped with the two-package layout allow-old-name
-The scripts on this page ran against the JVM build, version 26.10.2.post1 (formerly `arcadedb-embedded`). The output shown is what it printed. The code is the same for both packages. The wording of an error message can differ on `{native-pkg-name}`.
+The scripts on this page ran on Python 3.12 against both packages, version 26.11.1.post2, and both printed the output shown. The code is the same for both packages.
 
 == Embedded mode
 

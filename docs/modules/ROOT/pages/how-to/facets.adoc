@@ -650,6 +650,8 @@ has_facets = engine_version(db) >= (26, 12, 1)
 
 A snapshot or a build suffix of the version is dropped, so `26.12.1-SNAPSHOT` counts as 26.12.1. The https://github.com/ArcadeData/arcadedb-python/blob/main/examples/30_columnar_facets.py[example] makes this check, and prints one line and stops when the engine is too old.
 
+Until 26.12.1 is released, a pre-release wheel can bring an engine that has both features. A plain `uv add {native-pkg-name}` installs the final release, which does not, so ask for the pre-release: `uv add --prerelease allow {native-pkg-name}` (or `{jvm-pkg-name}`), or name its version, for example `uv add "{jvm-pkg-name}==26.12.1.dev2"`. Version `26.12.1.dev2` of both packages accepts the `COLUMNAR` index and the `FACETS` clause. The check above tells you what an installed build has. xref:installation.adoc[Installation] says more about pre-releases.
+
 == Known limits
 
 * The extremes of a negative zero come back as `0.0`, and `0.0 == -0.0` in Python, so a `MIN` or `MAX` facet cannot tell them apart. A `DISTINCT` counts `-0.0` and `0.0` as one value.
