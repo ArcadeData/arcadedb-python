@@ -161,7 +161,7 @@ JARS_DIR="$PY_BINDINGS_DIR/src/arcadedb/jars"
 # shellcheck source=stage_jars.sh
 source "$SCRIPT_DIR/stage_jars.sh"
 stage_jars "$JARS_DIR" "$JARS_SOURCE" "$ARCADEDB_TAG"
-echo -e "${CYAN}📦 $(ls -1 "$JARS_DIR"/*.jar | wc -l | tr -d ' ') JAR files${NC}"
+echo -e "${CYAN}📦 $(find "$JARS_DIR" -maxdepth 1 -name '*.jar' | wc -l | tr -d ' ') JAR files${NC}"
 
 # Always filter excluded jars, whichever source staged them.
 apply_jar_exclusions "$JARS_DIR" "$JAR_EXCLUSIONS_FILE"
@@ -182,7 +182,7 @@ case "$(uname -s)" in
         BRIDGE_CP=$(find "$JARS_DIR" -name '*.jar' | paste -sd ':' -)
         ;;
 esac
-javac -cp "$BRIDGE_CP" -d "$BRIDGE_CLASSES" $(find "$BRIDGE_SRC" -name "*.java")
+find "$BRIDGE_SRC" -name "*.java" -print0 | xargs -0 javac -cp "$BRIDGE_CP" -d "$BRIDGE_CLASSES"
 jar cf "$JARS_DIR/arcadedb-python-bridge.jar" -C "$BRIDGE_CLASSES" .
 rm -rf "$BRIDGE_CLASSES"
 echo -e "${GREEN}✅ Bridge jar built${NC}"
@@ -206,7 +206,7 @@ if [ ! -d "$JMODS_DIR" ]; then
 fi
 
 if [ -d "$JMODS_DIR" ]; then
-    AVAILABLE_MODULES=$(cd "$JMODS_DIR" && ls *.jmod 2> /dev/null | sed 's/\.jmod$//' | sort -u | paste -sd "|" -)
+    AVAILABLE_MODULES=$(for jmod in "$JMODS_DIR"/*.jmod; do if [ -e "$jmod" ]; then basename "$jmod" .jmod; fi; done | sort -u | paste -sd "|" -)
     if [ -n "$AVAILABLE_MODULES" ]; then
         FILTERED_MODULES=$(echo "$DETECTED_MODULES" | tr ',' '\n' | sed '/^$/d' | grep -E "^(${AVAILABLE_MODULES})$" | sort -u | paste -sd "," - || true)
     else
@@ -286,7 +286,7 @@ echo -e "${CYAN}📦 Preparing package...${NC}"
 # Build and copy JRE
 copy_tree_with_symlinks "$PY_BINDINGS_DIR/temp_jre" "$PY_BINDINGS_DIR/src/arcadedb/jre" "$PYTHON_BIN"
 
-JAR_COUNT=$(ls -1 "$JARS_DIR"/*.jar | wc -l)
+JAR_COUNT=$(find "$JARS_DIR" -maxdepth 1 -name '*.jar' | wc -l)
 echo -e "${GREEN}✅ Package prepared (${JAR_COUNT} JARs + JRE)${NC}"
 
 # Step 4: Write version to pyproject.toml
@@ -364,12 +364,16 @@ rm -f "$DIST_DIR"/*.whl
 
 # Rename wheel to have correct platform tag if needed
 # (the build may not set it correctly for cross-platform builds)
-WHEEL_FILE=$(ls "$DIST_DIR"/*.whl | head -n1)
+WHEEL_FILE=""
+for wheel in "$DIST_DIR"/*.whl; do
+    [[ -e "$wheel" ]] && WHEEL_FILE="$wheel"
+    break
+done
 if [[ -n "$WHEEL_FILE" ]]; then
     # Extract components from wheel filename
     WHEEL_NAME=$(basename "$WHEEL_FILE")
     # arcadedb_jvm-25.10.1-py3-none-any.whl -> arcadedb_jvm-25.10.1-py3-none-PLAT_NAME.whl
-    NEW_WHEEL_NAME=$(echo "$WHEEL_NAME" | sed "s|-py3-none-any\.whl|-py3-none-${PLAT_NAME}.whl|")
+    NEW_WHEEL_NAME="${WHEEL_NAME/-py3-none-any.whl/-py3-none-${PLAT_NAME}.whl}"
     if [[ "$WHEEL_NAME" != "$NEW_WHEEL_NAME" ]]; then
         mv "$WHEEL_FILE" "$DIST_DIR/$NEW_WHEEL_NAME"
         echo -e "${CYAN}🏷️  Renamed wheel to: ${YELLOW}${NEW_WHEEL_NAME}${NC}"

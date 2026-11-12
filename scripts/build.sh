@@ -150,7 +150,7 @@ if [[ -z "$PLATFORM" ]]; then
 fi
 
 # ArcadeDB image tag: `latest` follows upstream's current snapshot; set
-# ARCADEDB_TAG (e.g. 26.11.1-SNAPSHOT) to pin one. The package version is read
+# ARCADEDB_TAG (e.g. 26.12.1-SNAPSHOT) to pin one. The package version is read
 # from the engine jar inside the image, not from this tag.
 DOCKER_TAG="${ARCADEDB_TAG:-latest}"
 echo -e "${CYAN}📌 Docker tag: ${YELLOW}${DOCKER_TAG}${NC}"
@@ -158,8 +158,8 @@ echo ""
 
 # Select jar source: explicit directory when provided; otherwise pull from ArcadeDB image
 LOCAL_JARS_DIR="$PY_BINDINGS_DIR/local-jars/lib"
-USE_LOCAL_JARS_ARG=""
-LOCAL_JARS_HASH_ARG=""
+# Extra build arguments of the two docker build calls below (empty: the jars of the ArcadeDB image, no BUILD_VERSION)
+DOCKER_BUILD_ARGS=()
 JAR_SOURCE_DESC="ArcadeDB image"
 mkdir -p "$LOCAL_JARS_DIR"
 
@@ -192,12 +192,23 @@ if [[ -n "$JAR_LIB_DIR" ]]; then
         JAR_SOURCE_DESC="${JAR_LIB_DIR} (staged into local-jars)"
     fi
 
-    USE_LOCAL_JARS_ARG="--build-arg USE_LOCAL_JARS=1"
+    DOCKER_BUILD_ARGS+=(--build-arg USE_LOCAL_JARS=1)
     LOCAL_JARS_HASH=$(find "$LOCAL_JARS_DIR" -maxdepth 1 -name "*.jar" -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | awk '{print $1}')
-    LOCAL_JARS_HASH_ARG="--build-arg LOCAL_JARS_HASH=${LOCAL_JARS_HASH}"
+    DOCKER_BUILD_ARGS+=(--build-arg "LOCAL_JARS_HASH=${LOCAL_JARS_HASH}")
 else
     echo -e "${CYAN}📦 Using JARs from ArcadeDB image (no JAR_LIB_DIR provided)${NC}"
 fi
+
+# The newest wheel of dist/ by modification time, without parsing `ls`. Fails when dist/ holds no wheel.
+newest_wheel() {
+    local newest="" wheel
+    for wheel in dist/*.whl; do
+        [[ -e "$wheel" ]] || continue
+        if [[ -z "$newest" || "$wheel" -nt "$newest" ]]; then newest="$wheel"; fi
+    done
+    [[ -n "$newest" ]] || return 1
+    printf '%s\n' "$newest"
+}
 
 # Determine build method: native or Docker
 # Use native build if we're already on the target platform
@@ -296,10 +307,9 @@ else
     echo -e "${YELLOW} 🐳 Building in Docker...${NC}"
 
     # Check if BUILD_VERSION is set (from CI/CD)
-    BUILD_VERSION_ARG=""
     if [ -n "${BUILD_VERSION:-}" ]; then
         echo -e "${CYAN}📌 Using specified version: ${YELLOW}${BUILD_VERSION}${NC}"
-        BUILD_VERSION_ARG="--build-arg BUILD_VERSION=$BUILD_VERSION"
+        DOCKER_BUILD_ARGS+=(--build-arg "BUILD_VERSION=$BUILD_VERSION")
     fi
 
     # Convert platform format: linux/amd64 -> linux-x64, linux/arm64 -> linux-arm64, etc.
@@ -329,9 +339,7 @@ else
         --build-arg PACKAGE_DESCRIPTION="$DESCRIPTION" \
         --build-arg ARCADEDB_TAG="$DOCKER_TAG" \
         --build-arg TARGET_PLATFORM="$TARGET_PLATFORM" \
-        $USE_LOCAL_JARS_ARG \
-        $LOCAL_JARS_HASH_ARG \
-        $BUILD_VERSION_ARG \
+        ${DOCKER_BUILD_ARGS[@]+"${DOCKER_BUILD_ARGS[@]}"} \
         --target export \
         -t arcadedb-python-package-export \
         -f "$SCRIPT_DIR/Dockerfile.build" \
@@ -346,9 +354,7 @@ else
         --build-arg PACKAGE_DESCRIPTION="$DESCRIPTION" \
         --build-arg ARCADEDB_TAG="$DOCKER_TAG" \
         --build-arg TARGET_PLATFORM="$TARGET_PLATFORM" \
-        $USE_LOCAL_JARS_ARG \
-        $LOCAL_JARS_HASH_ARG \
-        $BUILD_VERSION_ARG \
+        ${DOCKER_BUILD_ARGS[@]+"${DOCKER_BUILD_ARGS[@]}"} \
         --target tester \
         -t arcadedb-python-package \
         -f "$SCRIPT_DIR/Dockerfile.build" \
@@ -366,23 +372,23 @@ else
     # this by clearing the directory first; the Docker path had no equivalent.
     # Compare identities rather than clearing, so deliberately kept wheels for
     # other platforms survive a build.
-    WHEELS_BEFORE=$(ls -1 dist/*.whl 2> /dev/null | sort || true)
+    WHEELS_BEFORE=$(find dist -maxdepth 1 -name '*.whl' 2> /dev/null | sort || true)
 
     # Extract the wheel from the export container
     echo -e "${CYAN}📋 Extracting wheel file...${NC}"
     CONTAINER_ID=$(docker create arcadedb-python-package-export)
-    docker cp ${CONTAINER_ID}:/build/dist/. ./dist/
-    docker rm ${CONTAINER_ID}
+    docker cp "${CONTAINER_ID}:/build/dist/." ./dist/
+    docker rm "${CONTAINER_ID}"
 
     # Verify THIS build produced a wheel, not merely that dist/ contains one
-    WHEELS_AFTER=$(ls -1 dist/*.whl 2> /dev/null | sort || true)
+    WHEELS_AFTER=$(find dist -maxdepth 1 -name '*.whl' 2> /dev/null | sort || true)
     NEW_WHEELS=$(comm -13 <(echo "$WHEELS_BEFORE") <(echo "$WHEELS_AFTER") || true)
     if [[ -n "$NEW_WHEELS" ]]; then
         echo -e "${GREEN}✅ Wheel file created successfully!${NC}"
     elif [[ -n "$WHEELS_AFTER" ]]; then
         # Same filename as before: only trust it if the export actually rewrote
         # it. A rebuild of the same version legitimately lands here.
-        NEWEST=$(ls -t dist/*.whl | head -n1)
+        NEWEST=$(newest_wheel)
         if [[ "$NEWEST" -nt "$BUILD_START_MARKER" ]]; then
             echo -e "${GREEN}✅ Wheel file created successfully!${NC}"
         elif [[ -n "$JAR_LIB_DIR" ]]; then
@@ -436,7 +442,7 @@ ARCADEDB_VERSION = os.environ["ARCADEDB_VERSION"]
 # (BUILD_VERSION when set, as the wheel's own version follows it), and assert
 # the version, so picking the wrong file fails loudly.
 # The wheel version's base, by extract_version.py's maven_to_pep440 rules:
-# 26.11.1-SNAPSHOT -> 26.11.1 (.devN follows), 26.11.1-RC1 -> 26.11.1rc1 (#7).
+# 26.12.1-SNAPSHOT -> 26.12.1 (.devN follows), 26.12.1-RC1 -> 26.12.1rc1 (#7).
 _want = (os.environ.get("BUILD_VERSION") or ARCADEDB_VERSION).replace("-SNAPSHOT", "")
 _want = _want.replace("-RC", "rc").replace("-", "")
 
@@ -503,7 +509,7 @@ echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━�
 if [[ -n "${NEW_WHEELS:-}" ]]; then
     NEWEST_WHEEL=$(echo "$NEW_WHEELS" | head -n1)
 else
-    NEWEST_WHEEL=$(ls -t dist/*.whl | head -n1)
+    NEWEST_WHEEL=$(newest_wheel)
 fi
 NEWEST_TAG=$(basename "$NEWEST_WHEEL" | sed -E 's/^[^-]+-[^-]+-//')
 for old in dist/*.whl; do
@@ -542,7 +548,7 @@ echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━�
 echo ""
 echo -e "${CYAN}📦 Built package:${NC}"
 if [ -d "dist" ]; then
-    ls -lh dist/*.whl 2> /dev/null | awk '{print "   " $9 " (" $5 ")"}'
+    find dist -maxdepth 1 -name '*.whl' -exec ls -lh {} + 2> /dev/null | awk '{print "   " $9 " (" $5 ")"}'
 fi
 
 echo ""

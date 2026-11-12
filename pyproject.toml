@@ -49,7 +49,7 @@ dependencies = [
 # This pyproject is the *package definition* consumed by the wheel build
 # (scripts/build.sh). It is not a uv project: tests run against the built wheel,
 # with its `test` extra, in a throwaway `uv run --no-project --with` environment
-# (see README, Testing). `managed = false` makes uv skip it during project
+# (see README, "Build and test from source"). `managed = false` makes uv skip it during project
 # discovery, so `uv run` never tries to sync this package.
 managed = false
 

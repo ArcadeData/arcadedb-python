@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Build the `arcadedb` wheel (the native build) from the shared Python sources and a built native image.
 
-  python native/wheel/build_wheel.py --lib-dir native/target/lib --version 26.11.1.dev0 --engine 26.10.2 --out <dir>
+  python native/wheel/build_wheel.py --lib-dir native/target/lib --version 26.12.1.dev0 --engine 26.11.1 --out <dir>
 
 Steps: copy src/arcadedb to <out>/stage/src/arcadedb (the shared tree is not duplicated in git; only the install hints of the extras are renamed from arcadedb-jvm[...] to arcadedb[...]);
 rewrite `import jpype` to the bundled stub; flip the default backend to native; add the library of the build platform (libarcadedb.so on Linux,
@@ -116,7 +116,7 @@ def main():
     ap.add_argument(
         "--engine",
         required=True,
-        help="engine release the image was built from, e.g. 26.10.2",
+        help="engine release the image was built from, e.g. 26.11.1",
     )
     ap.add_argument("--out", required=True)
     ap.add_argument(

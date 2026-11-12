@@ -46,7 +46,4 @@ jobs:
           uv --version
 
       - name: Run pre-commit on all files
-        env:
-          # shellcheck and hadolint findings are fixed in the follow-up PR.
-          SKIP: shellcheck,hadolint-docker
         run: uvx pre-commit run --all-files --show-diff-on-failure
