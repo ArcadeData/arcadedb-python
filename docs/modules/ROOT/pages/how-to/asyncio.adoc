@@ -1,0 +1,221 @@
+= asyncio: AsyncDatabase
+:description: Call a Database from async def code with arcadedb.aio.AsyncDatabase: awaited query, command, run_in_transaction and find_nearest on a bounded thread pool, what a transaction, a cancel and close() mean there, and how it differs from the async executor.
+
+// Sources: src/arcadedb/aio.py. Pinned by tests/test_aio.py, tests/test_docs_asyncio_page.py and tests/test_vector_read_your_writes.py.
+
+You need this page if your code is written with `async def`, for example an agent loop that stores a few vectors per turn and searches right after, and a database call must not block the event loop. The short version:
+
+* `adb = AsyncDatabase(db, max_workers=8)` wraps an open `Database`. It owns a pool of `max_workers` threads, and it is a thin layer: the calls and the errors are those of `db`.
+* `await adb.query(...)`, `await adb.command(...)` and `await adb.find_nearest(index, ...)` run the blocking call on a worker and return its result. `await adb.run(fn, *args)` does the same for any function.
+* A transaction belongs to one thread, and two awaits of one task can run on two workers. So there is no `async with adb.transaction()`: `await adb.run_in_transaction(fn)` runs the plain function `fn`, from begin to commit and through every retry, on one worker.
+* Cancelling the task that awaits a call abandons the result. A call that has started on a worker still finishes. A call that still waits for a worker does not run.
+* `await adb.close()` refuses new calls and waits for the ones that were submitted. It does not close the `Database`.
+
+The statements are SQL or openCypher, as on xref:how-to/databases-and-queries.adoc[Databases and queries]. This page covers what the facade adds. What the engine does with several threads is on xref:how-to/concurrency.adoc[Concurrency, processes and crashes].
+
+The blocks on this page run one after the other against one empty database, and a test in the repository runs them that way (`tests/test_docs_asyncio_page.py`) on the JVM build and on the native build. Each block that prints something is followed by its output. Every block assumes that `db` is an open database.
+
+== Open it, write and read
+
+`AsyncDatabase` is an async context manager, so `close()` runs when the block ends. A write goes in `run_in_transaction`, because a transaction cannot span awaits. A read needs no transaction. `query` returns a list of `dict`, the rows as `ResultSet.to_list()` gives them, read on the worker.
+
+[source,python]
+----
+import asyncio
+
+from arcadedb.aio import AsyncDatabase
+
+db.command("sql", "CREATE DOCUMENT TYPE Note")
+
+
+def add_hello():
+    db.command("sql", "INSERT INTO Note SET text = ?", "hello")
+
+
+async def main():
+    async with AsyncDatabase(db, max_workers=4) as adb:
+        await adb.run_in_transaction(add_hello)
+        rows = await adb.query("sql", "SELECT text FROM Note")
+        print([row["text"] for row in rows])
+
+
+asyncio.run(main())
+----
+
+[source,text]
+----
+['hello']
+----
+
+Parameters bind as in `db.query`: positional `?` from the extra arguments, or by name from one `dict`. `command` returns a list of `dict` as well, or `None` when the engine returns no result set. An `INSERT`, `UPDATE` or `DELETE` through `command` needs a transaction, so send it through `run_in_transaction`, or switch on `db.set_auto_transaction(True)`, which commits each statement on its own (see xref:how-to/transactions.adoc#auto-transaction[Transactions]). Do not send `BEGIN` or `COMMIT` through `command`: the next call can run on another worker, where that transaction is not open.
+
+== Many tasks at once
+
+Start as many tasks as you like. The pool runs at most `max_workers` calls at a time, and the others wait for a worker. Writers that change the same record conflict, and `run_in_transaction` runs the function again after such a conflict: pass `retries` for a contended record, as on xref:how-to/concurrency.adoc#several-writers[Several writers].
+
+[source,python]
+----
+async def remember(adb, n):
+    def write():
+        db.command("sql", "INSERT INTO Note SET text = ?", f"note {n}")
+
+    await adb.run_in_transaction(write, retries=60)
+
+
+async def main():
+    async with AsyncDatabase(db) as adb:
+        await asyncio.gather(*(remember(adb, n) for n in range(100)))
+        rows = await adb.query("sql", "SELECT count(*) AS n FROM Note")
+        print(rows[0]["n"])
+
+
+asyncio.run(main())
+----
+
+[source,text]
+----
+101
+----
+
+The default of 8 workers is a starting point, not a measured optimum. Measure it on your own workload before you change it.
+
+== A transaction that fails
+
+`fn` is a plain function with no arguments. It makes blocking calls on the `Database`, and it contains no `await`. An exception of `fn` rolls the transaction back and is raised in the awaiting task. The next block stores a note inside the function and then fails, and the note is gone.
+
+[source,python]
+----
+def fail():
+    db.command("sql", "INSERT INTO Note SET text = 'never stored'")
+    raise ValueError("not this one")
+
+
+async def main():
+    async with AsyncDatabase(db) as adb:
+        try:
+            await adb.run_in_transaction(fail)
+        except ValueError as error:
+            print("raised:", error)
+        rows = await adb.query("sql", "SELECT count(*) AS n FROM Note")
+        print(rows[0]["n"])
+
+
+asyncio.run(main())
+----
+
+[source,text]
+----
+raised: not this one
+101
+----
+
+== Any other call
+
+`run(fn, *args, **kwargs)` runs any blocking function on a worker and returns its result. Use it for what the facade does not wrap, and for a result shape other than a list of `dict`. The context variables of the calling task are visible to `fn`, as with `asyncio.to_thread`.
+
+[source,python]
+----
+def first_text():
+    return db.query("sql", "SELECT text FROM Note ORDER BY text LIMIT 1").first().get("text")
+
+
+async def main():
+    async with AsyncDatabase(db) as adb:
+        print(await adb.run(first_text))
+
+
+asyncio.run(main())
+----
+
+[source,text]
+----
+hello
+----
+
+== Vector search
+
+`find_nearest(index, query_vector, k=10, ...)` takes the `VectorIndex` that `db.create_vector_index(...)` or `db.schema.get_vector_index(...)` returns, and gives what `index.find_nearest` gives: a list of `(record, distance)`, nearest first. A search finds every vector whose transaction committed before the search started, so an agent can insert in one call and search in the next, from the same task or from another one: see xref:how-to/vectors.adoc#agents-that-write-as-they-go[Agents that write as they go].
+
+[source,python]
+----
+db.command("sql", "CREATE VERTEX TYPE Memory")
+db.command("sql", "CREATE PROPERTY Memory.embedding ARRAY_OF_FLOATS")
+with db.transaction():
+    for name, vector in [
+        ("red", [1.0, 0.0, 0.0]),
+        ("green", [0.0, 1.0, 0.0]),
+        ("blue", [0.0, 0.0, 1.0]),
+    ]:
+        db.command(
+            "sql", "INSERT INTO Memory SET name = ?, embedding = ?", name, vector
+        )
+index = db.create_vector_index("Memory", "embedding", dimensions=3)
+
+
+def add_orange():
+    db.command(
+        "sql",
+        "INSERT INTO Memory SET name = ?, embedding = ?",
+        "orange",
+        [0.9, 0.1, 0.0],
+    )
+
+
+async def main():
+    async with AsyncDatabase(db) as adb:
+        await adb.run_in_transaction(add_orange)
+        hits = await adb.find_nearest(index, [0.9, 0.1, 0.0], k=1)
+        print(hits[0][0].get("name"))
+
+
+asyncio.run(main())
+----
+
+[source,text]
+----
+orange
+----
+
+== What runs where
+
+Every call runs on a thread of the pool of the facade, never on the event loop, and the pool is its own: the facade does not use the default executor of the loop. The engine call runs without the Python GIL on both builds (JPype releases it for a Java call, `ctypes` for a call into the native library), so the loop keeps running while the engine works. Building the Python rows from the answer, which `query` and `command` do on the worker, holds the GIL. How late the loop wakes up during such calls was measured on xref:how-to/concurrency.adoc#asyncio[Concurrency, processes and crashes] for `asyncio.to_thread`, which is the same mechanism.
+
+One `Database` object shared by the workers is supported on both builds: see xref:how-to/concurrency.adoc#threads[Threads]. A worker keeps nothing between two calls, as long as every transaction is opened and ended inside one `run_in_transaction`.
+
+== Cancel and close
+
+Cancellation is not part of the facade. Cancelling the task that awaits a call, with `task.cancel()` or a timeout, stops the wait and drops the result. What happens to the call depends on where it is:
+
+* A call that still waits for a worker does not run.
+* A call that already runs on a worker is not interrupted, and finishes. A transaction function still commits or rolls back on its own worker, so no transaction is left half open.
+
+`await adb.close()` sets the facade to closed, so a new call raises `RuntimeError`, and then waits for the calls that were submitted, the queued ones included. The wait does not block the event loop. A second `close()` waits for the same calls. The `Database` stays open: close it yourself.
+
+== AsyncDatabase or the async executor
+
+Both names say "async", and they are different tools.
+
+[cols="2,3,3"]
+|===
+| | `AsyncDatabase` (`arcadedb.aio`) | `AsyncExecutor` (`db.async_executor()`)
+
+| Made by
+| `AsyncDatabase(db, max_workers=8)`
+| `db.async_executor()`, the one executor of the database
+
+| Runs on
+| Python threads of its own pool, through the blocking API
+| The threads of the engine
+
+| A call
+| Awaited: returns its result, or raises in the awaiting task
+| Queued: returns at once, and the result arrives in a callback
+
+| Transactions
+| `run_in_transaction(fn)`: one worker from begin to commit, with retries
+| Each worker commits after `commit_every` operations and at `wait_completion()`
+
+| Use it for
+| `async def` code: reads, vector search and small transactions
+| Work that the engine runs in the background while your code carries on: see xref:how-to/async-executor.adoc[The async executor]
+|===

@@ -9,7 +9,8 @@ The calls are the ones the concurrency page tells asyncio code to use: each bloc
 rebuild threshold is max(100, 20 percent of the graph) = 100 pending changes, and the 200 inserts of a test cross it: the searches meet the
 delta buffer first and the rebuilt graph later. ``ef_search`` is as large as the corpus on purpose, so a miss cannot be the approximate
 walk of a large graph: every vector is the nearest neighbour of itself, at distance 0, and a different result means the write was not seen.
-The file uses no Java object, so it runs on the JVM build and on the native build alike.
+The same two tests run again through ``arcadedb.aio.AsyncDatabase`` (the facade over those calls), where an insert is a ``run_in_transaction`` and
+a search is ``find_nearest``. The file uses no Java object, so it runs on the JVM build and on the native build alike.
 """
 
 import asyncio
@@ -20,6 +21,7 @@ import numpy as np
 import pytest
 
 import arcadedb
+from arcadedb.aio import AsyncDatabase
 
 DIM = 8
 BASE = 300
@@ -112,6 +114,78 @@ def test_another_task_finds_the_vector_once_the_writing_task_has_committed_it(co
     async def main():
         queue = asyncio.Queue()
         await asyncio.gather(writer(queue), *(reader(queue) for _ in range(READERS)))
+
+    asyncio.run(main())
+    assert (
+        missed == []
+    ), f"{len(missed)} of {TOTAL} committed vectors were not found by another task: {missed[:5]}"
+    assert _count(db) == BASE + TOTAL
+
+
+def _write(db, i):
+    db.command("sql", "INSERT INTO Doc SET vid = ?, embedding = ?", i, _vec(i))
+
+
+async def _facade_insert(adb, db, i):
+    await adb.run_in_transaction(lambda: _write(db, i), retries=60)
+
+
+async def _facade_nearest_ids(adb, index, i):
+    hits = await adb.find_nearest(index, _vec(i), k=5, ef_search=EF_SEARCH)
+    return [record.get("vid") for record, _distance in hits]
+
+
+def test_through_the_facade_a_task_finds_the_vector_it_committed_in_the_call_before(
+    corpus,
+):
+    db, index = corpus
+    missed = []
+
+    async def agent(adb, n):
+        for step in range(PER_WRITER):
+            i = BASE + n * PER_WRITER + step
+            await _facade_insert(adb, db, i)
+            ids = await _facade_nearest_ids(adb, index, i)
+            if ids[:1] != [i]:
+                missed.append((i, ids))
+
+    async def main():
+        async with AsyncDatabase(db, max_workers=8) as adb:
+            await asyncio.gather(*(agent(adb, n) for n in range(WRITERS)))
+
+    asyncio.run(main())
+    assert (
+        missed == []
+    ), f"{len(missed)} of {TOTAL} committed vectors were not found by the next search: {missed[:5]}"
+    assert _count(db) == BASE + TOTAL
+
+
+def test_through_the_facade_another_task_finds_the_vector_once_the_writing_task_has_committed_it(
+    corpus,
+):
+    db, index = corpus
+    missed = []
+
+    async def writer(adb, queue):
+        for step in range(TOTAL):
+            i = BASE + step
+            await _facade_insert(adb, db, i)
+            await queue.put(i)  # announced only after the commit returned
+        for _ in range(READERS):
+            await queue.put(None)
+
+    async def reader(adb, queue):
+        while (i := await queue.get()) is not None:
+            ids = await _facade_nearest_ids(adb, index, i)
+            if ids[:1] != [i]:
+                missed.append((i, ids))
+
+    async def main():
+        async with AsyncDatabase(db, max_workers=8) as adb:
+            queue = asyncio.Queue()
+            await asyncio.gather(
+                writer(adb, queue), *(reader(adb, queue) for _ in range(READERS))
+            )
 
     asyncio.run(main())
     assert (

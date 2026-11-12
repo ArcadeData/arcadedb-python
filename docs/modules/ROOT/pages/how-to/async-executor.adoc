@@ -3,7 +3,7 @@
 
 // Sources: src/arcadedb/async_executor.py (the JVM build), src/arcadedb/_native/extras.py (NativeAsyncExecutor, the native build), core.py (async_executor), and ArcadeDB 26.11.1 DatabaseAsyncExecutorImpl.java. Pinned by tests/test_async_executor.py, tests/test_async_transaction.py and tests/test_async_executor_behavior.py.
 
-You need this page if you want to hand statements to the engine and carry on, and learn about the result in a callback. The short version:
+You need this page if you want to hand statements to the engine and carry on, and learn about the result in a callback. For `async def` code that awaits each call, use `AsyncDatabase` instead: see xref:how-to/asyncio.adoc[asyncio: AsyncDatabase]. The short version:
 
 * `executor = db.async_executor()` returns a wrapper of the one executor of the database. Every call returns another wrapper of the same executor, with the same settings.
 * `executor.command(...)`, `executor.query(...)` and `executor.transaction(...)` queue work and return at once. `executor.wait_completion()` blocks until everything queued before it is stored.
