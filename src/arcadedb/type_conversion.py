@@ -795,13 +795,19 @@ def _dumps_checked(rows: Any, **kwargs: Any) -> str:
     BigDecimal, so it was stored as a DECIMAL and read back as ``Decimal``
     where every other write path stores a double. ValueError sends the row down
     the per-row path, which stores the double. Every subnormal is written with
-    an exponent of -308 or below, so the text is searched first (C speed) for
-    such an exponent after a digit, and only a hit pays for the walk over the
-    rows. A bare "e-3" would also hit ordinary text (hex ids, UUIDs, "name-3")
-    and send every such load through the walk.
+    an exponent of -308 or below, so the text is searched for such an exponent
+    after a digit, and only a hit pays for the walk over the rows. The search has
+    two steps: the plain substring "e-3" (a memchr-speed scan, about a tenth of
+    what the expression costs on a text of digits) must be there before the
+    expression is run. Ordinary text ("name-3", hex ids, UUIDs) passes the first
+    step and is turned back by the second, so it never reaches the walk.
     """
     text = json.dumps(rows, allow_nan=False, **kwargs)
-    if _SUBNORMAL_EXPONENT.search(text) and any(_has_subnormal(row) for row in rows):
+    if (
+        "e-3" in text
+        and _SUBNORMAL_EXPONENT.search(text)
+        and any(_has_subnormal(row) for row in rows)
+    ):
         raise ValueError("a subnormal double cannot go through the JSON bulk path")
     return text
 
@@ -867,23 +873,25 @@ def _kind_is_tagged(kind: type) -> bool:
     )
 
 
-def _rows_need_walk(rows: Any, tagged: bool) -> bool:
-    """Whether the rows may hold a value the JSON text would change, decided from their types and their columns, in C.
-
-    Only exact dict rows with str keys can be decided here. Each column is one list of its values and one census of their types;
-    a column of the exact scalar types is screened (`_scalar_column_suspect`: the 64-bit range of its ints, the UTF-8 form of its
-    strs), a column of the kinds bulk_tag_default writes (tagged) holds nothing the walk has to see, and any other type, or a
-    column of mixed kinds, sends the rows to the walk. A false alarm costs the walk and changes nothing else. This replaces two
-    scans of the JSON text with regular expressions (a lone surrogate, an integer token of 2**63 and above): the one for the
-    integer token cost 2.5 microseconds a row of a three-column table (12 ms of a 5,000-row call), a column screen about 0.2.
+def _screen_step(rows: Any) -> int:
+    """Rows per block of the column screens: about _SCREEN_CELLS values, so one block's rows, column lists and joined texts stay in the CPU
+    cache across the passes made over them. Every pass over the values of an input that does not fit the cache reads them from memory
+    again (the screens of 26.11.1.post2 read a 250,000-row table five times over); a block is read from memory once.
     """
-    if not set(map(type, rows)) <= _DICT_ONLY:
+    first = next(filter(None, rows[:64]), None)
+    width = len(first) if type(first) is dict else 8
+    return max(_SCREEN_MIN_ROWS, _SCREEN_CELLS // max(width, 1))
+
+
+def _block_needs_walk(block: Any, tagged: bool) -> bool:
+    """`_rows_need_walk` for one block of rows."""
+    if not set(map(type, block)) <= _DICT_ONLY:
         return True
-    keys = set(itertools.chain.from_iterable(rows))
+    keys = set(itertools.chain.from_iterable(block))
     if not set(map(type, keys)) <= _STR_ONLY:
         return True
     for key in keys:
-        column = list(map(dict.get, rows, itertools.repeat(key)))
+        column = list(map(dict.get, block, itertools.repeat(key)))
         kinds = set(map(type, column))
         extra = kinds - _BULK_SCALAR_TYPES
         if extra:
@@ -897,25 +905,53 @@ def _rows_need_walk(rows: Any, tagged: bool) -> bool:
     return False
 
 
+def _rows_need_walk(rows: Any, tagged: bool) -> bool:
+    """Whether the rows may hold a value the JSON text would change, decided from their types and their columns, in C.
+
+    Only exact dict rows with str keys can be decided here. Each column of a block of rows (`_screen_step`) is one list of its values
+    and one census of their types; a column of the exact scalar types is screened (`_scalar_column_suspect`: the 64-bit range of its
+    ints, the UTF-8 form of its strs; a float column is left to json.dumps and the text, see `_dumps_checked`), a column of the kinds
+    bulk_tag_default writes (tagged) holds nothing the walk has to see, and any other type, or a column of mixed kinds, sends the rows
+    to the walk. A false alarm costs the walk and changes nothing else. This replaces two scans of the JSON text with regular
+    expressions (a lone surrogate, an integer token of 2**63 and above): the one for the integer token cost 2.5 microseconds a row of
+    a three-column table, a column screen about 0.1.
+    """
+    step = _screen_step(rows)
+    if len(rows) <= step:
+        return _block_needs_walk(rows, tagged)
+    return any(
+        _block_needs_walk(rows[start : start + step], tagged)
+        for start in range(0, len(rows), step)
+    )
+
+
 def _dumps_once(rows: Any, tagged: bool, vetted: bool = False) -> str:
     """One json.dumps pass for the bulk paths, with the checks of `_check_rows` decided from the types and columns of the rows.
 
     A str or int the text would change cannot be seen by a json.dumps hook (the encoder writes both itself), so the rows decide:
     `_rows_need_walk` screens their columns in C and sends the rows to the walk when a value may be bad or its type is one it cannot
-    vouch for. When json.dumps itself refuses the rows (NaN, an unknown type, a subnormal, a hook error) the walk runs first, as the
-    validation loop used to run before json.dumps, so the error of the first bad row in row order is still the walk's; if the walk
-    finds nothing, json.dumps's own error stands. A false alarm costs the walk and changes nothing else.
+    vouch for, and the walk then runs before the text is written, as the validation loop used to run before json.dumps, so the error of
+    the first bad row in row order is still the walk's. When json.dumps itself refuses rows that did not need the walk (NaN, an unknown
+    type, a subnormal, a hook error) the walk runs after it; if the walk finds nothing, json.dumps's own error stands. A false alarm
+    costs the walk and changes nothing else.
+
+    Rows that did not need the walk hold no list, tuple or dict, so no value can contain itself: their text is written without the
+    encoder's cycle bookkeeping (``check_circular=False``, a dict insert and delete for every row). Rows the walk looked at keep it.
 
     `vetted` is for a caller that has already screened these rows with the same census (`screen_vertex_rows`: every value an exact
     scalar, no NaN, Infinity, subnormal, integer beyond 64 bits or lone surrogate): the text is written without a second look.
     """
+    walked = not vetted and _rows_need_walk(rows, tagged)
+    if walked:
+        _check_rows(rows, tagged)
+    kwargs = {"check_circular": walked}
+    if tagged:
+        kwargs["default"] = bulk_tag_default
     try:
         if vetted:
-            text = json.dumps(rows, allow_nan=False)
-        elif tagged:
-            text = _dumps_checked(rows, default=bulk_tag_default)
+            text = json.dumps(rows, allow_nan=False, **kwargs)
         else:
-            text = _dumps_checked(rows)
+            text = _dumps_checked(rows, **kwargs)
     except (TypeError, ValueError) as error:
         refused = error
     else:
@@ -923,12 +959,11 @@ def _dumps_once(rows: Any, tagged: bool, vetted: bool = False) -> str:
     if refused is not None:
         # outside the except block, so the walk's error does not carry json.dumps's as __context__ (the old loop ran first)
         try:
-            _check_rows(rows, tagged)
+            if not walked:
+                _check_rows(rows, tagged)
             raise refused
         finally:
             del refused
-    if not vetted and _rows_need_walk(rows, tagged):
-        _check_rows(rows, tagged)
     return text
 
 
@@ -1059,16 +1094,20 @@ def _column(rows: Any, key: str):
 
 
 _NONE_KIND = type(None)
-_SCREEN_BLOCK = 100_000  # rows per block of the scalar screen, so its transient lists and joined texts stay bounded
+# values per block of the column screens (`_screen_step`): a block of about this many values is about a megabyte of objects, and stays in
+# the cache between the passes (list, census, min and max, join, sum) that the screen makes over it; at least _SCREEN_MIN_ROWS rows per block
+_SCREEN_CELLS = 16_384
+_SCREEN_MIN_ROWS = 256
 
 
 def _scalar_column_suspect(column: list, kinds: Any = None) -> bool:
     """Whether one block of a column of exact scalar values may hold a value the JSON text would change.
 
     Conservative (a false alarm only sends the column to the exact per-value judgement) and run in C: the type census, the joined
-    text of a str column (a lone surrogate has no UTF-8 form), min and max of an int column (the 64-bit range), and a float column as
-    one float64 array (NaN, Infinity, a subnormal). Columns of mixed kinds are suspect. `kinds` is the set of the types of `column`
-    when the caller has taken that census already (it is not changed).
+    text of a str column (a lone surrogate has no UTF-8 form), min and max of an int column (the 64-bit range), and for a float column
+    its sum (NaN and the infinities make it non-finite; an overflow is a false alarm) and its smallest non-zero absolute value (a
+    subnormal). Columns of mixed kinds are suspect. `kinds` is the set of the types of `column` when the caller has taken that census
+    already (it is not changed).
     """
     kinds = set(map(type, column)) if kinds is None else set(kinds)
     if _NONE_KIND in kinds:
@@ -1090,32 +1129,39 @@ def _scalar_column_suspect(column: list, kinds: Any = None) -> bool:
         return False
     if kind is int:
         return not (_INT64_MIN <= min(column) and max(column) <= _INT64_MAX)
-    if kind is float and _np is not None:
-        values = _np.fromiter(column, dtype=_np.float64, count=len(column))
-        if not _np.isfinite(values).all():
+    if kind is float:
+        if not math.isfinite(sum(column)):
             return True
-        values = values[values != 0.0]
-        return bool((_np.abs(values) < _FLOAT_NORMAL_MIN).any())
+        if min(map(abs, column)) >= _FLOAT_NORMAL_MIN:
+            return False  # no zero and no subnormal: the common column, one pass
+        nonzero = list(filter(None, column))  # a zero is no subnormal
+        return bool(nonzero) and min(map(abs, nonzero)) < _FLOAT_NORMAL_MIN
     return True
 
 
-def _screen_key(rows: Any, key: str, screen: bool):
-    """(odd, suspect) for the column `key` of all `rows`: the types in it beyond the exact scalars, and, with `screen`, whether a column
-    of exact scalars only may hold a value the JSON text would change. One list and one census per block of `_SCREEN_BLOCK` rows.
+def _screen_columns(rows: Any, screen: bool):
+    """(odd, suspect) over all `rows` (dicts and None), each a dict by key: the types of the column beyond the exact scalars, and, with
+    `screen`, whether a column of exact scalars only may hold a value the JSON text would change. None when a key is not a str. One
+    list and one census per key and block of rows (`_screen_step`); the block is the outer loop, so the values of a block are read from
+    memory once.
     """
-    odd = set()
-    suspect = False
-    for start in range(0, len(rows), _SCREEN_BLOCK):
-        block = (
-            rows if len(rows) <= _SCREEN_BLOCK else rows[start : start + _SCREEN_BLOCK]
-        )
-        column = list(_column(block, key))
-        kinds = set(map(type, column))
-        extra = kinds - _BULK_SCALAR_TYPES
-        if extra:
-            odd |= extra
-        elif screen and not suspect:
-            suspect = _scalar_column_suspect(column, kinds)
+    odd = {}
+    suspect = {}
+    step = _screen_step(rows)
+    for start in range(0, len(rows), step):
+        block = rows if len(rows) <= step else rows[start : start + step]
+        keys = set(itertools.chain.from_iterable(filter(None, block)))
+        if not set(map(type, keys)) <= _STR_ONLY:
+            return None
+        for key in keys:
+            column = list(_column(block, key))
+            kinds = set(map(type, column))
+            extra = kinds - _BULK_SCALAR_TYPES
+            if extra:
+                odd.setdefault(key, set()).update(extra)
+            elif screen and not suspect.get(key):
+                suspect[key] = _scalar_column_suspect(column, kinds)
+            odd.setdefault(key, set())
     return odd, suspect
 
 
@@ -1130,13 +1176,14 @@ def _classify_rows(rows: Any, declared: Any, screen_scalars: bool):
         return (
             None if tagged is None else (tagged, False)
         )  # a row that is no dict: the walk raises what it always raised
-    keys = set(itertools.chain.from_iterable(filter(None, rows)))
-    if not set(map(type, keys)) <= _STR_ONLY:
+    columns = _screen_columns(rows, screen_scalars)
+    if columns is None:
         return None
+    column_odd, column_suspect = columns
     tagged = False
     vetted = screen_scalars
-    for key in keys:
-        odd, suspect = _screen_key(rows, key, screen_scalars)
+    for key, odd in column_odd.items():
+        suspect = column_suspect.get(key, False)
         if odd:
             vetted = False
             if key in declared and all(_is_vector_kind(kind) for kind in odd):
@@ -1169,7 +1216,7 @@ def classify_vertex_rows(rows: Any, declared: Any, screen_scalars: bool = False)
     `screen_scalars` is for an input of several chunks, which are sent one after the other: a value the text would change in a late
     chunk would leave the earlier ones stored from the JSON text (an int as an Integer) and the late one from the matrix path (a Long),
     so the stored type of a property would depend on which chunk held it. With `screen_scalars` the columns of exact scalars are
-    screened in C over the whole input first (`_screen_key`), and a column that may hold a bad value is judged value by value, so a
+    screened in C over the whole input first (`_screen_columns`), and a column that may hold a bad value is judged value by value, so a
     bad scalar anywhere gives None for the whole input.
 
     Returns None when the rows must all go the property-matrix way (a property name that is not a str, or a value of a type the
