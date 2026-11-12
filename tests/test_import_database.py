@@ -67,30 +67,9 @@ def _resource_path(name: str) -> Path:
     return Path(__file__).resolve().parent / "fixtures" / name
 
 
-# `parallel` is a reserved word in the SQL grammar, so an IMPORT DATABASE setting of that name can only be written in backticks. Since the engine
-# change that refuses unknown importer names (ArcadeData/arcadedb#11363) the quoted name reaches the importer with its backticks and is refused
-# (ArcadeData/arcadedb#11367). The two tests below pin the behaviour of each engine; when #11367 is fixed they go back to the plain form.
-QUOTED_PARALLEL_REFUSED_SINCE = (26, 12, 1)
-
-
-def _engine_version(db):
-    """The engine's x.y.z through SQL `SELECT version()`; a SNAPSHOT or a build suffix is dropped."""
-    raw = str(db.query("sql", "SELECT version() AS v").first().get("v"))
-    parts = [
-        int(p) if p.isdigit() else 0
-        for p in raw.split()[0].split("-")[0].split(".")[:3]
-    ]
-    return tuple(parts + [0] * (3 - len(parts)))
-
-
-def _quoted_parallel_refused(db, result_set):
-    """True, after checking the importer's reason, on an engine that refuses a quoted `parallel`."""
-    if _engine_version(db) < QUOTED_PARALLEL_REFUSED_SINCE:
-        return False
-    row = result_set.one()
-    assert row.get("result") == "FAIL", row.to_dict()
-    assert "Unknown importer setting" in str(row.get("reason")), row.to_dict()
-    return True
+# `parallel` is a reserved word in the SQL grammar, so an IMPORT DATABASE setting of that name can only be written in backticks. For a few
+# days the 26.12.1-SNAPSHOT engine refused the quoted name as an unknown importer setting (ArcadeData/arcadedb#11363, fixed by #11441 for
+# ArcadeData/arcadedb#11367); every engine accepts it now, as 26.11.1 does, so the two tests below assert OK on all of them.
 
 
 def _import_result_ok(result_set):
@@ -125,8 +104,6 @@ def test_import_database_csv_documents_with_quoted_parallel_setting(
                 "`parallel` = 1"
             ),
         )
-        if _quoted_parallel_refused(db, result):
-            return
         _import_result_ok(result)
 
         count = db.query("sql", "SELECT count(*) as c FROM `Document`").one().get("c")
@@ -200,8 +177,6 @@ def test_import_database_csv_graph_vertices_and_edges_with_quoted_parallel(
                 "`parallel` = 1"
             ),
         )
-        if _quoted_parallel_refused(db, result):
-            return
         _import_result_ok(result)
 
         vertices_count = (
