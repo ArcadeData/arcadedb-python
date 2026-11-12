@@ -195,6 +195,8 @@ run_repeatable_read(db, lambda: add_one(3))
 
 Call the bindings from asyncio through `asyncio.to_thread` or `loop.run_in_executor`. A call made directly on the event loop blocks the loop for as long as the call takes.
 
+`arcadedb.aio.AsyncDatabase` does this wrapping for `query`, `command`, `run_in_transaction` and `find_nearest`, on a bounded thread pool of its own: see xref:how-to/asyncio.adoc[asyncio: AsyncDatabase]. The probe below calls the bindings through `asyncio.to_thread` and `run_in_executor` directly.
+
 The probe: 100 tasks, each making 20 operations (10 on Python 3.14t), so 2,000 operations (1,000 on Python 3.14t) per call style. One operation is `db.run_in_transaction(fn, retries=60)` with an atomic counter update and one unique ledger insert, then a count. A heartbeat task sleeps 10 ms in a loop and records how late it wakes up. Each cell below is that lateness in milliseconds, as the 99th percentile and the maximum. In the short phases, where the 99th percentile equals the maximum, there were too few heartbeats for them to differ. The two `async_executor()` rows use the bindings' `AsyncExecutor` with `set_parallel_level(1)` and `set_parallel_level(4)`: each task inserts one row with `command(..., callback=..., error_callback=...)`, and the callbacks hand the result to the loop with `loop.call_soon_threadsafe`.
 
 [cols="4,2,2,2"]
