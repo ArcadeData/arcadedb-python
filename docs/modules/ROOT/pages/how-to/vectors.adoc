@@ -507,6 +507,9 @@ print(notes.get_size())
 
 An agent that writes one record per turn and searches right after needs no setting: the rebuild runs in the background and the searches keep running while it does.
 
+// Pinned by tests/test_vector_read_your_writes.py, on both packages: 200 inserts, each followed by a search, from the writing task and from other tasks.
+A search finds every vector whose transaction committed before the search started. Insert in one call and search in the next, from the same task or from another one, and the new vector is in the result, also while the graph rebuilds in the background. From asyncio, run each call with `asyncio.to_thread` as xref:how-to/concurrency.adoc#asyncio[Concurrency] describes: the insert and the search of one task can run on different threads and the search still finds the vector. This holds for committed writes only. It says nothing about a search made while the writing transaction is still open.
+
 If the tail of the search latency matters more than the agent's total time, you can move the rebuild to a moment of your choosing: raise `mutations_before_rebuild` far above the number of writes, set the database setting `arcadedb.vectorIndex.maxDeltaScanRatio` to 0, and call `build_graph_now()` right before a step in which the agent does not search, such as its call to the language model.
 
 The table compares the two on {jvm-pkg-name} and {native-pkg-name} 26.11.1.dev0: 768-dimensional COSINE vectors, 10,000 records at the start, one insert and four k = 10 searches per turn at efSearch 100, `build_graph_now()` every 1,000 turns, two efficiency cores of a laptop, the first 3,000 turns. Each ratio is the median over paired runs of the same package; the two packages ran separately and are not compared with each other.

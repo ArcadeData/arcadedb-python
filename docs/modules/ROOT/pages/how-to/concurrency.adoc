@@ -190,6 +190,7 @@ def add_one(key):
 run_repeatable_read(db, lambda: add_one(3))
 ----
 
+[[asyncio]]
 == asyncio
 
 Call the bindings from asyncio through `asyncio.to_thread` or `loop.run_in_executor`. A call made directly on the event loop blocks the loop for as long as the call takes.
