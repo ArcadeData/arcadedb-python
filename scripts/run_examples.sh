@@ -20,10 +20,22 @@ set -eo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT/examples"
 
+# The files that the space-separated globs in EXAMPLES match, one per line (a glob without a match adds nothing).
+list_examples() {
+    local -a globs
+    local glob
+    # EXAMPLES is an input of the workflows (see the header), not a misspelling of the local $examples
+    # shellcheck disable=SC2153
+    read -r -a globs <<< "$EXAMPLES"
+    for glob in "${globs[@]}"; do
+        compgen -G "$glob" || true
+    done
+}
+
 datasets() {
 
     # Determine which examples are selected
-    examples=$(ls $EXAMPLES 2> /dev/null || true)
+    examples=$(list_examples)
 
     # EXIT 75 MEANS "THE DATASET HOST IS DOWN", NOT "THE BINDINGS BROKE".
     #
@@ -86,8 +98,9 @@ datasets() {
     # 04_csv_import_documents.py --dataset movielens-small against data
     # that was never fetched -- the job still fails, just later and with a
     # worse error. Caught in review on #6889.
-    echo "SKIPPED_DATASETS=$(echo $SKIPPED_DATASETS | xargs)" >> "$GITHUB_ENV"
-    if [ -n "$(echo $SKIPPED_DATASETS | xargs)" ]; then
+    skipped_datasets="$(echo "$SKIPPED_DATASETS" | xargs)"
+    echo "SKIPPED_DATASETS=$skipped_datasets" >> "$GITHUB_ENV"
+    if [ -n "$skipped_datasets" ]; then
         echo "::notice title=Datasets unavailable::skipping examples that need:$SKIPPED_DATASETS"
     fi
 }
@@ -108,7 +121,7 @@ run_examples() {
     true > "$results_file"
 
     # Select example files by pattern(s) in EXAMPLES (space-separated globs)
-    examples=$(ls $EXAMPLES 2> /dev/null | sort)
+    examples=$(list_examples | sort)
 
     if [ -z "$examples" ]; then
         echo "❌ No example files found!"
@@ -339,15 +352,18 @@ run_examples() {
         echo "📝 Running: $example_name"
         echo "----------------------------------------"
 
+        # The argument string of the example, split on spaces into words (no globbing)
+        read -r -a example_argv <<< "$example_args"
+
         # Run the example with appropriate parameters
         if [ -n "$example_jvm_args" ]; then
-            if ARCADEDB_JVM_ARGS="$example_jvm_args" JAVA_TOOL_OPTIONS="" _JAVA_OPTIONS="" $TIMEOUT_CMD $timeout_duration "$EX_PY" "$example" $example_args > "$log_file" 2>&1; then
+            if ARCADEDB_JVM_ARGS="$example_jvm_args" JAVA_TOOL_OPTIONS="" _JAVA_OPTIONS="" $TIMEOUT_CMD $timeout_duration "$EX_PY" "$example" "${example_argv[@]}" > "$log_file" 2>&1; then
                 exit_code=0
             else
                 exit_code=$?
             fi
         else
-            if ARCADEDB_JVM_ARGS="" JAVA_TOOL_OPTIONS="" _JAVA_OPTIONS="" $TIMEOUT_CMD $timeout_duration "$EX_PY" "$example" $example_args > "$log_file" 2>&1; then
+            if ARCADEDB_JVM_ARGS="" JAVA_TOOL_OPTIONS="" _JAVA_OPTIONS="" $TIMEOUT_CMD $timeout_duration "$EX_PY" "$example" "${example_argv[@]}" > "$log_file" 2>&1; then
                 exit_code=0
             else
                 exit_code=$?
@@ -360,8 +376,9 @@ run_examples() {
         if [ $exit_code -eq 0 ] && [ "$example" = "10_stackoverflow_graph_olap.py" ]; then
             ref_args="${example_args/--db arcadedb_cypher/--db python_memory}"
             ref_args="${ref_args/--run-label ci10/--run-label ci10ref}"
+            read -r -a ref_argv <<< "$ref_args"
             ref_log="${example%.py}-reference.log"
-            if ! $TIMEOUT_CMD $timeout_duration "$EX_PY" "$example" $ref_args > "$ref_log" 2>&1; then
+            if ! $TIMEOUT_CMD $timeout_duration "$EX_PY" "$example" "${ref_argv[@]}" > "$ref_log" 2>&1; then
                 echo "❌ reference run (python_memory) of $example failed; last 20 lines:"
                 tail -n 20 "$ref_log"
                 exit_code=1
@@ -402,10 +419,12 @@ run_examples() {
     echo "Examples pattern(s): $EXAMPLES"
 
     # Output to GitHub Actions
-    echo "total=$total" >> $GITHUB_OUTPUT
-    echo "passed=$passed" >> $GITHUB_OUTPUT
-    echo "failed=$failed" >> $GITHUB_OUTPUT
-    echo "skipped=$skipped" >> $GITHUB_OUTPUT
+    {
+        echo "total=$total"
+        echo "passed=$passed"
+        echo "failed=$failed"
+        echo "skipped=$skipped"
+    } >> "$GITHUB_OUTPUT"
 
     # Show detailed results
     echo "Detailed Results:"

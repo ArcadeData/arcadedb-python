@@ -65,7 +65,8 @@ for f in target/reports/used_classes_*.txt reports/used_classes_*.txt; do
 done
 if [ -z "$UC" ]; then
     echo "no used_classes_*.txt analysis report after the build (-H:+PrintAnalysisCallTree); found:" >&2
-    ls -R target 2> /dev/null | grep -i -E "report|used_" >&2 || true
+    target_listing=$(ls -R target 2> /dev/null || true)
+    printf '%s\n' "$target_listing" | grep -i -E "report|used_" >&2 || true
     exit 1
 fi
 cp "$UC" "$OUT/used_classes.txt"

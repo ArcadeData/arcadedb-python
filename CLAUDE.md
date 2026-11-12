@@ -52,7 +52,7 @@ uv run --no-project --with "$W[test]" python -m pytest -m server                
 
 ## Lint / format
 
-Pre-commit: black, isort (`--profile black`), shfmt (`-i 4 -ci -sr`), pretty-format-yaml (not on `.github/`), actionlint. CI also runs Bandit, which must be clean:
+Pre-commit (CI runs every hook on all files, none is skipped): ruff, black, isort (`--profile black`), prettier, shfmt (`-i 4 -ci -sr`), shellcheck and hadolint (both in Docker), pretty-format-yaml (not on `.github/`), actionlint. CI also runs Bandit, which must be clean:
 
 ```bash
 uvx bandit==1.9.4 -c pyproject.toml -r src tests --severity-level low --confidence-level low

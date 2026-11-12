@@ -77,7 +77,7 @@ repos:
   hooks:
   - id: no-old-package-name
     name: the old package name does not come back
-    entry: python3 scripts/check_no_embedded_name.py
-    language: system
+    entry: python scripts/check_no_embedded_name.py
+    language: python
     pass_filenames: false
     always_run: true

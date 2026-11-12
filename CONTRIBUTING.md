@@ -87,7 +87,7 @@ uv run --no-project --python 3.12 python native/wheel/build_wheel.py --lib-dir <
 
 ### Pre-commit
 
-This project uses [pre-commit](https://pre-commit.com/): ruff (lint, default rules E4/E7/E9/F at line length 88), black and isort (Python formatting), prettier (Java, XML, Markdown, JSON), shfmt and shellcheck (shell), hadolint (Dockerfile), pretty-format-yaml and the basic hygiene hooks (trailing whitespace, end-of-file, merge-conflict markers, large files, private keys), and actionlint (GitHub Actions). The settings live in `pyproject.toml` (`[tool.ruff]`) and `.prettierrc.json`.
+This project uses [pre-commit](https://pre-commit.com/): ruff (lint, default rules E4/E7/E9/F at line length 88), black and isort (Python formatting), prettier (Java, XML, Markdown, JSON), shfmt and shellcheck (shell), hadolint (Dockerfile), pretty-format-yaml and the basic hygiene hooks (trailing whitespace, end-of-file, merge-conflict markers, large files, private keys), and actionlint (GitHub Actions). The settings live in `pyproject.toml` (`[tool.ruff]`), `.prettierrc.json` and `.shellcheckrc`.
 
 Install the hooks once so they run on every commit:
 
