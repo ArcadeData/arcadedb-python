@@ -39,6 +39,8 @@ WINDOWS_NOT_APPLICABLE = {
     "test_dev_engine_pin.py": "runs the bash code of a workflow step",
     # runs the awk program of the parity gate step of test-native.yml, which is code for the bash of a runner
     "test_parity_gate_awk.py": "runs the workflows' awk step code",
+    # runs the bash code of the verify step of release-native.yml on small passed/ and wheels/ directories (#349)
+    "test_release_native_verify.py": "runs the bash code of a workflow step",
 }
 if sys.platform == "win32":
     collect_ignore.extend(WINDOWS_NOT_APPLICABLE)

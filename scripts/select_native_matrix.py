@@ -11,8 +11,8 @@ usage: select_native_matrix.py EVENT     EVENT: pull_request | push | schedule |
 
 Prints `build=<json>`, `test=<json>`, `pyver=<json>` and `examples=<json>` lines (GITHUB_OUTPUT format). Publishing is not decided here:
 release-native.yml does it. `pyver` is the cheap Python-version job (see PYVER_NOTE): a subset of the tests against the built
-linux-x86_64 wheel on the Pythons the full parity run of the event does not cover, and always on the free-threaded 3.14t. It never
-gates a release. The GraalVM CE archives are pinned by sha256 per platform (GraalVM Community Edition only, never Oracle GraalVM).
+linux-x86_64 wheel on the Pythons the full parity run of the event does not cover, and always on the free-threaded 3.14t. A release
+needs its legs to pass (release-native.yml, `verify`). The GraalVM CE archives are pinned by sha256 per platform (GraalVM Community Edition only, never Oracle GraalVM).
 """
 
 from __future__ import annotations
@@ -100,7 +100,7 @@ ALL_PLATFORMS = list(PLATFORMS)
 # full parity run of the event does not cover, and runs a subset of the test files there. 3.14t is the free-threaded build of 3.14:
 # it is not a classifier of the wheel and has no polars (polars ships abi3 wheels only, which a free-threaded Python cannot install).
 FREE_THREADED_PYTHONS = ["3.14t"]
-PYVER_NOTE = "informational: release-native.yml does not read it"
+PYVER_NOTE = "gates a release: release-native.yml requires a native-passed-pyver-py<version> marker for each leg of a release"
 
 PULL_REQUEST_PLATFORMS = ["linux-x86_64"]
 PULL_REQUEST_PYTHONS = ["3.12"]

@@ -5,7 +5,8 @@ name: Release native (arcadedb)
 # starts release-jvm.yml, which publishes `arcadedb-jvm`; the two workflows do not wait for each other.
 #
 # The build and the tests are test-native.yml, called with `release: true` (the full matrix: linux-x86_64, linux-aarch64,
-# macos-arm64 and windows-x64, each on Python 3.11 to 3.14). A native image build takes about 5 to 30 minutes per platform; this workflow adds
+# macos-arm64 and windows-x64, each on Python 3.11 to 3.14, and the `pyver` job: the linux-x86_64 wheel on Python 3.15 and on the
+# free-threaded 3.14t). A native image build takes about 5 to 30 minutes per platform; this workflow adds
 # no build of its own. The way the JVM release calls test-jvm.yml is the model.
 #
 # PyPI keys a trusted publisher on this FILENAME and on the job's environment, so do not rename either without changing the publisher
@@ -15,7 +16,8 @@ name: Release native (arcadedb)
 # The GitHub environment `pypi` only accepts deployments from tags that match [0-9]*. There is one environment and one publish job for
 # dev, final and post releases.
 #
-# What is published (the `verify` job decides, the `publish` job uploads):
+# What is published (the `verify` job decides, the `publish` job uploads). Every kind of release also needs the two `pyver` legs to have
+# passed (3.15 and 3.14t on the linux-x86_64 wheel; the other platforms are not tested on them):
 #   A.B.C.devN       the parity run of linux-x86_64, linux-aarch64 and macos-arm64 passed on every Python. windows-x64 is published too when it
 #                    passed on every Python, and is informational otherwise.
 #   A.B.C, A.B.C.postN  ONLY when the readiness bar is met: the repository variable ARCADEDB_NATIVE_READINESS_BAR_MET is `true` (a maintainer
@@ -135,7 +137,7 @@ jobs:
           path: wheels
           merge-multiple: true
 
-      - name: Every required platform passed on every Python, and the wheels are the ones that were tested
+      - name: Every required platform passed on every Python, the pyver legs passed, and the wheels are the ones that were tested
         id: verify
         env:
           VERSION: ${{ needs.validate-version.outputs.version }}
@@ -146,6 +148,8 @@ jobs:
           mkdir -p passed dist
           ls -l passed wheels
           pythons="3.11 3.12 3.13 3.14"
+          # the `pyver` legs of a release (scripts/select_native_matrix.py; tests/test_select_native_matrix.py checks that this list is the same)
+          pyver_pythons="3.15 3.14t"
           if [ "$FINAL" = true ]; then
             required="linux-x86_64 linux-aarch64 macos-arm64 windows-x64"
             if [ "$BAR" != true ]; then
@@ -159,6 +163,12 @@ jobs:
             for py in $pythons; do
               [ -f "passed/$key-py$py.ok" ] || { echo "::error::required leg $key on Python $py did not pass its parity run: nothing is published" >&2; exit 1; }
             done
+          done
+          # every release needs the `pyver` legs too, and they must have installed the wheel of linux-x86_64 that is published
+          tested="$(cat "passed/linux-x86_64-py3.12.ok")"
+          for py in $pyver_pythons; do
+            [ -f "passed/pyver-py$py.ok" ] || { echo "::error::the pyver leg on Python $py did not pass: nothing is published" >&2; exit 1; }
+            [ "$(cat "passed/pyver-py$py.ok")" = "$tested" ] || { echo "::error::the pyver leg on Python $py tested another wheel than $tested: nothing is published" >&2; exit 1; }
           done
           # every platform that passed on every Python is published (Windows is informational for a pre-release)
           for key in linux-x86_64 linux-aarch64 macos-arm64 windows-x64; do

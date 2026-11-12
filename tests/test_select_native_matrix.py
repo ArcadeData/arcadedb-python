@@ -1,5 +1,6 @@
 """The legs of the native test workflow per event: a pull request must stay small (the org shares a runner cap with upstream)."""
 
+import fnmatch
 import importlib.util
 import json
 import re
@@ -124,20 +125,55 @@ def test_the_python_version_job_never_repeats_a_full_parity_leg_and_has_no_polar
             assert leg["polars"] is (not leg["freethreaded"]), leg
 
 
-def test_the_release_does_not_need_the_python_version_job():
+def _job(text, name):
+    """The text of one job of a workflow file (a job starts at two spaces of indentation)."""
+    parts = re.split(
+        r"^  ([A-Za-z0-9_-]+):\n", text.split("\njobs:\n", 1)[1], flags=re.M
+    )
+    return dict(zip(parts[1::2], parts[2::2]))[name]
+
+
+def test_a_release_needs_a_marker_from_every_leg_of_the_python_version_job():
+    # ArcadeData/arcadedb-python#349: the pyver job was informational (a red leg could not stop a release); now a leg that passes uploads a
+    # marker and verify in release-native.yml requires the markers of the legs a release has. The bash of verify is run in
+    # tests/test_release_native_verify.py; here the two workflow files and the selector are checked against one another.
     workflows = ROOT / ".github" / "workflows"
     test_native = (workflows / "test-native.yml").read_text()
     release = (workflows / "release-native.yml").read_text()
-    assert re.search(r"^  pyver:\n", test_native, re.M)
-    # no job of either workflow waits for it
-    for text in (test_native, release):
-        for needs in re.findall(r"^    needs: (.*)$", text, re.M):
-            assert "pyver" not in needs, needs
-    # release-native.yml reads the markers and the wheels only, never the artifacts of the pyver job
+    pyver = _job(test_native, "pyver")
+    # the marker is written and uploaded after the gate step and by steps that run on success only, and a missing file fails the upload
+    gate = pyver.find("Gate: no failure, error, crash, timeout or uncounted skip")
+    mark = pyver.find("- name: Mark this leg as passed")
+    assert 0 <= gate < mark, "the pyver job has no marker step after its gate"
+    upload = re.search(
+        r"      - uses: actions/upload-artifact@\S+ # v[0-9.]+\n"
+        r"        with:\n"
+        r"          name: native-passed-pyver-py\$\{\{ matrix\.python \}\}\n"
+        r"          path: \$\{\{ runner\.temp \}\}/passed/pyver-py\$\{\{ matrix\.python \}\}\.ok\n"
+        r"          if-no-files-found: error\n",
+        pyver,
+    )
+    assert upload, "the pyver job uploads no marker native-passed-pyver-py<version>"
+    assert gate < mark < upload.start()
+    marker_step = pyver[mark : upload.start()]
+    assert "if:" not in marker_step and 'pyver-py$PY.ok"' in marker_step
+    # verify requires the marker of every leg the selector gives a release, under the file name the upload has
+    chosen = re.search(r'^\s+pyver_pythons="([^"]*)"$', release, re.M)
+    assert chosen, "verify names no pyver legs"
+    assert chosen.group(1).split() == [
+        leg["python"] for leg in sel.select("release")["pyver"]
+    ]
+    assert '"passed/pyver-py$py.ok"' in release
+    # the marker artifact is downloaded by a pattern verify already has; the artifacts of the parity runs of this job are not
     patterns = re.findall(r"^\s+pattern: (.*)$", release, re.M)
     assert patterns and all(
         p in ("native-passed-*", "native-wheel-*") for p in patterns
     ), patterns
+    assert fnmatch.fnmatch("native-passed-pyver-py3.14t", "native-passed-*")
+    # nothing calls the job informational any more
+    assert "informational" not in sel.PYVER_NOTE.lower()
+    assert "It is informational" not in test_native
+    assert "INFORMATIONAL for now" not in test_native
 
 
 def test_the_linux_legs_build_in_the_manylinux_container_of_the_tag_and_the_workflow_gates_that_floor():

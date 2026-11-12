@@ -62,7 +62,7 @@ Intel macOS, Windows arm64 and musl-based Linux (Alpine) are not built and not s
 
 - **JVM-only APIs do not exist**: `get_java_database()` and the other `get_java_*` calls, `start_jvm()`, `jvm_kwargs` and JVM options. There is no JVM. Use `arcadedb-jvm` if you need them.
 - **A few API calls raise `NotOnNativeYet`** (a `NotImplementedError`) instead of misbehaving: `AsyncExecutor.transaction`, `find_nearest_approximate` over product quantization, `get_metadata` of a foreign index, and `get_stats`.
-- Free-threaded Python (3.14t) runs a subset of the tests in CI; it is informational and does not gate a release.
+- Python 3.15 and free-threaded Python (3.14t) run a subset of the tests in CI, on the `linux-x86_64` wheel only; a release needs both to pass. The other platforms are not tested on them.
 
 The bindings' own tests run against the installed wheel (the parity run). What does not pass is the list above, or JVM-only by nature.
 
