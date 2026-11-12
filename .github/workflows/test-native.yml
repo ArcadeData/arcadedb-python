@@ -13,7 +13,8 @@
 #
 # Beside the full parity runs, the `pyver` job installs the already built linux-x86_64 wheel (py3-none: no rebuild) into the Pythons the full
 # runs of the event leave out (a pull request: 3.11, 3.13, 3.14; main, nightly, dispatch: 3.11, 3.13; a release: none), into 3.15 (always: the full suite
-# needs jpype1 and ladybug, which have no cp315 wheel yet, so 3.15 runs without the test files that need jpype1) and into the free-threaded 3.14t, and runs a small subset of the tests there (about 20 s of tests per Python). It is informational: release-native.yml does not need it.
+# needs jpype1 and ladybug, which have no cp315 wheel yet, so 3.15 runs without the test files that need jpype1) and into the free-threaded 3.14t, and runs a small subset of the tests there (about 20 s of tests per Python). A release needs it: a leg that passes uploads a marker (native-passed-pyver-py<version>), and release-native.yml
+# publishes nothing unless the legs of a release (3.15 and the free-threaded 3.14t) passed. Only linux-x86_64 is checked on them.
 # scripts/select_native_matrix.py decides its legs.
 #
 # The `examples` job runs every script of examples/ against the installed wheel of each platform (Python 3.12 and 3.14; a pull request: linux-x86_64, 3.12), through
@@ -31,8 +32,9 @@
 # test suite of this repository run against the INSTALLED wheel (native/wheel/parity_wheel.py): no failure, error, crash, timeout, or skip
 # besides the counted NOTYET and NA-JVM kinds (tests/conftest.py).
 #
-# A leg that passes uploads a marker (native-passed-<platform>-py<version>) and the wheel (native-wheel-<platform>); release-native.yml
-# reads them to decide what may be published. Do not rename these artifacts without changing release-native.yml.
+# A leg that passes uploads a marker (native-passed-<platform>-py<version>) and the wheel (native-wheel-<platform>); a `pyver` leg that
+# passes uploads a marker too (native-passed-pyver-py<version>). release-native.yml reads them to decide what may be published. Do not
+# rename these artifacts without changing release-native.yml.
 #
 # Crashes (ArcadeData/arcadedb-python#295): a test file whose process dies without a result is a CRASH row with its exit code, and fails the leg.
 # On the Windows legs only, the harness runs such a file once more in a fresh process (--retry-crash): a retry that produces a result is a
@@ -968,8 +970,9 @@ jobs:
   # The cheap Python-version coverage of the wheel of linux-x86_64 (py3-none: the same file for every Python, nothing is rebuilt): a subset of
   # the test files, not the whole suite. The legs are the supported Pythons the full parity runs of this event leave out, plus the
   # free-threaded 3.14t (scripts/select_native_matrix.py).
-  # INFORMATIONAL for now: release-native.yml (verify and the publish jobs) reads only the native-passed-* markers and the native-wheel-* wheels,
-  # never an artifact of this job, so a red leg never blocks a release. Promote it once it has been green for a while.
+  # Part of the release gate (ArcadeData/arcadedb-python#349): a leg that passes uploads the marker native-passed-pyver-py<version> (the file name of
+  # the wheel it installed), and `verify` in release-native.yml requires the markers of the legs a release has (3.15 and 3.14t, see
+  # scripts/select_native_matrix.py), so a red leg stops the release. Only the linux-x86_64 wheel is checked on these Pythons.
   # 3.14t runs without polars, and so without test_dataframe_ingest.py (it imports polars at module level): polars ships abi3 wheels only
   # (polars and polars-runtime-32 have no cp314t wheel, and an abi3 wheel cannot be installed on a free-threaded build). The other
   # dependencies of the subset (numpy, pandas, pyarrow, jpype1, requests) all have cp314t wheels. polars is an optional extra of the wheel.
@@ -1089,6 +1092,21 @@ jobs:
               # this repository accepts no skips; NOTYET and NA-JVM are the two counted kinds of the native build
               if (skipped + 0 != 0) { print "skipped tests that are neither NOTYET nor NA-JVM: " skipped > "/dev/stderr"; exit 1 }
             }' "$tsv" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # Reached only when the gate passed: release-native.yml reads this marker (one per Python, holding the wheel file name).
+      - name: Mark this leg as passed
+        run: |
+          set -euo pipefail
+          mkdir -p "$T/passed"
+          basename "$(ls "$T"/wheel/*.whl)" > "$T/passed/pyver-py$PY.ok"
+          cat "$T/passed/pyver-py$PY.ok"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: native-passed-pyver-py${{ matrix.python }}
+          path: ${{ runner.temp }}/passed/pyver-py${{ matrix.python }}.ok
+          if-no-files-found: error
+          retention-days: 30
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ !cancelled() }}

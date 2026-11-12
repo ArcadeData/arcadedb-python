@@ -101,13 +101,14 @@ The version rule above holds for both packages. One tag starts both release work
 `release-native.yml` has four jobs:
 
 . `Validate tag` checks that the tag is a bare version and the next one (`scripts/check_version.py`).
-. `test` calls `test-native.yml` with the full matrix: four platforms, each on Python 3.11 to 3.14. It builds the native image and the wheel on each platform and runs the test suite of this repository against the installed wheel.
+. `test` calls `test-native.yml` with the full matrix: four platforms, each on Python 3.11 to 3.14. It builds the native image and the wheel on each platform and runs the test suite of this repository against the installed wheel. It also runs the `pyver` job: a subset of the tests against the `linux-x86_64` wheel on Python 3.15 and on the free-threaded 3.14t.
 . `Verify what may be published` reads which legs passed, applies the readiness gate below and collects the wheels.
 . `Publish to PyPI` uploads the wheels through the environment `pypi`. It refuses any wheel that is not the distribution `arcadedb`.
 
 `arcadedb` has one trusted publisher on PyPI (`release-native.yml` with the environment `pypi`) for dev, final and post releases, and one publish job in the workflow. `arcadedb-jvm` has one trusted publisher (`release-jvm.yml` with the environment `pypi-jvm`). PyPI matches the workflow file name, so renaming either file means changing the publisher on PyPI first. There is no separate pre-release environment; the readiness gate below is what keeps a final release back.
 
 * A native pre-release (`A.B.C.devN`) publishes when the builds on `linux-x86_64`, `linux-aarch64` and `macos-arm64` pass.
+* Every native release, pre-release or final, also needs the two `pyver` legs (Python 3.15 and 3.14t on the `linux-x86_64` wheel) to pass. The other platforms are not tested on those two Pythons.
 * A FINAL native release (`A.B.C` or `A.B.C.postN`) needs two more things:
 ** The repository variable `ARCADEDB_NATIVE_READINESS_BAR_MET` is `true`. A maintainer sets it after checking the readiness bar: the correctness fixes are merged; the full suite is green on every platform, Windows included, and on Python 3.11 to 3.14; the fault and concurrency probes pass; and the documented API raises no `NotOnNativeYet`.
 ** The parity run of every platform and every Python version passes with zero `NotOnNativeYet` skips.
