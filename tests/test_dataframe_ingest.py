@@ -212,6 +212,235 @@ class TestPrecision:
         assert _one_column(temp_db, pa.timestamp("ms"), values) == values
 
 
+# The engine pattern that shows a stored wall clock to the nanosecond: a read through Result.get returns a Python datetime,
+# which holds microseconds and cuts the rest.
+_WALL_CLOCK = "yyyy-MM-dd HH:mm:ss.SSSSSSSSS"
+_TICKS_PER_SECOND = {"s": 1, "ms": 1_000, "us": 1_000_000, "ns": 1_000_000_000}
+# Epoch ticks of each unit: one tick before the epoch (a floor, never a truncation toward zero), the epoch, one tick after
+# it, 2020-01-02 03:04:05.123456789 cut to the unit, 1900-01-01 00:00:00 plus one tick, a null, and the year 2255 (the last
+# year a nanosecond column holds, so every unit stays inside the range of a DATETIME_NANOS property).
+_STAMPS = {
+    "s": [-1, 0, 1, 1_577_934_245, -2_208_988_799, None, 9_000_000_000],
+    "ms": [-1, 0, 1, 1_577_934_245_123, -2_208_988_799_999, None, 9_000_000_000_000],
+    "us": [
+        -1,
+        0,
+        1,
+        1_577_934_245_123_456,
+        -2_208_988_799_999_999,
+        None,
+        9_000_000_000_000_000,
+    ],
+    "ns": [
+        -1,
+        0,
+        1,
+        1_577_934_245_123_456_789,
+        -2_208_988_799_999_999_999,
+        None,
+        9_000_000_000_000_000_000,
+    ],
+}
+_DAYS = [
+    dt.date(1600, 3, 1),
+    dt.date(1969, 12, 31),
+    dt.date(1970, 1, 1),
+    dt.date(2020, 2, 29),
+    None,
+    dt.date(2999, 12, 31),
+]
+
+
+def _wall_clock(ticks, unit):
+    """The UTC wall clock of ``ticks`` of ``unit`` since the epoch as ``_WALL_CLOCK`` prints it (a None stays None)."""
+    if ticks is None:
+        return None
+    seconds, rest = divmod(ticks, _TICKS_PER_SECOND[unit])
+    moment = dt.datetime(1970, 1, 1) + dt.timedelta(seconds=seconds)
+    nanos = rest * (1_000_000_000 // _TICKS_PER_SECOND[unit])
+    return f"{moment.isoformat(sep=' ', timespec='seconds')}.{nanos:09d}"
+
+
+def _timestamps(ticks, unit, tz=None):
+    """An Arrow timestamp column of integer ticks (None is a null), so that no Python datetime cuts a nanosecond."""
+    return pa.array(ticks, pa.int64()).cast(pa.timestamp(unit, tz=tz))
+
+
+def _wall_clocks(db, type_name, *columns):
+    """Each column as the text of its stored wall clock, in the order of ``idx``: {column: [text or None, ...]}."""
+    shown = ", ".join(f"{c}.format('{_WALL_CLOCK}') AS {c}" for c in columns)
+    sql = f"SELECT idx, {shown} FROM {type_name} ORDER BY idx"  # nosec B608 - test-controlled
+    rows = _rows(db, sql)
+    return {c: [r.get(c) for r in rows] for c in columns}
+
+
+class TestTemporalColumns:
+    """A timestamp or date column of a load keeps what the Arrow integers say: the unit, the zone rule, the nulls, the dates before 1970.
+
+    The JVM wheel sends such a column to the bridge as one array of epoch ticks and builds the date-times in Java; the native
+    wheel lays it out as columnar buffers. The expected values come from the integers and the UTC rule, never from a
+    database read, so both wheels must store the same wall clock.
+    """
+
+    @pytest.mark.parametrize(
+        "tz", [None, "UTC", "Asia/Karachi"], ids=["naive", "utc", "zoned"]
+    )
+    @pytest.mark.parametrize("unit", ["s", "ms", "us", "ns"])
+    def test_a_timestamp_keeps_its_wall_clock_to_the_nanosecond(
+        self, temp_db, unit, tz
+    ):
+        """A zoned timestamp is already UTC epoch time and a naive one is the clock it shows: both read the integer."""
+        ticks = _STAMPS[unit]
+        temp_db.command("sql", "CREATE DOCUMENT TYPE Stamp")
+        temp_db.command("sql", "CREATE PROPERTY Stamp.val DATETIME_NANOS")
+        table = pa.table(
+            {
+                "idx": pa.array(range(len(ticks)), pa.int64()),
+                "val": _timestamps(ticks, unit, tz),
+            }
+        )
+        assert temp_db.insert_arrow("Stamp", table) == len(ticks)
+        assert _wall_clocks(temp_db, "Stamp", "val") == {
+            "val": [_wall_clock(t, unit) for t in ticks]
+        }
+
+    @pytest.mark.parametrize("declared", [None, "DATE"], ids=["undeclared", "DATE"])
+    @pytest.mark.parametrize(
+        "arrow_type", [pa.date32(), pa.date64()], ids=["date32", "date64"]
+    )
+    def test_a_date_before_and_after_the_epoch_with_a_null(
+        self, temp_db, arrow_type, declared
+    ):
+        assert _one_column(temp_db, arrow_type, _DAYS, declared) == _DAYS
+
+    @pytest.mark.parametrize(
+        "kind, parallel",
+        [("DOCUMENT", False), ("DOCUMENT", True), ("VERTEX", False)],
+        ids=["document", "document_parallel", "vertex"],
+    )
+    def test_every_temporal_column_of_a_load_in_batches(self, temp_db, kind, parallel):
+        """23 rows in batches of 5 (the last of 3): six timestamp columns and two date columns, with their nulls in different rows."""
+        n = 23
+        idx = np.arange(n, dtype=np.int64)
+        units = {
+            "t_s": "s",
+            "t_ms": "ms",
+            "t_us": "us",
+            "t_ns": "ns",
+            "t_zoned": "us",
+            "t_null": "us",
+        }
+        ticks = {
+            "t_s": (idx * 86_400 - 1_000_000_000).tolist(),
+            "t_ms": (idx * 1_000_003 - 1_000_000_000_001).tolist(),
+            "t_us": (idx * 1_000_000_007 - 1_000_000_000_000_001).tolist(),
+            "t_ns": (idx * 1_000_000_000_011 - 1_000_000_000_000_000_001).tolist(),
+            "t_zoned": (idx * 777_777_777 - 5).tolist(),
+            "t_null": [None] * n,
+        }
+        for name, every in (
+            ("t_s", 4),
+            ("t_ms", 5),
+            ("t_us", 6),
+            ("t_ns", 7),
+            ("t_zoned", 3),
+        ):
+            ticks[name] = [
+                None if i % every == 2 else t for i, t in enumerate(ticks[name])
+            ]
+        days = [
+            (
+                None
+                if i % 6 == 1
+                else dt.date(2000, 1, 1) + dt.timedelta(days=i * 997 - 30_000)
+            )
+            for i in range(n)
+        ]
+        temp_db.command("sql", f"CREATE {kind} TYPE Wide")
+        for name in units:
+            temp_db.command("sql", f"CREATE PROPERTY Wide.{name} DATETIME_NANOS")
+        columns = {"idx": pa.array(idx)}
+        for name, unit in units.items():
+            tz = "Asia/Karachi" if name == "t_zoned" else None
+            columns[name] = _timestamps(ticks[name], unit, tz)
+        columns["d32"] = pa.array(days, pa.date32())
+        columns["d64"] = pa.array(days, pa.date64())
+        assert (
+            temp_db.insert_arrow(
+                "Wide", pa.table(columns), batch_size=5, parallel=parallel
+            )
+            == n
+        )
+        assert _count(temp_db, "Wide") == n
+        assert _wall_clocks(temp_db, "Wide", *units) == {
+            name: [_wall_clock(t, unit) for t in ticks[name]]
+            for name, unit in units.items()
+        }
+        stored = _rows(temp_db, "SELECT idx, d32, d64 FROM Wide ORDER BY idx")
+        assert [r.get("d32") for r in stored] == days
+        assert [r.get("d64") for r in stored] == days
+
+    def test_pandas_and_polars_columns_keep_their_unit_zone_and_nulls(self, temp_db):
+        """pandas datetime64[ns] with a NaT, the same instants with a zone, and Polars Datetime of two units and a Date."""
+        ticks = _STAMPS["ns"]
+        nat = np.iinfo(np.int64).min
+        values = np.array([nat if t is None else t for t in ticks], dtype="int64")
+        naive = pd.Series(values.view("datetime64[ns]"))
+        pandas_frame = pd.DataFrame(
+            {
+                "idx": np.arange(len(ticks), dtype=np.int64),
+                "t_naive": naive,
+                "t_zoned": naive.dt.tz_localize("UTC").dt.tz_convert("Etc/GMT-5"),
+            }
+        )
+        whole_ms = [
+            dt.datetime(1969, 12, 31, 23, 59, 59, 999000),
+            dt.datetime(2020, 1, 2, 3, 4, 5, 123000),
+            None,
+            dt.datetime(1900, 1, 1, 0, 0, 0, 1000),
+        ]
+        micros = [
+            dt.datetime(1969, 12, 31, 23, 59, 59, 999999),
+            dt.datetime(2020, 1, 2, 3, 4, 5, 123456),
+            None,
+            dt.datetime(1900, 1, 1, 0, 0, 0, 1),
+        ]
+        polars_frame = pl.DataFrame(
+            {
+                "idx": pl.Series(range(4), dtype=pl.Int64),
+                "t_ms": pl.Series(whole_ms, dtype=pl.Datetime("ms")),
+                "t_ns": pl.Series(micros, dtype=pl.Datetime("ns")),
+                "day": pl.Series([m and m.date() for m in micros], dtype=pl.Date),
+            }
+        )
+        for name, columns in (
+            ("FromPandas", ("t_naive", "t_zoned")),
+            ("FromPolars", ("t_ms", "t_ns")),
+        ):
+            temp_db.command("sql", f"CREATE DOCUMENT TYPE {name}")
+            for column in columns:
+                temp_db.command(
+                    "sql", f"CREATE PROPERTY {name}.{column} DATETIME_NANOS"
+                )
+        assert temp_db.insert_dataframe("FromPandas", pandas_frame) == len(ticks)
+        assert temp_db.insert_dataframe("FromPolars", polars_frame) == 4
+        shown = [_wall_clock(t, "ns") for t in ticks]
+        assert _wall_clocks(temp_db, "FromPandas", "t_naive", "t_zoned") == {
+            "t_naive": shown,
+            "t_zoned": shown,  # the zone is only how pandas shows the instant: it is stored as the UTC wall clock
+        }
+        got = _wall_clocks(temp_db, "FromPolars", "t_ms", "t_ns")
+        assert got["t_ms"] == [
+            m and m.isoformat(sep=" ", timespec="milliseconds") + "000000"
+            for m in whole_ms
+        ]
+        assert got["t_ns"] == [
+            m and m.isoformat(sep=" ", timespec="microseconds") + "000" for m in micros
+        ]
+        days = _rows(temp_db, "SELECT idx, day FROM FromPolars ORDER BY idx")
+        assert [r.get("day") for r in days] == [m and m.date() for m in micros]
+
+
 class TestNulls:
     def test_every_kind_stores_nulls_as_missing(self, temp_db):
         temp_db.command("sql", "CREATE DOCUMENT TYPE Nul")
