@@ -150,6 +150,7 @@ NATIVE_NOT_APPLICABLE = {
     "test_graph_batch_vector_crossings_jvm.py": "the JPype crossings of the JVM wheel's create_vertices vector path (the bridge classes, the property-matrix fallback)",
     "test_insert_columns_string_blob.py": "the bridge's StringColumn and the JVM wheel's core._column_to_java (JPype arrays, a spy on the per-element conversion)",
     "test_arrow_vector_column_jvm.py": "the JPype crossings of the JVM wheel's Arrow vector column (core.convert_python_to_java, the bridge's FloatVectors.Matrix) and its Python heap",
+    "test_arrow_temporal_column_jvm.py": "the JPype calls of the JVM wheel's Arrow timestamp and date columns (the bridge's TemporalColumn, core._column_to_java, java.time classes)",
     "test_async_proxy_cache.py": "the JPype proxy classes of the JVM build's async executor",
     "test_read_crossings.py": "crossing counts of the JVM build's read path (JPype proxies of the Java objects and the bridge classes)",
     "test_reader_crossings.py": "crossing counts of the JVM build's record and row readers (JPype proxies of the Java objects and the bridge classes)",
