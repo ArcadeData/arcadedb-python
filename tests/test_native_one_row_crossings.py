@@ -7,7 +7,7 @@ transaction check, the SELECT of the stale-record check, and two for the UPDATE)
 reads the stored record first: the engine's reply to an UPDATE comes after the write, and the check must refuse before writing
 anything inside the caller's transaction, so it cannot be read from the update's own result.
 
-The counts are crossings (the ctypes doors ``cmd``, ``call``, ``call_bin``, ``exec_query`` and the batched cursor close), not seconds:
+The counts are crossings (the ctypes doors ``cmd``, ``call``, ``call_bin``, ``exec_query``, ``tx`` and the batched cursor close), not seconds:
 deterministic. The oracle for the values and the errors is the lazy form itself (``db.command(...).first()``), kept for every other caller.
 """
 
@@ -27,7 +27,7 @@ class _Crossings:
 
     def __init__(self, monkeypatch):
         self.names = []
-        for attr in ("cmd", "call", "call_bin", "exec_query"):
+        for attr in ("cmd", "call", "call_bin", "exec_query", "tx"):
             monkeypatch.setattr(lib, attr, self._spy(attr, getattr(lib, attr)))
         real_close = lib._lib.arcadedb_n_rs_close_many
 
@@ -39,7 +39,9 @@ class _Crossings:
 
     def _spy(self, attr, real):
         def spy(*args, **kwargs):
-            self.names.append(args[0] if attr in ("call", "call_bin") else attr)
+            # the transaction door is named by its entry point, as it was when it went through lib.call
+            name = "arcadedb_n_tx" if attr == "tx" else attr
+            self.names.append(args[0] if attr in ("call", "call_bin") else name)
             return real(*args, **kwargs)
 
         return spy
