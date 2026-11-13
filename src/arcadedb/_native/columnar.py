@@ -68,28 +68,52 @@ class Packed:
 
 
 class Declared:
-    """The declared property types of a type, read once and only when a column needs them (``INTEGER``, ``FLOAT``, ``ARRAY_OF_FLOATS``).
+    """The declared property types of a type, read only when a column needs them (``INTEGER``, ``FLOAT``, ``ARRAY_OF_FLOATS``).
 
-    ``known`` (a dict) is used as it is; otherwise ``db`` is asked for ``schema:types`` the first time :meth:`get` is called.
+    One ingest call makes one object (:func:`declared_for`) and every chunk of the call shares it, so the call reads ``schema:types``
+    (every type and property in one reply) once, not once per chunk. The object is dropped when the call ends: nothing is kept across
+    calls, so a schema change made between two calls is always seen.
+
+    ``known`` (a dict) is the caller's own snapshot and is used as it is. Otherwise ``db`` is asked the first time :meth:`get` is
+    called, and again when a statement has run on ``db`` since (its ``_command_count`` moved): a schema change made while the call
+    runs (the rows come from a generator that runs a ``CREATE PROPERTY``, say) is a statement on the handle, so the next chunk sees it.
+    A read that fails is not kept: the next :meth:`get` asks again.
     """
 
     def __init__(self, db=None, type_name=None, known=None):
         self._db, self._type, self._known = db, type_name, known
+        self._pinned = known is not None
+        self._stamp = None
 
     def get(self, name):
-        if self._known is None:
-            self._known = _declared_types(self._db, self._type)
+        if not self._pinned:
+            stamp = getattr(self._db, "_command_count", None)
+            if self._known is None or stamp != self._stamp:
+                known = _declared_types(self._db, self._type)
+                if known is None:
+                    self._known = None
+                    return None
+                self._known, self._stamp = known, stamp
         return self._known.get(name)
 
 
+def declared_for(db, type_name, declared=None):
+    """The :class:`Declared` of one ingest call: ``declared`` itself when it is one (a call that goes on from one entry to another
+    shares it), a dict as the caller's snapshot, None as read from the schema when a column needs it.
+    """
+    if isinstance(declared, Declared):
+        return declared
+    return Declared(db, type_name, declared)
+
+
 def _declared_types(db, type_name):
-    """``{property: TYPE}`` of ``type_name`` and its parent types (the nearest declaration wins); ``{}`` when it cannot be read."""
+    """``{property: TYPE}`` of ``type_name`` and its parent types (the nearest declaration wins); None when it cannot be read."""
     try:
         rows = {
             r["name"]: r for r in db.query("sql", "SELECT FROM schema:types").to_list()
         }
     except Exception:  # nosec B110 - the insert reports the real error
-        return {}
+        return None
     out, seen, queue = {}, set(), [type_name]
     while queue:
         current = queue.pop(0)
