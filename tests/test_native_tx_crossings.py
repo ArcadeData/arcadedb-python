@@ -15,6 +15,7 @@ Needs the native library, so conftest.py does not collect this file on the JPype
 scripts/check_test_skips.py); it runs in the native parity run.
 """
 
+import contextlib
 import json
 
 import pytest
@@ -113,8 +114,18 @@ def db(temp_db_path):
     ):  # the thread's transaction context exists from here on, as it does in a running application
         pass
     lib.flush_closes()  # a cursor closed earlier is not part of a call measured below
-    yield database
-    database.drop()
+    try:
+        yield database
+    finally:
+        # a test that fails with a transaction open (a begin without its end, a level a direct lib.tx call pushed) must not turn into
+        # a teardown error as well: the engine refuses to drop a database that has a transaction open on the thread
+        try:
+            for _ in range(16):
+                if not database.is_transaction_active():
+                    break
+                database.rollback()
+        finally:
+            database.drop()
 
 
 @pytest.fixture
@@ -255,14 +266,19 @@ def test_a_nested_block_that_succeeds_commits_with_the_caller(db):
     assert _count(db) == 2
 
 
-def test_nested_with_blocks_push_and_pop_one_level_each(db):
+def test_nested_with_blocks_push_one_level_for_the_inner_block_only(db):
+    # The depth is the size of the thread's stack of transaction contexts (LocalDatabase.getNestedTransactions). The stack always holds
+    # the thread's base context once the thread has used the database (the fixture did), so it is 1 while idle. The outer begin
+    # reuses that base context (depth stays 1, active); only a begin while a transaction is active pushes a context (2), and the commit
+    # of that inner level pops it (1, still active). The outer commit ends the base context and leaves it on the stack (1, idle).
     base = db._transaction_stack_mark()[1]
+    assert db._transaction_stack_mark() == (False, 1)
     with db.transaction():
-        assert db._transaction_stack_mark() == (True, base + 1)
+        assert db._transaction_stack_mark() == (True, base)
         with db.transaction():
-            assert db._transaction_stack_mark() == (True, base + 2)
+            assert db._transaction_stack_mark() == (True, base + 1)
             db.command("sql", "INSERT INTO R SET k = 1")
-        assert db._transaction_stack_mark() == (True, base + 1)
+        assert db._transaction_stack_mark() == (True, base)
     assert db._transaction_stack_mark() == (False, base)
     assert _count(db) == 1
 
@@ -366,6 +382,7 @@ def test_with_transaction_decodes_nothing(db, decodes):
 def test_a_state_still_carries_active_depth_and_commits(db):
     db.begin()
     db.begin()
+    # the first begin reuses the thread's base context (depth 1), the second pushes one (2)
     assert db._transaction_stack_mark() == (True, 2)
     db.rollback()
     db.rollback()
@@ -382,14 +399,15 @@ def test_the_state_comes_back_as_one_integer(db):
     assert type(idle) is int and idle >= 0
     active, base, _ = _fields(idle)
     assert active is False
+    # the first begin reuses the thread's base context (the depth stays), a begin inside it pushes one more (see the nested with test)
     one = lib.tx(handle, 0)
     assert type(one) is int and one >= 0
-    assert _fields(one)[:2] == (True, base + 1)
+    assert _fields(one)[:2] == (True, base)
     two = lib.tx(handle, 0)
-    assert _fields(two)[:2] == (True, base + 2)
+    assert _fields(two)[:2] == (True, base + 1)
     assert _fields(two)[2] == _fields(lib.tx(handle, 3))[2]  # a mark reads the count
-    assert _fields(lib.tx(handle, 2))[:2] == (True, base + 1)
-    assert _fields(lib.tx(handle, 2))[:2] == (False, base)
+    assert _fields(lib.tx(handle, 2))[:2] == (True, base)  # the inner level is gone
+    assert _fields(lib.tx(handle, 2))[:2] == (False, base)  # the outer one ended
 
 
 # -- errors: the same typed exception with the same message
@@ -462,23 +480,31 @@ def test_a_failure_reply_is_read_from_last_error_into_the_same_error(db, monkeyp
 
 def test_a_transaction_left_open_is_gone_after_a_close_and_reopen(temp_db_path):
     database = arcadedb.create_database(temp_db_path)
-    database.command("sql", "CREATE DOCUMENT TYPE R")
-    database.begin()
-    database.command("sql", "INSERT INTO R SET k = 1")
-    assert database.is_transaction_active() is True
-    database.close()
-    for call in (
-        database.begin,
-        database.commit,
-        database.rollback,
-        database.is_transaction_active,
-        database._transaction_stack_mark,
-    ):
-        with pytest.raises(ArcadeDBError, match="Database is closed"):
-            call()
-    reopened = arcadedb.open_database(temp_db_path)
+    reopened = None
     try:
+        database.command("sql", "CREATE DOCUMENT TYPE R")
+        database.begin()
+        database.command("sql", "INSERT INTO R SET k = 1")
+        assert database.is_transaction_active() is True
+        database.close()
+        for call in (
+            database.begin,
+            database.commit,
+            database.rollback,
+            database.is_transaction_active,
+            database._transaction_stack_mark,
+        ):
+            with pytest.raises(ArcadeDBError, match="Database is closed"):
+                call()
+        reopened = arcadedb.open_database(temp_db_path)
         assert reopened.is_transaction_active() is False
         assert _count(reopened) == 0
     finally:
-        reopened.drop()
+        if reopened is not None:
+            reopened.drop()
+        else:
+            # a failure before the reopen: end what is open and drop, ignoring the refusals of a database already closed
+            with contextlib.suppress(ArcadeDBError):
+                database.rollback()
+            with contextlib.suppress(ArcadeDBError):
+                database.drop()
