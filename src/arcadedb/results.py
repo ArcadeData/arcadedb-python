@@ -121,6 +121,24 @@ def _loads_typed_row(java_row):
     return json.loads(text, object_hook=_typed_hook(java_row[1]))
 
 
+def _loads_typed_batch(java_batch):
+    """The rows of one ``TypedRows.nextRows`` batch, ``{String json, Object[] side, Boolean drained}``.
+
+    The hook, and the read of the side array that builds it, are needed only when the text holds a
+    tag. TypedRows writes every tag as ``{"\\u0001": [kind, payload]}`` with the escape spelled out
+    (``tagged``, and the ``r`` row of ``appendRow``), writes a control character of a string as the
+    same escape (``quote``), and never writes the raw character, and every entry of the side array
+    is referred to by such a tag. So a text without the escape holds no tag and no side index: the
+    hook would return every object unchanged, and ``json.loads(text)`` is the same value without it.
+    A string that holds U+0001, or the text of the escape, also puts the escape into the text; that
+    only keeps the hook, which then changes nothing.
+    """
+    text = str(java_batch[0])
+    if "\\u0001" not in text:
+        return json.loads(text)
+    return json.loads(text, object_hook=_typed_hook(java_batch[1]))
+
+
 def _loads_names(java_text):
     """The property names ``ReaderCalls.rowNames`` / ``documentNames`` wrote, as a tuple."""
     return tuple(json.loads(str(java_text)))
@@ -340,7 +358,9 @@ class ResultSet:
         else (RIDs, embedded documents, non-finite floats, ...) by index into
         a side array of the engine's own objects, so every value comes back
         as the type ``convert_java_to_python`` gives it. The C ``json`` module
-        parses the text and one hook call per tagged value restores it.
+        parses the text and one hook call per tagged value restores it; a batch
+        with no tag in its text is parsed without the hook and its side array
+        is not read (``_loads_typed_batch``).
         """
         out: List[Dict[str, Any]] = []
         if not self._readable():
@@ -352,9 +372,7 @@ class ResultSet:
                 )
             except JException as exc:
                 raise _read_error(exc) from exc
-            side = java_batch[1]
-            rows = json.loads(str(java_batch[0]), object_hook=_typed_hook(side))
-            out.extend(rows)
+            out.extend(_loads_typed_batch(java_batch))
             if java_batch[2]:
                 # the result set is drained, and the bridge closed it: no
                 # second call just to see an empty batch. (A batch also ends
@@ -392,9 +410,7 @@ class ResultSet:
                 java_batch = typed_rows.nextRows(self._java_result_set, 1)
             except JException as exc:
                 raise _read_error(exc) from exc
-            rows = json.loads(
-                str(java_batch[0]), object_hook=_typed_hook(java_batch[1])
-            )
+            rows = _loads_typed_batch(java_batch)
             if not rows:
                 # nextRows closed the drained result set itself
                 self._drained()
