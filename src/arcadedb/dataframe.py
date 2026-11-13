@@ -245,43 +245,46 @@ def _check_declared(
             )
 
 
-def _temporal_to_java(chunk, pa):
-    """A timestamp or date chunk as a list of ``LocalDateTime``/``LocalDate``, keeping the unit's precision.
+def _temporal_column(chunk, pa):
+    """A timestamp or date chunk as one ``TemporalColumn`` of the bridge, keeping the unit's precision.
+
+    The integer epoch values cross as ONE ``long[]`` (a buffer copy), the null rows as one ``boolean[]`` when there is a null, and the
+    bridge builds each ``LocalDateTime`` or ``LocalDate`` as it fills the document of that row: one call per column and batch, where a
+    ``LocalDateTime.ofEpochSecond`` or ``LocalDate.ofEpochDay`` call per cell (and one conversion per element in ``insert_columns``) came
+    before. ``insert_columns`` takes the column as it is.
 
     DATETIME is a UTC wall clock: a timestamp with a zone is already UTC epoch time, and a timestamp without
     one is taken as the wall clock it shows (the same rule ``Document.set`` applies to a ``datetime``), so both
-    are read from the integer epoch value. Going through ``datetime`` would cut a nanosecond value to microseconds.
+    are read from the integer epoch value, in the unit of the column. Going through ``datetime`` would cut a nanosecond value to
+    microseconds. A date32 is days, a date64 is milliseconds (the bridge divides by 86,400,000, rounding toward negative infinity).
     """
     import numpy as np
 
     types = pa.types
-    mask = chunk.is_null().to_numpy(zero_copy_only=False)
     if types.is_date(chunk.type):
-        local_date = jpype.JClass("java.time.LocalDate")
-        raw = chunk.cast(pa.int64() if types.is_date64(chunk.type) else pa.int32())
-        days = raw.fill_null(0).to_numpy(zero_copy_only=False).astype(np.int64)
-        if types.is_date64(chunk.type):
-            days = days // 86_400_000
-        return [
-            None if m else local_date.ofEpochDay(int(d)) for d, m in zip(days, mask)
-        ]
-    per_second = {"s": 1, "ms": 1_000, "us": 1_000_000, "ns": 1_000_000_000}[
-        chunk.type.unit
-    ]
-    values = chunk.cast(pa.int64()).fill_null(0).to_numpy(zero_copy_only=False)
-    seconds, rest = np.divmod(values.astype(np.int64), per_second)
-    nanos = rest * (1_000_000_000 // per_second)
-    local_datetime = jpype.JClass("java.time.LocalDateTime")
-    utc = jpype.JClass("java.time.ZoneOffset").UTC
-    return [
-        None if m else local_datetime.ofEpochSecond(int(s), int(n), utc)
-        for s, n, m in zip(seconds, nanos, mask)
-    ]
+        date64 = types.is_date64(chunk.type)
+        raw = chunk.cast(pa.int64() if date64 else pa.int32())
+        ticks, per_unit, factory = raw, 86_400_000 if date64 else 1, "dates"
+    else:
+        per_second = {"s": 1, "ms": 1_000, "us": 1_000_000, "ns": 1_000_000_000}
+        ticks = chunk.cast(pa.int64())
+        per_unit, factory = per_second[chunk.type.unit], "dateTimes"
+    values = ticks.fill_null(0).to_numpy(zero_copy_only=False)
+    nulls = None
+    if chunk.null_count:
+        nulls = jpype.JArray(jpype.JBoolean)(
+            chunk.is_null().to_numpy(zero_copy_only=False)
+        )
+    return getattr(jpype.JClass("com.arcadedb.python.TemporalColumn"), factory)(
+        jpype.JArray(jpype.JLong)(np.ascontiguousarray(values, dtype=np.int64)),
+        per_unit,
+        nulls,
+    )
 
 
 def _temporal_to_tagged(chunk, pa):
     """A timestamp or date chunk as tagged values (``T`` date-time, ``D`` date) for the native backend, with the same
-    reading rules as :func:`_temporal_to_java`: ISO text of the integer epoch value, so a nanosecond value keeps its
+    reading rules as :func:`_temporal_column`: ISO text of the integer epoch value, so a nanosecond value keeps its
     nanoseconds (a Python ``datetime`` would cut them to microseconds).
     """
     import numpy as np
@@ -381,7 +384,8 @@ def _column_values(
     float_vectors: bool = False,
 ):
     """One Arrow array as what ``Database.insert_columns`` takes: a numpy array when the column crosses as one
-    buffer (integers, floats and booleans without nulls), else a list of values (``None`` is a null).
+    buffer (integers, floats and booleans without nulls), else a list of values (``None`` is a null). On the JVM backend a timestamp or
+    date column is one bridge ``TemporalColumn`` instead (``_temporal_column``: one ``long[]`` of epoch ticks, no value per cell).
 
     ``float_vectors`` (the JVM backend, a property declared ``ARRAY_OF_FLOATS``): a float32 vector column of one length and no null is
     one 2-D float32 matrix, which ``insert_columns`` sends as one ``float[]``; ``to_pylist`` made one Python float per element and
@@ -434,9 +438,7 @@ def _column_values(
         if matrix is not None:
             return matrix
     if kind in ("timestamp", "date"):
-        return (
-            _temporal_to_tagged(chunk, pa) if native else _temporal_to_java(chunk, pa)
-        )
+        return _temporal_to_tagged(chunk, pa) if native else _temporal_column(chunk, pa)
     if native and kind in ("decimal", "binary"):
         return _scalars_to_tagged(kind, chunk)
     if kind == "null":

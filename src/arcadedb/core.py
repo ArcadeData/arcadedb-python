@@ -241,7 +241,8 @@ def _column_to_java(name, values):
     into a ``long[]``, ``double[]``, or ``boolean[]``; a string or object array
     and any other sequence of mixed values convert per element into an ``Object[]`` (a ``str``
     reuses one Java String per distinct value, ``None`` is a null); a column of nothing but ``str`` and ``None`` crosses instead as one
-    ``StringColumn`` (``_string_column``). A pandas
+    ``StringColumn`` (``_string_column``). A bridge ``TemporalColumn``, which ``insert_arrow`` and ``insert_dataframe`` build from a
+    timestamp or date column (``dataframe._temporal_column``), crosses as it is. A pandas
     ``Series`` is read through ``to_numpy``, with a nullable dtype's ``<NA>``
     as ``None``. A 2-D ``float32`` array is a column of vectors: it crosses as
     one ``float[]`` and each document gets one row of it. Kinds that do not cross natively raise ``TypeError`` rather
@@ -313,6 +314,8 @@ def _column_to_java(name, values):
         # a string, bytes, or object array: its elements are Python objects (str, None, ...), converted one by one below
         values = list(values.astype(object, copy=False))
     elif not isinstance(values, (list, tuple)):
+        if isinstance(values, _java_class("com.arcadedb.python.TemporalColumn")):
+            return values, int(values.rows())
         values = list(values)
     column = _string_column(values)
     if column is not None:
