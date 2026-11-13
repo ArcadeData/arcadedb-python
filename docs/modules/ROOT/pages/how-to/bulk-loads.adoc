@@ -78,6 +78,8 @@ A column the buffers cannot carry makes the batch take the row path, which store
 
 On the `arcadedb-jvm` package, a column of only `str` and `None` crosses as one UTF-8 buffer with its row offsets, and a mask when a row is null. A column that mixes types, is empty, or holds more than 2 GiB of text crosses value by value. A column with a lone surrogate also crosses value by value, and is refused with the error it always raised, before anything is written.
 
+On the same package, a timestamp or date column of `insert_arrow` and `insert_dataframe` crosses as one array of epoch values for each batch, and the bridge builds the date-times in Java. The stored value does not change: a date-time is a UTC wall clock, a nanosecond value reaches the property with its nanoseconds (the precision of the property, such as `DATETIME_NANOS`, decides what is stored), and a null stays a null. A list of Python `datetime` objects passed to `insert_columns` still crosses value by value.
+
 [[parallel-inserts]]
 == Parallel and async inserts
 

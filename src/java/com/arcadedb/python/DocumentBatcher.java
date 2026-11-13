@@ -81,17 +81,17 @@ public final class DocumentBatcher {
 
   /**
    * Columnar insert: the documents are built Java-side from whole columns, so each column crosses the FFI once (a long[] or
-   * double[] copied from a numpy buffer, a boolean[], a StringColumn (one UTF-8 byte[] plus the int[] offsets), or an Object[] of
-   * boxed numbers, Strings of a mixed column, and nulls) instead of one
+   * double[] copied from a numpy buffer, a boolean[], a StringColumn (one UTF-8 byte[] plus the int[] offsets), a TemporalColumn (one
+   * long[] of epoch ticks), or an Object[] of boxed numbers, Strings of a mixed column, and nulls) instead of one
    * JSON text per batch (bindings issue #150: 2.24x over insertManyJson on the first
    * 2,000,000 TPC-H SF1 line items, nine typed properties, commit every 10,000, same sums and count).
    *
    * Same failure contract as insertManyJson (#7882): batch commits and the failure rollback apply only to a transaction
    * opened here; a caller's own transaction is the caller's to commit or roll back.
    *
-   * @param columns one array per name, each of length n: long[], double[], boolean[], Object[], a FloatVectors.Matrix or a
-   *                StringColumn; a null element (or null row of a StringColumn) sets the property to null, as a JSON null does
-   *                on the insertManyJson path
+   * @param columns one array per name, each of length n: long[], double[], boolean[], Object[], a FloatVectors.Matrix, a
+   *                StringColumn or a TemporalColumn; a null element (or null row of a StringColumn or TemporalColumn) sets the
+   *                property to null, as a JSON null does on the insertManyJson path
    */
   public static long insertColumns(final Database db, final String typeName, final String[] names, final Object[] columns,
       final int n, final int commitEvery) {
@@ -229,9 +229,11 @@ public final class DocumentBatcher {
         len = m.rows();
       else if (col instanceof StringColumn s)
         len = s.rows();
+      else if (col instanceof TemporalColumn t)
+        len = t.rows();
       else
         throw new IllegalArgumentException("column '" + names[c] + "' is a " + (col == null ? "null" : col.getClass().getName())
-            + ", not a long[], double[], boolean[], Object[], FloatVectors.Matrix or StringColumn");
+            + ", not a long[], double[], boolean[], Object[], FloatVectors.Matrix, StringColumn or TemporalColumn");
       if (len != n)
         throw new IllegalArgumentException("column '" + names[c] + "' has " + len + " values for " + n + " rows");
     }
@@ -251,6 +253,8 @@ public final class DocumentBatcher {
         v = m.row(i);
       else if (col instanceof StringColumn s)
         v = s.get(i);
+      else if (col instanceof TemporalColumn t)
+        v = t.get(i);
       else
         v = ((Object[]) col)[i];
       doc.set(names[c], v);
