@@ -74,12 +74,10 @@ def _call(prefix: str, name: str, *args) -> dict:
     return reply
 
 
-# Every successful ``arcadedb_n_tx`` reply is ``{"ok":true,"active":<bool>,"depth":<n>,"commits":<n>}`` (``ArcadeNative.txState``). A caller
-# that reads none of the state (begin, commit, rollback), or only ``active``, tells success and that bool from the text it already holds
-# instead of decoding a JSON object. An error reply is ``{"ok":false,...}``: it fails the prefix test and is decoded, as before.
-_TX_OK = '{"ok":true,'
-_TX_ACTIVE = '{"ok":true,"active":true,'
-_TX_IDLE = '{"ok":true,"active":false,'
+# ``arcadedb_n_tx`` answers with the transaction state after the call as one int (``ArcadeNative.tx``, no reply text to copy, free or
+# decode): bit 0 is ``active``, bits 1 to 31 the nesting ``depth``, bits 32 to 62 the ``commits`` of the transaction context (its low 31
+# bits: callers compare two of them for equality). Callers read the fields inline: ``state & 1``, ``(state >> 1) & 0x7FFFFFFF``,
+# ``state >> 32``. -1 is an error: its text, the ``{"ok":false,...}`` reply of every other entry point, is ``lib.last_error()``.
 
 
 def _first_row(database, reply: dict):
@@ -793,73 +791,63 @@ class NativeDatabase:
 
     # -- transactions
 
-    def _tx_text(self, op: int, prefix: str) -> str:
-        """One ``arcadedb_n_tx`` crossing: the reply text of a success (not decoded), an ArcadeDBError for a failure."""
+    def _tx_state(self, op: int, prefix: str) -> int:
+        """One ``arcadedb_n_tx`` crossing, one foreign call: the transaction state after the operation as an int (its layout is
+        described at the top of this module), an ArcadeDBError for a failure.
+        """
         if self._closed:
             raise ArcadeDBError("Database is closed")
         if (op == 1 or op == 2) and lib.CLOSE_BATCH:
             lib.flush_closes()
-        text = lib.call("arcadedb_n_tx", self._h, op)
-        if text.startswith(_TX_OK):
-            return text
-        reply = json.loads(text)
-        if not reply.get("ok"):
-            raise _error(prefix, reply)
-        return text
-
-    def _tx(self, op: int, prefix: str) -> dict:
-        """The decoded state reply: for a caller that reads ``depth`` or ``commits``."""
-        return json.loads(self._tx_text(op, prefix))
+        state = lib.tx(self._h, op)
+        if state < 0:
+            raise _error(prefix, json.loads(lib.last_error()))
+        return state
 
     def begin(self):
-        self._tx_text(0, "Failed to begin transaction")
+        self._tx_state(0, "Failed to begin transaction")
 
-    def _begin_state(self) -> dict:
-        """begin(), and the state right after it: the reply of ``arcadedb_n_tx`` carries ``active``, ``depth`` and ``commits``."""
-        return self._tx(0, "Failed to begin transaction")
+    def _begin_state(self) -> int:
+        """begin(), and the state right after it: the int of ``arcadedb_n_tx`` carries ``active``, ``depth`` and ``commits``."""
+        return self._tx_state(0, "Failed to begin transaction")
 
     def commit(self):
-        self._tx_text(1, "Failed to commit transaction")
+        self._tx_state(1, "Failed to commit transaction")
 
     def rollback(self):
-        self._tx_text(2, "Failed to rollback transaction")
+        self._tx_state(2, "Failed to rollback transaction")
 
-    def _rollback_state(self) -> dict:
-        """rollback(), and the state right after it (the reply carries it, as begin's does): the unwind reads it instead of asking."""
-        return self._tx(2, "Failed to rollback transaction")
+    def _rollback_state(self) -> int:
+        """rollback(), and the state right after it (the int carries it, as begin's does): the unwind reads it instead of asking."""
+        return self._tx_state(2, "Failed to rollback transaction")
 
     def transaction(self) -> TransactionContext:
         return TransactionContext(self)
 
     def is_transaction_active(self) -> bool:
-        text = self._tx_text(3, "Failed to check transaction status")
-        if text.startswith(_TX_ACTIVE):
-            return True
-        if text.startswith(_TX_IDLE):
-            return False
-        return json.loads(text)["active"]
+        return bool(self._tx_state(3, "Failed to check transaction status") & 1)
 
     def _transaction_stack_mark(self):
-        state = self._tx(3, "Failed to read the transaction state")
-        return state["active"], state["depth"]
+        state = self._tx_state(3, "Failed to read the transaction state")
+        return bool(state & 1), (state >> 1) & 0x7FFFFFFF
 
     def _transaction_commit_mark(self):
         """The commit count of the current transaction (the witness that a BATCH boundary published part of its work)."""
-        return self._tx(3, "Failed to read the transaction state")["commits"]
+        return self._tx_state(3, "Failed to read the transaction state") >> 32
 
     def _unwind_opened_since(self, mark):
         """Roll back every level opened since ``mark``, and no other; returns ``(state, first_error)``.
 
-        ``state`` is the transaction state after the last crossing (every rollback reply carries it, so no read sits between two
+        ``state`` is the transaction state int after the last crossing (every rollback carries it, so no read sits between two
         steps), or None when that crossing failed. A level the caller held at the mark is theirs, as in the JPype ``Database``.
         """
         was_active, depth_before = mark
         first_error = None
-        state = self._tx(3, "Failed to read the transaction state")
-        for _ in range(state["depth"] - depth_before):
+        state = self._tx_state(3, "Failed to read the transaction state")
+        for _ in range(((state >> 1) & 0x7FFFFFFF) - depth_before):
             if state is None:
-                state = self._tx(3, "Failed to check transaction status")
-            if not state["active"]:
+                state = self._tx_state(3, "Failed to check transaction status")
+            if not state & 1:
                 break
             try:
                 state = self._rollback_state()
@@ -868,8 +856,8 @@ class NativeDatabase:
                 first_error = first_error or e
         if not was_active:
             if state is None:
-                state = self._tx(3, "Failed to check transaction status")
-            if state["active"]:
+                state = self._tx_state(3, "Failed to check transaction status")
+            if state & 1:
                 try:
                     state = self._rollback_state()
                 except Exception as e:
@@ -893,7 +881,7 @@ class NativeDatabase:
             mark = self._transaction_stack_mark()
             commits_at_start = None
             try:
-                commits_at_start = self._begin_state()["commits"]
+                commits_at_start = self._begin_state() >> 32
                 result = fn()
                 self.commit()
                 return result
@@ -919,7 +907,7 @@ class NativeDatabase:
                     # retry, as before); the raise sits outside that try, or its own except would swallow it.
                     try:
                         commits_now = (
-                            state["commits"]
+                            state >> 32
                             if state is not None
                             else self._transaction_commit_mark()
                         )

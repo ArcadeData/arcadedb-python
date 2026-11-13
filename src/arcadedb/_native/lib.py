@@ -259,6 +259,9 @@ def _load():
             "arcadedb_n_set_upcall": [P, P],
             "arcadedb_free": [P, P],
         }
+        # the entry points that answer with a number, not with the address of a reply text: a cursor id (arcadedb_n_cmd) and the
+        # transaction state (arcadedb_n_tx); -1 is an error for both, its text is read with arcadedb_n_last_error
+        returns_long = ("arcadedb_n_cmd", "arcadedb_n_tx")
         for name, argtypes in sigs.items():
             fn = getattr(lib, name, None)
             if fn is None:  # a library built before this entry point existed
@@ -272,7 +275,7 @@ def _load():
                     "arcadedb_n_rs_close_many",
                     "arcadedb_n_set_upcall",
                 )
-                else ctypes.c_longlong if name == "arcadedb_n_cmd" else ctypes.c_void_p
+                else ctypes.c_longlong if name in returns_long else ctypes.c_void_p
             )
         global BINARY_PARAMS, CMD_PATH, CLOSE_BATCH, INSERT_ROWS, EXEC_MANY, NEXT_BIN, GB_BIN, TS_BIN
         if not hasattr(
@@ -488,7 +491,19 @@ def cmd(handle, flags, language, command, params, buf, count, first) -> int:
     )
 
 
+def tx(handle, op) -> int:
+    """``arcadedb_n_tx``: op 0 begin, 1 commit, 2 rollback, 3 mark. Returns the transaction state after the call as one int (bit 0
+    ``active``, bits 1 to 31 ``depth``, bits 32 to 62 ``commits``, as ``ArcadeNative.tx`` writes it), or -1 for an error (read it
+    with :func:`last_error`). One foreign call: no reply text to copy, free or decode.
+    """
+    lib = _lib or _load()
+    t = _local.__dict__.get("thread")
+    th = t.handle if t is not None else _thread_handle()
+    return lib.arcadedb_n_tx(th, handle, op)
+
+
 def last_error() -> str:
+    """The error of the last failed :func:`cmd` or :func:`tx` on this thread, as the JSON text of an error reply."""
     return call("arcadedb_n_last_error")
 
 
