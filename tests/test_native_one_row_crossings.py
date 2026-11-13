@@ -7,6 +7,11 @@ transaction check, the SELECT of the stale-record check, and two for the UPDATE)
 reads the stored record first: the engine's reply to an UPDATE comes after the write, and the check must refuse before writing
 anything inside the caller's transaction, so it cannot be read from the update's own result.
 
+With auto-transaction on, the transaction check cannot refuse (the engine opens a transaction for a bare write), so ``save()`` does not
+ask for the state: two crossings, the SELECT and the UPDATE. With it off (the engine default) the check still comes first, outside a
+transaction and inside one. The engine runs the before-update callbacks and the property validation before it looks for a transaction,
+and an UPDATE of a record that is gone raises nothing, so the engine's own refusal cannot stand in for the check.
+
 The counts are crossings (the ctypes doors ``cmd``, ``call``, ``call_bin``, ``exec_query``, ``tx`` and the batched cursor close), not seconds:
 deterministic. The oracle for the values and the errors is the lazy form itself (``db.command(...).first()``), kept for every other caller.
 """
@@ -190,6 +195,110 @@ def test_an_update_that_reads_its_row_back_is_three_crossings(db, crossings):
         record.save()
         assert crossings.names == ["arcadedb_n_tx", "exec_query", "exec_query"]
     assert db.lookup_by_rid(rid).get("brand_new") == "value"
+
+
+@pytest.mark.parametrize("in_transaction", [False, True], ids=["bare", "in_tx"])
+def test_updating_a_saved_record_with_auto_transaction_is_two_crossings(
+    db, crossings, in_transaction
+):
+    rid = _saved(db, a=1, name="x")
+    db.set_auto_transaction(True)
+    record = db.lookup_by_rid(rid).modify()
+    record.set("a", 2)
+    with contextlib.ExitStack() as stack:
+        if in_transaction:
+            stack.enter_context(db.transaction())
+        crossings.reset()
+        record.save()
+        # the SELECT of the stale-record check and the UPDATE: the transaction check cannot refuse, so it is not asked (was three)
+        assert crossings.names == ["exec_query", "exec_query"]
+    assert db.lookup_by_rid(rid).get("a") == 2
+
+
+@pytest.mark.parametrize("in_transaction", [False, True], ids=["bare", "in_tx"])
+def test_an_update_that_reads_its_row_back_with_auto_transaction_is_two_crossings(
+    db, crossings, in_transaction
+):
+    rid = _saved(db, a=1)
+    db.set_auto_transaction(True)
+    record = db.lookup_by_rid(rid).modify()
+    record.set("brand_new", "value")  # a new property is read back (RETURN AFTER)
+    with contextlib.ExitStack() as stack:
+        if in_transaction:
+            stack.enter_context(db.transaction())
+        crossings.reset()
+        record.save()
+        assert crossings.names == ["exec_query", "exec_query"]
+    assert db.lookup_by_rid(rid).get("brand_new") == "value"
+
+
+def test_with_auto_transaction_off_again_the_transaction_check_comes_back(
+    db, crossings
+):
+    rid = _saved(db, a=1)
+    db.set_auto_transaction(True)
+    db.set_auto_transaction(False)
+    record = db.lookup_by_rid(rid).modify()
+    record.set("a", 2)
+    crossings.reset()
+    with pytest.raises(ArcadeDBError, match="Transaction not begun"):
+        record.save()
+    assert crossings.names == ["arcadedb_n_tx"]  # refused before it reads anything
+    with db.transaction():
+        crossings.reset()
+        record.save()
+        assert crossings.names == ["arcadedb_n_tx", "exec_query", "exec_query"]
+    assert db.lookup_by_rid(rid).get("a") == 2
+
+
+def test_a_stale_record_is_refused_under_auto_transaction_too(db):
+    rid = _saved(db, a=1, b=1)
+    mine = db.lookup_by_rid(rid).modify()
+    with db.transaction():
+        bump_sql = f"UPDATE {rid} SET b = 9"  # nosec B608 - a record id this test read
+        db.command("sql", bump_sql).close()
+    db.set_auto_transaction(True)
+    mine.set("a", 2)
+    with pytest.raises(ArcadeDBError, match="ConcurrentModificationException"):
+        mine.save()
+    stored = db.lookup_by_rid(rid)
+    assert (stored.get("a"), stored.get("b")) == (1, 9)  # nothing of mine was written
+
+
+UPDATE_CASES = {
+    "null": None,
+    "float": 2.5,
+    "text": "new",
+    "date and time": dt.datetime(2026, 11, 9, 12, 30, 15, 123000),
+    "date": dt.date(2026, 11, 9),
+    "decimal": Decimal("1.50"),
+    "list and map": {"l": [1, 2, 3], "m": {"k": [1.5, "v"]}},
+    "float array": np.arange(16, dtype=np.float32),
+    "as read": "old",  # the value the record already holds: set() of an unchanged value
+}
+
+
+@pytest.mark.parametrize("case", list(UPDATE_CASES))
+def test_an_update_under_auto_transaction_stores_what_one_in_a_transaction_stores(
+    db, case
+):
+    value = UPDATE_CASES[case]
+    inside, bare = _saved(db, k="old", n=0), _saved(db, k="old", n=0)
+    record = db.lookup_by_rid(inside).modify()
+    record.set("k", value)
+    with db.transaction():
+        record.save()
+    db.set_auto_transaction(True)
+    held = db.lookup_by_rid(bare).modify()
+    held.set("k", value)
+    held.save()
+    assert _plain(db.lookup_by_rid(bare).to_dict()) == _plain(
+        db.lookup_by_rid(inside).to_dict()
+    )
+    # the copy the save left is the stored row: the next save of the same object is no conflict
+    held.set("n", 1)
+    held.save()
+    assert db.lookup_by_rid(bare).get("n") == 1
 
 
 def test_a_stale_record_is_still_refused_before_anything_is_written(db):
