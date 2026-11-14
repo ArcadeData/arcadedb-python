@@ -13,6 +13,7 @@ import itertools
 import json
 import logging
 import threading
+import time
 import weakref
 from collections.abc import Mapping
 from typing import Any, Callable, Iterable, Optional
@@ -451,6 +452,9 @@ class NativeGraphBatch(_BaseGraphBatch):
 
 # records per crossing of create_record (the same size as the commit interval of insert_many on this build)
 _ASYNC_BATCH = 1000
+# seconds a collected record may wait for the rest of its batch before a thread of the executor hands it over: a caller that creates
+# records and waits for a callback, or reads after a pause, with no other call on the executor, is never kept waiting longer
+_ASYNC_LINGER = 0.05
 # the values of a property that cannot change after create_record returns; any other value is copied at the call
 _ATOMIC = frozenset((int, float, str, bool, bytes, type(None)))
 
@@ -484,6 +488,13 @@ class NativeAsyncExecutor:
         self._buf: list = []
         self._buf_key = None
         self._buf_lock = threading.RLock()
+        # the linger thread (started with the first collected record) hands a batch over when its first record has waited
+        # _ASYNC_LINGER; a failure it meets is kept and raised by the next call that hands records over
+        self._linger = threading.Condition(self._buf_lock)
+        self._linger_thread = None
+        self._linger_due = 0.0
+        self._linger_stop = False
+        self._linger_error = None
 
     def __enter__(self):
         return self
@@ -606,7 +617,10 @@ class NativeAsyncExecutor:
         afterwards is stored as it was at this call) and cross the library boundary ``_ASYNC_BATCH`` at a time, as one columnar frame
         with the callback ids of each record, not one JSON op per record. Every other call on the executor (``wait_completion``,
         ``is_processing``, ``query``, ``command``, ``kill``, ``close``, ...) hands the collected records over first, so the engine
-        queue keeps the order of the calls and a record is never held back from a ``wait_completion`` that follows its call. Records
+        queue keeps the order of the calls and a record is never held back from a ``wait_completion`` that follows its call. A thread of
+        the executor hands a batch over when its first record has waited ``_ASYNC_LINGER`` (50 ms), so a caller that waits for a
+        callback or reads after a pause, with no other call, is not kept waiting; a failure that thread meets is raised by the next
+        call that hands records over. Records
         whose shape the frame cannot carry (different keys, nested values, mixed-type columns, integers beyond 64 bits) and a batch of
         one cross as the per-record op they always did. A record that the library refuses before it is queued (the frame is checked
         before the first record is handed over; a record that cannot be built) reaches its own ``error_callback`` when one was given,
@@ -629,6 +643,43 @@ class NativeAsyncExecutor:
             self._buf.append(entry)
             if len(self._buf) >= _ASYNC_BATCH:
                 self._flush()
+            elif (
+                len(self._buf) == 1
+            ):  # the first record of a batch: its hand-over is due after the linger time
+                self._start_linger()
+
+    def _start_linger(self):
+        """Under ``_buf_lock``: the batch that has just got its first record is handed over at the latest after ``_ASYNC_LINGER``."""
+        self._linger_due = time.monotonic() + _ASYNC_LINGER
+        if self._linger_thread is None:
+            self._linger_thread = threading.Thread(
+                target=self._linger_loop, name="arcadedb-async-linger", daemon=True
+            )
+            self._linger_thread.start()
+        else:
+            self._linger.notify()
+
+    def _linger_loop(self):
+        with self._buf_lock:
+            while not self._linger_stop:
+                if not self._buf:
+                    self._linger.wait()
+                    continue
+                left = self._linger_due - time.monotonic()
+                if left > 0:
+                    self._linger.wait(left)
+                    continue
+                try:
+                    self._flush_buffer()
+                except (
+                    BaseException
+                ) as e:  # no caller to raise it to: the next call that hands records over raises it
+                    self._linger_error = e
+
+    def _stop_linger(self):
+        with self._buf_lock:
+            self._linger_stop = True
+            self._linger.notify_all()
 
     def _queue_record(self, type_name, kind, props, callback, error_callback):
         cb = self._record_callback(callback, kind) if callback is not None else 0
@@ -638,6 +689,16 @@ class NativeAsyncExecutor:
         )
 
     def _flush(self):
+        """Hand the collected ``create_record`` calls to the library, in order, and raise what the linger thread's hand-over met."""
+        if not self._buf and self._linger_error is None:
+            return
+        with self._buf_lock:
+            self._flush_buffer()
+            error, self._linger_error = self._linger_error, None
+            if error is not None:
+                raise error
+
+    def _flush_buffer(self):
         """Hand the collected ``create_record`` calls to the library, in order; see :meth:`create_record`."""
         if not self._buf:
             return
@@ -1081,10 +1142,18 @@ class NativeAsyncExecutor:
     def close(self):
         if self._closed:
             return
+        pending = None
         try:
-            self._op("close")
+            try:
+                self._flush()
+            except BaseException as e:  # the engine's executor is closed all the same
+                pending = e
+            self._op_raw("close")
+            if pending is not None:
+                raise pending
         finally:
             self._closed = True
+            self._stop_linger()
             self._release_callbacks()
             owner, self._owner = self._owner, None
             if owner is not None:
