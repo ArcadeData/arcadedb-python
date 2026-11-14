@@ -741,3 +741,155 @@ def test_null_vectors_in_every_columnar_api(temp_db):
     assert p["v"].to_list()[3] == [1.5, 1.0, 2.0]
     m = db.query("sql", sql).to_columns()["v"]
     assert m.shape == (700, 3) and np.isnan(m[nulls]).all()
+
+
+# --- the rid, li8 and lf8 kinds (refs #388): hand-built frames, no database
+
+
+def _rids(pairs):
+    return b"".join(struct.pack("<2q", b, p) for b, p in pairs)
+
+
+def _lists(rows, ctype):
+    """The buffer of a ``li8`` or ``lf8`` column: int32 offsets (n + 1), the bitmap of null elements, the flat int64 or float64 array.
+    A ``None`` row is an empty list (its null bit is the frame's)."""
+    offsets, flat, null_elements = [0], [], []
+    for row in rows:
+        for e in row or []:
+            null_elements.append(len(flat) if e is None else None)
+            (
+                flat.append(0 if ctype == "li8" else math.nan)
+                if e is None
+                else flat.append(e)
+            )
+        offsets.append(len(flat))
+    bitmap = bytearray((len(flat) + 7) // 8)
+    for j in (j for j in null_elements if j is not None):
+        bitmap[j >> 3] |= 1 << (j & 7)
+    fmt = "q" if ctype == "li8" else "d"
+    return (
+        struct.pack(f"<{len(offsets)}i", *offsets)
+        + bytes(bitmap)
+        + struct.pack(f"<{len(flat)}{fmt}", *flat)
+    )
+
+
+INT_LISTS = [[1, 2, 3], [], None, [4, None], [2**62, -(2**62), 2**53 + 1], [None]]
+FLOAT_LISTS = [
+    [0.5, math.nan],
+    [math.inf, -math.inf, -0.0],
+    [],
+    None,
+    [0.1, None],
+    [5e-324],
+]
+
+
+def _null_rows(rows):
+    return [i for i, row in enumerate(rows) if row is None]
+
+
+def test_rid_column_is_the_text_of_each_link_in_columns_and_arrow_with_nulls():
+    pairs = [(12, 0), (12, 345), (0, 0), (3, 2**40), (0, 7)]
+    frame = _frame(5, [("r", "rid", [2], _rids(pairs))])
+    texts = ["#12:0", "#12:345", None, "#3:1099511627776", "#0:7"]
+    _, parts = _columns(frame)
+    assert parts["r"] == texts
+    _, chunks = _arrow(frame)
+    assert chunks["r"].type == pa.string()
+    assert chunks["r"].to_pylist() == texts
+
+
+def test_rid_column_hands_the_pairs_to_the_wheels_hook_and_nulls_stay_none():
+    seen = []
+
+    def hook(pairs, side, col):
+        seen.append((pairs.tolist(), side, col["side"]))
+        return [("rid", b, p) for b, p in pairs.tolist()]
+
+    frame = _frame(3, [("r", "rid", [1], _rids([(1, 2), (0, 0), (5, 6)]))])
+    header, _ = _columnar.read_header(frame)
+    header["cols"][0][
+        "side"
+    ] = 9  # what the bridge writes: where its RID objects start in the side array
+    cols = json.dumps(header).encode("utf-8")
+    frame = memoryview(
+        struct.pack("<i", len(cols))
+        + cols
+        + bytes(frame[4 + int.from_bytes(frame[:4], "little") :])
+    )
+    _, parts, _ = _columnar.decode_columns_frame(
+        frame, ("side",), _json_values, False, hook
+    )
+    assert parts["r"] == [("rid", 1, 2), None, ("rid", 5, 6)]
+    assert seen == [([[1, 2], [0, 0], [5, 6]], ("side",), 9)]
+
+
+@pytest.mark.parametrize("ctype,lists", [("li8", INT_LISTS), ("lf8", FLOAT_LISTS)])
+def test_number_list_columns_decode_to_the_lists_and_arrow_lists_of_the_json_form(
+    ctype, lists
+):
+    frame = _frame(len(lists), [("x", ctype, _null_rows(lists), _lists(lists, ctype))])
+    # what a writer of the json kind wrote for the same column: the decoded values and the Arrow type must be the same
+    as_json = json.dumps(lists, allow_nan=True).encode("utf-8")
+    old = _frame(len(lists), [("x", "json", _null_rows(lists), as_json)])
+    _, have = _columns(frame)
+    _, want = _columns(old)
+    assert [None if v is None else [norm(x) for x in v] for v in have["x"]] == [
+        None if v is None else [norm(x) for x in v] for v in want["x"]
+    ]
+    assert [[type(x) for x in v or []] for v in have["x"]] == [
+        [type(x) for x in v or []] for v in want["x"]
+    ]
+    _, new_arrow = _arrow(frame)
+    _, old_arrow = _arrow(old)
+    assert (
+        new_arrow["x"].type
+        == old_arrow["x"].type
+        == pa.list_(pa.int64() if ctype == "li8" else pa.float64())
+    )
+    assert [
+        None if v is None else [norm(x) for x in v] for v in new_arrow["x"].to_pylist()
+    ] == [
+        None if v is None else [norm(x) for x in v] for v in old_arrow["x"].to_pylist()
+    ]
+
+
+def norm(x):
+    """Exact form of a number: NaN equal to NaN, -0.0 apart from 0.0, an int apart from a float."""
+    return (type(x).__name__, repr(x))
+
+
+def test_number_list_values_are_exact_python_numbers():
+    _, ints = _columns(
+        _frame(2, [("x", "li8", [], _lists([[2**62, -(2**63)], [2**53 + 1]], "li8"))])
+    )
+    assert ints["x"] == [[2**62, -(2**63)], [2**53 + 1]]
+    assert all(type(e) is int for row in ints["x"] for e in row)
+    _, floats = _columns(
+        _frame(1, [("x", "lf8", [], _lists([[math.nan, -0.0, math.inf]], "lf8"))])
+    )
+    (row,) = floats["x"]
+    assert math.isnan(row[0]) and math.copysign(1, row[1]) == -1 and row[2] == math.inf
+    assert all(type(e) is float for e in row)
+
+
+def test_list_column_of_empty_and_null_rows_and_a_list_of_one_decode():
+    frame = _frame(3, [("x", "li8", [1], _lists([[], None, [9]], "li8"))])
+    _, parts = _columns(frame)
+    assert parts["x"] == [[], None, [9]]
+    _, chunks = _arrow(frame)
+    assert chunks["x"].to_pylist() == [[], None, [9]]
+    assert chunks["x"].null_count == 1
+    only_empty = _frame(2, [("x", "lf8", [], _lists([[], []], "lf8"))])
+    assert _columns(only_empty)[1]["x"] == [[], []]
+    assert _arrow(only_empty)[1]["x"].to_pylist() == [[], []]
+
+
+def test_the_json_kind_still_reads_lists_maps_and_rids_of_a_writer_that_has_no_binary_kinds():
+    values = [[1, 2], {"a": 1}, None, "#1:2"]
+    frame = _frame(4, [("m", "json", [2], json.dumps(values).encode("utf-8"))])
+    assert _columns(frame)[1]["m"] == values
+    assert _arrow(frame)[1]["m"].to_pylist() == [
+        str(v) if v is not None else None for v in values
+    ]
