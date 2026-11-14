@@ -34,7 +34,7 @@ class _Db:
     def query(self, language, text):  # the schema read of columnar.Declared
         self.schema_reads = getattr(self, "schema_reads", 0) + 1
         rows = [
-            {"name": "P", "properties": [{"name": "n32", "type": "INTEGER"}]},
+            {"name": "P", "properties": [{"name": "v", "type": "ARRAY_OF_FLOATS"}]},
         ]
         return SimpleNamespace(to_list=lambda: rows)
 
@@ -73,8 +73,10 @@ class _Library:
             self.next += n
             return json.dumps({"ok": True, "n": n})
         assert name in OLD, name
-        rows = json.loads(args[2])["rows"]
-        rows = len(rows) if isinstance(rows, list) else rows
+        body = json.loads(args[2])
+        rows = (
+            len(body["rows"]) if "rows" in body else body["count"]
+        )  # the count form has no rows
         rids = [f"#1:{self.next + i}" for i in range(rows)]
         self.crossings.append((name, args[1].decode(), None))
         self.next += rows
@@ -134,7 +136,7 @@ def test_the_chunks_of_one_call_are_one_crossing_each_and_the_rids_stay_in_order
 
 
 def test_a_batch_of_one_row_and_no_per_row_python_in_the_codec(library, monkeypatch):
-    seen = {"prep": 0, "default": 0, "dumps": 0}
+    seen = {"prep": 0, "default": 0}
     for key, module, name in (("prep", codec, "_prep"), ("default", codec, "_default")):
         real = getattr(module, name)
 
@@ -152,7 +154,6 @@ def test_a_batch_of_one_row_and_no_per_row_python_in_the_codec(library, monkeypa
     assert seen == {
         "prep": 0,
         "default": 0,
-        "dumps": 0,
     }  # the rows were never walked or written as JSON
 
 
@@ -185,13 +186,15 @@ def test_float32_vectors_cross_as_one_matrix_column(library):
     assert library.columns[0][1] == x.tobytes()
 
 
-def test_a_declared_integer_is_read_once_for_all_chunks_of_a_call(library):
+def test_a_declared_vector_property_is_read_once_for_all_chunks_of_a_call(library):
     db = _Db()
     gb = extras.NativeGraphBatch(db, 7, commit_every=10)
-    gb.create_vertices("P", [{"n32": np.int32(i)} for i in range(25)])
+    gb.create_vertices("P", [{"v": [i * 0.5, i + 0.25, 3.0]} for i in range(25)])
     assert library.entries() == [COLP] * 3
-    assert db.schema_reads == 1
-    assert [c[2]["cols"][0] for c in library.crossings] == [["n32", "i", 0]] * 3
+    assert db.schema_reads == 1  # the schema of the type, once for the three chunks
+    assert [c[2]["cols"][0] for c in library.crossings] == [["v", "f", 3]] * 3
+    expected = np.array([[i * 0.5, i + 0.25, 3.0] for i in range(10)], np.float32)
+    assert library.columns[0][0] == expected.tobytes()
 
 
 FALLBACKS = {
@@ -233,14 +236,20 @@ def test_no_rows_and_a_count_keep_the_json_route(library):
 def test_a_chunk_that_cannot_be_carried_does_not_stop_the_others(library):
     rows = (
         [{"id": i} for i in range(10)]
-        + [{"id": 10, "x": 1}]
-        + [{"id": i} for i in range(11, 20)]
+        + [
+            {"id": 10 + i, **({"x": 1} if i == 3 else {})} for i in range(10)
+        ]  # a key the others lack
+        + [{"id": i} for i in range(20, 30)]
     )
-    gb = _batch(chunk=10)
-    rids = gb.create_vertices("P", rows)
-    assert library.entries() == [COLP, OLD[1] if False else library.entries()[1], COLP]
-    assert library.entries()[1] in OLD
-    assert len(rids) == 20
+    rids = _batch(chunk=10).create_vertices("P", rows)
+    entries = library.entries()
+    assert (
+        len(entries) == 3
+        and entries[0] == COLP
+        and entries[1] in OLD
+        and entries[2] == COLP
+    )
+    assert len(rids) == 30
 
 
 @pytest.mark.parametrize("switch", ["env", "bulk", "library"])
