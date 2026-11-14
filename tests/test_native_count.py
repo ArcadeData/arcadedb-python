@@ -93,7 +93,9 @@ def _state(rs):
 
 @pytest.mark.parametrize("size", EDGE_SIZES)
 def test_count_is_the_number_of_rows_to_list_gives(db, size):
-    query = f"SELECT id, txt FROM R LIMIT {size}"
+    query = (
+        f"SELECT id, txt FROM R LIMIT {size}"  # nosec B608 - an int from the list above
+    )
     rows = db.query("sql", query).to_list()
     assert len(rows) == size
     assert db.query("sql", query).count() == size
