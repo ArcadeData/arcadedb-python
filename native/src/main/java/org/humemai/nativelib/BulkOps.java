@@ -86,6 +86,17 @@ final class BulkOps {
   }
 
   /**
+   * The records of a frame for the async writers, each with its own callbacks (the "create_records" operation of arcadedb_n_async_bin):
+   * as the "parallel" form above, but record i goes to {@link NativeExtras.RecordHooks#submit} instead of one shared error callback. The
+   * header is the one of arcadedb_n_insert_colp ("n", "commit", "cols"); the frame is checked before the first record is handed over.
+   * A failure after that is thrown as an IllegalStateException "after handing k of n rows", and hooks.handed is k.
+   */
+  static long handColumns(final Database db, final String type, final Map<String, Object> header, final long[] spec,
+      final NativeExtras.RecordHooks hooks) {
+    return insertColumns(db, type, header, spec, hooks);
+  }
+
+  /**
    * header: {"n":rows,"commit":every,"cols":[[name,kind,dim],..]}. Kinds: q (int64), d (float64), b (bool byte), i (int32), e (float32),
    * f (float32 matrix, dim floats per row), s (UTF-8 string: int32 offsets[n+1] in the data slot, the bytes they index in the aux slot, as
    * an Arrow string array; offsets[0] need not be 0). The kinds that the JSON rows carry as tagged values (Json.decodeTag), read as the same
@@ -182,7 +193,10 @@ final class BulkOps {
         for (; handed < n; handed++) {
           final MutableDocument doc = vertex ? db.newVertex(type) : db.newDocument(type);
           setRow(doc, handed, names, kinds, dims, data, nulls, blobs, scratch);
-          async.createRecord(doc, null, onError);
+          if (onError instanceof NativeExtras.RecordHooks hooks)
+            hooks.submit(async, doc, handed); // an async create_record batch: each record has its own callbacks
+          else
+            async.createRecord(doc, null, onError);
         }
       } catch (final Throwable t) {
         // the records handed over before the failure are the writers' now, whatever this call does

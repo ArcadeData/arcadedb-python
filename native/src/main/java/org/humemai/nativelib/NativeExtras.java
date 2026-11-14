@@ -614,6 +614,78 @@ public final class NativeExtras {
     }
   }
 
+  /**
+   * The callback of a record that an async writer stored: Python gets the stored record (its RID included) under the callback id, or
+   * nothing when the record has no callback.
+   */
+  private static com.arcadedb.database.async.NewRecordCallback recordCallback(final long cb) {
+    if (cb == 0)
+      return null;
+    return rec -> {
+      try {
+        final StringBuilder sb = new StringBuilder("\"rec\":");
+        NativeCodec.append(sb, rec);
+        fire("record callback", cb, event("record", sb.toString()));
+      } catch (final Throwable e) {
+        swallowed("record callback", e); // the writer goes on
+      }
+    };
+  }
+
+  /**
+   * The callbacks of the records of one "create_records" batch (callback id and error callback id per record, 0 for none). It is the
+   * error callback that BulkOps gets for the frame; BulkOps hands record i to {@link #submit} when it is one of these, so that every
+   * record has its own callbacks, as a "create_record" call has.
+   */
+  static final class RecordHooks implements ErrorCallback {
+    private final long[] cbs;
+    private final long[] errs;
+    /** The records handed to the writers so far: after a failure, the number of records that the writers hold. */
+    int handed;
+
+    RecordHooks(final long[] cbs, final long[] errs) {
+      this.cbs = cbs;
+      this.errs = errs;
+    }
+
+    /** Not used: every record is handed over with its own error callback. */
+    @Override
+    public void call(final Throwable t) {
+      swallowed("create_records error callback", t);
+    }
+
+    void submit(final DatabaseAsyncExecutor ex, final MutableDocument doc, final int i) {
+      final com.arcadedb.database.async.NewRecordCallback ok = recordCallback(cbs[i]);
+      if (errs[i] == 0)
+        ex.createRecord(doc, ok);
+      else
+        ex.createRecord(doc, ok, errorCallback(errs[i]));
+      handed = i + 1;
+    }
+  }
+
+  /** The address table of arcadedb_n_async_bin as a long[] of BulkOps.SLOTS entries per column (the layout of arcadedb_n_insert_colp). */
+  private static long[] columnTable(final long table, final int nTable) {
+    if (table == 0 || nTable <= 0 || nTable % BulkOps.SLOTS != 0)
+      throw new IllegalArgumentException("address table of " + nTable + " entries is not a multiple of " + BulkOps.SLOTS);
+    final Pointer t = WordFactory.pointer(table);
+    final long[] spec = new long[nTable];
+    for (int i = 0; i < nTable; i++)
+      spec[i] = t.readLong(WordFactory.signed(8L * i));
+    return spec;
+  }
+
+  @SuppressWarnings("unchecked")
+  private static long[] callbackIds(final Object list, final int n, final String what) {
+    final List<Object> in = (List<Object>) list;
+    if (in == null || in.size() != n)
+      throw new IllegalArgumentException("\"" + what + "\" needs one entry per record (" + n + ")");
+    final long[] out = new long[n];
+    for (int i = 0; i < n; i++)
+      out[i] = ((Number) in.get(i)).longValue();
+    return out;
+  }
+
   private static String replyRows(final ResultSet rs) {
     final StringBuilder sb = new StringBuilder("{\"ok\":true,\"rs\":0,");
     NativeCodec.appendBatch(sb, rs, Integer.MAX_VALUE);
@@ -673,8 +745,8 @@ public final class NativeExtras {
   }
 
   /**
-   * ops: get | set {key,value} | wait {timeout_ms} | kill | create_record {type, kind, props, cb, err} | command / query {lang, text, params,
-   * cb, err} | on_ok {cb} | on_error {cb} | append_samples {type, ts, cols} | insert_parallel {type, rows} | failures {fid}.
+   * ops: get | set {key,value} | wait {timeout_ms} | kill | create_record {type, kind, props, cb, err} | create_records {type, kind, n, commit,
+   * cols, cbs, errs} (arcadedb_n_async_bin only: a frame) | command / query {lang, text, params, cb, err} | on_ok {cb} | on_error {cb} | append_samples {type, ts, cols} | insert_parallel {type, rows} | failures {fid}.
    */
   @CEntryPoint(name = "arcadedb_n_async")
   public static CCharPointer async(final IsolateThread thread, final long dbh, final CCharPointer op, final CCharPointer argsJson) {
@@ -781,19 +853,36 @@ public final class NativeExtras {
         final MutableDocument doc = "v".equals(a.get("kind")) ? db.newVertex(type) : db.newDocument(type);
         for (final Map.Entry<String, Object> e : ((Map<String, Object>) a.get("props")).entrySet())
           doc.set(e.getKey(), e.getValue());
-        final com.arcadedb.database.async.NewRecordCallback ok = cb == 0 ? null : rec -> {
-          try {
-            final StringBuilder sb = new StringBuilder("\"rec\":");
-            NativeCodec.append(sb, rec);
-            fire("record callback", cb, event("record", sb.toString()));
-          } catch (final Throwable e) {
-            swallowed("record callback", e); // the writer goes on
-          }
-        };
+        final com.arcadedb.database.async.NewRecordCallback ok = recordCallback(cb);
         if (errCb == 0)
           ex.createRecord(doc, ok);
         else
           ex.createRecord(doc, ok, errorCallback(errCb));
+      }
+      case "create_records" -> {
+        // a frame of records of one type and kind, each with its own callbacks (cbs, errs: callback ids, 0 for none), through BulkOps' column
+        // reader. The frame and the type are checked before the first record is handed over (an exception then: nothing was queued). A
+        // record that fails while the batch is handed over ends the call with {"ok":true,"n":k,"err":..}: k records are the writers'
+        // now and the record k is refused with that error, so the caller can give it to its error callback and send the rest again.
+        final String type = (String) a.get("type");
+        final boolean vertex = "v".equals(a.get("kind"));
+        final Object schemaType = db.getSchema().getType(type);
+        if (schemaType instanceof EdgeType)
+          throw new IllegalArgumentException("Cannot bulk-insert into '" + type
+              + "' because it is an edge type; load the vertices, then create the edges (graph_batch().new_edges() or CREATE EDGE)");
+        if (vertex != (schemaType instanceof VertexType))
+          throw new IllegalArgumentException("'" + type + "' is " + (vertex ? "not a vertex type" : "a vertex type")
+              + ", but its records were created as " + (vertex ? "vertices" : "documents"));
+        final int n = intOf(a.get("n"), -1);
+        final RecordHooks hooks = new RecordHooks(callbackIds(a.get("cbs"), n, "cbs"), callbackIds(a.get("errs"), n, "errs"));
+        try {
+          final long handed = BulkOps.handColumns(db, type, a, columnTable(table, nTable), hooks);
+          return ArcadeNative.out("{\"ok\":true,\"n\":" + handed + "}");
+        } catch (final IllegalStateException e) {
+          if (e.getMessage() == null || !e.getMessage().startsWith("after handing ") || e.getCause() == null)
+            throw e;
+          return ArcadeNative.out("{\"ok\":true,\"n\":" + hooks.handed + "," + errorBody(e.getCause()) + "}");
+        }
       }
       case "command", "query" -> {
         final boolean command = "command".equals(ArcadeNative.str(op));
