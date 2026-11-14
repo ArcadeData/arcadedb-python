@@ -621,8 +621,8 @@ class NativeAsyncExecutor:
         the executor hands a batch over when its first record has waited ``_ASYNC_LINGER`` (50 ms), so a caller that waits for a
         callback or reads after a pause, with no other call, is not kept waiting; a failure that thread meets is raised by the next
         call that hands records over. Records
-        whose shape the frame cannot carry (different keys, nested values, mixed-type columns, integers beyond 64 bits) and a batch of
-        one cross as the per-record op they always did. A record that the library refuses before it is queued (the frame is checked
+        whose shape the frame cannot carry (different keys, nested values, numpy scalars, mixed-type columns, integers beyond 64 bits)
+        and a batch of one cross as the per-record op they always did. A record that the library refuses before it is queued (the frame is checked
         before the first record is handed over; a record that cannot be built) reaches its own ``error_callback`` when one was given,
         else it is raised by the call that hands the batch over, after the records around it were handed over.
         """

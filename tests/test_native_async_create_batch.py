@@ -84,11 +84,11 @@ _DUMPS = {
 def _dump(db, type_name):
     rows = db.query("sql", _DUMPS[type_name]).to_list()
     rows = [
-        {k: v for k, v in row.items() if not k.startswith("@")} for row in rows
-    ]  # the rid and the type name differ by design
-    return repr(
-        rows
-    )  # repr: a NaN equals a NaN, a None differs from a missing key, key order counts
+        dict(sorted((k, v) for k, v in row.items() if not k.startswith("@")))
+        for row in rows
+    ]  # the rid and the type name differ by design; the keys are sorted: the per-record op parses the properties into a hash map, so
+    # it stores them in hash order and the batch in the order of the call, and the order of the properties of a document is no promise
+    return repr(rows)  # repr: a NaN equals a NaN, a None differs from a missing key
 
 
 _N = 12
@@ -112,7 +112,7 @@ SHAPES = {
     "some_nulls": lambda i: {"i": i, "v": None if i % 2 else i},
     "numpy_scalars": lambda i: {"i": i, "v": np.int64(i), "w": np.float64(i) / 3},
     "nested": lambda i: {"i": i, "v": [i, [i, {"k": i}]], "m": {"a": [i]}},
-    "key_order": lambda i: {"z": 1, "i": i, "a": 2},
+    "unsorted_keys": lambda i: {"z": 1, "i": i, "a": 2},
     "keys_differ": lambda i: {"i": i, "v": i} if i % 2 else {"i": i},
 }
 
@@ -136,7 +136,8 @@ def test_a_batch_stores_what_the_per_record_op_stores(temp_db, monkeypatch, shap
     if shape in (
         "nested",
         "keys_differ",
-    ):  # no frame for these: the per-record op, as before
+        "numpy_scalars",
+    ):  # no frame for these (the column reader takes Python scalars only): the per-record op, as before
         assert batched == [] and len(crossings.ops("create_record")) == _N
     else:
         assert len(batched) == 1 and crossings.ops("create_record") == []
@@ -239,7 +240,10 @@ def test_a_record_the_writer_refuses_in_the_middle_reaches_its_own_error_callbac
         4,
         7,
     ]  # exactly the refused records, each on its own callback
-    assert ok == [0, 1, 2, 3, 5, 6, 8] and len(stored) == 7
+    # the writer reports a record stored once it is in the transaction, and a refusal at the commit comes after that: the records 4 and 7
+    # reach their callback and then their error callback (on both routes, as the equal results say), so what is stored is the proof
+    assert {0, 1, 2, 3, 5, 6, 8} <= set(ok)
+    assert stored == [(1, 0), (2, 1), (3, 2), (4, 3), (5, 5), (6, 6), (7, 8)]
 
 
 def test_the_executor_keeps_working_after_a_refused_batch(temp_db):
