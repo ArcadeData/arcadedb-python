@@ -432,7 +432,9 @@ def _typed_chunk_columns(chunk):
     column holds one kind of value (``_typed_kind``). Whether a column qualifies is decided from the types alone before any bridge
     array is built, so a chunk that cannot cross this way costs the census and nothing else. The result is stored as the JSON text
     stores it: ``DocumentBatcher.insertManyColumns`` stores a whole number as an Integer when it fits an int, as the text parser
-    does, and ``None`` is a null property, never a missing one.
+    does, and ``None`` is a null property, never a missing one. A row with a NaN, an infinity or a subnormal float is the exception: the
+    text cannot carry it, so the JSON route inserts that row on the per-row path, which stores its whole numbers as Long, and the
+    bridge stores them as Long for that row too.
     """
     if _np is None or not chunk or set(map(type, chunk)) != _DICT_ONLY:
         return None
@@ -896,7 +898,8 @@ class Database:
         ``date``, or a ``datetime`` without a zone), crosses as typed columns, with
         no text (``DocumentBatcher.insertManyColumns``); a whole number is stored
         as an Integer when it fits an int and as a Long beyond, which is what the
-        JSON text stored. Any other chunk is serialized to one JSON string.
+        JSON text stored (a row with a NaN, an infinity or a subnormal ``float``
+        stores its whole numbers as Long, as the per-row path always did). Any other chunk is serialized to one JSON string.
         Memory stays bounded by the chunk whatever the row count, so a
         generator of any length can be loaded (#294). On the JSON route, a value that sits directly
         in a row may be JSON-representable (str/int/float/bool/None, nested

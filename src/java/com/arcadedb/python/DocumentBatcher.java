@@ -12,7 +12,7 @@
  * Python insert_many wrapper waits for completion itself, then reads the
  * failures the writers reported). insertColumns takes whole columns instead of
  * JSON (Database.insert_columns); insertManyColumns is the same for a chunk of insert_many rows whose columns each hold one kind of
- * value, and stores every number as the JSON text route did (see narrowed). Float vectors for ARRAY_OF_FLOATS properties cross as binary matrices (FloatVectors), beside
+ * value, and stores every number as the JSON text route did (see narrowed and carriedByText). Float vectors for ARRAY_OF_FLOATS properties cross as binary matrices (FloatVectors), beside
  * the JSON or as a column. The boxDoubles/boxLongs
  * helpers below serve AsyncExecutor.append_samples' numpy fast path.
  *
@@ -102,7 +102,9 @@ public final class DocumentBatcher {
   /**
    * The columns of one insert_many chunk (every row has the same keys in the same order and each column holds one kind of value): as
    * {@link #insertColumns}, except that a whole number is stored as the JSON text route stored it, an Integer when it fits an int and a
-   * Long beyond, so the type of a schemaless property does not depend on which route carried the chunk (see {@link #narrowed}).
+   * Long beyond, so the type of a schemaless property does not depend on which route carried the chunk (see {@link #narrowed}). A row
+   * the text could not have carried (a NaN, an infinity or a subnormal double) keeps every whole number a Long, as the per-row path
+   * stores it (see {@link #carriedByText}).
    */
   public static long insertManyColumns(final Database db, final String typeName, final String[] names, final Object[] columns,
       final int n, final int commitEvery) {
@@ -278,13 +280,36 @@ public final class DocumentBatcher {
     return v;
   }
 
+  /**
+   * Whether the JSON text route could have carried row i. The text cannot carry a NaN, an infinity or a subnormal double (the engine's
+   * parser reads 5e-324 as a BigDecimal), so Python sends a row that has one down the per-row path, which stores every whole number of
+   * that row as a Long: the same value the text would have made an Integer. insert_many columns keep that for such a row, so what a
+   * record stores does not depend on which route carried its chunk. Only a double[] and an Object[] (a column with a null) can hold one.
+   */
+  private static boolean carriedByText(final Object[] columns, final int i) {
+    for (final Object col : columns) {
+      if (col instanceof double[] a) {
+        if (!textDouble(a[i]))
+          return false;
+      } else if (col instanceof Object[] o && o[i] instanceof Double d && !textDouble(d))
+        return false;
+    }
+    return true;
+  }
+
+  /** A double the JSON text keeps as a double: finite, and zero or at least the smallest normal value (Double.MIN_NORMAL). */
+  private static boolean textDouble(final double v) {
+    return Double.isFinite(v) && (v == 0.0 || Math.abs(v) >= Double.MIN_NORMAL);
+  }
+
   private static void fillRow(final MutableDocument doc, final String[] names, final Object[] columns, final int i,
       final boolean narrowIntegers) {
+    final boolean narrow = narrowIntegers && carriedByText(columns, i);
     for (int c = 0; c < names.length; c++) {
       final Object col = columns[c];
       Object v;
       if (col instanceof long[] a)
-        v = narrowIntegers ? narrowed(a[i]) : (Object) a[i];
+        v = narrow ? narrowed(a[i]) : (Object) a[i];
       else if (col instanceof double[] a)
         v = a[i];
       else if (col instanceof boolean[] a)
@@ -297,7 +322,7 @@ public final class DocumentBatcher {
         v = t.get(i);
       else {
         v = ((Object[]) col)[i];
-        if (narrowIntegers && v instanceof Long l)
+        if (narrow && v instanceof Long l)
           v = narrowed(l);
       }
       doc.set(names[c], v);
