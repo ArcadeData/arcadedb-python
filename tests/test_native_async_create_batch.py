@@ -64,8 +64,8 @@ def _store(db, type_name, rows, one_by_one):
         executor.create_record(_document(db, type_name, row))
         if one_by_one:
             executor.wait_completion()
+    # not closed: close() shuts the database's async executor down for good, and the next _store of the test needs it
     executor.wait_completion()
-    executor.close()
 
 
 def _document(db, type_name, props):
@@ -214,7 +214,8 @@ def test_a_record_the_writer_refuses_in_the_middle_reaches_its_own_error_callbac
     ]  # records 4 and 7 repeat an earlier key: the writer refuses them
     results = {}
     for batched in (False, True):
-        temp_db.command("sql", "DELETE FROM Uniq")
+        with temp_db.transaction():
+            temp_db.command("sql", "DELETE FROM Uniq")
         seen = {"ok": [], "err": []}
         executor = _executor(temp_db)
         for index, key in enumerate(keys):
@@ -227,8 +228,7 @@ def test_a_record_the_writer_refuses_in_the_middle_reaches_its_own_error_callbac
             )
             if not batched:
                 executor.wait_completion()
-        executor.wait_completion()
-        executor.close()
+        executor.wait_completion()  # not closed: the database's async executor is shut down for good by close()
         stored = sorted(
             (r["k"], r["n"]) for r in temp_db.query("sql", "SELECT FROM Uniq").to_list()
         )

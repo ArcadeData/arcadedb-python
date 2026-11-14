@@ -13,6 +13,7 @@ values and the callbacks of the real library are in test_native_async_create_bat
 """
 
 import json
+import time
 
 import pytest
 
@@ -88,6 +89,8 @@ class _Library:
 @pytest.fixture
 def library(monkeypatch):
     fake = _Library()
+    # the linger time (how long a collected record waits for the rest of its batch) is out of the way, so "still buffered" is a fact
+    monkeypatch.setattr(extras, "_ASYNC_LINGER", 3600.0, raising=False)
     monkeypatch.setattr(extras, "_call", fake)
     monkeypatch.setattr(extras, "_ensure_upcall", lambda: None)
     monkeypatch.setattr(bulk, "_usable", lambda: True)
@@ -349,3 +352,63 @@ def test_an_empty_executor_hands_nothing_over(library, executor):
     executor.wait_completion()
     executor.close()
     assert library.batches() == [] and library.per_record() == []
+
+
+def _wait_for(condition, seconds=10.0):
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if condition():
+            return True
+        time.sleep(0.005)
+    return condition()
+
+
+def test_a_collected_record_is_handed_over_after_the_linger_time_with_no_other_call(
+    library, executor, monkeypatch
+):
+    # an existing async test creates one record and waits for its callback, with no other call on the executor: a record must
+    # not sit in Python until the caller happens to make one
+    monkeypatch.setattr(extras, "_ASYNC_LINGER", 0.02, raising=False)
+    for doc in _rows(3):
+        executor.create_record(doc)
+    assert _wait_for(
+        lambda: library.log
+    ), "the collected records were never handed over"
+    assert library.order() == [("create_records", 3)]
+    # a second round: the linger thread waits for the next first record of a batch
+    library.log.clear()
+    for doc in _rows(1):
+        executor.create_record(doc)
+    assert _wait_for(lambda: library.log), "the second batch was never handed over"
+    assert [(e[1], e[2].get("type")) for e in library.log] == [
+        ("create_record", "Item")
+    ]
+
+
+def test_a_failure_of_the_linger_flush_is_raised_by_the_next_call(
+    library, executor, monkeypatch
+):
+    monkeypatch.setattr(extras, "_ASYNC_LINGER", 0.02, raising=False)
+    library.raise_on_batch = ArcadeDBError("Async executor failed: type Nope not found")
+    for doc in _rows(3, "Nope"):
+        executor.create_record(doc)
+    assert _wait_for(lambda: library.batches() and executor._linger_error is not None)
+    library.raise_on_batch = None
+    with pytest.raises(ArcadeDBError, match="Nope"):
+        executor.wait_completion()
+    executor.wait_completion()  # raised once, not again
+
+
+def test_close_stops_the_linger_thread(library, executor, monkeypatch):
+    monkeypatch.setattr(extras, "_ASYNC_LINGER", 3600.0, raising=False)
+    executor.create_record(_Doc("Item", {"id": 1}))
+    thread = executor._linger_thread
+    assert thread is not None and thread.is_alive()
+    executor.close()
+    assert _wait_for(
+        lambda: not thread.is_alive()
+    ), "the linger thread outlived close()"
+    assert library.order()[0] == (
+        "create_record",
+        None,
+    )  # the record was handed over by close(), before the engine closed
