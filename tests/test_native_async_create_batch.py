@@ -75,10 +75,14 @@ def _document(db, type_name, props):
     return doc
 
 
+_DUMPS = {
+    "Old": "SELECT FROM Old ORDER BY i",
+    "New": "SELECT FROM New ORDER BY i",
+}
+
+
 def _dump(db, type_name):
-    rows = db.query(
-        "sql", f"SELECT FROM {type_name} ORDER BY i"
-    ).to_list()  # nosec B608 - a literal type name of this test
+    rows = db.query("sql", _DUMPS[type_name]).to_list()
     rows = [
         {k: v for k, v in row.items() if not k.startswith("@")} for row in rows
     ]  # the rid and the type name differ by design
