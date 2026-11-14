@@ -154,3 +154,28 @@ def test_a_record_with_no_identity_yet_reads_as_it_did(graph_db):
         doc = graph_db.new_document("D")
         # str() of whatever the engine gives an unsaved record: the same text as before, "None" for no identity at all
         assert doc.get_rid() == str(doc._java_document.getIdentity())
+
+
+@pytest.mark.parametrize("kind", ROWS)
+def test_without_the_bridge_class_every_getter_answers_as_with_it(
+    graph_db, monkeypatch, kind
+):
+    """No ``ReaderCalls`` (a broken checkout, the case ``_bridge_class`` answers None for): the plain path, the same answers, no AttributeError."""
+
+    def answers():
+        row = _row(graph_db, kind)
+        element = row.get_element()
+        return {
+            "rid": row.get_rid(),
+            "vertex": None if row.get_vertex() is None else row.get_vertex().get_rid(),
+            "edge": None if row.get_edge() is None else row.get_edge().get_rid(),
+            "element": None if element is None else element.get_rid(),
+            "types": [
+                type(x).__name__ for x in (row.get_vertex(), row.get_edge(), element)
+            ],
+        }
+
+    with_bridge = answers()
+    monkeypatch.setitem(results._BRIDGE_CLASSES, "ReaderCalls", None)
+    assert answers() == with_bridge
+    assert (with_bridge["rid"] is None) == (kind in ("projection", "aggregate"))

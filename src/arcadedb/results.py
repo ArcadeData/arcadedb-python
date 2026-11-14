@@ -1060,6 +1060,16 @@ class Result:
             return None
         return self._java_result.getProperty(name)
 
+    def _element_or_none(self, bridge_method: str, java_getter: str):
+        """The Java vertex, edge or record of the row, or None when the row is not one: one
+        crossing through ``ReaderCalls``, or the three calls (``getX()``, ``isPresent()``,
+        ``get()``) of the plain path when the bridge class is unavailable."""
+        reader = _bridge_class("ReaderCalls")
+        if reader is not None:
+            return getattr(reader, bridge_method)(self._java_result)
+        optional = getattr(self._java_result, java_getter)()
+        return optional.get() if optional.isPresent() else None
+
     def get_rid(self) -> Optional[str]:
         """
         Get the Record ID (RID) if available.
@@ -1072,7 +1082,13 @@ class Result:
             >>> print(result.get_rid())
             #10:5
         """
-        rid = _bridge_class("ReaderCalls").ridOf(self._java_result)
+        reader = _bridge_class("ReaderCalls")
+        if reader is None:  # no bridge jar: the four calls of the plain path
+            identity = self._java_result.getIdentity()
+            if identity.isPresent():
+                return str(identity.get().toString())
+            return None
+        rid = reader.ridOf(self._java_result)
         return None if rid is None else str(rid)
 
     def get_vertex(self) -> Optional[Vertex]:
@@ -1083,7 +1099,7 @@ class Result:
             Vertex object or None
         """
         self._check_open()
-        vertex = _bridge_class("ReaderCalls").vertexOrNull(self._java_result)
+        vertex = self._element_or_none("vertexOrNull", "getVertex")
         return None if vertex is None else Vertex(vertex, self._database)
 
     def get_edge(self) -> Optional[Edge]:
@@ -1094,7 +1110,7 @@ class Result:
             Edge object or None
         """
         self._check_open()
-        edge = _bridge_class("ReaderCalls").edgeOrNull(self._java_result)
+        edge = self._element_or_none("edgeOrNull", "getEdge")
         return None if edge is None else Edge(edge, self._database)
 
     def get_element(self) -> Optional[Document]:
@@ -1105,7 +1121,7 @@ class Result:
             Document, Vertex, or Edge object or None
         """
         self._check_open()
-        element = _bridge_class("ReaderCalls").elementOrNull(self._java_result)
+        element = self._element_or_none("elementOrNull", "getElement")
         return None if element is None else Document.wrap(element, self._database)
 
     def get_property_names(self) -> List[str]:
