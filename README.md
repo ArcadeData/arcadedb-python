@@ -128,7 +128,7 @@ Open an [issue](https://github.com/ArcadeData/arcadedb-python/issues) or a pull 
 
 ## Where this code comes from
 
-It moved here from `bindings/python` in [ArcadeData/arcadedb](https://github.com/ArcadeData/arcadedb) at `ee04bd202abce0183c6263a3c4d8a61a4d526960`, with its git history. Issue numbers in older commit messages refer to that repository. [humemai/arcadedb-embedded-python](https://github.com/humemai/arcadedb-embedded-python) is the fork where the bindings kept developing (runtime fixes, JRE trim, the native build, benchmarks). Its benchmark tooling stays there. <!-- allow-old-name -->
+It moved here from `bindings/python` in [ArcadeData/arcadedb](https://github.com/ArcadeData/arcadedb) at `ee04bd202abce0183c6263a3c4d8a61a4d526960`, with its git history. Issue numbers in older commit messages refer to that repository. [humemai/arcadedb-embedded-python](https://github.com/humemai/arcadedb-embedded-python) is the fork where the bindings kept developing (runtime fixes, JRE trim, the native build, benchmarks). Its benchmark tooling moved to [humemai/mmdbbench](https://github.com/humemai/mmdbbench). <!-- allow-old-name -->
 
 ## Citation
 
