@@ -26,6 +26,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.function.IntConsumer;
@@ -103,73 +104,9 @@ final class BulkOps {
   @SuppressWarnings("unchecked")
   private static long insertColumns(final Database db, final String type, final Map<String, Object> h, final long[] spec,
       final ErrorCallback onError) {
-    final long nRows = ((Number) h.get("n")).longValue();
-    if (nRows < 0 || nRows > Integer.MAX_VALUE)
-      throw new IllegalArgumentException("row count out of range: " + nRows);
-    final int n = (int) nRows;
     final int commitEvery = ((Number) h.get("commit")).intValue();
-    final List<Object> cols = (List<Object>) h.get("cols");
-    final int k = cols.size();
-    if (spec.length != SLOTS * k)
-      throw new IllegalArgumentException("address table has " + spec.length + " entries for " + k + " columns, expected " + SLOTS * k);
-    final String[] names = new String[k];
-    final char[] kinds = new char[k];
-    final int[] dims = new int[k];
-    final long[] data = new long[k]; // addresses: a Word value cannot live in an array or be compared with null
-    final long[] nulls = new long[k]; // 0 = no nulls
-    final ByteBuffer[] blobs = new ByteBuffer[k];
-    int longest = 0;
-    for (int c = 0; c < k; c++) {
-      final List<Object> col = (List<Object>) cols.get(c);
-      names[c] = (String) col.get(0);
-      kinds[c] = ((String) col.get(1)).charAt(0);
-      dims[c] = ((Number) col.get(2)).intValue();
-      final long dataAddr = spec[SLOTS * c], dataBytes = spec[SLOTS * c + 1];
-      final long auxAddr = spec[SLOTS * c + 2], auxBytes = spec[SLOTS * c + 3];
-      final long nullAddr = spec[SLOTS * c + 4], nullBytes = spec[SLOTS * c + 5];
-      final long need = switch (kinds[c]) {
-        case 'q', 'd' -> 8L * n;
-        case 'b' -> n;
-        case 'i', 'e', 'D' -> 4L * n;
-        case 'T' -> {
-          if (dims[c] != 1 && dims[c] != 1_000 && dims[c] != 1_000_000 && dims[c] != 1_000_000_000)
-            throw new IllegalArgumentException("column '" + names[c] + "': a date-time column has 1, 1000, 10^6 or 10^9 ticks per second, not " + dims[c]);
-          yield 8L * n;
-        }
-        case 'f' -> {
-          if (dims[c] <= 0)
-            throw new IllegalArgumentException("column '" + names[c] + "': a vector column needs a dimension above 0");
-          yield 4L * n * dims[c];
-        }
-        case 's', 'n', 'x' -> 4L * (n + 1L);
-        default -> throw new IllegalArgumentException("unknown column kind " + kinds[c]);
-      };
-      if (dataBytes < need || (need > 0 && dataAddr == 0))
-        throw new IllegalArgumentException("column '" + names[c] + "' has " + dataBytes + " bytes, " + need + " needed");
-      data[c] = dataAddr;
-      if (nullAddr != 0) {
-        if (nullBytes < (n + 7L) / 8)
-          throw new IllegalArgumentException("column '" + names[c] + "' has a null bitmap of " + nullBytes + " bytes, " + (n + 7L) / 8 + " needed");
-        nulls[c] = nullAddr;
-      }
-      if (kinds[c] == 's' || kinds[c] == 'n' || kinds[c] == 'x') {
-        if (auxBytes < 0 || auxBytes > Integer.MAX_VALUE || (auxBytes > 0 && auxAddr == 0))
-          throw new IllegalArgumentException("column '" + names[c] + "': the string bytes are missing or beyond 2 GiB");
-        blobs[c] = auxBytes == 0 ? ByteBuffer.allocate(0) : CTypeConversion.asByteBuffer(WordFactory.pointer(auxAddr), (int) auxBytes);
-        final Pointer offsets = WordFactory.pointer(data[c]);
-        int prev = offsets.readInt(WordFactory.signed(0));
-        if (prev < 0)
-          throw new IllegalArgumentException("column '" + names[c] + "': negative string offset");
-        for (int i = 1; i <= n; i++) {
-          final int off = offsets.readInt(WordFactory.signed(4L * i));
-          if (off < prev || off > auxBytes)
-            throw new IllegalArgumentException("column '" + names[c] + "': string offsets are not increasing within the " + auxBytes + " bytes (row " + (i - 1) + ")");
-          longest = Math.max(longest, off - prev);
-          prev = off;
-        }
-      }
-    }
-    final byte[] scratch = new byte[longest];
+    final Table table = Table.of(h, spec);
+    final int n = table.n;
     final Object schemaType = db.getSchema().getType(type);
     final boolean vertex = schemaType instanceof VertexType;
     if (onError != null) {
@@ -181,7 +118,7 @@ final class BulkOps {
       try {
         for (; handed < n; handed++) {
           final MutableDocument doc = vertex ? db.newVertex(type) : db.newDocument(type);
-          setRow(doc, handed, names, kinds, dims, data, nulls, blobs, scratch);
+          setRow(doc, handed, table);
           async.createRecord(doc, null, onError);
         }
       } catch (final Throwable t) {
@@ -192,7 +129,7 @@ final class BulkOps {
     }
     writeChunks(db, n, commitEvery, i -> {
       final MutableDocument doc = vertex ? db.newVertex(type) : db.newDocument(type);
-      setRow(doc, i, names, kinds, dims, data, nulls, blobs, scratch);
+      setRow(doc, i, table);
       doc.save();
     });
     return n;
@@ -266,58 +203,181 @@ final class BulkOps {
     }
   }
 
-  /** Sets the properties of row i on doc from the columns: the one place that reads a value out of a buffer. */
-  private static void setRow(final MutableDocument doc, final int i, final String[] names, final char[] kinds, final int[] dims,
-      final long[] data, final long[] nulls, final ByteBuffer[] blobs, final byte[] scratch) {
-    final int k = names.length;
-    for (int c = 0; c < k; c++) {
-      final Pointer base = WordFactory.pointer(data[c]);
-      if (nulls[c] != 0 && ((WordFactory.<Pointer>pointer(nulls[c]).readByte(WordFactory.signed(i >> 3)) >> (i & 7)) & 1) == 0) {
-        doc.set(names[c], null);
-        continue;
+  /** Sets the properties of row i on doc from the columns. */
+  private static void setRow(final MutableDocument doc, final int i, final Table t) {
+    for (int c = 0; c < t.k; c++)
+      doc.set(t.names[c], t.cell(c, i));
+  }
+
+  /**
+   * The rows of a column table as GraphBatch.createVertices takes them: per row {name, value, name, value, ...}. The names are in the
+   * iteration order of a java.util.HashMap that took them in column order: the order in which the JSON rows of the same call set their
+   * properties (Json.rows reads every row, which has the keys of the first row in the same order, into a fresh HashMap), so a vertex is
+   * stored with the property order it has always had. The values are the objects the JSON rows give (Table.cell).
+   */
+  static Object[][] vertexRows(final Table t) {
+    final HashMap<String, Integer> byName = new HashMap<>();
+    for (int c = 0; c < t.k; c++)
+      byName.put(t.names[c], c);
+    if (byName.size() != t.k)
+      throw new IllegalArgumentException("two columns have the same name");
+    final int[] order = new int[t.k];
+    int at = 0;
+    for (final Integer c : byName.values())
+      order[at++] = c;
+    final Object[][] rows = new Object[t.n][];
+    for (int i = 0; i < t.n; i++) {
+      final Object[] row = new Object[2 * t.k];
+      for (int p = 0; p < t.k; p++) {
+        row[2 * p] = t.names[order[p]];
+        row[2 * p + 1] = t.cell(order[p], i);
       }
+      rows[i] = row;
+    }
+    return rows;
+  }
+
+  /**
+   * The columns of one call: the header ("n" rows, "cols" [name, kind, dim]) and the address table (SLOTS longs per column), validated
+   * before anything is built, and the one place that reads a value out of a buffer ({@link #cell}). The memory belongs to the caller for
+   * the duration of the call.
+   */
+  static final class Table {
+    final int n, k;
+    final String[] names;
+    final char[] kinds;
+    final int[] dims;
+    final long[] data; // addresses: a Word value cannot live in an array or be compared with null
+    final long[] nulls; // 0 = no nulls
+    final ByteBuffer[] blobs;
+    final byte[] scratch;
+
+    @SuppressWarnings("unchecked")
+    static Table of(final Map<String, Object> h, final long[] spec) {
+      final long nRows = ((Number) h.get("n")).longValue();
+      if (nRows < 0 || nRows > Integer.MAX_VALUE)
+        throw new IllegalArgumentException("row count out of range: " + nRows);
+      final List<Object> cols = (List<Object>) h.get("cols");
+      if (spec.length != SLOTS * cols.size())
+        throw new IllegalArgumentException("address table has " + spec.length + " entries for " + cols.size() + " columns, expected " + SLOTS * cols.size());
+      return new Table((int) nRows, cols, spec);
+    }
+
+    @SuppressWarnings("unchecked")
+    private Table(final int n, final List<Object> cols, final long[] spec) {
+      this.n = n;
+      k = cols.size();
+      names = new String[k];
+      kinds = new char[k];
+      dims = new int[k];
+      data = new long[k];
+      nulls = new long[k];
+      blobs = new ByteBuffer[k];
+      int longest = 0;
+      for (int c = 0; c < k; c++) {
+        final List<Object> col = (List<Object>) cols.get(c);
+        names[c] = (String) col.get(0);
+        kinds[c] = ((String) col.get(1)).charAt(0);
+        dims[c] = ((Number) col.get(2)).intValue();
+        final long dataAddr = spec[SLOTS * c], dataBytes = spec[SLOTS * c + 1];
+        final long auxAddr = spec[SLOTS * c + 2], auxBytes = spec[SLOTS * c + 3];
+        final long nullAddr = spec[SLOTS * c + 4], nullBytes = spec[SLOTS * c + 5];
+        final long need = switch (kinds[c]) {
+          case 'q', 'd' -> 8L * n;
+          case 'b' -> n;
+          case 'i', 'e', 'D' -> 4L * n;
+          case 'T' -> {
+            if (dims[c] != 1 && dims[c] != 1_000 && dims[c] != 1_000_000 && dims[c] != 1_000_000_000)
+              throw new IllegalArgumentException("column '" + names[c] + "': a date-time column has 1, 1000, 10^6 or 10^9 ticks per second, not " + dims[c]);
+            yield 8L * n;
+          }
+          case 'f' -> {
+            if (dims[c] <= 0)
+              throw new IllegalArgumentException("column '" + names[c] + "': a vector column needs a dimension above 0");
+            yield 4L * n * dims[c];
+          }
+          case 's', 'n', 'x' -> 4L * (n + 1L);
+          default -> throw new IllegalArgumentException("unknown column kind " + kinds[c]);
+        };
+        if (dataBytes < need || (need > 0 && dataAddr == 0))
+          throw new IllegalArgumentException("column '" + names[c] + "' has " + dataBytes + " bytes, " + need + " needed");
+        data[c] = dataAddr;
+        if (nullAddr != 0) {
+          if (nullBytes < (n + 7L) / 8)
+            throw new IllegalArgumentException("column '" + names[c] + "' has a null bitmap of " + nullBytes + " bytes, " + (n + 7L) / 8 + " needed");
+          nulls[c] = nullAddr;
+        }
+        if (kinds[c] == 's' || kinds[c] == 'n' || kinds[c] == 'x') {
+          if (auxBytes < 0 || auxBytes > Integer.MAX_VALUE || (auxBytes > 0 && auxAddr == 0))
+            throw new IllegalArgumentException("column '" + names[c] + "': the string bytes are missing or beyond 2 GiB");
+          blobs[c] = auxBytes == 0 ? ByteBuffer.allocate(0) : CTypeConversion.asByteBuffer(WordFactory.pointer(auxAddr), (int) auxBytes);
+          final Pointer offsets = WordFactory.pointer(data[c]);
+          int prev = offsets.readInt(WordFactory.signed(0));
+          if (prev < 0)
+            throw new IllegalArgumentException("column '" + names[c] + "': negative string offset");
+          for (int i = 1; i <= n; i++) {
+            final int off = offsets.readInt(WordFactory.signed(4L * i));
+            if (off < prev || off > auxBytes)
+              throw new IllegalArgumentException("column '" + names[c] + "': string offsets are not increasing within the " + auxBytes + " bytes (row " + (i - 1) + ")");
+            longest = Math.max(longest, off - prev);
+            prev = off;
+          }
+        }
+      }
+      scratch = new byte[longest];
+    }
+
+    /** The value of column c in row i (null for a null), as the JSON rows give it: Long, Double, Boolean, String, LocalDateTime, LocalDate, BigDecimal, byte[], float[]. */
+    Object cell(final int c, final int i) {
+      if (nulls[c] != 0 && ((WordFactory.<Pointer>pointer(nulls[c]).readByte(WordFactory.signed(i >> 3)) >> (i & 7)) & 1) == 0)
+        return null;
+      final Pointer base = WordFactory.pointer(data[c]);
       switch (kinds[c]) {
-        case 'q' -> doc.set(names[c], base.readLong(WordFactory.signed(8L * i)));
-        case 'd' -> doc.set(names[c], base.readDouble(WordFactory.signed(8L * i)));
-        case 'b' -> doc.set(names[c], base.readByte(WordFactory.signed(i)) != 0);
-        case 'i' -> doc.set(names[c], base.readInt(WordFactory.signed(4L * i)));
-        case 'e' -> doc.set(names[c], base.readFloat(WordFactory.signed(4L * i)));
-        case 'T' -> {
+        case 'q':
+          return Long.valueOf(base.readLong(WordFactory.signed(8L * i)));
+        case 'd':
+          return Double.valueOf(base.readDouble(WordFactory.signed(8L * i)));
+        case 'b':
+          return Boolean.valueOf(base.readByte(WordFactory.signed(i)) != 0);
+        case 'i':
+          return Integer.valueOf(base.readInt(WordFactory.signed(4L * i)));
+        case 'e':
+          return Float.valueOf(base.readFloat(WordFactory.signed(4L * i)));
+        case 'T': {
           final long ticks = base.readLong(WordFactory.signed(8L * i));
           final long perSecond = dims[c];
-          doc.set(names[c], LocalDateTime.ofEpochSecond(Math.floorDiv(ticks, perSecond),
-              (int) (Math.floorMod(ticks, perSecond) * (1_000_000_000L / perSecond)), ZoneOffset.UTC));
+          return LocalDateTime.ofEpochSecond(Math.floorDiv(ticks, perSecond),
+              (int) (Math.floorMod(ticks, perSecond) * (1_000_000_000L / perSecond)), ZoneOffset.UTC);
         }
-        case 'D' -> doc.set(names[c], LocalDate.ofEpochDay(base.readInt(WordFactory.signed(4L * i))));
-        case 'n' -> {
+        case 'D':
+          return LocalDate.ofEpochDay(base.readInt(WordFactory.signed(4L * i)));
+        case 'n': {
           final int from = base.readInt(WordFactory.signed(4L * i));
           final int len = base.readInt(WordFactory.signed(4L * (i + 1L))) - from;
           blobs[c].get(from, scratch, 0, len);
-          doc.set(names[c], new BigDecimal(new String(scratch, 0, len, StandardCharsets.US_ASCII)));
+          return new BigDecimal(new String(scratch, 0, len, StandardCharsets.US_ASCII));
         }
-        case 'x' -> {
+        case 'x': {
           final int from = base.readInt(WordFactory.signed(4L * i));
           final byte[] bytes = new byte[base.readInt(WordFactory.signed(4L * (i + 1L))) - from];
           blobs[c].get(from, bytes, 0, bytes.length);
-          doc.set(names[c], bytes);
+          return bytes;
         }
-        case 's' -> {
+        case 's': {
           final int from = base.readInt(WordFactory.signed(4L * i));
           final int len = base.readInt(WordFactory.signed(4L * (i + 1L))) - from;
           if (len == 0)
-            doc.set(names[c], "");
-          else {
-            blobs[c].get(from, scratch, 0, len);
-            doc.set(names[c], new String(scratch, 0, len, StandardCharsets.UTF_8));
-          }
+            return "";
+          blobs[c].get(from, scratch, 0, len);
+          return new String(scratch, 0, len, StandardCharsets.UTF_8);
         }
-        default -> {
+        default: {
           final int dim = dims[c];
           final float[] v = new float[dim];
           final long at = 4L * i * dim;
           for (int j = 0; j < dim; j++)
             v[j] = base.readFloat(WordFactory.signed(at + 4L * j));
-          doc.set(names[c], v);
+          return v;
         }
       }
     }

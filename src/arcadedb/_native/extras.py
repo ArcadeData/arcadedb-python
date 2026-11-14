@@ -20,7 +20,7 @@ from ..callbacks import check_event, check_function
 from ..exceptions import ArcadeDBError
 from ..graph_batch import GraphBatch as _BaseGraphBatch
 from ..type_conversion import take_vector_columns
-from . import interrupts, lib, not_yet
+from . import bulk, columnar, interrupts, lib, not_yet
 from .codec import (
     _PLAIN,
     _default,
@@ -191,13 +191,32 @@ class NativeGraphBatch(_BaseGraphBatch):
             return _call(prefix, "arcadedb_n_gb", self._gb, lib.b(op), lib.b(text))
         return _call(prefix, "arcadedb_n_gb", self._gb, lib.b(op), lib.b(_enc(args)))
 
-    def _create_chunk(self, prefix: str, type_name: str, rows: list) -> list:
+    def _create_chunk(
+        self, prefix: str, type_name: str, rows: list, declared=None
+    ) -> list:
         """One crossing and one transaction for `rows` (dicts): the RIDs of the new vertices.
+
+        Rows with the same keys in the same order, whose values are scalars, strings, dates, decimals, bytes or float32 vectors of one type
+        per property, cross as columns by address and the RIDs come back in an int64 buffer (``bulk.create_vertices_columns``, no JSON text in
+        either direction). Any other chunk goes as JSON text, as follows.
 
         A property whose value in every row is a float32 numpy array of one length crosses as one float32 matrix in the side buffer
         (``take_vector_columns``, ``encode_vertex_args``), with no tag, hook call or Python code per row; every other value is
         written as :func:`encode_gb_args` writes it.
         """
+        rids = bulk.create_vertices_columns(
+            self,
+            type_name,
+            rows,
+            (
+                declared
+                if declared is not None
+                else columnar.Declared(self._db, type_name)
+            ),
+            prefix,
+        )
+        if rids is not None:
+            return rids
         taken = take_vector_columns(rows, (), undeclared=True) if lib.GB_BIN else None
         if taken is None:
             return self._op(prefix, "create_vertices", type=type_name, rows=rows)[
@@ -308,12 +327,15 @@ class NativeGraphBatch(_BaseGraphBatch):
             # chunked, as the JPype wrapper does: one crossing, one JSON text and one reply per chunk, so a 1M-vertex load
             # never holds the text, the parsed rows and the reply of all of it at once (the Serial GC copies what lives)
             rids = []
+            declared = columnar.Declared(
+                db, type_name
+            )  # the schema is read at most once for the chunks of this call
             has_none = type(None) in kinds
             for start in range(0, len(rows), chunk):
                 part = rows[start : start + chunk]
                 if has_none:
                     part = [r or {} for r in part]
-                rids.extend(self._create_chunk(prefix, type_name, part))
+                rids.extend(self._create_chunk(prefix, type_name, part, declared))
             if not rows:
                 rids = self._op(prefix, "create_vertices", type=type_name, rows=[])[
                     "rids"

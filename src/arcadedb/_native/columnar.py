@@ -255,6 +255,10 @@ def _list_column(name, values, declared):
     if issubclass(only, datetime):
         if only.__name__ == "NaTType":
             return None  # the JSON path stores it as a null
+        if only is not datetime and any(
+            getattr(v, "nanosecond", 0) for v in values if v is not None
+        ):
+            return None  # a pandas Timestamp with nanoseconds: the JSON path keeps them, microsecond ticks cannot
         try:
             ticks = [0 if v is None else _epoch_micros(v) for v in values]
         except (OverflowError, ValueError):
@@ -472,8 +476,12 @@ def header_of(rows, commit_every, packed, fid=None):
     return json.dumps(header)
 
 
-def rows_to_columns(rows):
-    """A list of dicts with the same keys as a dict of name -> list of values, or None (no rows, different keys, a non-str key)."""
+def rows_to_columns(rows, same_order=False):
+    """A list of dicts with the same keys as a dict of name -> list of values, or None (no rows, different keys, a non-str key).
+
+    ``same_order``: every row must also list its keys in the order of the first row (a row with the same keys in another order gives
+    None), for a caller whose stored property order follows the key order of its rows.
+    """
     if not rows:
         return None
     try:
@@ -481,6 +489,8 @@ def rows_to_columns(rows):
         if any(type(key) is not str for key in keys):
             return None
         if set(map(len, rows)) != {len(keys)}:
+            return None
+        if same_order and not all(map(keys.__eq__, map(list, rows))):
             return None
         return {key: [row[key] for row in rows] for key in keys}
     except (

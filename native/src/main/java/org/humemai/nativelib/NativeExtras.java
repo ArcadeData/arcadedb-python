@@ -501,6 +501,41 @@ public final class NativeExtras {
     return gbImpl(h, op, argsJson, buf.rawValue(), bufFloats);
   }
 
+  /**
+   * create_vertices from columns, by pointer, as arcadedb_n_insert_colp takes them (see BulkOps.Table): header JSON {"n":rows,"cols":[[name,
+   * kind, dim],..]} and an address table of nspec longs (BulkOps.SLOTS per column). The rows are built from the columns (BulkOps.vertexRows:
+   * the objects, and the property order, that the JSON rows of arcadedb_n_gb give) and go to the same GraphBatch.createVertices(type,
+   * Object[][]), so the transaction, the retries and the commit are the engine's and nothing differs from the JSON route but the transport.
+   * The RIDs do not come back as text: rids points at ridLongs int64 slots of the caller's (at least 2 per row), and row i gets bucket id
+   * at slot 2i and position at slot 2i + 1. Returns {"ok":true,"n":rows}. The caller keeps every buffer alive until the call returns.
+   */
+  @CEntryPoint(name = "arcadedb_n_gb_colp")
+  public static CCharPointer gbColp(final IsolateThread thread, final long h, final CCharPointer type, final CCharPointer header,
+      final CCharPointer spec, final int nspec, final CCharPointer rids, final long ridLongs) {
+    try {
+      final BatchEntry entry = BATCHES.get(h);
+      if (entry == null)
+        throw new IllegalArgumentException("unknown GraphBatch " + h);
+      if (nspec < 0 || nspec % BulkOps.SLOTS != 0)
+        throw new IllegalArgumentException("address table of " + nspec + " entries is not a multiple of " + BulkOps.SLOTS);
+      final long[] table = new long[nspec];
+      for (int i = 0; i < nspec; i++)
+        table[i] = ((Pointer) spec).readLong(WordFactory.signed(8L * i));
+      final BulkOps.Table columns = BulkOps.Table.of(args(header), table);
+      if (rids.isNull() || ridLongs < 2L * columns.n)
+        throw new IllegalArgumentException("the RID buffer holds " + ridLongs + " int64 slots, " + 2L * columns.n + " needed");
+      final RID[] created = entry.batch().createVertices(ArcadeNative.str(type), BulkOps.vertexRows(columns));
+      final Pointer out = (Pointer) rids;
+      for (int i = 0; i < created.length; i++) {
+        out.writeLong(WordFactory.signed(16L * i), created[i].getBucketId());
+        out.writeLong(WordFactory.signed(16L * i + 8L), created[i].getPosition());
+      }
+      return ArcadeNative.out("{\"ok\":true,\"n\":" + created.length + "}");
+    } catch (final Throwable t) {
+      return ArcadeNative.err(t);
+    }
+  }
+
   @SuppressWarnings("unchecked")
   private static CCharPointer gbImpl(final long h, final CCharPointer op, final CCharPointer argsJson, final long buf,
       final long bufFloats) {
