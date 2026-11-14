@@ -681,6 +681,11 @@ public final class ArcadeNative {
 
   private static final ThreadLocal<String> LAST_ERROR = new ThreadLocal<>();
 
+  /** Records the error of an entry point that answers with a long (-1), for arcadedb_n_last_error on the same thread. */
+  static void recordError(final Throwable t) {
+    LAST_ERROR.set(errorJson(t));
+  }
+
   /**
    * A command (flags bit 0 selects command, else query) whose first rows are pulled but not encoded (as flags bit 1 of arcadedb_n_exec).
    * Returns the cursor id (> 0, read with arcadedb_n_next, closed with arcadedb_n_rs_close or arcadedb_n_rs_close_many), 0 when the

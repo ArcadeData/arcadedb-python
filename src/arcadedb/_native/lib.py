@@ -37,6 +37,9 @@ TS_BIN = os.environ.get("ARCADEDB_NATIVE_TS_BIN", "1") != "0"
 # ARCADEDB_NATIVE_GB_BIN: the float32 vectors of a GraphBatch op (create_vertices rows, new_edges props) go through arcadedb_n_gb_bin in a float32 side buffer, not as number text
 GB_BIN = os.environ.get("ARCADEDB_NATIVE_GB_BIN", "1") != "0"
 
+# ARCADEDB_NATIVE_VINDEX_BIN: the query vector of find_nearest_approximate crosses as a float32 array by address and the hits come back in one packed buffer (arcadedb_n_vindex_bin), not as a JSON list of numbers and a JSON list of [rid, score]
+VINDEX_BIN = os.environ.get("ARCADEDB_NATIVE_VINDEX_BIN", "1") != "0"
+
 # the directory the engine log, logging.properties and the crash files go to (None until the library is loaded)
 LOG_DIR_USED = None
 
@@ -255,6 +258,7 @@ def _load():
             "arcadedb_n_async": [P, L, S, S],
             "arcadedb_n_async_bin": [P, L, S, S, P, N],
             "arcadedb_n_vindex": [P, L, S, S],
+            "arcadedb_n_vindex_bin": [P, L, S, S, N, P, L, P, L, P, L],
             "arcadedb_n_import": [P, L, S],
             "arcadedb_n_export": [P, L, S, S, N, S],
             "arcadedb_n_cb": [P, S, S],
@@ -262,9 +266,10 @@ def _load():
             "arcadedb_n_set_upcall": [P, P],
             "arcadedb_free": [P, P],
         }
-        # the entry points that answer with a number, not with the address of a reply text: a cursor id (arcadedb_n_cmd) and the
-        # transaction state (arcadedb_n_tx); -1 is an error for both, its text is read with arcadedb_n_last_error
-        returns_long = ("arcadedb_n_cmd", "arcadedb_n_tx")
+        # the entry points that answer with a number, not with the address of a reply text: a cursor id (arcadedb_n_cmd), the
+        # transaction state (arcadedb_n_tx) and the hit count of arcadedb_n_vindex_bin; -1 is an error for all three, its text is
+        # read with arcadedb_n_last_error
+        returns_long = ("arcadedb_n_cmd", "arcadedb_n_tx", "arcadedb_n_vindex_bin")
         for name, argtypes in sigs.items():
             fn = getattr(lib, name, None)
             if fn is None:  # a library built before this entry point existed
@@ -280,7 +285,7 @@ def _load():
                 )
                 else ctypes.c_longlong if name in returns_long else ctypes.c_void_p
             )
-        global BINARY_PARAMS, CMD_PATH, CLOSE_BATCH, INSERT_ROWS, EXEC_MANY, NEXT_BIN, GB_BIN, TS_BIN
+        global BINARY_PARAMS, CMD_PATH, CLOSE_BATCH, INSERT_ROWS, EXEC_MANY, NEXT_BIN, GB_BIN, TS_BIN, VINDEX_BIN
         if not hasattr(
             lib, "arcadedb_n_exec_bin"
         ):  # a library built before the binary path
@@ -305,6 +310,10 @@ def _load():
             lib, "arcadedb_n_async_bin"
         ):  # a library built before the address table of append_samples
             TS_BIN = False
+        if not hasattr(
+            lib, "arcadedb_n_vindex_bin"
+        ):  # a library built before the binary approximate search
+            VINDEX_BIN = False
         _isolate = isolate
         _creator = threading.get_ident()
         _local.thread = _Thread(thread, owned=False)
@@ -505,8 +514,27 @@ def tx(handle, op) -> int:
     return lib.arcadedb_n_tx(th, handle, op)
 
 
+def vindex_bin(
+    handle, type_name, prop, k, query, dims, allowed, pairs, out, cap
+) -> int:
+    """``arcadedb_n_vindex_bin``: the approximate search of a vector index with no JSON on either side.
+
+    ``type_name`` and ``prop`` are bytes; ``query`` is the address of ``dims`` float32 values; ``allowed`` is the address of ``pairs``
+    (bucket, position) int64 pairs, or 0 with 0 pairs for no filter; ``out`` is the address of room for ``cap`` hits of three int64
+    words (bucket, position, the score as the bits of a double). Returns the hit count n: the n hits are in ``out`` when ``n <= cap``,
+    and nothing is written when it is larger (call again with room for n). -1 is an error, read with :func:`last_error`.
+    The caller keeps every buffer alive until the call returns.
+    """
+    lib = _lib or _load()
+    t = _local.__dict__.get("thread")
+    th = t.handle if t is not None else _thread_handle()
+    return lib.arcadedb_n_vindex_bin(
+        th, handle, type_name, prop, k, query, dims, allowed, pairs, out, cap
+    )
+
+
 def last_error() -> str:
-    """The error of the last failed :func:`cmd` or :func:`tx` on this thread, as the JSON text of an error reply."""
+    """The error of the last failed :func:`cmd`, :func:`tx` or :func:`vindex_bin` on this thread, as the JSON text of an error reply."""
     return call("arcadedb_n_last_error")
 
 
