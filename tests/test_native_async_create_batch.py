@@ -12,11 +12,10 @@ Python side with a recorded library is in test_native_async_create_batch_unit.py
 import datetime
 import decimal
 
+import numpy as np
 import pytest
 
 from arcadedb._native import lib
-
-np = pytest.importorskip("numpy")
 
 
 class _Crossings:

@@ -19,8 +19,6 @@ import pytest
 from arcadedb import ArcadeDBError
 from arcadedb._native import bulk, columnar, extras
 
-np = pytest.importorskip("numpy")
-
 BATCH = getattr(extras, "_ASYNC_BATCH", 1000)
 REFUSAL = {"cls": "DuplicatedKeyException", "error": "duplicate", "chain": []}
 
