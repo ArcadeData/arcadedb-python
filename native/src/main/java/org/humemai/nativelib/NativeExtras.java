@@ -503,7 +503,7 @@ public final class NativeExtras {
 
   /**
    * create_vertices from columns, by pointer, as arcadedb_n_insert_colp takes them (see BulkOps.Table): header JSON {"n":rows,"cols":[[name,
-   * kind, dim],..]} and an address table of nspec longs (BulkOps.SLOTS per column). The rows are built from the columns (BulkOps.vertexRows:
+   * kind, dim],..],"last":[names]} (the columns stored after the others, see BulkOps.vertexRows) and an address table of nspec longs (BulkOps.SLOTS per column). The rows are built from the columns (BulkOps.vertexRows:
    * the objects, and the property order, that the JSON rows of arcadedb_n_gb give) and go to the same GraphBatch.createVertices(type,
    * Object[][]), so the transaction, the retries and the commit are the engine's and nothing differs from the JSON route but the transport.
    * The RIDs do not come back as text: rids points at ridLongs int64 slots of the caller's (at least 2 per row), and row i gets bucket id
@@ -521,10 +521,11 @@ public final class NativeExtras {
       final long[] table = new long[nspec];
       for (int i = 0; i < nspec; i++)
         table[i] = ((Pointer) spec).readLong(WordFactory.signed(8L * i));
-      final BulkOps.Table columns = BulkOps.Table.of(args(header), table);
+      final Map<String, Object> head = args(header);
+      final BulkOps.Table columns = BulkOps.Table.of(head, table);
       if (rids.isNull() || ridLongs < 2L * columns.n)
         throw new IllegalArgumentException("the RID buffer holds " + ridLongs + " int64 slots, " + 2L * columns.n + " needed");
-      final RID[] created = entry.batch().createVertices(ArcadeNative.str(type), BulkOps.vertexRows(columns));
+      final RID[] created = entry.batch().createVertices(ArcadeNative.str(type), BulkOps.vertexRows(columns, head.get("last")));
       final Pointer out = (Pointer) rids;
       for (int i = 0; i < created.length; i++) {
         out.writeLong(WordFactory.signed(16L * i), created[i].getBucketId());

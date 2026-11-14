@@ -138,6 +138,8 @@ def test_the_columnar_route_stores_what_the_json_route_stores(
     db, monkeypatch, shape, n
 ):
     make, carried = SHAPES[shape]
+    if shape == "mixed int and float" and n == 1:
+        carried = True  # one row holds one type: a column of one float
     rows = _rows(n, make)
     rids_on, calls_on = _load(db, monkeypatch, "A", rows, True)
     rids_off, calls_off = _load(db, monkeypatch, "B", rows, False)
@@ -199,7 +201,9 @@ def test_an_integer_past_64_bits_is_refused_by_both_routes_alike(db, monkeypatch
     for type_name, columnar in (("A", True), ("B", False)):
         with pytest.raises(Exception) as raised:
             _load(db, monkeypatch, type_name, rows, columnar)
-        errors.append(str(raised.value))
+        errors.append(
+            str(raised.value).replace(f"'{type_name}'", "'T'")
+        )  # the type name is the only difference
     assert errors[0] == errors[1]
     assert db.query("sql", "SELECT count(*) AS c FROM A").first().get("c") == 0
 
@@ -221,3 +225,72 @@ def test_a_failing_chunk_stores_nothing_of_itself_and_keeps_the_chunks_before_it
     with pytest.raises(Exception):
         _load(db, monkeypatch, "A", rows, True)
     assert db.query("sql", "SELECT count(*) AS c FROM A").first().get("c") == 1000
+
+
+def test_the_paper_shaped_loads_take_the_columnar_route_end_to_end(
+    temp_db, monkeypatch
+):
+    """l2 (Person rows in chunks) and e2 (Product rows with a float32 vector): every chunk is one arcadedb_n_gb_colp crossing, no create_vertices
+    crossing of the JSON entries, no codec hook; the vertices and the vectors are stored, the RIDs come back as a list of str.
+    """
+    from arcadedb._native import codec
+
+    temp_db.command("sql", "CREATE VERTEX TYPE Person")
+    temp_db.command("sql", "CREATE VERTEX TYPE Product")
+    temp_db.command("sql", "CREATE PROPERTY Product.embedding ARRAY_OF_FLOATS")
+    calls, hooks = [], {"prep": 0, "default": 0}
+    real_call, real_prep, real_default = lib.call, codec._prep, codec._default
+
+    def spy(name, *args):
+        calls.append(
+            (name, args[1] if name in ("arcadedb_n_gb", "arcadedb_n_gb_bin") else None)
+        )
+        return real_call(name, *args)
+
+    def counting(key, real):
+        def wrapper(*args, **kwargs):
+            hooks[key] += 1
+            return real(*args, **kwargs)
+
+        return wrapper
+
+    people = [
+        {"id": i, "name": f"p{i}", "age": 20 + i % 50, "city": f"c{i % 7}"}
+        for i in range(2500)
+    ]
+    x = _vectors(2100, 16)
+    products = [
+        {"id": i, "title": f"t{i}", "price": i * 0.25, "embedding": x[i]}
+        for i in range(2100)
+    ]
+    with (
+        temp_db.graph_batch() as gb
+    ):  # the default commit_every: 1000 rows per crossing
+        monkeypatch.setattr(lib, "call", spy)
+        monkeypatch.setattr(codec, "_prep", counting("prep", real_prep))
+        monkeypatch.setattr(codec, "_default", counting("default", real_default))
+        rids_people = gb.create_vertices("Person", people)
+        rids_products = gb.create_vertices("Product", products)
+        monkeypatch.undo()
+    assert [
+        c for c in calls if c[1] == b"create_vertices"
+    ] == []  # no JSON entry carried a chunk
+    assert [c[0] for c in calls].count(
+        COLP
+    ) == 3 + 3  # 1000, 1000, 500 and 1000, 1000, 100
+    assert hooks == {"prep": 0, "default": 0}
+    assert len(rids_people) == 2500 and len(rids_products) == 2100
+    assert all(type(r) is str for r in rids_people + rids_products)
+    stored = {
+        r["id"]: r["embedding"]
+        for r in temp_db.query("sql", "SELECT id, embedding FROM Product").to_list()
+    }
+    assert len(stored) == 2100
+    assert all(
+        np.array(stored[i], dtype=np.float32).tobytes() == x[i].tobytes()
+        for i in range(2100)
+    )
+    assert (
+        temp_db.query("sql", "SELECT count(*) AS c FROM Person").first().get("c")
+        == 2500
+    )

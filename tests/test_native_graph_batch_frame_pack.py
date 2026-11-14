@@ -183,6 +183,9 @@ def test_float32_vectors_cross_as_one_matrix_column(library):
     _expect_columns(library, rows)
     cols = library.crossings[0][2]["cols"]
     assert cols == [["id", "q", 0], ["embedding", "f", 8]]
+    assert library.crossings[0][2]["last"] == [
+        "embedding"
+    ]  # stored after the other properties, as the old route did
     assert library.columns[0][1] == x.tobytes()
 
 
@@ -193,6 +196,9 @@ def test_a_declared_vector_property_is_read_once_for_all_chunks_of_a_call(librar
     assert library.entries() == [COLP] * 3
     assert db.schema_reads == 1  # the schema of the type, once for the three chunks
     assert [c[2]["cols"][0] for c in library.crossings] == [["v", "f", 3]] * 3
+    assert (
+        "last" not in library.crossings[0][2]
+    )  # a list column stays in the HashMap order, as in the JSON rows
     expected = np.array([[i * 0.5, i + 0.25, 3.0] for i in range(10)], np.float32)
     assert library.columns[0][0] == expected.tobytes()
 
@@ -299,16 +305,22 @@ def test_same_order_is_a_rule_of_the_row_check_only():
     }
 
 
-def test_a_pandas_timestamp_with_nanoseconds_is_not_a_column():
-    """The JSON route keeps the nanoseconds of a Timestamp (``isoformat``); microsecond ticks cannot, so the chunk keeps that route."""
+def test_a_pandas_timestamp_with_nanoseconds_keeps_the_json_route_of_a_vertex_load(
+    library,
+):
+    """GraphBatch's JSON route writes a Timestamp with isoformat(), which keeps the nanoseconds, and microsecond ticks cannot; insert_many's
+    JSON route keeps microseconds (test_native_columnar_temporal.py), so only this route asks the packer to refuse them.
+    """
     import pandas as pd
 
     declared = columnar.Declared(known={})
-    assert (
-        columnar.pack({"t": [pd.Timestamp("2020-01-01 00:00:00.000000123")]}, declared)
-        is None
-    )
-    assert (
-        columnar.pack({"t": [pd.Timestamp("2020-01-01 00:00:00.000123")]}, declared)
-        is not None
-    )
+    stamp = pd.Timestamp("2020-01-01 00:00:00.000000123")
+    assert columnar.pack({"t": [stamp]}, declared) is not None  # insert_many
+    assert columnar.pack({"t": [stamp]}, declared, exact_nanos=True) is None
+    micros = pd.Timestamp("2020-01-01 00:00:00.000123")
+    assert columnar.pack({"t": [micros]}, declared, exact_nanos=True) is not None
+    _batch().create_vertices("P", [{"t": stamp}, {"t": stamp}])
+    assert set(library.entries()) <= set(OLD) and library.entries()
+    library.crossings.clear()
+    _batch().create_vertices("P", [{"t": micros}, {"t": micros}])
+    assert library.entries() == [COLP]

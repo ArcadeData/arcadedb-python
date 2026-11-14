@@ -27,8 +27,10 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.IntConsumer;
 
 final class BulkOps {
@@ -213,18 +215,30 @@ final class BulkOps {
    * The rows of a column table as GraphBatch.createVertices takes them: per row {name, value, name, value, ...}. The names are in the
    * iteration order of a java.util.HashMap that took them in column order: the order in which the JSON rows of the same call set their
    * properties (Json.rows reads every row, which has the keys of the first row in the same order, into a fresh HashMap), so a vertex is
-   * stored with the property order it has always had. The values are the objects the JSON rows give (Table.cell).
+   * stored with the property order it has always had. The values are the objects the JSON rows give (Table.cell). The columns that
+   * {@code last} names (float32 array vectors: the old route took them out of the rows and appended them, in column order) follow the others.
    */
-  static Object[][] vertexRows(final Table t) {
+  static Object[][] vertexRows(final Table t, final Object last) {
+    final Set<String> tail = new HashSet<>();
+    if (last instanceof List<?> names)
+      for (final Object name : names)
+        tail.add((String) name);
     final HashMap<String, Integer> byName = new HashMap<>();
     for (int c = 0; c < t.k; c++)
-      byName.put(t.names[c], c);
-    if (byName.size() != t.k)
-      throw new IllegalArgumentException("two columns have the same name");
+      if (!tail.contains(t.names[c]))
+        byName.put(t.names[c], c);
     final int[] order = new int[t.k];
     int at = 0;
     for (final Integer c : byName.values())
       order[at++] = c;
+    int tailFound = 0;
+    for (int c = 0; c < t.k; c++)
+      if (tail.contains(t.names[c])) {
+        order[at++] = c;
+        tailFound++;
+      }
+    if (at != t.k || tailFound != tail.size())
+      throw new IllegalArgumentException("two columns have the same name, or \"last\" names a column that is not there");
     final Object[][] rows = new Object[t.n][];
     for (int i = 0; i < t.n; i++) {
       final Object[] row = new Object[2 * t.k];

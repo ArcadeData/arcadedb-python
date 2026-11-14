@@ -116,10 +116,19 @@ def create_vertices_columns(gb, type_name, rows, declared, prefix):
     columns = columnar.rows_to_columns(rows, same_order=True)
     if columns is None:
         return None
-    packed = columnar.pack(columns, declared)
+    packed = columnar.pack(
+        columns, declared, exact_nanos=True
+    )  # the JSON route keeps the nanoseconds of a Timestamp
     if packed is None:
         return None
     count, cols = packed
+    # a column of float32 arrays is stored after the other properties of a row: the old route took those vectors out of the JSON rows and
+    # appended them (NativeExtras.withVectors); the other columns keep the order of a HashMap of their names, as the JSON rows do
+    last = [
+        c.name
+        for c in cols
+        if c.kind == "f" and isinstance(columns[c.name][0], columnar._np.ndarray)
+    ]
     spec = columnar.spec_of(cols)
     out = columnar._np.empty(2 * count, dtype=columnar._np.int64)
     from .database import _call
@@ -129,7 +138,7 @@ def create_vertices_columns(gb, type_name, rows, declared, prefix):
         "arcadedb_n_gb_colp",
         gb._gb,
         lib.b(type_name),
-        lib.b(columnar.header_of(count, 0, cols)),
+        lib.b(columnar.header_of(count, 0, cols, last=last)),
         spec,
         len(spec),
         out.ctypes.data,
