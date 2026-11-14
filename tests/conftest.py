@@ -113,6 +113,8 @@ if BACKEND != "native":
     collect_ignore.append("test_native_vertex_vector_crossings.py")
     # the native columnar fast path (arcadedb._native.bulk.insert_columns_fast) with a rows-dropped fault in it, found by the ingest-integrity check (#336)
     collect_ignore.append("test_native_ingest_integrity_faults.py")
+    # find_nearest_approximate through arcadedb_n_vindex_bin against the JSON route of arcadedb_n_vindex, observed on the native library
+    collect_ignore.append("test_native_vindex_bin.py")
 if not os.path.isfile(
     os.path.join(os.path.dirname(os.path.dirname(__file__)), "docs", "index.md")
 ):
