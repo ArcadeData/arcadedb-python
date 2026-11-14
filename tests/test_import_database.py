@@ -67,10 +67,17 @@ def _resource_path(name: str) -> Path:
     return Path(__file__).resolve().parent / "fixtures" / name
 
 
+# `parallel` is a reserved word in the SQL grammar, so an IMPORT DATABASE setting of that name can only be written in backticks. For a few
+# days the 26.12.1-SNAPSHOT engine refused the quoted name as an unknown importer setting (ArcadeData/arcadedb#11363, fixed by #11441 for
+# ArcadeData/arcadedb#11367); every engine accepts it now, as 26.11.1 does, so the two tests below assert OK on all of them.
+
+
 def _import_result_ok(result_set):
     assert result_set is not None
     row = result_set.one()
-    assert row.get("result") == "OK"
+    assert (
+        row.get("result") == "OK"
+    ), row.to_dict()  # the whole row: the importer says why on a FAIL
     return row
 
 
@@ -188,7 +195,7 @@ def test_import_database_xml_vertices(temp_db_path, sample_xml_path):
             "sql",
             (
                 f"IMPORT DATABASE {_file_url(sample_xml_path)} "
-                "WITH objectNestLevel = 1, entityType = 'VERTEX'"
+                "WITH objectNestLevel = 1"
             ),
         )
         _import_result_ok(result)
