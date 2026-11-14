@@ -43,6 +43,31 @@ public final class EdgeBatcher {
   }
 
   /**
+   * Bulk edges WITH properties as whole columns: the RIDs cross as the two joined texts of {@link #newEdgesJoined} and the property
+   * values as typed columns (see {@link VertexBatcher#createVerticesColumns}, which has the layout of {@code columns} and
+   * {@code nulls} and the boxing of an integer), one value per edge in each. Every edge gets the same property names, in the order of
+   * {@code names}; an empty {@code names} buffers edges without properties. The engine call is the one {@link #newEdgesJson} makes.
+   */
+  public static void newEdgesColumns(final GraphBatch batch, final String joinedSourceRids, final String edgeType,
+      final String joinedDestinationRids, final String[] names, final Object[] columns, final Object[] nulls) {
+    final String[] sources = joinedSourceRids.split(";");
+    final String[] destinations = joinedDestinationRids.split(";");
+    if (sources.length != destinations.length)
+      throw new IllegalArgumentException(
+          "sourceRids and destinationRids must have the same length (" + sources.length + " vs " + destinations.length + ")");
+    final int n = sources.length;
+    DocumentBatcher.checkColumns(names, columns, n);
+    VertexBatcher.checkNulls(names, nulls, n);
+    for (int i = 0; i < n; i++) {
+      final Object[] props = VertexBatcher.flatRow(names, columns, nulls, i);
+      if (props.length == 0)
+        batch.newEdge(new RID(sources[i]), edgeType, new RID(destinations[i]));
+      else
+        batch.newEdge(new RID(sources[i]), edgeType, new RID(destinations[i]), props);
+    }
+  }
+
+  /**
    * Bulk edges WITH properties: one JSON array of rows, each
    * {"_src": "#1:0", "_dst": "#1:1", ...properties}. Property values are JSON values and the tagged values
    * DocumentBatcher.untag decodes; the Python side falls back per-edge otherwise.
