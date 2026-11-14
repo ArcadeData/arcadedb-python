@@ -5,7 +5,7 @@ row, and the whole load went through ``_to_java_property_matrix``, which convert
 builds one ``Object[]`` per row and one ``Object[][]`` for the call (an unwrapped Python loop that was 59 to 61 percent of the wall of the
 e2 and l3d loads in the untimed ingest profile of 26.11.1). A float32 numpy array on a property that is not declared ``ARRAY_OF_FLOATS``
 took the same way. Now ``take_vector_columns`` stacks the column once (numpy reads a Java array through the buffer protocol), one
-``float[]`` copy and one ``FloatVectors.Matrix`` cross per property, and one ``VertexBatcher.createVerticesJson`` call per chunk.
+``float[]`` copy and one ``FloatVectors.Matrix`` cross per property, and one ``VertexBatcher.createVerticesColumns`` call per chunk.
 
 The JPype crossings are counted by wrapping the bridge classes and the Python-side conversion; the stored values are in
 test_vertex_vector_loads.py. The JPype bridge does not exist on the native wheel (its counts are in test_native_vertex_vector_crossings.py),
@@ -129,7 +129,7 @@ def test_a_float32_vector_crosses_as_one_matrix_per_chunk(
     ), "the property-matrix path ran (a JPype conversion per value and per row)"
     assert crossings["convert"] == [], "a value was converted one at a time"
     assert (
-        crossings["bridge"] == ["createVerticesJson"] * 3
+        crossings["bridge"] == ["createVerticesColumns"] * 3
     )  # one crossing per chunk of 100
     # one float32 matrix per chunk: `declared` is asked once per call, `Matrix` once per chunk
     assert crossings["matrix"].count("Matrix") == 3
@@ -148,7 +148,7 @@ def test_two_vector_properties_cross_as_two_matrices_per_chunk(db, crossings):
     with db.graph_batch(parallel_flush=False) as gb:
         gb.create_vertices("Declared", rows)
     assert crossings["fallback"] == [] and crossings["convert"] == []
-    assert crossings["bridge"] == ["createVerticesJson"] * 3
+    assert crossings["bridge"] == ["createVerticesColumns"] * 3
     assert crossings["matrix"].count("Matrix") == 6
 
 
@@ -162,7 +162,7 @@ def test_a_ragged_column_still_takes_the_property_matrix_path_for_its_chunk(
     with db.graph_batch(parallel_flush=False) as gb:
         assert len(gb.create_vertices("Declared", rows)) == ROWS
     assert crossings["fallback"] == [100], "only the chunk of row 120"
-    assert crossings["bridge"] == ["createVerticesJson"] * 2
+    assert crossings["bridge"] == ["createVerticesColumns"] * 2
     stored = {
         r["id"]: r["embedding"]
         for r in db.query("sql", "SELECT id, embedding FROM Declared").to_list()
@@ -180,7 +180,7 @@ def test_a_java_double_array_is_a_vector_only_on_a_declared_property(db, crossin
         gb.create_vertices("Declared", rows)
     assert (
         crossings["fallback"] == []
-        and crossings["bridge"] == ["createVerticesJson"] * 3
+        and crossings["bridge"] == ["createVerticesColumns"] * 3
     )
     declared = {
         r["id"]: r["embedding"]
@@ -255,7 +255,7 @@ def test_rows_with_vectors_cross_in_blocks_sized_by_their_width(
         assert len(gb.create_vertices("Declared", rows)) == ROWS
     assert crossings["fallback"] == [] and crossings["convert"] == []
     assert (
-        crossings["bridge"] == ["createVerticesJson"] * 7
+        crossings["bridge"] == ["createVerticesColumns"] * 7
     )  # 6 blocks of 40, one of 10
     assert crossings["matrix"].count("Matrix") == 7
     sql = "SELECT id, embedding FROM Declared"
@@ -269,12 +269,12 @@ def test_rows_with_vectors_cross_in_blocks_sized_by_their_width(
     rows = [{"id": 1000 + i, "embedding": arrays[i]} for i in range(25)]
     with db.graph_batch(parallel_flush=False) as gb:
         gb.create_vertices("Free", rows)
-    assert crossings["bridge"] == ["createVerticesJson"] * 3  # 10, 10, 5
+    assert crossings["bridge"] == ["createVerticesColumns"] * 3  # 10, 10, 5
     # rows without a vector keep the whole _BULK_CHUNK
     crossings["bridge"].clear()
     with db.graph_batch(parallel_flush=False) as gb:
         gb.create_vertices("Free", [{"id": 2000 + i} for i in range(ROWS)])
-    assert crossings["bridge"] == ["createVerticesJson"]
+    assert crossings["bridge"] == ["createVerticesColumns"]
 
 
 def test_vector_width_counts_the_vector_columns_of_the_first_row(db):
