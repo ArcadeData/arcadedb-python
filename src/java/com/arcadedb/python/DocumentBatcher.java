@@ -210,7 +210,7 @@ public final class DocumentBatcher {
     return vertex ? db.newVertex(typeName) : db.newDocument(typeName);
   }
 
-  private static void checkColumns(final String[] names, final Object[] columns, final int n) {
+  static void checkColumns(final String[] names, final Object[] columns, final int n) {
     final int k = names.length;
     if (columns.length != k)
       throw new IllegalArgumentException("columns has " + columns.length + " arrays for " + k + " names");
