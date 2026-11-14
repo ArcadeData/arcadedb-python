@@ -43,12 +43,12 @@ def insert_columns_fast(
 ):
     """Insert ``columns`` (name -> column) in one crossing and return the row count, or None when a column cannot be sent this way.
 
-    ``declared``: a dict of declared property types when the caller already knows them (the DataFrame path), else they are read from the
-    schema if a column needs them.
+    ``declared``: a dict of declared property types when the caller already knows them (the DataFrame path), the call's
+    :class:`columnar.Declared` when it goes on to another entry after this one, else they are read from the schema if a column needs them.
     """
     if not _usable():
         return None
-    packed = columnar.pack(columns, columnar.Declared(db, type_name, declared))
+    packed = columnar.pack(columns, columnar.declared_for(db, type_name, declared))
     if packed is None:
         return None
     rows, cols = packed
@@ -63,7 +63,7 @@ def insert_columns_parallel(db, type_name, columns, declared=None):
     """
     if not _usable():
         return None
-    packed = columnar.pack(columns, columnar.Declared(db, type_name, declared))
+    packed = columnar.pack(columns, columnar.declared_for(db, type_name, declared))
     if packed is None:
         return None
     rows, cols = packed
@@ -80,16 +80,19 @@ def insert_columns_parallel(db, type_name, columns, declared=None):
     return db._finish_parallel(type_name, [fid], rows)
 
 
-def insert_rows_columnar(db, type_name, chunk):
+def insert_rows_columnar(db, type_name, chunk, declared=None):
     """One ``insert_many`` chunk (a list of dicts with the same keys) through the columnar entry inside the caller's transaction (no
     commit here). Returns True when it was sent, False when the chunk needs the JSON path.
+
+    ``declared``: the :class:`columnar.Declared` of the call, so that its chunks read the schema once between them (a chunk on its own
+    reads it when a column needs it).
     """
     if not _usable():
         return False
     columns = columnar.rows_to_columns(chunk)
     if columns is None:
         return False
-    packed = columnar.pack(columns, columnar.Declared(db, type_name))
+    packed = columnar.pack(columns, columnar.declared_for(db, type_name, declared))
     if packed is None:
         return False
     rows, cols = packed
