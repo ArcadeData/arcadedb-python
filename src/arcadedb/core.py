@@ -8,7 +8,7 @@ import gc
 import itertools
 import operator
 from collections.abc import Mapping
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from os import PathLike
 from typing import Any, Callable, List, Optional
@@ -33,6 +33,8 @@ from .jvm import start_jvm
 from .results import ResultSet
 from .transactions import TransactionContext
 from .type_conversion import (
+    _INT64_MAX,
+    _INT64_MIN,
     _is_numpy_bool,
     bulk_row_ok,
     convert_python_to_java,
@@ -332,6 +334,129 @@ def _column_to_java(name, values):
         else:
             converted.append(convert_python_to_java(value))
     return jpype.JArray(jpype.JObject)(converted), len(converted)
+
+
+# insert_many: the kinds of column a chunk can cross as typed columns (see _typed_chunk_columns). The exact types only: a subclass
+# (pandas.Timestamp, numpy.float64) and every other type (Decimal, bytes, list, dict, tuple) keep the JSON text.
+_TYPED_KINDS = {
+    int: "int",
+    float: "float",
+    bool: "bool",
+    str: "str",
+    date: "date",
+    datetime: "datetime",
+}
+_DICT_ONLY = frozenset((dict,))
+_STR_ONLY = frozenset((str,))
+_NO_ZONE = frozenset((None,))
+_EPOCH_ORDINAL = date(1970, 1, 1).toordinal()
+_EPOCH_DATE = date(1970, 1, 1)
+_EPOCH_DATETIME = datetime(1970, 1, 1)
+
+
+def _typed_kind(values):
+    """``(kind, nullable)`` of one column of an insert_many chunk when it can cross as a typed column, else None.
+
+    The column holds ``None`` and values of ONE exact type of ``_TYPED_KINDS`` (``"null"`` when there is nothing but ``None``).
+    A mixed column (an int beside a float, a bool beside an int) would store each value as its own type on the JSON route, which one
+    typed array cannot do; an int beyond 64 bits, a date-time with a zone and a type the table does not list keep the JSON route.
+    """
+    kinds = set(map(type, values))
+    nullable = _NONE_TYPE in kinds
+    kinds.discard(_NONE_TYPE)
+    if not kinds:
+        return "null", True
+    if len(kinds) != 1:
+        return None
+    kind = _TYPED_KINDS.get(next(iter(kinds)))
+    if kind == "int":
+        present = [v for v in values if v is not None] if nullable else values
+        if min(present) < _INT64_MIN or max(present) > _INT64_MAX:
+            return None
+    elif kind == "datetime":
+        present = [v for v in values if v is not None] if nullable else values
+        if set(map(operator.attrgetter("tzinfo"), present)) != _NO_ZONE:
+            return None
+    return (kind, nullable) if kind else None
+
+
+def _typed_java_column(name, values, kind, nullable):
+    """One column of an insert_many chunk as the Java column ``DocumentBatcher.insertManyColumns`` takes, or None.
+
+    A whole column of int, float or bool without a null is one numpy array and one buffer copy (``long[]``, ``double[]``,
+    ``boolean[]``); a column of str and None is one ``StringColumn``; date and naive date-time columns are one ``TemporalColumn``
+    (a ``long[]`` of epoch days or microseconds, and one ``boolean[]`` when there is a null); a numeric column with a null converts
+    per element into an ``Object[]``, as ``insert_columns`` does, and a column of nothing but None is an ``Object[]`` of nulls.
+    """
+    n = len(values)
+    if kind == "null":
+        return jpype.JArray(jpype.JObject)([None] * n)
+    if kind == "str":
+        return _string_column(values)
+    if kind == "date" or kind == "datetime":
+        mask = None
+        if nullable:
+            mask = jpype.JArray(jpype.JBoolean)(
+                _np.fromiter(
+                    map(operator.is_, values, itertools.repeat(None)),
+                    dtype=_np.bool_,
+                    count=n,
+                )
+            )
+            filler = _EPOCH_DATE if kind == "date" else _EPOCH_DATETIME
+            values = [filler if v is None else v for v in values]
+        temporal = _java_class("com.arcadedb.python.TemporalColumn")
+        if kind == "date":
+            ticks = (
+                _np.fromiter(map(date.toordinal, values), dtype=_np.int64, count=n)
+                - _EPOCH_ORDINAL
+            )
+            return temporal.dates(jpype.JArray(jpype.JLong)(ticks), 1, mask)
+        ticks = _np.array(values, dtype="datetime64[us]").astype(_np.int64)
+        return temporal.dateTimes(jpype.JArray(jpype.JLong)(ticks), 1_000_000, mask)
+    if nullable:
+        return _column_to_java(name, values)[0]
+    dtype = {"int": _np.int64, "float": _np.float64, "bool": _np.bool_}[kind]
+    try:
+        array = _np.fromiter(values, dtype=dtype, count=n)
+    except (OverflowError, ValueError, TypeError):
+        return None
+    return _column_to_java(name, array)[0]
+
+
+def _typed_chunk_columns(chunk):
+    """``(names, columns)`` for one chunk of insert_many rows that can cross as typed columns, else None (the chunk keeps the JSON text).
+
+    The chunk qualifies when every row is a ``dict`` with the same str keys in the same order (a row that lacks a key, has another
+    one, or lists them in another order is a different shape, and a record keeps its properties in the order they were set), and every
+    column holds one kind of value (``_typed_kind``). Whether a column qualifies is decided from the types alone before any bridge
+    array is built, so a chunk that cannot cross this way costs the census and nothing else. The result is stored as the JSON text
+    stores it: ``DocumentBatcher.insertManyColumns`` stores a whole number as an Integer when it fits an int, as the text parser
+    does, and ``None`` is a null property, never a missing one.
+    """
+    if _np is None or not chunk or set(map(type, chunk)) != _DICT_ONLY:
+        return None
+    names = tuple(chunk[0])
+    if not names or set(map(type, names)) != _STR_ONLY:
+        return None
+    if len(set(map(tuple, chunk))) != 1:
+        return None
+    lists = []
+    shapes = []
+    for name in names:
+        values = list(map(operator.itemgetter(name), chunk))
+        shape = _typed_kind(values)
+        if shape is None:
+            return None
+        lists.append(values)
+        shapes.append(shape)
+    columns = []
+    for name, values, (kind, nullable) in zip(names, lists, shapes):
+        column = _typed_java_column(name, values, kind, nullable)
+        if column is None:
+            return None
+        columns.append(column)
+    return names, columns
 
 
 def _wrap_java_record(java_record, database=None):
@@ -763,11 +888,17 @@ class Database:
     ) -> int:
         """Bulk-insert documents with one FFI crossing per chunk of rows.
 
-        The iterable is read 10,000 rows at a time; each chunk is serialized
-        to one JSON string and looped Java-side (``DocumentBatcher``),
-        avoiding the per-row JNI cost that caps ``new_document``-loop ingest.
+        The iterable is read 10,000 rows at a time; each chunk crosses once and
+        is looped Java-side (``DocumentBatcher``), avoiding the per-row JNI cost
+        that caps ``new_document``-loop ingest. A chunk whose rows are dicts with
+        the same keys in the same order, and whose columns each hold ``None`` and
+        values of one type (``int`` within 64 bits, ``float``, ``bool``, ``str``,
+        ``date``, or a ``datetime`` without a zone), crosses as typed columns, with
+        no text (``DocumentBatcher.insertManyColumns``); a whole number is stored
+        as an Integer when it fits an int and as a Long beyond, which is what the
+        JSON text stored. Any other chunk is serialized to one JSON string.
         Memory stays bounded by the chunk whatever the row count, so a
-        generator of any length can be loaded (#294). A value that sits directly
+        generator of any length can be loaded (#294). On the JSON route, a value that sits directly
         in a row may be JSON-representable (str/int/float/bool/None, nested
         lists/dicts), a ``datetime`` (also ``pandas.Timestamp`` and
         ``numpy.datetime64``), ``date``, ``Decimal``, ``bytes``/``bytearray``,
@@ -942,6 +1073,12 @@ class Database:
         still go in bulk, and every row is inserted in the order given. Dates, date-times, Decimals, bytes, numpy scalars and
         pandas NA and NaT sitting directly in a row cross inside the text as tagged values (see json_bulk_dumps_tagged).
         """
+        # A chunk of rows with the same keys whose columns each hold one kind of value crosses as typed columns, with no text
+        # (see _typed_chunk_columns); every other chunk keeps the JSON text below, as it was.
+        typed = _typed_chunk_columns(chunk)
+        if typed is not None:
+            self._insert_many_typed(type_name, typed, len(chunk))
+            return
         # Float vectors for ARRAY_OF_FLOATS properties cross as one binary matrix
         # beside the JSON, not as text (see split_float_vectors).
         split = split_float_vectors(self._java_db, type_name, chunk)
@@ -951,6 +1088,21 @@ class Database:
             self._insert_many_runs(type_name, chunk)
             return
         self._insert_many_bulk(type_name, payload, split)
+
+    def _insert_many_typed(self, type_name, typed, n):
+        """One chunk of insert_many as typed columns inside the open transaction (commitEvery 0: the transaction stays with insert_many)."""
+        names, columns = typed
+        try:
+            _java_class("com.arcadedb.python.DocumentBatcher").insertManyColumns(
+                self._java_db,
+                type_name,
+                jpype.JArray(jpype.JString)(names),
+                jpype.JArray(jpype.JObject)(columns),
+                n,
+                0,
+            )
+        except Exception as e:
+            raise ArcadeDBError(f"Failed to bulk-insert into '{type_name}': {e}") from e
 
     def _insert_many_runs(self, type_name, chunk):
         """A chunk with a row the JSON text cannot carry: runs of carriable rows go in bulk, the other rows one by one, in order."""
@@ -1011,6 +1163,22 @@ class Database:
         chunk = first
         try:
             while chunk:
+                typed = _typed_chunk_columns(chunk)
+                if typed is not None:
+                    try:
+                        failures = batcher.insertManyColumnsParallel(
+                            self._java_db,
+                            type_name,
+                            jpype.JArray(jpype.JString)(typed[0]),
+                            jpype.JArray(jpype.JObject)(typed[1]),
+                            len(chunk),
+                        )
+                    except Exception as e:
+                        raise self._parallel_load_failed(type_name, e) from e
+                    chunk_failures.append(failures)
+                    n += len(chunk)
+                    chunk = list(itertools.islice(rows, _INSERT_MANY_CHUNK))
+                    continue
                 bad = []
                 split = split_float_vectors(self._java_db, type_name, chunk)
                 try:
