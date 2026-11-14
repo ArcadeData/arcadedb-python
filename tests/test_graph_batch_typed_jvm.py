@@ -107,7 +107,7 @@ def _stored(db, type_name):
         rows.append(
             [(str(n), _plain(record.get(n))) for n in record.getPropertyNames()]
         )
-    rows.sort(key=lambda pairs: int(dict(pairs)["id"][1]))
+    rows.sort(key=lambda pairs: int(dict(pairs).get("id", (None, "-1"))[1]))
     return rows
 
 
@@ -226,11 +226,13 @@ def test_the_rids_are_the_texts_in_row_order(db, bridge):
     assert bridge["vertex"] == ["createVerticesColumns"] * 3
     assert all(type(rid) is str and rid.startswith("#") for rid in rids)
     assert len(set(rids)) == 250
-    by_rid = {
-        r["rid"]: r["id"]
-        for r in db.query("sql", "SELECT id, @rid AS rid FROM A").to_list()
-    }
-    assert [by_rid[str(rid)] for rid in rids] == list(range(250))
+    # the engine's own lookup of each returned text: row i must be the vertex that was created from rows[i]
+    rid_class = jpype.JClass("com.arcadedb.database.RID")
+    ids = [
+        int(str(db._java_db.lookupByRID(rid_class(rid), True).asDocument().get("id")))
+        for rid in rids
+    ]
+    assert ids == list(range(250))
 
 
 def test_the_rids_equal_those_of_the_old_route(db, bridge, monkeypatch):
