@@ -65,6 +65,19 @@ def ends(temp_db):
     return temp_db, [temp_db.lookup_by_rid(str(row["r"])) for row in rows]
 
 
+def _edges(db, vertex, direction):
+    """The RIDs of the "E" edges of ``vertex``, read through a vertex looked up now.
+
+    A vertex object is the state it had when it was read: the engine (``GraphEngine.getMostUpdatedVertex``) hands it the
+    newest version of its record only inside the transaction that wrote it, so an object read before an edge was
+    committed lists none of it. ``new_edge`` does not refresh the object it is called on (its docstring says so), which
+    holds for the seven-call path as well, so the lists are read through a fresh lookup.
+    """
+    fresh = db.lookup_by_rid(vertex.get_rid())
+    listed = fresh.get_out_edges("E") if direction == "out" else fresh.get_in_edges("E")
+    return sorted(e.get_rid() for e in listed)
+
+
 KW = {"s": "text", "i": 7, "big": 2**40, "f": 1.5, "flag": True, "none": None}
 
 
@@ -73,12 +86,15 @@ def test_new_edge_is_one_call_into_the_bridge(ends, monkeypatch):
     calls = []
     real = graph._graph_calls()
     assert real is not None, "the bridge jar must carry GraphCalls"
-    monkeypatch.setattr(graph, "_GRAPH_CALLS", Counting(real, calls, "GraphCalls"))
-    monkeypatch.setattr(db, "_java_db", Counting(db._java_db, calls, "db"))
-    monkeypatch.setattr(a, "_java_document", Counting(a._java_document, calls, "a"))
-    monkeypatch.setattr(b, "_java_document", Counting(b._java_document, calls, "b"))
     with db.transaction():
-        edge = a.new_edge("E", b, **KW)
+        # the proxies are on only for the call itself: the transaction's own begin and
+        # commit (``DbCalls.stackMark(db)`` among them) need the real database object
+        with monkeypatch.context() as patched:
+            patched.setattr(graph, "_GRAPH_CALLS", Counting(real, calls, "GraphCalls"))
+            patched.setattr(db, "_java_db", Counting(db._java_db, calls, "db"))
+            patched.setattr(a, "_java_document", Counting(a._java_document, calls, "a"))
+            patched.setattr(b, "_java_document", Counting(b._java_document, calls, "b"))
+            edge = a.new_edge("E", b, **KW)
     assert calls == ["GraphCalls.newEdge"]
     assert edge.get_rid().startswith("#")
 
@@ -94,11 +110,12 @@ def test_the_edge_is_the_one_the_seven_call_path_writes(ends):
     assert str(new._java_document.getClass().getName()) == str(
         old._java_document.getClass().getName()
     )
-    with db.transaction():
-        assert [e.get_rid() for e in a.get_out_edges("E")] == [new.get_rid()]
-        assert [e.get_rid() for e in b.get_in_edges("E")] == [new.get_rid()]
-        assert [e.get_rid() for e in c.get_out_edges("E")] == [old.get_rid()]
-        assert [e.get_rid() for e in d.get_in_edges("E")] == [old.get_rid()]
+    assert _edges(db, a, "out") == [new.get_rid()]
+    assert _edges(db, b, "in") == [new.get_rid()]
+    assert _edges(db, c, "out") == [old.get_rid()]
+    assert _edges(db, d, "in") == [old.get_rid()]
+    # the object new_edge was called on is left as it was read, as on the seven-call path
+    assert len(a.get_out_edges("E")) == len(c.get_out_edges("E"))
 
 
 @pytest.mark.parametrize("form", ["vertex", "java vertex", "java rid"])
@@ -124,9 +141,7 @@ def test_an_edge_without_properties_and_several_edges_of_one_vertex(ends):
         e3 = a.new_edge("E", d, w=1)  # a was read before the two commits above
     assert e1.to_dict() == e2.to_dict()
     assert e3.get("w") == 1
-    assert sorted(e.get_rid() for e in a.get_out_edges("E")) == sorted(
-        e.get_rid() for e in (e1, e2, e3)
-    )
+    assert _edges(db, a, "out") == sorted(e.get_rid() for e in (e1, e2, e3))
 
 
 def _outcome(db, action):
