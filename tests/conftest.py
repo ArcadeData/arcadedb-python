@@ -97,7 +97,7 @@ if BACKEND != "native":
     collect_ignore.append("test_native_vector_provider.py")
     # the copy of a record's values as read that save() compares with the stored row (arcadedb._native.records), counted through its seams
     collect_ignore.append("test_native_save_baseline.py")
-    # crossing counts of the transaction entry points (lib.call is the native library's ctypes door)
+    # crossing and foreign-call counts of the transaction entry points (lib.tx and lib.call are the native library's ctypes doors)
     collect_ignore.append("test_native_tx_crossings.py")
     # counts the statement texts the native backend hands to the engine (the JPype backend has no such layer)
     collect_ignore.append("test_native_statement_texts.py")
@@ -154,9 +154,11 @@ NATIVE_NOT_APPLICABLE = {
     "test_graph_batch_vector_crossings_jvm.py": "the JPype crossings of the JVM wheel's create_vertices vector path (the bridge classes, the property-matrix fallback)",
     "test_insert_columns_string_blob.py": "the bridge's StringColumn and the JVM wheel's core._column_to_java (JPype arrays, a spy on the per-element conversion)",
     "test_arrow_vector_column_jvm.py": "the JPype crossings of the JVM wheel's Arrow vector column (core.convert_python_to_java, the bridge's FloatVectors.Matrix) and its Python heap",
+    "test_arrow_temporal_column_jvm.py": "the JPype calls of the JVM wheel's Arrow timestamp and date columns (the bridge's TemporalColumn, core._column_to_java, java.time classes)",
     "test_async_proxy_cache.py": "the JPype proxy classes of the JVM build's async executor",
     "test_read_crossings.py": "crossing counts of the JVM build's read path (JPype proxies of the Java objects and the bridge classes)",
     "test_reader_crossings.py": "crossing counts of the JVM build's record and row readers (JPype proxies of the Java objects and the bridge classes)",
+    "test_typed_batch_guard.py": "the object_hook and the side array of the JVM build's TypedRows batches (JPype arrays, the bridge class, a spy on json.loads)",
     "test_jvm_ingest_integrity_faults.py": "rows-dropped faults put into the JVM build's column conversion and bulk vertex path (core._column_to_java, GraphBatch._create_vertices_json_bulk)",
 }
 if BACKEND == "native" and not os.environ.get("NATIVE_PARITY_ALL"):

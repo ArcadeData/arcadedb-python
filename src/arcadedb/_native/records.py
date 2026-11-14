@@ -359,8 +359,11 @@ class _Mixin:
 
         Like every write (and like the JVM build), it needs an active transaction while auto-transaction is off, the engine default:
         outside one it raises ArcadeDBError ("Transaction not begun") before it reads or writes anything. This method opens no
-        transaction of its own."""
-        if not db.is_transaction_active() and not db._auto_transaction:
+        transaction of its own. With auto-transaction on the check cannot refuse, so the state is not asked for (one crossing less).
+        The engine's own refusal cannot stand in for the check with it off: the engine runs the before-update callbacks and the
+        validation before it looks for a transaction, and an UPDATE of a record that is gone raises nothing.
+        """
+        if not db._auto_transaction and not db.is_transaction_active():
             raise ArcadeDBError(
                 "Failed to save record: com.arcadedb.exception.TransactionException: Transaction not begun "
                 "(wrap the write in `with db.transaction():` or call begin() first)"
