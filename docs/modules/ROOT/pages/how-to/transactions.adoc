@@ -1,5 +1,5 @@
 = Transactions
-:description: Commit and roll back with the context manager or with begin, commit and rollback, what an exception, a failed statement and a second begin do, what other threads see before a commit, auto-transaction, run_in_transaction, and the GraphBatch rule.
+:description: Commit and roll back with the context manager or with begin, commit and rollback, what an exception, a failed statement and a second begin do, what other threads see before a commit, auto-transaction, what a transaction costs on the native build, run_in_transaction, and the GraphBatch rule.
 
 // Sources: src/arcadedb/core.py (begin, commit, rollback, transaction, run_in_transaction, set_auto_transaction), transactions.py and graph_batch.py. Every statement below is pinned by tests/test_transactions_behavior.py.
 
@@ -122,6 +122,31 @@ db.set_auto_transaction(False)
 ----
 True False
 ----
+
+== What a transaction costs on the native build
+
+On the `arcadedb` (native) package, `begin()`, `commit()`, `rollback()`, the block `with db.transaction():` and `db.is_transaction_active()` each make a call into the library, and the library answers with the state of the transaction. From 26.11.1.post3 it answers with that state as one number. Before, it answered with a JSON text that the bindings copied, freed and decoded. What a transaction does, and what an error does to it, are the same as before. The `arcadedb-jvm` package does not change.
+
+The table is one laptop study of the `arcadedb` (native) package: the time for each operation of the 26.11.1.post3 wheel against the 26.11.1.post2 wheel, with 20,000 operations in each run. The ratio is the median of the pair ratios (below 1 means less time) with its 95% interval. Auto-transaction was off, the default, in all three rows. The setup was Python 3.12, one fresh process for each run, the two builds alternated in both orders (ABBA), the first round dropped, 20 clean pairs for each figure, and an A/A control (the post2 wheel twice) whose median ratio was between 0.97 and 1.03 in every row. The figures come from one Linux x86_64 laptop with two cores for the process. The post3 wheels were the ones that CI built from the tagged commit. The wheels on PyPI were checked for the same engine as 26.11.1 and were not timed again.
+
+[cols="5,3,1"]
+|===
+| What was timed | Ratio, post3 over post2 (95% interval) | Clean pairs
+
+| `with db.transaction(): pass`, one begin and one commit with an empty body
+| 0.370 [0.368, 0.374]
+| 20
+
+| `with db.transaction():` around one `INSERT` through `db.command`
+| 0.875 [0.873, 0.878]
+| 20
+
+| `set()` and `save()` of one saved vertex, in transactions of 1,000 records
+| 0.932 [0.928, 0.935]
+| 20
+|===
+
+In the third row each `save()` asks once for the transaction state, because auto-transaction was off. The study did not time `save()` with auto-transaction on, where it no longer asks (see xref:how-to/databases-and-queries.adoc#record-ids-in-rows[Record ids in rows]), so this page gives no speed for that case. The study claims no gain in memory.
 
 == What a transaction sees
 

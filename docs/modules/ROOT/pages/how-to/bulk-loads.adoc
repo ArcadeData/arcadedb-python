@@ -78,6 +78,25 @@ A column the buffers cannot carry makes the batch take the row path, which store
 
 On the `arcadedb-jvm` package, a column of only `str` and `None` crosses as one UTF-8 buffer with its row offsets, and a mask when a row is null. A column that mixes types, is empty, or holds more than 2 GiB of text crosses value by value. A column with a lone surrogate also crosses value by value, and is refused with the error it always raised, before anything is written.
 
+On the `arcadedb-jvm` package, from 26.11.1.post3, a timestamp or date column of `insert_arrow` and `insert_dataframe` crosses as one `long[]` of epoch ticks for each batch, with one `boolean[]` that marks the null rows when the batch has a null. Java builds each `LocalDateTime` or `LocalDate` when it fills the document of that row. Before 26.11.1.post3 the bindings made one Java object for each cell, with a JPype call of its own. The stored values are the same: a timestamp keeps the precision of its Arrow unit (a nanosecond value is not cut to microseconds), a timestamp without a time zone is stored as the wall clock it shows, a timestamp with a time zone is stored as UTC, and a `date64` value is divided into days toward negative infinity. A list of Python `datetime` or `date` values that you pass to `insert_columns` yourself still converts value by value. The `arcadedb` (native) package does not change.
+
+The table is one laptop study of the `arcadedb-jvm` package: the time for each row of the 26.11.1.post3 wheel against the 26.11.1.post2 wheel, with 3 calls of 100,000 rows that carry a `DATETIME` and a `DATE` property next to four narrow ones. The ratio is the median of the pair ratios (below 1 means less time) with its 95% interval. The setup was Python 3.12, one fresh process for each run, the two builds alternated in both orders (ABBA), the first round dropped, 20 clean pairs for each figure, and an A/A control (the post2 wheel twice) whose median ratio was between 0.97 and 1.03 in every row. The figures come from one Linux x86_64 laptop with two cores for the process. The post3 wheels were the ones that CI built from the tagged commit. The wheels on PyPI were checked for the same engine as 26.11.1 and were not timed again.
+
+[cols="5,3,1"]
+|===
+| What was timed | Ratio, post3 over post2 (95% interval) | Clean pairs
+
+| `insert_arrow`, an Arrow table with `timestamp[ms]` and `date32` columns
+| 0.295 [0.283, 0.311]
+| 20
+
+| `insert_dataframe`, a pandas frame with `datetime64[ms]` and `datetime.date` columns
+| 0.283 [0.278, 0.290]
+| 20
+|===
+
+`insert_columns` with Python lists of `datetime` and `date` values, which this change does not touch, gave 1.009 [0.983, 1.050] in the same study. The interval contains 1, so there is no claim in either direction. The study did not time memory. It read the peak resident size of the process for information only, and it was higher with the new path: 1.066 [1.014, 1.194] for `insert_arrow` and 1.202 [1.059, 1.299] for `insert_dataframe` (median of the pair ratios, 95% interval). The reason has not been examined, so the page makes no claim about memory.
+
 [[parallel-inserts]]
 == Parallel and async inserts
 

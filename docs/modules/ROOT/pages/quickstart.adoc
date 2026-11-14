@@ -20,7 +20,7 @@ This page builds a small database from scratch. You need one of the two packages
 
 See xref:which-package.adoc[Which package?] if you are not sure. If you are not sure, take `{native-pkg-name}`.
 
-The scripts on this page ran on Python 3.12 against both packages, version 26.11.1.post2, and both printed the output shown. The code is the same for both packages.
+The scripts on this page ran on Python 3.12 against both packages, version 26.11.1.post3, and both printed the output shown. The code is the same for both packages.
 
 == Embedded mode
 
