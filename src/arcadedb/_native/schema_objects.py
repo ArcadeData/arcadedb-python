@@ -13,6 +13,24 @@ from .codec import _np
 
 _PROPERTY = re.compile(r"name: (.+?), type: ([A-Z_]+)")
 
+# find_nearest_approximate crosses in arcadedb_n_vindex_bin. The answer buffer is sized for this many bucket indexes of the type at
+# first (each answers with up to k hits); a type with more of them costs one more crossing, and the larger size is remembered.
+_VINDEX_PARTS = 8
+# an answer buffer larger than this is not asked for: the JSON route answers
+_VINDEX_MAX_BYTES = 1 << 30
+# int64 words per hit: bucket, position, the score as the bits of a double
+_HIT_WORDS = 3
+_RID_PAIRS = re.compile(r"#\d{1,9}:\d{1,18}(?:;#\d{1,9}:\d{1,18})*")
+_DIGITS = re.compile(r"\d+")
+_NUMBERS = frozenset((float, int))
+_FLOAT_DTYPES = (
+    (_np.dtype(_np.float16), _np.dtype(_np.float32), _np.dtype(_np.float64))
+    if _np is not None
+    else ()
+)
+# an int up to this is a double, so float32 rounds it as Java's floatValue() of the parsed JSON number does
+_EXACT_INT = 1 << 53
+
 
 def _name_type(entry):
     """(name, type) of an entry of a ``schema:types`` row's ``properties``: a dict since #195 (the codec writes a nested row
@@ -98,6 +116,7 @@ class _IndexShim:
 
     def __init__(self, database, type_name, prop, name):
         self._db, self._type, self._prop, self._name = database, type_name, prop, name
+        self._vindex_parts = _VINDEX_PARTS
 
     def getName(self):
         return self._name
@@ -168,6 +187,59 @@ class _IndexShim:
 def _rid_text(value) -> str:
     get_rid = getattr(value, "get_rid", None)
     return get_rid() if get_rid is not None else str(value)
+
+
+def _vindex_query(query_vector):
+    """The query of an approximate search as a contiguous float32 array, for ``arcadedb_n_vindex_bin``; None when the JSON route must
+    carry it.
+
+    The engine searches with float32 whatever it is given: the JSON route sends doubles and Java narrows them with ``floatValue()``, which
+    rounds to nearest even, as numpy's cast to float32 does, so the library reads the same floats from the address. What goes by
+    address: a one-dimensional ``float16``, ``float32`` or ``float64`` array of the native byte order, and a list or tuple of ``float``
+    and ``int`` (an int beyond 2**53 is not a double and stays JSON). Everything else keeps the JSON route (it reads whatever the
+    object's ``tolist()`` or ``list()`` gives and reports what the engine makes of it): a generator, any other array or sequence, an
+    entry that is not a number, a bool, a NaN or an infinity (also one that float32 overflows to), and an empty query.
+    """
+    if _np is None:
+        return None
+    if type(query_vector) is _np.ndarray:
+        if query_vector.ndim != 1 or query_vector.dtype not in _FLOAT_DTYPES:
+            return None
+        source = query_vector
+    elif type(query_vector) in (list, tuple):
+        kinds = set(map(type, query_vector))
+        if not kinds or not kinds <= _NUMBERS:
+            return None
+        if int in kinds and any(
+            abs(v) > _EXACT_INT for v in query_vector if type(v) is int
+        ):
+            return None
+        source = query_vector
+    else:
+        return None
+    try:
+        with _np.errstate(over="ignore", invalid="ignore"):
+            f32 = _np.asarray(source, dtype=_np.float32)
+    except (OverflowError, ValueError, TypeError):
+        return None
+    if f32.size == 0 or not _np.isfinite(f32).all():
+        return None
+    return _np.require(f32, requirements=["C", "A"])
+
+
+def _vindex_allowed(texts):
+    """The RIDs of an approximate search's filter (``"#bucket:position"`` texts) as an int64 array of (bucket, position) pairs, or None
+    when one of them is not that plain form (the JSON route hands the text to the engine's own RID parser).
+    """
+    try:
+        joined = ";".join(texts)
+    except TypeError:
+        return None
+    numbers = _DIGITS.findall(joined) if _RID_PAIRS.fullmatch(joined) else ()
+    # one text that holds a ';' is two RIDs to the pattern but one bad RID to the engine: the count tells them apart
+    if not numbers or len(numbers) != 2 * len(texts):
+        return None
+    return _np.array(numbers, dtype=_np.int64)
 
 
 def _query_vector_param(query_vector):
@@ -331,6 +403,71 @@ class NativeVectorIndex(_BaseVectorIndex):
     def _run_approximate(self, query_vector, k, allowed_rids):
         """The PQ-scored search of the engine (no statement runs it): the engine returns (RID, distance), the records are loaded here."""
         from . import lib
+
+        vector = _vindex_query(query_vector) if lib.VINDEX_BIN else None
+        k = int(k)
+        allowed = [_rid_text(r) for r in allowed_rids] if allowed_rids else None
+        hits = None if vector is None else self._approximate_packed(vector, k, allowed)
+        if hits is None:
+            hits = self._approximate_json(query_vector, k, allowed)
+        out = [(self._database.lookup_by_rid(rid), score) for rid, score in hits]
+        return self._sort_results(out)[:k]
+
+    def _approximate_packed(self, vector, k, allowed):
+        """``[(rid text, score)]`` from ``arcadedb_n_vindex_bin``, or None when the JSON route has to carry the call (a k that is not a C
+        int, a filter that is not plain ``#bucket:position`` texts, an answer buffer of more than a gibibyte, or one that the engine keeps
+        outgrowing). The library fills one buffer of int64 words, three per hit, and answers with their number; the query, the filter and
+        the buffer are numpy arrays that live until the call returns.
+        """
+        from . import lib
+        from .database import _error
+
+        if not -(1 << 31) <= k < (1 << 31):
+            return None
+        pairs, count = None, 0
+        if allowed:
+            pairs = _vindex_allowed(allowed)
+            if pairs is None:
+                return None
+            count = len(pairs) // 2
+        shim = self._shim
+        room = max(k, 1)
+        for _ in range(3):
+            cap = room * shim._vindex_parts
+            if cap * _HIT_WORDS * 8 > _VINDEX_MAX_BYTES:
+                return None
+            out = _np.empty(cap * _HIT_WORDS, dtype=_np.int64)
+            n = lib.vindex_bin(
+                self._database._h,
+                lib.bc(shim._type),
+                lib.bc(shim._prop),
+                k,
+                vector.ctypes.data,
+                vector.size,
+                pairs.ctypes.data if count else 0,
+                count,
+                out.ctypes.data,
+                cap,
+            )
+            if n < 0:
+                raise _error("Approximate search failed", json.loads(lib.last_error()))
+            if n <= cap:
+                words, end = out[: n * _HIT_WORDS], n * _HIT_WORDS
+                rids = [
+                    f"#{b}:{p}"
+                    for b, p in zip(
+                        words[0::_HIT_WORDS].tolist(), words[1::_HIT_WORDS].tolist()
+                    )
+                ]
+                scores = out.view(_np.float64)[2:end:_HIT_WORDS].tolist()
+                return list(zip(rids, scores))
+            # more hits than the buffer holds: nothing was written; ask again with room for them, and keep that size
+            shim._vindex_parts = -(-n // room)
+        return None
+
+    def _approximate_json(self, query_vector, k, allowed):
+        """``[(rid text, score)]`` through the JSON text of ``arcadedb_n_vindex``: the route for every call the binary entry cannot carry."""
+        from . import lib
         from .extras import _call, _enc
 
         vector = (
@@ -349,21 +486,13 @@ class NativeVectorIndex(_BaseVectorIndex):
                         "type": self._shim._type,
                         "prop": self._shim._prop,
                         "vector": vector,
-                        "k": int(k),
-                        "allowed": (
-                            [_rid_text(r) for r in allowed_rids]
-                            if allowed_rids
-                            else None
-                        ),
+                        "k": k,
+                        "allowed": allowed,
                     }
                 )
             ),
         )
-        out = [
-            (self._database.lookup_by_rid(rid), float(distance))
-            for rid, distance in reply["hits"]
-        ]
-        return self._sort_results(out)[:k]
+        return [(rid, float(distance)) for rid, distance in reply["hits"]]
 
     def find_nearest_approximate(self, query_vector, k=10, allowed_rids=None):
         """PQ approximate search over PRODUCT quantization, the engine's own (``findNeighborsFromVectorApproximate``)."""
