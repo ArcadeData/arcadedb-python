@@ -1,9 +1,10 @@
 /*
  * SPDX-License-Identifier: Apache-2.0
  *
- * Phase 2: the C entry points behind the Python native backend (arcadedb/_native). Every function returns a
+ * Phase 2: the C entry points behind the Python native backend (arcadedb/_native). Most functions return a
  * malloc'd UTF-8 JSON text that the caller releases with arcadedb_free: {"ok":true,...} or
  * {"ok":false,"error":msg,"cls":java class,"chain":[[class,msg],..],"retry":"need_retry"|"duplicated_key"|null,"retry_ms":n}.
+ * arcadedb_n_cmd and arcadedb_n_tx return a long (-1 for an error, whose text in that form arcadedb_n_last_error returns).
  * Databases, result sets and servers are long handles. Any thread attached to the isolate may call any function; a
  * transaction belongs to the (Java) thread that began it, as in the embedded API.
  */
@@ -184,9 +185,15 @@ public final class ArcadeNative {
     }
   }
 
-  /** op 0 begin, 1 commit, 2 rollback, 3 mark. Every reply carries {"active":b,"depth":n,"commits":n}. */
+  /**
+   * op 0 begin, 1 commit, 2 rollback, 3 mark. Returns the transaction state after the call as one non-negative long: bit 0 is
+   * isTransactionActive, bits 1 to 31 the nesting depth, bits 32 to 62 the low 31 bits of the commit count of the thread's
+   * transaction context (callers compare two counts for equality). -1 on error: the error text is then read with
+   * arcadedb_n_last_error on the same thread, as for arcadedb_n_cmd. No reply text, so no malloc, no arcadedb_free and no JSON
+   * decode in the caller.
+   */
   @CEntryPoint(name = "arcadedb_n_tx")
-  public static CCharPointer tx(final IsolateThread thread, final long h, final int op) {
+  public static long tx(final IsolateThread thread, final long h, final int op) {
     try {
       final Database db = db(h);
       switch (op) {
@@ -196,14 +203,15 @@ public final class ArcadeNative {
       default -> {
       }
       }
-      return out(txState(db));
+      return txState(db);
     } catch (final Throwable t) {
-      return err(t);
+      LAST_ERROR.set(errorJson(t));
+      return -1;
     }
   }
 
-  private static String txState(final Database db) {
-    int depth = 0;
+  private static long txState(final Database db) {
+    long depth = 0;
     long commits = 0;
     if (db instanceof LocalDatabase local)
       depth = local.getNestedTransactions();
@@ -212,7 +220,7 @@ public final class ArcadeNative {
       if (ctx != null)
         commits = ctx.getCommitCount();
     }
-    return "{\"ok\":true,\"active\":" + db.isTransactionActive() + ",\"depth\":" + depth + ",\"commits\":" + commits + "}";
+    return (db.isTransactionActive() ? 1L : 0L) | ((depth & 0x7FFFFFFFL) << 1) | ((commits & 0x7FFFFFFFL) << 32);
   }
 
   // ---- statements
