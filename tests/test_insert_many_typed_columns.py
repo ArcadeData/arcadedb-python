@@ -16,6 +16,7 @@ entry, ``arcadedb._native.bulk.insert_rows_columnar``).
 import datetime as dt
 import decimal
 import math
+import sys
 
 import jpype
 import numpy as np
@@ -68,8 +69,8 @@ def _old_route(monkeypatch):
 def _describe(value):
     if value is None:
         return ("null",)
-    if isinstance(value, str):
-        return ("str", value)
+    if isinstance(value, str):  # a String JPype already converted
+        return ("java.lang.String", value)
     if isinstance(value, jpype.JArray):
         return (str(value.getClass().getName()), repr(list(value)))
     if hasattr(value, "getClass"):
@@ -178,6 +179,40 @@ def _cycle(values, n):
     return [values[i % len(values)] for i in range(n)]
 
 
+# floats the JSON text cannot carry (NaN, infinity, a subnormal: the row goes down the per-row path, which stores its whole numbers as
+# Long) beside floats it carries (the smallest normal value, -0.0, a plain value)
+NON_TEXT_FLOATS = [
+    float("nan"),
+    float("inf"),
+    float("-inf"),
+    5e-324,
+    -5e-324,
+    math.nextafter(sys.float_info.min, 0.0),  # the largest subnormal
+    sys.float_info.min,
+    -0.0,
+    0.5,
+]
+SMALL_INTS = [3, -3, 0, 2**31 - 1, -(2**31), 5, 6, 7, 8]
+
+
+def _ints_beside_floats(nulls):
+    """Whole numbers that fit an int in the same rows as the floats above: the rows the text cannot carry keep them Long."""
+    rows = []
+    for i in range(2 * len(NON_TEXT_FLOATS)):
+        rows.append(
+            {
+                "id": i,
+                "i": None if nulls and i % 4 == 1 else SMALL_INTS[i % len(SMALL_INTS)],
+                "f": (
+                    None
+                    if nulls and i % 4 == 2
+                    else NON_TEXT_FLOATS[i % len(NON_TEXT_FLOATS)]
+                ),
+            }
+        )
+    return rows
+
+
 def _all_kinds(nulls):
     n = 12
     rows = []
@@ -211,6 +246,11 @@ CASES = {
     "null_beside_ints": (_one_column([1, None, 2**40, None]), True),
     "null_beside_floats": (_one_column([1.5, None, float("nan")]), True),
     "null_beside_strings": (_one_column(["a", None, "b"]), True),
+    "ints_beside_nan_inf_subnormal": (_ints_beside_floats(False), True),
+    "nullable_ints_beside_nullable_nan_inf_subnormal": (
+        _ints_beside_floats(True),
+        True,
+    ),
     "single_row": (_one_column([7]), True),
     # shapes the typed route cannot carry: the chunk keeps the JSON text and the per-row path for the rows the text cannot carry
     "other_key_order": (
@@ -316,11 +356,18 @@ def test_a_whole_number_is_an_integer_when_it_fits_an_int_and_a_long_beyond(
 
 
 def test_insert_columns_still_stores_a_long_for_every_whole_number(temp_db):
-    """insert_columns shares fillRow with the new entry point; only insertManyColumns narrows (a regression test, green before this change)."""
-    _make(temp_db, "C")
+    """insert_columns shares fillRow with the new entry point; only insertManyColumns narrows (a regression test, green before this change).
+
+    The type declares no property: a declared INTEGER would convert the Long to an Integer whichever entry point stored it.
+    """
+    temp_db.command("sql", "CREATE DOCUMENT TYPE C")
     temp_db.insert_columns("C", {"id": np.arange(3, dtype=np.int64), "v": [1, 2, 3]})
-    for record in _stored(temp_db, "C"):
-        assert dict(record)["id"][0] == "java.lang.Long"
+    records = _stored(temp_db, "C")
+    assert len(records) == 3
+    for record in records:
+        assert {name for name, _ in record} == {"id", "v"}
+        for name, (kind, _) in record:
+            assert kind == "java.lang.Long", name
 
 
 def test_a_chunk_that_takes_the_old_route_builds_no_bridge_array(
@@ -379,14 +426,24 @@ def test_a_homogeneous_load_crosses_once_per_chunk_with_no_text_and_no_per_value
     record = dict(
         _stored(temp_db, "T")[1235]
     )  # 1235 % 6 == 5: the last date and date-time of the lists above
-    assert record == {
-        "id": ("java.lang.Integer", "1235"),
-        "n": ("java.lang.Integer", "3705"),
-        "x": ("java.lang.Double", "617.5"),
-        "ok": ("java.lang.Boolean", "false"),
-        "name": ("str", "row 1235"),
-        "day": ("java.time.LocalDate", "2000-02-29"),
-        "at": ("java.time.LocalDateTime", DATETIMES[5].isoformat()),
+    assert {name: kind for name, (kind, _) in record.items()} == {
+        "id": "java.lang.Integer",
+        "n": "java.lang.Integer",
+        "x": "java.lang.Double",
+        "ok": "java.lang.Boolean",
+        "name": "java.lang.String",
+        "day": "java.time.LocalDate",
+        "at": "java.time.LocalDateTime",
+    }
+    # the text of a value is how JPype prints it (a Java Boolean prints as False), so the case is not part of the claim
+    assert {name: text.lower() for name, (_, text) in record.items()} == {
+        "id": "1235",
+        "n": "3705",
+        "x": "617.5",
+        "ok": "false",
+        "name": "row 1235",
+        "day": "2000-02-29",
+        "at": DATETIMES[5].isoformat().lower(),
     }
 
 
@@ -530,7 +587,16 @@ def test_a_value_no_route_can_store_fails_as_before(
     ), "a value the text refuses must not take the typed route"
 
 
-@pytest.mark.parametrize("case", ["ints", "all_kinds_with_nulls", "decimal"])
+@pytest.mark.parametrize(
+    "case",
+    [
+        "ints",
+        "all_kinds_with_nulls",
+        "ints_beside_nan_inf_subnormal",
+        "nullable_ints_beside_nullable_nan_inf_subnormal",
+        "decimal",
+    ],
+)
 def test_parallel_mode_stores_what_the_json_route_stores(
     temp_db, monkeypatch, bridge, case
 ):
