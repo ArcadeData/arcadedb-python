@@ -76,7 +76,7 @@ GROUPS = {
     "g3": "SELECT n, lin, lfn FROM g3 ORDER BY n",
     "g4": "SELECT n, lfx FROM g4 ORDER BY n",
 }
-# the kind of each column in the last frame of a read (the shapes in the table above)
+# the kind of each column in the frames of a read (the shapes in the table above)
 KINDS = {
     "g1": {
         "li": "li8",
@@ -244,8 +244,15 @@ def test_the_frames_carry_rid_and_number_lists_in_binary_kinds(
 ):
     getattr(tables.query("sql", GROUPS[group]), reader)()
     assert recorded_kinds, "no frame was decoded"
-    last = recorded_kinds[-1]
-    assert {name: last[name] for name in KINDS[group]} == KINDS[group]
+    for name, expected in KINDS[group].items():
+        # every frame that has the column: the read ends with an empty frame (no columns), and on the native wheel the first 256 rows
+        # are a Python-written frame (always json) that is decoded after the library's frames, so neither is "the last frame"
+        kinds = [frame[name] for frame in recorded_kinds if name in frame]
+        assert kinds, name
+        if expected == "json":
+            assert set(kinds) == {"json"}, (name, kinds)
+        else:
+            assert expected in kinds and set(kinds) <= {expected, "json"}, (name, kinds)
 
 
 # ------------------------------------------------------------------------------------------------ the values the JSON route gave
