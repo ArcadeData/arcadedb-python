@@ -156,6 +156,7 @@ NATIVE_NOT_APPLICABLE = {
     "test_reader_crossings.py": "crossing counts of the JVM build's record and row readers (JPype proxies of the Java objects and the bridge classes)",
     "test_typed_batch_guard.py": "the object_hook and the side array of the JVM build's TypedRows batches (JPype arrays, the bridge class, a spy on json.loads)",
     "test_jvm_ingest_integrity_faults.py": "rows-dropped faults put into the JVM build's column conversion and bulk vertex path (core._column_to_java, GraphBatch._create_vertices_json_bulk)",
+    "test_insert_many_typed_columns.py": "the typed-column route of the JVM wheel's insert_many (the bridge's DocumentBatcher.insertManyColumns, core._typed_chunk_columns, the Java classes of the stored values)",
 }
 if BACKEND == "native" and not os.environ.get("NATIVE_PARITY_ALL"):
     collect_ignore.extend(NATIVE_NOT_APPLICABLE)
