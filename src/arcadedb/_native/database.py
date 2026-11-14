@@ -560,9 +560,19 @@ class NativeResultSet:
             yield chunk
 
     def count(self) -> int:
-        n = 0
-        for _ in self:
-            n += 1
+        """The number of rows still to be read; the result is finished. A reply's rows are counted as ``len`` of the batch: no
+        ``NativeResult`` and no tuple per row is built for a row that is only counted.
+        """
+        if not self._readable():
+            return 0
+        buf = self._buf
+        n = len(buf)
+        buf.clear()
+        batch: list = []
+        while self._fill(batch):
+            n += len(batch)
+            batch.clear()
+        self._finish()
         return n
 
     def first(self) -> Optional[NativeResult]:
