@@ -1072,10 +1072,8 @@ class Result:
             >>> print(result.get_rid())
             #10:5
         """
-        identity = self._java_result.getIdentity()
-        if identity.isPresent():
-            return str(identity.get().toString())
-        return None
+        rid = _bridge_class("ReaderCalls").ridOf(self._java_result)
+        return None if rid is None else str(rid)
 
     def get_vertex(self) -> Optional[Vertex]:
         """
@@ -1085,10 +1083,8 @@ class Result:
             Vertex object or None
         """
         self._check_open()
-        vertex = self._java_result.getVertex()
-        if vertex.isPresent():
-            return Vertex(vertex.get(), self._database)
-        return None
+        vertex = _bridge_class("ReaderCalls").vertexOrNull(self._java_result)
+        return None if vertex is None else Vertex(vertex, self._database)
 
     def get_edge(self) -> Optional[Edge]:
         """
@@ -1098,10 +1094,8 @@ class Result:
             Edge object or None
         """
         self._check_open()
-        edge = self._java_result.getEdge()
-        if edge.isPresent():
-            return Edge(edge.get(), self._database)
-        return None
+        edge = _bridge_class("ReaderCalls").edgeOrNull(self._java_result)
+        return None if edge is None else Edge(edge, self._database)
 
     def get_element(self) -> Optional[Document]:
         """
@@ -1111,10 +1105,8 @@ class Result:
             Document, Vertex, or Edge object or None
         """
         self._check_open()
-        element = self._java_result.getElement()
-        if element.isPresent():
-            return Document.wrap(element.get(), self._database)
-        return None
+        element = _bridge_class("ReaderCalls").elementOrNull(self._java_result)
+        return None if element is None else Document.wrap(element, self._database)
 
     def get_property_names(self) -> List[str]:
         """
