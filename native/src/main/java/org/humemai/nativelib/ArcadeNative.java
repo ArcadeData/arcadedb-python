@@ -371,6 +371,36 @@ public final class ArcadeNative {
     return p;
   }
 
+  /**
+   * The number of rows an open cursor still holds, as one long: the cursor is drained here (the rows are pulled from the engine but
+   * not encoded) and closed. Rows a cursor already gave out in an earlier reply are not counted. -1 on error: the error text is then
+   * read with arcadedb_n_last_error on the same thread, as for arcadedb_n_cmd, built by the same errorJson as the "rerr" of a JSON
+   * reply, so the exception the caller raises does not change. The cursor is closed on an error too. No reply text, so no malloc, no
+   * arcadedb_free and no JSON decode in the caller, and no row is built as text.
+   */
+  @CEntryPoint(name = "arcadedb_n_count")
+  public static long count(final IsolateThread thread, final long rsId) {
+    ResultSet rs = null;
+    try {
+      rs = RESULT_SETS.get(rsId);
+      if (rs == null)
+        throw new IllegalArgumentException("unknown result set " + rsId);
+      long n = 0;
+      while (rs.hasNext()) {
+        rs.next();
+        n++;
+      }
+      RESULT_SETS.remove(rsId);
+      closeQuietly(rs);
+      return n;
+    } catch (final Throwable t) {
+      RESULT_SETS.remove(rsId);
+      closeQuietly(rs);
+      LAST_ERROR.set(errorJson(t));
+      return -1;
+    }
+  }
+
   @CEntryPoint(name = "arcadedb_n_rs_close")
   public static CCharPointer rsClose(final IsolateThread thread, final long rsId) {
     closeQuietly(RESULT_SETS.remove(rsId));

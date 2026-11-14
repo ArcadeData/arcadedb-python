@@ -560,18 +560,27 @@ class NativeResultSet:
             yield chunk
 
     def count(self) -> int:
-        """The number of rows still to be read; the result is finished. A reply's rows are counted as ``len`` of the batch: no
-        ``NativeResult`` and no tuple per row is built for a row that is only counted.
+        """The number of rows still to be read; the result is finished. The rows already in this object (the first reply) are counted
+        as ``len``, the rows still in the library by one crossing, ``arcadedb_n_count``, which returns a long: the library drains and
+        closes the cursor and encodes no row, and no ``NativeResult`` or dict is built for a counted row.
         """
         if not self._readable():
             return 0
         buf = self._buf
         n = len(buf)
         buf.clear()
-        batch: list = []
-        while self._fill(batch):
-            n += len(batch)
-            batch.clear()
+        if self._pending_error is not None:
+            self._fill()  # the error of the first reply: raised, as reading the rows before it would
+        if self._more and self._rs:
+            rows = lib.count(self._rs)
+            # the library closed the cursor, on success and on an error alike: this object holds no cursor any more
+            self._more = False
+            self._rs = 0
+            if rows < 0:
+                self._closed = True
+                self._exhausted = True
+                raise _read_error(json.loads(lib.last_error()))
+            n += rows
         self._finish()
         return n
 
