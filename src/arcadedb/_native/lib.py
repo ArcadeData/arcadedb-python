@@ -344,38 +344,36 @@ _strlen = ctypes.CFUNCTYPE(ctypes.c_size_t, ctypes.c_void_p)(
         ctypes.cdll.msvcrt if sys.platform == "win32" else ctypes.CDLL(None),
     )
 )
-_TAIL_KEY = b',"bin":'
+_TAIL_KEY = ',"bin":'
 _TAIL_WINDOW = 40
 
 
 def _take(lib, th, ptr, tail: bool):
     """Read the reply at ``ptr`` as ``(text, floats)`` and free it: ``floats`` is None unless ``tail`` and the reply ends with
     ``,"bin":N}`` (then N float32 follow the text's NUL, 4-byte aligned, and the text is returned without the ``,"bin":N`` part).
+
+    The marker is looked for in the decoded text, in its last ``_TAIL_WINDOW`` characters. A reply with no marker, nearly every
+    reply, costs the foreign calls of the read itself (``strlen``, the decode and the free) and no peek at its last bytes.
     """
     if not ptr:
         raise ArcadeDBError("The native library returned no reply")
     try:
         end = _strlen(ptr)
-        floats = None
-        if tail:
-            # only the last bytes can hold the marker: peek at them (at most 40 bytes), never at the whole reply
-            start = end - _TAIL_WINDOW if end > _TAIL_WINDOW else 0
-            peek = ctypes.string_at(ptr + start, end - start)
-            if peek.endswith(b"}"):
-                i = peek.rfind(_TAIL_KEY)
-                if i >= 0:
-                    n = int(peek[i + 7 : -1])
-                    import numpy as np
+        text = _str_from_utf8(ptr, end)
+        if not tail or not text.endswith("}"):
+            return text, None
+        i = text.rfind(_TAIL_KEY, max(0, len(text) - _TAIL_WINDOW))
+        if i < 0:
+            return text, None
+        n = int(text[i + 7 : -1])
+        import numpy as np
 
-                    off = (end + 1 + 3) & ~3
-                    floats = np.frombuffer(
-                        ctypes.string_at(ptr + off, 4 * n), dtype=np.float32
-                    )
-                    # the text ends at the marker, closed by the "}" that the JSON object needs: written over the marker's comma
-                    # in the reply's own memory (it is freed below), so the decode reads the JSON as it stands
-                    ctypes.c_char.from_address(ptr + start + i).value = b"}"
-                    end = start + i + 1
-        return _str_from_utf8(ptr, end), floats
+        off = (end + 1 + 3) & ~3
+        floats = np.frombuffer(ctypes.string_at(ptr + off, 4 * n), dtype=np.float32)
+        # the text ends at the marker, closed by the "}" that the JSON object needs
+        text = text[:i]
+        text += "}"
+        return text, floats
     finally:
         lib.arcadedb_free(th, ptr)
 

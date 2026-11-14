@@ -10,10 +10,6 @@ package org.humemai.nativelib;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
-import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.serializer.json.JSONArray;
-import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import org.graalvm.nativeimage.IsolateThread;
 import org.graalvm.nativeimage.UnmanagedMemory;
@@ -56,29 +52,6 @@ public final class ArcadeLib {
   @CEntryPoint(name = "arcadedb_last_error")
   public static CCharPointer lastError(final IsolateThread thread) {
     return toC(lastError);
-  }
-
-  /** Runs one command (any language: sql, sqlscript, opencypher...) and returns its rows as JSON. */
-  @CEntryPoint(name = "arcadedb_command")
-  public static CCharPointer command(final IsolateThread thread, final long handle, final CCharPointer language,
-      final CCharPointer text, final CCharPointer paramsJson) {
-    try {
-      final Database db = DATABASES.get(handle);
-      if (db == null)
-        throw new IllegalArgumentException("unknown handle " + handle);
-      final String paramsText = CTypeConversion.toJavaString(paramsJson);
-      final Map<String, Object> params = paramsText == null || paramsText.isEmpty() ? Map.of() : new JSONObject(paramsText).toMap();
-      final JSONArray rows = new JSONArray();
-      try (final ResultSet rs = db.command(CTypeConversion.toJavaString(language), CTypeConversion.toJavaString(text), params)) {
-        while (rs.hasNext()) {
-          final Result r = rs.next();
-          rows.put(r.toJSON());
-        }
-      }
-      return toC(new JSONObject().put("ok", true).put("result", rows).toString());
-    } catch (final Throwable t) {
-      return toC(new JSONObject().put("ok", false).put("error", describe(t)).toString());
-    }
   }
 
   @CEntryPoint(name = "arcadedb_close")
