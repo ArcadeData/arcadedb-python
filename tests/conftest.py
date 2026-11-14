@@ -67,6 +67,9 @@ if BACKEND != "native":
     collect_ignore.append("test_native_mixed_chunk.py")
     # the native build's ingest defaults (insert_many and graph_batch commit size), observed on the native library
     collect_ignore.append("test_native_ingest_defaults.py")
+    # create_record on the native async executor hands records over as columnar frames with per-record callbacks (and its recorded-library twin)
+    collect_ignore.append("test_native_async_create_batch.py")
+    collect_ignore.append("test_native_async_create_batch_unit.py")
     # the float32 side buffer of the native GraphBatch entry (arcadedb_n_gb_bin), observed on the native library
     collect_ignore.append("test_native_graph_batch_binary_vectors.py")
     # the native library's start-up output (#477) can only be checked with the native library loaded
