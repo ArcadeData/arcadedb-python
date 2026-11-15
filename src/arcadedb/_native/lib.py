@@ -39,6 +39,12 @@ GB_BIN = os.environ.get("ARCADEDB_NATIVE_GB_BIN", "1") != "0"
 # ARCADEDB_NATIVE_GB_COLP: the rows of a GraphBatch create_vertices chunk cross as columns by address (arcadedb_n_gb_colp, the layout of
 # arcadedb_n_insert_colp) and the RIDs come back in an int64 buffer, not as JSON text both ways; a chunk the columns cannot carry keeps the JSON route
 GB_COLP = os.environ.get("ARCADEDB_NATIVE_GB_COLP", "1") != "0"
+# ARCADEDB_NATIVE_GB_COLP_MIN_ROWS: a create_vertices chunk of fewer rows than this takes the JSON route of 26.11.1.post3, whatever the columns could carry (0: no floor).
+# The columnar entry has a fixed cost (a header, the column specs, the buffers) that a handful of rows does not repay: the laptop A/B of this change measured a single row
+# 1.63 times slower than post3 and a batch of 100 rows faster. An untimed micro of create_vertices calls in one open graph batch (this change against post3, native, cores 14 and 15)
+# measured slower for 1, 8, 16 and 32 rows (1.7x, 1.4x, 1.2x, 1.03x) and faster for 64 and 100 rows (0.90, 0.86): the crossover is near 40 rows, so 64 is above it and a chunk below
+# 64 rows takes the post3 path and cannot be slower. 64 to 99 rows were measured in the micro only (not in the pre-registered A/B, which has sizes 1 and 100).
+GB_COLP_MIN_ROWS = int(os.environ.get("ARCADEDB_NATIVE_GB_COLP_MIN_ROWS", "64"))
 
 # ARCADEDB_NATIVE_VINDEX_BIN: the query vector of find_nearest_approximate crosses as a float32 array by address and the hits come back in one packed buffer (arcadedb_n_vindex_bin), not as a JSON list of numbers and a JSON list of [rid, score]
 VINDEX_BIN = os.environ.get("ARCADEDB_NATIVE_VINDEX_BIN", "1") != "0"

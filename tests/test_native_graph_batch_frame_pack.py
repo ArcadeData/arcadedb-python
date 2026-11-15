@@ -49,6 +49,9 @@ class _Library:
             lib, "_lib", SimpleNamespace(arcadedb_n_insert_colp=1, arcadedb_n_gb_colp=1)
         )
         monkeypatch.setattr(lib, "GB_COLP", True)
+        monkeypatch.setattr(
+            lib, "GB_COLP_MIN_ROWS", 0
+        )  # the tests below pin the columnar route on small batches; the floor has its own tests at the end
         monkeypatch.setattr(lib, "GB_BIN", True)
         monkeypatch.setattr(bulk, "_ENABLED", True)
 
@@ -324,3 +327,89 @@ def test_a_pandas_timestamp_with_nanoseconds_keeps_the_json_route_of_a_vertex_lo
     library.crossings.clear()
     _batch().create_vertices("P", [{"t": micros}, {"t": micros}])
     assert library.entries() == [COLP]
+
+
+# the floor (ArcadeData/arcadedb-python #388, the laptop A/B of this route: one row 1.63 times slower than post3, 100 rows faster): a chunk below
+# lib.GB_COLP_MIN_ROWS (64) takes the JSON route of 26.11.1.post3, exactly as before this change, and a chunk at or above it the columnar route
+
+
+@pytest.mark.parametrize(
+    "n,route", [(1, OLD), (63, OLD), (64, (COLP,)), (65, (COLP,)), (100, (COLP,))]
+)
+def test_the_floor_keeps_small_chunks_on_the_json_route_and_the_rest_on_columns(
+    library, monkeypatch, n, route
+):
+    monkeypatch.setattr(
+        lib, "GB_COLP_MIN_ROWS", 64
+    )  # the default, whatever the environment says
+    rows = [{"id": i, "name": f"n{i}"} for i in range(n)]
+    rids = _batch(1000).create_vertices("P", rows)
+    assert library.entries()[0] in route and len(library.entries()) == 1, (
+        n,
+        library.entries(),
+    )
+    assert type(rids) is list and len(rids) == n and all(type(r) is str for r in rids)
+
+
+def test_a_small_chunk_below_the_floor_reads_no_schema_and_builds_no_columns(
+    library, monkeypatch
+):
+    """The post3 path costs nothing more than before for a small chunk: no schema read, no column layout, no packing."""
+    monkeypatch.setattr(lib, "GB_COLP_MIN_ROWS", 64)
+    for name in ("rows_to_columns", "pack"):
+        monkeypatch.setattr(
+            columnar,
+            name,
+            lambda *a, _n=name, **k: pytest.fail(
+                f"{_n} ran for a chunk below the floor"
+            ),
+        )
+    db = _Db()
+    extras.NativeGraphBatch(db, 7, commit_every=100).create_vertices(
+        "P", [{"id": i} for i in range(63)]
+    )
+    assert getattr(db, "schema_reads", 0) == 0
+    assert library.entries() == [OLD[0]] or library.entries() == [OLD[1]]
+
+
+def test_the_chunks_of_a_load_are_judged_one_by_one(library, monkeypatch):
+    monkeypatch.setattr(lib, "GB_COLP_MIN_ROWS", 64)
+    _batch(100).create_vertices(
+        "P", [{"id": i} for i in range(230)]
+    )  # 100, 100 and a last chunk of 30
+    assert [c[0] for c in library.crossings] == [COLP, COLP, OLD[0]]
+
+
+def test_zero_turns_the_floor_off_and_the_switch_still_turns_the_route_off(
+    library, monkeypatch
+):
+    monkeypatch.setattr(lib, "GB_COLP_MIN_ROWS", 0)
+    _batch().create_vertices("P", [{"id": 1}])
+    assert library.entries() == [COLP]
+    library.crossings.clear()
+    monkeypatch.setattr(lib, "GB_COLP", False)
+    _batch().create_vertices("P", [{"id": i} for i in range(100)])
+    assert COLP not in library.entries()
+
+
+def test_the_floor_is_read_from_the_environment_and_is_64_by_default():
+    import os
+    import subprocess
+    import sys
+
+    code = "from arcadedb._native import lib; print(lib.GB_COLP_MIN_ROWS)"
+    env = {
+        k: v for k, v in os.environ.items() if k != "ARCADEDB_NATIVE_GB_COLP_MIN_ROWS"
+    }
+
+    def run(e):
+        return subprocess.run(
+            [sys.executable, "-c", code],
+            env=e,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        ).stdout.strip()
+
+    assert run(env) == "64"
+    assert run({**env, "ARCADEDB_NATIVE_GB_COLP_MIN_ROWS": "5"}) == "5"
