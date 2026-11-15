@@ -4,7 +4,8 @@ A result of the native build reaches Python in two forms. The rows after the fir
 the shared decoder reads. The first reply of a query (up to ``_FIRST_BATCH`` rows) is JSON text that the row APIs read, and a columnar read
 finds those rows (and any the caller read by row) as dicts in the result's buffer. They cannot be read again from the cursor, so they are
 written here as one more frame, in the layout the library writes, by the rules the library's encoder follows, and read by the same
-decoder: a column has one type however a result splits into the first reply and frames. The JSON reply names the properties that were
+decoder: a column has one type however a result splits into the first reply and frames. A column of RIDs, or of lists of numbers, is a
+``json`` column here and a ``rid``, ``li8`` or ``lf8`` column in a frame of the library: the decoder gives the same values for both forms. The JSON reply names the properties that were
 ``float[]`` or ``double[]`` (``fv`` and ``dv``): a list of numbers in a row cannot say that by itself, and a vector column is a column of
 declared arrays, not a column of lists that happen to fit float32. This frame goes away with the JSON reply.
 """
@@ -15,7 +16,7 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
 from .. import _columnar
-from .codec import loads_tagged
+from .codec import RID, loads_tagged
 
 _EPOCH = datetime(1970, 1, 1)
 _MS = timedelta(milliseconds=1)
@@ -27,6 +28,12 @@ _TWO53 = 1 << 53
 def json_values(data, side, count):
     """The values of a ``json`` column of a frame from the library: its tagged JSON, restored as a row's values are."""
     return loads_tagged(bytes(data).decode("utf-8"))[0]
+
+
+def rid_objects(pairs, side, col):
+    """The RID objects of a ``rid`` column of a frame from the library: its bucket and position pairs, as the native build's ``RID`` of the text
+    the tagged JSON of a link value gives."""
+    return [RID(text) for text in _columnar.rid_texts(pairs)]
 
 
 def _head_json_values(data, side, count):
@@ -182,7 +189,9 @@ def _head_frame(rows, columns, hints, micros):
 
 
 def decode_columns(raw, micros):
-    return _columnar.decode_columns_frame(memoryview(raw), (), json_values, micros)
+    return _columnar.decode_columns_frame(
+        memoryview(raw), (), json_values, micros, rid_objects
+    )
 
 
 def decode_arrow(raw):
@@ -196,7 +205,7 @@ def columns_result(head_rows, columns, micros, batches, hints):
     if head_rows:
         frame, side = _head_frame(head_rows, columns, hints, micros)
         count, parts, _ = _columnar.decode_columns_frame(
-            frame, side, _head_json_values, micros
+            frame, side, _head_json_values, micros, rid_objects
         )
         names.extend(parts)
         parts_list.append((count, parts))
