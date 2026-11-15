@@ -1,7 +1,9 @@
 """Crossings of ``Result.get_rid()``, ``get_vertex()``, ``get_edge()``, ``get_element()`` and ``Document.get_rid()`` on the JVM build.
 
-``Result.get_rid()`` made four JPype calls (``getIdentity``, ``isPresent``, ``get``, ``toString``), each of the three element getters made three
-(``getVertex()``, ``isPresent()``, ``get()``), and ``Document.get_rid()`` two. ``ReaderCalls`` now answers each in one call. Every test here pins two
+``Result.get_rid()`` made four JPype calls (``getIdentity``, ``isPresent``, ``get``, ``toString``) and each of the three element getters made three
+(``getVertex()``, ``isPresent()``, ``get()``): ``ReaderCalls`` now answers each in one call. ``Document.get_rid()`` makes two (``getIdentity()`` and
+``str()`` of the RID) and stays on them: a bridge call is two operations as well (the call and the conversion of its String), and a timed A/B
+read the one-call version 1.6 times slower per call (figure ``j_rid_docobj_100k``). Every test here pins two
 things: the calls into the JVM (counted on a proxy of the Java row or record and of the bridge class, the technique of ``test_reader_crossings.py``;
 a call on the Java row itself would show up in the log) and that the answer is the one the per-call path gives (the oracle is that path, written out
 below), so a count cannot be bought with a change of behaviour.
@@ -138,15 +140,16 @@ def test_each_kind_of_row_has_the_element_it_should(graph_db):
     assert _row(graph_db, "projection").get_element() is None
 
 
-def test_document_get_rid_is_one_call_and_the_text_str_of_the_identity_gives(
+def test_document_get_rid_stays_on_the_plain_path_and_gives_the_text_str_of_the_identity_gives(
     graph_db, log
 ):
+    """No bridge call on purpose (see the module docstring): the one call on the Java record is ``getIdentity()``, and the text is ``str()`` of it."""
     doc = _row(graph_db, "document").get_element()
     want = str(doc._java_document.getIdentity())
     doc._java_document = Counting(doc._java_document, log, "doc")
     del log[:]
     assert doc.get_rid() == want
-    assert log == ["ReaderCalls.documentRid"]
+    assert log == ["doc.getIdentity"]
 
 
 def test_a_record_with_no_identity_yet_reads_as_it_did(graph_db):
