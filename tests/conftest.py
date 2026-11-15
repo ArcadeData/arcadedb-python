@@ -111,6 +111,8 @@ if BACKEND != "native":
     collect_ignore.append("test_native_ingest_integrity_faults.py")
     # count() of a native result set counts the rows without building a result object for each (and, in the library, without encoding them)
     collect_ignore.append("test_native_count.py")
+    # find_nearest_approximate through arcadedb_n_vindex_bin against the JSON route of arcadedb_n_vindex, observed on the native library
+    collect_ignore.append("test_native_vindex_bin.py")
 if not os.path.isfile(
     os.path.join(os.path.dirname(os.path.dirname(__file__)), "docs", "index.md")
 ):
