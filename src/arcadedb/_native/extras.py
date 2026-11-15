@@ -455,6 +455,12 @@ _ASYNC_BATCH = 1000
 # seconds a collected record may wait for the rest of its batch before a thread of the executor hands it over: a caller that creates
 # records and waits for a callback, or reads after a pause, with no other call on the executor, is never kept waiting longer
 _ASYNC_LINGER = 0.05
+# the first records of an executor go one op each, exactly as in 26.11.1.post3, before it starts to collect: no copy, no buffer, no linger thread, no frame. Collecting has a fixed
+# cost per executor (the linger thread and the locks, then the columnar frame) that a small load does not repay: an untimed micro of one executor call (a new executor, N records,
+# wait_completion) on the wheel of this change against post3, native, cores 14 and 15, measured 1.6x for 1 record, 2.7x for 4, 1.7x for 8 and 1.1x for 16 (slower), and 0.74 for 32,
+# 0.54 for 64 and 0.42 for 100 (faster): the crossover is near 20 records. 32 is above it, so an executor of up to 32 records cannot be slower than post3; an executor of 100
+# records or more still collects from its 33rd record on. Sizes 1 and 100 are the pre-registered figures of the laptop A/B (n_async_nar_1, n_async_nar_100); 0 turns this off.
+_ASYNC_DIRECT = 32
 # the values of a property that cannot change after create_record returns; any other value is copied at the call
 _ATOMIC = frozenset((int, float, str, bool, bytes, type(None)))
 
@@ -495,6 +501,7 @@ class NativeAsyncExecutor:
         self._linger_due = 0.0
         self._linger_stop = False
         self._linger_error = None
+        self._direct = 0  # the records that went one op each (see _ASYNC_DIRECT)
 
     def __enter__(self):
         return self
@@ -613,7 +620,8 @@ class NativeAsyncExecutor:
         """Queue ``document`` for an async writer; ``callback(record)`` runs on the writer once it is stored, ``error_callback(error)``
         when the engine refuses it.
 
-        The records of one type and kind are collected (a copy of their properties, so a document that the caller changes or reuses
+        The first ``_ASYNC_DIRECT`` (32) records of an executor go one op each, exactly as in 26.11.1.post3 (an executor that creates a few
+        records pays nothing for collecting). From the next record on the records of one type and kind are collected (a copy of their properties, so a document that the caller changes or reuses
         afterwards is stored as it was at this call) and cross the library boundary ``_ASYNC_BATCH`` at a time, as one columnar frame
         with the callback ids of each record, not one JSON op per record. Every other call on the executor (``wait_completion``,
         ``is_processing``, ``query``, ``command``, ``kill``, ``close``, ...) hands the collected records over first, so the engine
@@ -627,7 +635,8 @@ class NativeAsyncExecutor:
         else it is raised by the call that hands the batch over, after the records around it were handed over.
         """
         kind = "v" if hasattr(document, "get_out_edges") else "d"
-        if self._closed:
+        if self._closed or self._direct < _ASYNC_DIRECT:
+            self._direct += 1
             self._queue_record(
                 document._type, kind, document._props, callback, error_callback
             )
