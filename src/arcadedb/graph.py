@@ -220,7 +220,11 @@ class Document:
 
     def get_rid(self) -> str:
         """Get Record ID."""
-        return str(self._java_document.getIdentity())
+        reader = _reader_calls()[0]
+        if reader is None:  # no bridge jar: the plain path
+            return str(self._java_document.getIdentity())
+        # one crossing; a record with no identity yet reads "None", as str() of the identity did
+        return str(reader.documentRid(self._java_document))
 
     def get_java_document(self):
         """Expose the wrapped Java document for internal integrations."""
