@@ -21,6 +21,7 @@ from ._columnar import (
     frame_rows,
     merge_arrow,
     merge_columns,
+    rid_texts,
 )
 from ._logging import get_logger
 from .callbacks import raise_pending_interrupt
@@ -100,6 +101,16 @@ def _typed_hook(side):
         return {str(n): convert_java_to_python(v) for n, v in zip(pair[0], pair[1])}
 
     return hook
+
+
+def _typed_rid_values(pairs, side, col):
+    """The engine's RID objects of a ``rid`` column of a ColumnBatcher frame: the bridge puts them into the side array in row order from
+    the index ``col["side"]`` (an RID is a record link of a database, which a bucket and a position cannot be turned back into here).
+    """
+    start = col.get("side")
+    if start is None:
+        return rid_texts(pairs)
+    return [convert_java_to_python(side[start + i]) for i in range(len(pairs))]
 
 
 def _typed_json_values(data, side, count):
@@ -732,7 +743,7 @@ class ResultSet:
                 raise _read_error(exc) from exc
             buf = memoryview(bytes(java_batch[0]))
             count, parts, _ = decode_columns_frame(
-                buf, java_batch[1], _typed_json_values, micros
+                buf, java_batch[1], _typed_json_values, micros, _typed_rid_values
             )
             if count == 0:
                 self._finish()
