@@ -95,3 +95,58 @@ def insert_rows_columnar(db, type_name, chunk):
     rows, cols = packed
     _send(db, type_name, cols, rows, 0, f"Failed to bulk-insert into '{type_name}'")
     return True
+
+
+def rids_of(out):
+    """The RID texts (``#bucket:position``, the ``RID.toString`` text) of an int64 array of ``(bucket, position)`` pairs, in row order."""
+    pairs = out.reshape(-1, 2)
+    return list(map("#{}:{}".format, pairs[:, 0].tolist(), pairs[:, 1].tolist()))
+
+
+def create_vertices_columns(gb, type_name, rows, declared, prefix):
+    """One ``GraphBatch.create_vertices`` chunk (a list of dicts) through ``arcadedb_n_gb_colp``: the rows cross as columns by address and
+    the RIDs come back in an int64 buffer, one crossing and one transaction, as the JSON route has it. Returns the list of RID texts, or None
+    when the chunk needs the JSON route (nothing was sent then): rows that do not all have the same keys in the same order, a value no column
+    holds (a nested list or map, a mixed-type column, a set, a NaT, a numpy scalar, an integer past 64 bits, a lone surrogate), an empty chunk or a
+    chunk of fewer rows than ``lib.GB_COLP_MIN_ROWS`` (64 by default: a handful of rows does not repay the fixed cost of the columnar entry).
+
+    ``declared``: a :class:`columnar.Declared` of the type, read once by the caller for all chunks of a call.
+    """
+    if not (lib.GB_COLP and _usable()) or len(rows) < lib.GB_COLP_MIN_ROWS:
+        return None  # a chunk below the floor keeps the JSON route of post3 (lib.GB_COLP_MIN_ROWS), as does a chunk the columns cannot carry
+    columns = columnar.rows_to_columns(rows, same_order=True)
+    if columns is None:
+        return None
+    packed = columnar.pack(
+        columns, declared, exact_nanos=True
+    )  # the JSON route keeps the nanoseconds of a Timestamp
+    if packed is None:
+        return None
+    count, cols = packed
+    # a column of float32 arrays is stored after the other properties of a row: the old route took those vectors out of the JSON rows and
+    # appended them (NativeExtras.withVectors); the other columns keep the order of a HashMap of their names, as the JSON rows do
+    last = [
+        c.name
+        for c in cols
+        if c.kind == "f" and isinstance(columns[c.name][0], columnar._np.ndarray)
+    ]
+    spec = columnar.spec_of(cols)
+    out = columnar._np.empty(2 * count, dtype=columnar._np.int64)
+    from .database import _call
+
+    reply = _call(
+        prefix,
+        "arcadedb_n_gb_colp",
+        gb._gb,
+        lib.b(type_name),
+        lib.b(columnar.header_of(count, 0, cols, last=last)),
+        spec,
+        len(spec),
+        out.ctypes.data,
+        out.size,
+    )  # `cols` and `out` hold the memory the addresses point into until the call returns
+    if reply["n"] != count:
+        raise ArcadeDBError(
+            f"{prefix}: the library created {reply['n']} vertices for {count} rows"
+        )
+    return rids_of(out)
