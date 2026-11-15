@@ -220,6 +220,9 @@ class Document:
 
     def get_rid(self) -> str:
         """Get Record ID."""
+        # Two JPype operations (``getIdentity()``, then ``str()`` of the RID). A bridge call would be two as well (the static call and the
+        # conversion of the String it returns) plus the lookup of the bridge class, so there is none here: the timed A/B of a one-call
+        # version read 1.6 times slower per call (ArcadeData/arcadedb-python#395, figure ``j_rid_docobj_100k``).
         return str(self._java_document.getIdentity())
 
     def get_java_document(self):
