@@ -1,7 +1,7 @@
 = Values and records
 :description: Which Python types go into a database and what comes back (datetime, date, Decimal, bytes, lists, maps, sets), what a query row and a record object give you and which of them is a copy, and the Schema API next to plain SQL.
 
-// Sources: src/arcadedb/type_conversion.py and _native/codec.py (values), results.py and graph.py with _native/records.py (rows and records), schema.py and _native/database.py (Schema). Every statement below is pinned by tests/test_values_and_records_behavior.py.
+// Sources: src/arcadedb/type_conversion.py and _native/codec.py (values), results.py and graph.py with _native/records.py (rows and records), schema.py and _native/database.py (Schema). Every statement below is pinned by tests/test_values_and_records_behavior.py, except the section on an index on a property with no declared type: it was measured on the 26.11.1.post3 wheels of both packages, and the engine fix it names (ArcadeData/arcadedb#11615) is in no release yet.
 
 This page covers what the Python bindings add to the statements: how a Python value becomes a stored value and back, what the objects you get from a query or a lookup are, and where the `Schema` API fits. The types, the date formats and the schema rules of the engine belong to the main manual: {arcadedb-docs-url}/reference/datatypes[Data types], {arcadedb-docs-url}/reference/managing-dates[Managing dates] and {arcadedb-docs-url}/concepts/schema[Schema].
 
@@ -183,6 +183,14 @@ print(type(db.lookup_by_rid(roles.get_rid()).get("roles")).__name__)
 set
 list
 ----
+
+=== An index on a property with no declared type
+
+An index on a property that no `CREATE PROPERTY` declares keys each value by its text. The openCypher statement `CREATE INDEX FOR (n:N) ON (n.k)`, run before any record has `k`, makes such an index. ArcadeDB 26.11.1, the engine of both packages, keys an array by the identity of the engine's array object and not by its elements. A `bytes` value and a `float32` NumPy array are stored as arrays, so a seek by one of them finds no record, where the same query on a type with no index finds it. A `list` and an `int64` NumPy array are not affected.
+
+The measurement is one script that ran on `arcadedb` and on `arcadedb-jvm` 26.11.1.post3, with the same answers on both. `MATCH (n:N) WHERE n.k = $p RETURN n.id` found the record for `[7, 8]`, for `[1.5, 2.5]` and for an `int64` array. It found no record for `b"hello"` and for a `float32` array, and the same query on a type with no index found one each.
+
+https://github.com/ArcadeData/arcadedb/pull/11615[ArcadeData/arcadedb#11615] fixes this: an array is keyed by the text of its elements, and a list or an array of floating-point numbers is keyed with the same spelling of each number. The fix is in the engine's main branch and in no release yet, so a wheel built on 26.11.1 does not have it, and nothing on this page was run against an engine that has it. The pull request reports that an update or a delete of such a record left the old entry in the index, and that an index which an older engine built and which holds lists of floating-point numbers needs {arcadedb-docs-url}/reference/sql/sql-indexes#sql-rebuild-index[REBUILD INDEX] on the engine with the fix.
 
 == Read a row
 
