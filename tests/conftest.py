@@ -67,6 +67,8 @@ if BACKEND != "native":
     collect_ignore.append("test_native_mixed_chunk.py")
     # the native build's ingest defaults (insert_many and graph_batch commit size), observed on the native library
     collect_ignore.append("test_native_ingest_defaults.py")
+    # create_vertices on the native library: the columnar route (arcadedb_n_gb_colp) stores what the JSON route stores
+    collect_ignore.append("test_native_graph_batch_frame.py")
     # the float32 side buffer of the native GraphBatch entry (arcadedb_n_gb_bin), observed on the native library
     collect_ignore.append("test_native_graph_batch_binary_vectors.py")
     # the native library's start-up output (#477) can only be checked with the native library loaded
