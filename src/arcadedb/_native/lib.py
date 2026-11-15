@@ -41,8 +41,9 @@ GB_BIN = os.environ.get("ARCADEDB_NATIVE_GB_BIN", "1") != "0"
 GB_COLP = os.environ.get("ARCADEDB_NATIVE_GB_COLP", "1") != "0"
 # ARCADEDB_NATIVE_GB_COLP_MIN_ROWS: a create_vertices chunk of fewer rows than this takes the JSON route of 26.11.1.post3, whatever the columns could carry (0: no floor).
 # The columnar entry has a fixed cost (a header, the column specs, the buffers) that a handful of rows does not repay: the laptop A/B of this change measured a single row
-# 1.63 times slower than post3 and a batch of 100 rows faster. Sizes 1 and 100 are measured and the crossover lies between them; below 64 the path is the post3 path, so it
-# cannot be slower; 100 rows and more are measured faster; 64 to 99 rows are not measured.
+# 1.63 times slower than post3 and a batch of 100 rows faster. An untimed micro of create_vertices calls in one open graph batch (this change against post3, native, cores 14 and 15)
+# measured slower for 1, 8, 16 and 32 rows (1.7x, 1.4x, 1.2x, 1.03x) and faster for 64 and 100 rows (0.90, 0.86): the crossover is near 40 rows, so 64 is above it and a chunk below
+# 64 rows takes the post3 path and cannot be slower. 64 to 99 rows were measured in the micro only (not in the pre-registered A/B, which has sizes 1 and 100).
 GB_COLP_MIN_ROWS = int(os.environ.get("ARCADEDB_NATIVE_GB_COLP_MIN_ROWS", "64"))
 
 # the directory the engine log, logging.properties and the crash files go to (None until the library is loaded)
