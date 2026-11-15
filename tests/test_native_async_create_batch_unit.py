@@ -418,15 +418,15 @@ def test_close_stops_the_linger_thread(library, executor, monkeypatch):
     )  # the record was handed over by close(), before the engine closed
 
 
-# the direct phase (ArcadeData/arcadedb-python #388, #393): the first _ASYNC_DIRECT (96) records of an executor go one op each, exactly as in post3.
+# the direct phase (ArcadeData/arcadedb-python #388, #393): the first _ASYNC_DIRECT (128) records of an executor go one op each, exactly as in post3.
 # The laptop A/B measured one record 1.57 times slower than post3; the cost is collecting (a linger thread, locks, a copy), which a small load does not repay.
 
 
-@pytest.mark.parametrize("n", [1, 2, 95, 96])
-def test_an_executor_of_up_to_96_records_sends_one_op_each_and_collects_nothing(
+@pytest.mark.parametrize("n", [1, 2, 127, 128])
+def test_an_executor_of_up_to_128_records_sends_one_op_each_and_collects_nothing(
     library, monkeypatch, n
 ):
-    monkeypatch.setattr(extras, "_ASYNC_DIRECT", 96)
+    monkeypatch.setattr(extras, "_ASYNC_DIRECT", 128)
     executor = extras.NativeAsyncExecutor(_Db())
     seen = []
     for doc in _rows(n):
@@ -447,25 +447,25 @@ def test_an_executor_of_up_to_96_records_sends_one_op_each_and_collects_nothing(
     assert library.batches() == [] and len(library.per_record()) == n
 
 
-@pytest.mark.parametrize("n", [97, 98, 160, 200])
-def test_from_the_97th_record_on_the_executor_collects_and_nothing_is_lost_or_reordered(
+@pytest.mark.parametrize("n", [129, 130, 192, 256])
+def test_from_the_129th_record_on_the_executor_collects_and_nothing_is_lost_or_reordered(
     library, monkeypatch, n
 ):
-    monkeypatch.setattr(extras, "_ASYNC_DIRECT", 96)
+    monkeypatch.setattr(extras, "_ASYNC_DIRECT", 128)
     executor = extras.NativeAsyncExecutor(_Db())
     for doc in _rows(n):
         executor.create_record(doc, callback=lambda r: None)
     executor.wait_completion()
-    assert len(library.per_record()) == 96 + (
-        1 if n - 96 == 1 else 0
+    assert len(library.per_record()) == 128 + (
+        1 if n - 128 == 1 else 0
     )  # a collected batch of one is the per-record op
     batches = library.batches()
     assert sum(b[2]["n"] for b in batches) == n - len(library.per_record())
-    # the order of every crossing is the order of the calls: the 96 direct ops, then the collected rest
+    # the order of every crossing is the order of the calls: the 128 direct ops, then the collected rest
     first = [e for e in library.log if e[1] == "create_record"][0]
     assert library.log.index(first) == 0
-    ids = [o[2]["props"]["id"] for o in library.per_record()[:96]]
-    assert ids == list(range(96))
+    ids = [o[2]["props"]["id"] for o in library.per_record()[:128]]
+    assert ids == list(range(128))
 
 
 def test_zero_turns_the_direct_phase_off(library, monkeypatch):
@@ -478,8 +478,8 @@ def test_zero_turns_the_direct_phase_off(library, monkeypatch):
     assert len(library.batches()) == 1 and library.per_record() == []
 
 
-def test_the_default_is_96():
-    assert extras._ASYNC_DIRECT == 96
+def test_the_default_is_128():
+    assert extras._ASYNC_DIRECT == 128
 
 
 # the frame floor (ArcadeData/arcadedb-python #388, #393): a hand-over of fewer than _ASYNC_FRAME_MIN (64) collected records goes one op each, as in post3.
@@ -517,19 +517,19 @@ def test_64_or_more_collected_records_cross_as_one_frame(library, monkeypatch, n
     "n, direct, frame",
     [
         (1, 1, 0),
-        (95, 95, 0),
-        (96, 96, 0),
-        (97, 97, 0),
-        (159, 159, 0),
-        (160, 96, 64),
-        (200, 96, 104),
+        (127, 127, 0),
+        (128, 128, 0),
+        (129, 129, 0),
+        (191, 191, 0),
+        (192, 128, 64),
+        (256, 128, 128),
     ],
 )
 def test_the_defaults_of_an_executor_of_n_records(
     library, monkeypatch, n, direct, frame
 ):
-    """The production values: the first 96 records one op each, the rest a frame only when 64 or more of them are collected."""
-    monkeypatch.setattr(extras, "_ASYNC_DIRECT", 96)
+    """The production values: the first 128 records one op each, the rest a frame only when 64 or more of them are collected."""
+    monkeypatch.setattr(extras, "_ASYNC_DIRECT", 128)
     monkeypatch.setattr(extras, "_ASYNC_FRAME_MIN", 64)
     executor = extras.NativeAsyncExecutor(_Db())
     for doc in _rows(n):
