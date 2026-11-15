@@ -234,6 +234,7 @@ def _load():
             "arcadedb_n_next_bin": [P, L, I],
             "arcadedb_n_next_col": [P, L, I, S, I],
             "arcadedb_n_rs_close": [P, L],
+            "arcadedb_n_count": [P, L],
             "arcadedb_n_cmd": [P, L, I, S, S, S, S, L, I],
             "arcadedb_n_last_error": [P],
             "arcadedb_n_rs_close_many": [P, P, I],
@@ -259,9 +260,10 @@ def _load():
             "arcadedb_n_set_upcall": [P, P],
             "arcadedb_free": [P, P],
         }
-        # the entry points that answer with a number, not with the address of a reply text: a cursor id (arcadedb_n_cmd) and the
-        # transaction state (arcadedb_n_tx); -1 is an error for both, its text is read with arcadedb_n_last_error
-        returns_long = ("arcadedb_n_cmd", "arcadedb_n_tx")
+        # the entry points that answer with a number, not with the address of a reply text: a cursor id (arcadedb_n_cmd), the
+        # transaction state (arcadedb_n_tx) and a row count (arcadedb_n_count); -1 is an error for all, its text is read with
+        # arcadedb_n_last_error
+        returns_long = ("arcadedb_n_cmd", "arcadedb_n_tx", "arcadedb_n_count")
         for name, argtypes in sigs.items():
             fn = getattr(lib, name, None)
             if fn is None:  # a library built before this entry point existed
@@ -502,8 +504,18 @@ def tx(handle, op) -> int:
     return lib.arcadedb_n_tx(th, handle, op)
 
 
+def count(rs_id: int) -> int:
+    """``arcadedb_n_count``: the number of rows the cursor still holds (it is drained and closed in the library), or -1 for an error (read
+    it with :func:`last_error`; the cursor is closed then too). One foreign call: no reply text to copy, free or decode, no row encoded.
+    """
+    lib = _lib or _load()
+    t = _local.__dict__.get("thread")
+    th = t.handle if t is not None else _thread_handle()
+    return lib.arcadedb_n_count(th, rs_id)
+
+
 def last_error() -> str:
-    """The error of the last failed :func:`cmd` or :func:`tx` on this thread, as the JSON text of an error reply."""
+    """The error of the last failed :func:`cmd`, :func:`tx` or :func:`count` on this thread, as the JSON text of an error reply."""
     return call("arcadedb_n_last_error")
 
 
