@@ -39,6 +39,11 @@ GB_BIN = os.environ.get("ARCADEDB_NATIVE_GB_BIN", "1") != "0"
 # ARCADEDB_NATIVE_GB_COLP: the rows of a GraphBatch create_vertices chunk cross as columns by address (arcadedb_n_gb_colp, the layout of
 # arcadedb_n_insert_colp) and the RIDs come back in an int64 buffer, not as JSON text both ways; a chunk the columns cannot carry keeps the JSON route
 GB_COLP = os.environ.get("ARCADEDB_NATIVE_GB_COLP", "1") != "0"
+# ARCADEDB_NATIVE_GB_COLP_MIN_ROWS: a create_vertices chunk of fewer rows than this takes the JSON route of 26.11.1.post3, whatever the columns could carry (0: no floor).
+# The columnar entry has a fixed cost (a header, the column specs, the buffers) that a handful of rows does not repay: the laptop A/B of this change measured a single row
+# 1.63 times slower than post3 and a batch of 100 rows faster. Sizes 1 and 100 are measured and the crossover lies between them; below 64 the path is the post3 path, so it
+# cannot be slower; 100 rows and more are measured faster; 64 to 99 rows are not measured.
+GB_COLP_MIN_ROWS = int(os.environ.get("ARCADEDB_NATIVE_GB_COLP_MIN_ROWS", "64"))
 
 # the directory the engine log, logging.properties and the crash files go to (None until the library is loaded)
 LOG_DIR_USED = None

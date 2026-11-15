@@ -107,12 +107,13 @@ def create_vertices_columns(gb, type_name, rows, declared, prefix):
     """One ``GraphBatch.create_vertices`` chunk (a list of dicts) through ``arcadedb_n_gb_colp``: the rows cross as columns by address and
     the RIDs come back in an int64 buffer, one crossing and one transaction, as the JSON route has it. Returns the list of RID texts, or None
     when the chunk needs the JSON route (nothing was sent then): rows that do not all have the same keys in the same order, a value no column
-    holds (a nested list or map, a mixed-type column, a set, a NaT, a numpy scalar, an integer past 64 bits, a lone surrogate) or an empty chunk.
+    holds (a nested list or map, a mixed-type column, a set, a NaT, a numpy scalar, an integer past 64 bits, a lone surrogate), an empty chunk or a
+    chunk of fewer rows than ``lib.GB_COLP_MIN_ROWS`` (64 by default: a handful of rows does not repay the fixed cost of the columnar entry).
 
     ``declared``: a :class:`columnar.Declared` of the type, read once by the caller for all chunks of a call.
     """
-    if not (lib.GB_COLP and _usable()):
-        return None
+    if not (lib.GB_COLP and _usable()) or len(rows) < lib.GB_COLP_MIN_ROWS:
+        return None  # a chunk below the floor keeps the JSON route of post3 (lib.GB_COLP_MIN_ROWS), as does a chunk the columns cannot carry
     columns = columnar.rows_to_columns(rows, same_order=True)
     if columns is None:
         return None

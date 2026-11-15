@@ -26,7 +26,8 @@ def db(temp_db):
     for name in (
         "A",
         "B",
-    ):  # the same schema twice: A is loaded with the columnar route, B with the JSON route
+        "C",
+    ):  # the same schema three times: A is loaded with the columnar route, B with the JSON route, C with the columns forced
         temp_db.command("sql", f"CREATE VERTEX TYPE {name}")
         temp_db.command("sql", f"CREATE PROPERTY {name}.i LONG")
         temp_db.command("sql", f"CREATE PROPERTY {name}.n INTEGER")
@@ -114,7 +115,7 @@ def _dump(db, type_name):
     return [out[i] for i in sorted(out)]
 
 
-def _load(db, monkeypatch, type_name, rows, columnar):
+def _load(db, monkeypatch, type_name, rows, columnar, floor=None):
     calls = []
     real = lib.call
 
@@ -124,6 +125,9 @@ def _load(db, monkeypatch, type_name, rows, columnar):
 
     monkeypatch.setattr(lib, "call", spy)
     monkeypatch.setattr(lib, "GB_COLP", columnar)
+    monkeypatch.setattr(
+        lib, "GB_COLP_MIN_ROWS", 0 if floor is None else floor
+    )  # the route tests force the columns; floor=64 is the default
     try:
         with db.graph_batch() as gb:
             rids = gb.create_vertices(type_name, rows)
@@ -294,3 +298,24 @@ def test_the_paper_shaped_loads_take_the_columnar_route_end_to_end(
         temp_db.query("sql", "SELECT count(*) AS c FROM Person").first().get("c")
         == 2500
     )
+
+
+@pytest.mark.parametrize("n", [1, 63, 64, 65, 100])
+def test_the_floor_picks_the_route_by_size_and_both_routes_store_the_same(
+    db, monkeypatch, n
+):
+    """#388: the default floor of 64 rows: below it the JSON route of post3, from it the columns; the stored data and the RIDs are those of the JSON route either way."""
+    rows = _rows(n, SHAPES["scalars"][0])
+    rids_floor, calls_floor = _load(db, monkeypatch, "A", rows, True, floor=64)
+    rids_json, calls_json = _load(db, monkeypatch, "B", rows, False)
+    assert (COLP in calls_floor) is (n >= 64), (n, calls_floor)
+    assert COLP not in calls_json
+    assert _dump(db, "A") == _dump(db, "B")
+    for rids in (rids_floor, rids_json):
+        assert type(rids) is list and len(rids) == n
+        assert all(type(r) is str and re.fullmatch(r"#\d+:\d+", r) for r in rids)
+    rids_cols, calls_cols = _load(
+        db, monkeypatch, "C", rows, True, floor=0
+    )  # the columns forced, even for one row
+    assert COLP in calls_cols and len(rids_cols) == n
+    assert _dump(db, "C") == _dump(db, "B")
