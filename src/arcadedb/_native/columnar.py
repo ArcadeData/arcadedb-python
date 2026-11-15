@@ -215,7 +215,7 @@ def _epoch_micros(value):
     return seconds * 1_000_000 + value.microsecond
 
 
-def _list_column(name, values, declared):
+def _list_column(name, values, declared, exact_nanos=False):
     """A list or tuple of Python values as a column: one type (None allowed) or a list of equal-length float arrays; else None."""
     n = len(values)
     types = set(map(type, values))
@@ -255,6 +255,12 @@ def _list_column(name, values, declared):
     if issubclass(only, datetime):
         if only.__name__ == "NaTType":
             return None  # the JSON path stores it as a null
+        if (
+            exact_nanos
+            and only is not datetime
+            and any(getattr(v, "nanosecond", 0) for v in values if v is not None)
+        ):
+            return None  # a pandas Timestamp with nanoseconds, for a caller whose JSON route keeps them (insert_many's keeps microseconds)
         try:
             ticks = [0 if v is None else _epoch_micros(v) for v in values]
         except (OverflowError, ValueError):
@@ -407,7 +413,7 @@ def _arrow_column(name, arr, declared):
     return None
 
 
-def pack(columns, declared):
+def pack(columns, declared, exact_nanos=False):
     """``(rows, [Packed])`` for a dict of name -> column, or None when any column cannot be laid out or the columns differ in length.
 
     A column is a numpy array (1-D ints, floats and bools, or a 2-D float32 matrix), a list or tuple of Python values of one type (None
@@ -425,14 +431,14 @@ def pack(columns, declared):
         elif isinstance(values, _np.ndarray):
             if values.dtype.kind in "OUS":
                 col = (
-                    _list_column(name, values.tolist(), declared)
+                    _list_column(name, values.tolist(), declared, exact_nanos)
                     if values.ndim == 1
                     else None
                 )
             else:
                 col = _numpy_column(name, values, declared)
         elif isinstance(values, (list, tuple)) and values:
-            col = _list_column(name, values, declared)
+            col = _list_column(name, values, declared, exact_nanos)
         else:
             col = None  # a pandas Series, a generator, an empty list: the row path handles them
         if col is None:
@@ -454,7 +460,7 @@ def spec_of(packed):
     return (ctypes.c_int64 * len(flat))(*flat)
 
 
-def header_of(rows, commit_every, packed, fid=None):
+def header_of(rows, commit_every, packed, fid=None, last=()):
     """The JSON header text: row count, commit interval and ``[name, kind, dim]`` per column; with a failure token ``fid`` it also says
     ``"parallel": true``, which hands the records to the async executor (the image then ignores the commit interval and counts the
     failed records on that token).
@@ -466,14 +472,22 @@ def header_of(rows, commit_every, packed, fid=None):
         "commit": min(int(commit_every), 2**31 - 1),
         "cols": [[c.name, c.kind, c.dim] for c in packed],
     }
+    if (
+        last
+    ):  # create_vertices: the columns the old route appended to the end of each row (float32 array vectors)
+        header["last"] = list(last)
     if fid is not None:
         header["parallel"] = True
         header["fid"] = fid
     return json.dumps(header)
 
 
-def rows_to_columns(rows):
-    """A list of dicts with the same keys as a dict of name -> list of values, or None (no rows, different keys, a non-str key)."""
+def rows_to_columns(rows, same_order=False):
+    """A list of dicts with the same keys as a dict of name -> list of values, or None (no rows, different keys, a non-str key).
+
+    ``same_order``: every row must also list its keys in the order of the first row (a row with the same keys in another order gives
+    None), for a caller whose stored property order follows the key order of its rows.
+    """
     if not rows:
         return None
     try:
@@ -481,6 +495,8 @@ def rows_to_columns(rows):
         if any(type(key) is not str for key in keys):
             return None
         if set(map(len, rows)) != {len(keys)}:
+            return None
+        if same_order and not all(map(keys.__eq__, map(list, rows))):
             return None
         return {key: [row[key] for row in rows] for key in keys}
     except (
