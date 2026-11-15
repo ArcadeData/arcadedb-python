@@ -6,7 +6,10 @@
  * little-endian for numerics/bools/temporals (epoch millis), offset+UTF-8
  * for strings, plus a null bitmap per column. A DECIMAL column ("dec" type) uses the string layout with each
  * BigDecimal written in full, so no digit is lost to a double. Columns whose values don't
- * fit those encodings are serialized as one JSON array ("json" type). Python decodes with numpy.frombuffer
+ * fit those encodings are serialized as one JSON array ("json" type). A column of record links is "rid" (two int64 per row:
+ * bucket and position) and a column of lists of integers or of floats is "li8" or "lf8" (int32 offsets, a bitmap of the null
+ * elements, then one flat int64 or float64 array); maps, nested lists, lists of anything else and the rest stay "json".
+ * Python decodes with numpy.frombuffer
  * (ResultSet.to_columns / the fast to_dataframe path). Measured ~1.2x of
  * Java-native iteration on 100k-row scans (vs 3.4x for the JSON row path).
  *
@@ -19,6 +22,7 @@
  */
 package com.arcadedb.python;
 
+import com.arcadedb.database.RID;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.json.JSONArray;
@@ -85,6 +89,55 @@ public final class ColumnBatcher {
   /** Python's datetime covers years 1 to 9999; a datetime outside it stays an engine object (TypedRows does the same). */
   private static boolean yearFits(final LocalDateTime ldt) {
     return ldt.getYear() >= 1 && ldt.getYear() <= 9999;
+  }
+
+  /**
+   * The column kind of one list: "li8" (every element a Long, Integer, Short or Byte, or null), "lf8" (every element a Double or Float, or
+   * null), "l0" (no element that is not null: it takes the kind of the other lists of the column) or "json" (a string, a boolean, a
+   * nested value, ints next to floats: what no fixed layout carries without changing a value).
+   */
+  private static String listKind(final List<?> list) {
+    String kind = "l0";
+    for (final Object e : list) {
+      if (e == null)
+        continue;
+      final String k;
+      if (e instanceof Long || e instanceof Integer || e instanceof Short || e instanceof Byte)
+        k = "li8";
+      else if (e instanceof Double || e instanceof Float)
+        k = "lf8";
+      else
+        return "json";
+      if (kind.equals("l0"))
+        kind = k;
+      else if (!kind.equals(k))
+        return "json";
+    }
+    return kind;
+  }
+
+  private static boolean isListKind(final String kind) {
+    return kind.equals("li8") || kind.equals("lf8") || kind.equals("l0");
+  }
+
+  /** The kind of a column that holds lists of kind {@code a} and of kind {@code b}, or null when no list layout carries both. */
+  private static String mergeListKinds(final String a, final String b) {
+    if (!isListKind(a) || !isListKind(b))
+      return null;
+    if (a.equals(b) || b.equals("l0"))
+      return a;
+    if (a.equals("l0"))
+      return b;
+    return null; // ints next to floats: each element keeps its own type in a json column
+  }
+
+  /** The elements of the lists of a column of list kind (the size of the flat buffer), or -1 when the buffer would not fit an int32 offset. */
+  private static long listElements(final List<Object[]> rows, final int c, final int count) {
+    long total = 0;
+    for (int r = 0; r < count; r++)
+      if (rows.get(r)[c] instanceof List<?> l)
+        total += l.size();
+    return total <= (1 << 27) ? total : -1;
   }
 
   /** The columns of up to {@code max} rows, temporals in milliseconds: {@code {byte[] buffer, Object[] side}}. */
@@ -188,13 +241,21 @@ public final class ColumnBatcher {
           t = "f4v";
         else if (v instanceof double[])
           t = "f8v";
+        else if (v instanceof RID rid)
+          // a record link: bucket and position, which write the text of the RID ("#b:p") for a valid RID
+          t = rid.getBucketId() >= 0 && rid.getPosition() >= 0 ? "rid" : "json";
+        else if (v instanceof List<?> list)
+          t = listKind(list);
         else
           t = "json";
         if (type == null)
           type = t;
         else if (!type.equals(t)) {
+          final String merged = mergeListKinds(type, t);
           // numeric widening is fine; anything else degrades to json
-          if ((type.equals("i8") && t.equals("f8")) || (type.equals("f8") && t.equals("i8")))
+          if (merged != null)
+            type = merged;
+          else if ((type.equals("i8") && t.equals("f8")) || (type.equals("f8") && t.equals("i8")))
             type = "f8";
           else {
             type = "json";
@@ -204,6 +265,8 @@ public final class ColumnBatcher {
       }
       if (type == null)
         type = "str"; // all-null column
+      if (type.equals("l0"))
+        type = "json"; // lists with no element that is not null say nothing about the element type: Arrow types them list<null>
       // an integer beyond 2**53 next to a floating value has no exact double: the values stay what they are, in a json column
       if (type.equals("f8") && sawInt && sawFloating && bigInt)
         type = "json";
@@ -224,6 +287,14 @@ public final class ColumnBatcher {
         if (vdim < 0)
           type = "json";
       }
+
+      long listTotal = 0;
+      if (type.equals("li8") || type.equals("lf8")) {
+        listTotal = listElements(rows, c, count);
+        if (listTotal < 0)
+          type = "json";
+      }
+      int ridSide = -1;
 
       byte[] colBuf;
       if (type.equals("i8") || type.equals("dt") || type.equals("dtu")) {
@@ -289,6 +360,59 @@ public final class ColumnBatcher {
               bb.putDouble(x);
         }
         colBuf = bb.array();
+      } else if (type.equals("rid")) {
+        // bucket and position as two int64 per row; a null row is 0, 0. The engine's RID objects go to the side array too, in row
+        // order from the index the header names ("side"): to_columns hands out the engine's own RID, which a numeric pair cannot be
+        // turned back into on this side of the bridge without the database; to_arrow reads the pairs and never touches the array
+        ridSide = side.size();
+        final ByteBuffer bb = ByteBuffer.allocate(count * 16).order(ByteOrder.LITTLE_ENDIAN);
+        for (int r = 0; r < count; r++) {
+          final Object v = rows.get(r)[c];
+          side.add(v);
+          if (v == null) {
+            nulls[r >> 3] |= (1 << (r & 7));
+            bb.putLong(0);
+            bb.putLong(0);
+          } else {
+            bb.putLong(((RID) v).getBucketId());
+            bb.putLong(((RID) v).getPosition());
+          }
+        }
+        colBuf = bb.array();
+      } else if (type.equals("li8") || type.equals("lf8")) {
+        // int32 offsets (count + 1), a bitmap of the null elements (bit j of byte j/8 set for a null element, one bit per element of
+        // the flat array), then the elements of every list one after the other, int64 or float64 LE. A null row is an empty list.
+        final boolean ints = type.equals("li8");
+        final ByteBuffer offs = ByteBuffer.allocate((count + 1) * 4).order(ByteOrder.LITTLE_ENDIAN);
+        final ByteBuffer vals = ByteBuffer.allocate((int) listTotal * 8).order(ByteOrder.LITTLE_ENDIAN);
+        final byte[] elemNulls = new byte[(int) ((listTotal + 7) / 8)];
+        int pos = 0;
+        offs.putInt(0);
+        for (int r = 0; r < count; r++) {
+          final Object v = rows.get(r)[c];
+          if (v == null)
+            nulls[r >> 3] |= (1 << (r & 7));
+          else
+            for (final Object e : (List<?>) v) {
+              if (e == null) {
+                elemNulls[pos >> 3] |= (1 << (pos & 7));
+                if (ints)
+                  vals.putLong(0);
+                else
+                  vals.putDouble(Double.NaN);
+              } else if (ints)
+                vals.putLong(((Number) e).longValue());
+              else
+                vals.putDouble(((Number) e).doubleValue());
+              pos++;
+            }
+          offs.putInt(pos);
+        }
+        final ByteBuffer bb = ByteBuffer.allocate(offs.capacity() + elemNulls.length + vals.capacity());
+        bb.put(offs.array());
+        bb.put(elemNulls);
+        bb.put(vals.array());
+        colBuf = bb.array();
       } else if (type.equals("json")) {
         // one JSON array for the whole column, in the tagged encoding of TypedRows: what the engine's JSON writer turns
         // into epoch milliseconds, a double or a text key (a date or Decimal in a list, an int map key) stays what the
@@ -337,6 +461,8 @@ public final class ColumnBatcher {
       columnHeader.put("bytes", colBuf.length);
       if (vdim > 0 && (type.equals("f4v") || type.equals("f8v")))
         columnHeader.put("dim", vdim);
+      if (ridSide >= 0)
+        columnHeader.put("side", ridSide);
       headerColumns.put(columnHeader);
       body.write(nulls, 0, nulls.length);
       body.write(colBuf, 0, colBuf.length);

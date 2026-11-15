@@ -13,15 +13,22 @@
  *   b1   one byte per row                           dt   int64 epoch milliseconds, dtu: epoch microseconds (see micros)
  *   f4v  dim float32 LE per row (float[])           f8v  dim float64 LE per row (double[])
  *   str  int32 LE offsets (n + 1) then UTF-8 bytes  dec  a BigDecimal as text in the str layout
+ *   rid  two int64 LE per row: the bucket and the position of a record link (the text "#bucket:position")
+ *   li8  a list of int64 per row (Long, Integer, Short, Byte or null elements) and lf8 a list of float64 (Double, Float or null
+ *        elements; NaN and the infinities are values): int32 offsets (n + 1), a bitmap of the null elements (one bit per element
+ *        of the flat array), then the elements of every list one after the other. A null row is an empty list under the row's
+ *        null bit; an empty list and a null element are what they were in the json form
  *   json one JSON array of the column in the tagged encoding of NativeCodec: what no fixed layout carries without changing a value
- *        (nested lists and maps, records and RIDs, BigInteger, a column that mixes kinds, a DATE or a time-zone-aware temporal next to
- *        datetimes with micros, a ragged vector, a Long beyond 2**53 next to a floating value)
+ *        (maps, nested lists, lists of strings or of RIDs, lists that mix ints and floats, a list of nothing but nulls, embedded
+ *        records, other record values, a RID that is not valid, BigInteger, a column that mixes kinds, a DATE or a time-zone-aware
+ *        temporal next to datetimes with micros, a ragged vector, a Long beyond 2**53 next to a floating value)
  *
  * A frame holds at most {@code max} rows and stops once the rows read add up to about FRAME_BYTES, so the working set of a read is a frame
  * and not the table.
  */
 package org.humemai.nativelib;
 
+import com.arcadedb.database.RID;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 
@@ -94,6 +101,55 @@ final class ColumnFrames {
 
   private static boolean yearFits(final LocalDateTime ldt) {
     return ldt.getYear() >= 1 && ldt.getYear() <= 9999;
+  }
+
+  /**
+   * The column kind of one list: "li8" (every element a Long, Integer, Short or Byte, or null), "lf8" (every element a Double or Float, or
+   * null), "l0" (no element that is not null: it takes the kind of the other lists of the column) or "json" (a string, a boolean, a
+   * nested value, ints next to floats: what no fixed layout carries without changing a value).
+   */
+  private static String listKind(final List<?> list) {
+    String kind = "l0";
+    for (final Object e : list) {
+      if (e == null)
+        continue;
+      final String k;
+      if (e instanceof Long || e instanceof Integer || e instanceof Short || e instanceof Byte)
+        k = "li8";
+      else if (e instanceof Double || e instanceof Float)
+        k = "lf8";
+      else
+        return "json";
+      if (kind.equals("l0"))
+        kind = k;
+      else if (!kind.equals(k))
+        return "json";
+    }
+    return kind;
+  }
+
+  private static boolean isListKind(final String kind) {
+    return kind.equals("li8") || kind.equals("lf8") || kind.equals("l0");
+  }
+
+  /** The kind of a column that holds lists of kind {@code a} and of kind {@code b}, or null when no list layout carries both. */
+  private static String mergeListKinds(final String a, final String b) {
+    if (!isListKind(a) || !isListKind(b))
+      return null;
+    if (a.equals(b) || b.equals("l0"))
+      return a;
+    if (a.equals("l0"))
+      return b;
+    return null; // ints next to floats: each element keeps its own type in a json column
+  }
+
+  /** The elements of the lists of a column of list kind (the size of the flat buffer), or -1 when the buffer would not fit an int32 offset. */
+  private static long listElements(final List<Object[]> rows, final int c, final int count) {
+    long total = 0;
+    for (int r = 0; r < count; r++)
+      if (rows.get(r)[c] instanceof List<?> l)
+        total += l.size();
+    return total <= (1 << 27) ? total : -1;
   }
 
   /** About how many bytes the values of a row take in a frame (a stop rule, not an exact size). */
@@ -218,12 +274,20 @@ final class ColumnFrames {
           t = "f4v";
         else if (v instanceof double[])
           t = "f8v";
+        else if (v instanceof RID rid)
+          // a record link: bucket and position, which write the text of the RID ("#b:p") for a valid RID
+          t = rid.getBucketId() >= 0 && rid.getPosition() >= 0 ? "rid" : "json";
+        else if (v instanceof List<?> list)
+          t = listKind(list);
         else
           t = "json";
         if (type == null)
           type = t;
         else if (!type.equals(t)) {
-          if ((type.equals("i8") && t.equals("f8")) || (type.equals("f8") && t.equals("i8")))
+          final String merged = mergeListKinds(type, t);
+          if (merged != null)
+            type = merged;
+          else if ((type.equals("i8") && t.equals("f8")) || (type.equals("f8") && t.equals("i8")))
             type = "f8";
           else {
             type = "json";
@@ -233,6 +297,8 @@ final class ColumnFrames {
       }
       if (type == null)
         type = "str"; // an all-null column
+      if (type.equals("l0"))
+        type = "json"; // lists with no element that is not null say nothing about the element type: Arrow types them list<null>
       // an integer beyond 2**53 next to a floating value has no exact double: the values stay what they are, in a json column
       if (type.equals("f8") && sawInt && sawFloating && bigInt)
         type = "json";
@@ -253,6 +319,13 @@ final class ColumnFrames {
           type = "json"; // ragged
         else if (vdim == -1)
           vdim = 0;
+      }
+
+      long listTotal = 0;
+      if (type.equals("li8") || type.equals("lf8")) {
+        listTotal = listElements(rows, c, count);
+        if (listTotal < 0)
+          type = "json";
       }
 
       final byte[] colBuf;
@@ -318,6 +391,55 @@ final class ColumnFrames {
             for (final double x : (double[]) v)
               bb.putDouble(x);
         }
+        colBuf = bb.array();
+      } else if (type.equals("rid")) {
+        // bucket and position as two int64 per row; a null row is 0, 0
+        final ByteBuffer bb = ByteBuffer.allocate(count * 16).order(ByteOrder.LITTLE_ENDIAN);
+        for (int r = 0; r < count; r++) {
+          final Object v = rows.get(r)[c];
+          if (v == null) {
+            nulls[r >> 3] |= (1 << (r & 7));
+            bb.putLong(0);
+            bb.putLong(0);
+          } else {
+            bb.putLong(((RID) v).getBucketId());
+            bb.putLong(((RID) v).getPosition());
+          }
+        }
+        colBuf = bb.array();
+      } else if (type.equals("li8") || type.equals("lf8")) {
+        // int32 offsets (count + 1), a bitmap of the null elements (bit j of byte j/8 set for a null element, one bit per element of
+        // the flat array), then the elements of every list one after the other, int64 or float64 LE. A null row is an empty list.
+        final boolean ints = type.equals("li8");
+        final ByteBuffer offs = ByteBuffer.allocate((count + 1) * 4).order(ByteOrder.LITTLE_ENDIAN);
+        final ByteBuffer vals = ByteBuffer.allocate((int) listTotal * 8).order(ByteOrder.LITTLE_ENDIAN);
+        final byte[] elemNulls = new byte[(int) ((listTotal + 7) / 8)];
+        int pos = 0;
+        offs.putInt(0);
+        for (int r = 0; r < count; r++) {
+          final Object v = rows.get(r)[c];
+          if (v == null)
+            nulls[r >> 3] |= (1 << (r & 7));
+          else
+            for (final Object e : (List<?>) v) {
+              if (e == null) {
+                elemNulls[pos >> 3] |= (1 << (pos & 7));
+                if (ints)
+                  vals.putLong(0);
+                else
+                  vals.putDouble(Double.NaN);
+              } else if (ints)
+                vals.putLong(((Number) e).longValue());
+              else
+                vals.putDouble(((Number) e).doubleValue());
+              pos++;
+            }
+          offs.putInt(pos);
+        }
+        final ByteBuffer bb = ByteBuffer.allocate(offs.capacity() + elemNulls.length + vals.capacity());
+        bb.put(offs.array());
+        bb.put(elemNulls);
+        bb.put(vals.array());
         colBuf = bb.array();
       } else if (type.equals("json")) {
         final StringBuilder arr = new StringBuilder();
