@@ -1,0 +1,576 @@
+"""The native async executor hands ``create_record`` calls to the library in batches, and every record keeps its own callbacks.
+
+``NativeAsyncExecutor.create_record`` used to send one JSON op (``{type, kind, props, cb, err}``) per record: one crossing, one
+``json.dumps`` and one JSON parse in the image per record. It now buffers the records of one type and kind and hands a batch over
+as one columnar frame (``arcadedb_n_async_bin`` with the ``create_records`` op, the layout of ``arcadedb_n_insert_colp``) plus the
+callback ids of each record. These tests pin what must not change: nothing is ever lost or reordered (every other call on the
+executor, ``wait_completion``, ``close`` and ``kill`` hand the buffer over first), a record changed after ``create_record`` returned
+is stored as it was at the call, a shape the frame cannot carry keeps the per-record op, and a record that the image refuses in the
+middle of a batch reaches its own error callback while the records around it still go in, in order.
+
+No JVM and no native library: the library call is replaced by a recorder, so the counts are crossings, not seconds. The stored
+values and the callbacks of the real library are in test_native_async_create_batch.py.
+"""
+
+import json
+import time
+
+import pytest
+
+from arcadedb import ArcadeDBError
+from arcadedb._native import bulk, columnar, extras
+
+BATCH = getattr(extras, "_ASYNC_BATCH", 1000)
+REFUSAL = {"cls": "DuplicatedKeyException", "error": "duplicate", "chain": []}
+
+
+class _Doc:
+    """What the executor needs of a document: its type and its properties."""
+
+    def __init__(self, type_name, props):
+        self._type = type_name
+        self._props = props
+
+
+class _Db:
+    _h = 7
+
+    def _discard_async_executor(self, executor):
+        pass
+
+    def query(
+        self, *args, **kwargs
+    ):  # the schema read of columnar.Declared: no engine here, so no declared types
+        raise RuntimeError("no engine")
+
+
+class _Library:
+    """Stands for ``extras._call``: records every crossing in order and answers like the image."""
+
+    def __init__(self):
+        self.log = []  # (kind, op, args or header, n_spec)
+        self.refusals = (
+            []
+        )  # replies for the next create_records calls, None for a plain success
+        self.raise_on_batch = None
+
+    def __call__(self, prefix, name, handle, op, text, *rest):
+        args = json.loads(text)
+        op = op.decode() if isinstance(op, bytes) else op
+        if name == "arcadedb_n_async_bin":
+            self.log.append(("bin", op, args, rest[1]))
+            if self.raise_on_batch is not None:
+                raise self.raise_on_batch
+            reply = self.refusals.pop(0) if self.refusals else None
+            return {"ok": True, "n": args["n"]} if reply is None else reply
+        self.log.append(("op", op, args, 0))
+        return {
+            "ok": True,
+            "parallel": 1,
+            "back_pressure": 0,
+            "commit_every": 1,
+            "wal": True,
+            "sync": "NO",
+            "threads": 1,
+            "processing": False,
+            "done": True,
+        }
+
+    def batches(self):
+        return [entry for entry in self.log if entry[0] == "bin"]
+
+    def per_record(self):
+        return [entry for entry in self.log if entry[1] == "create_record"]
+
+    def order(self):
+        return [(entry[1], entry[2].get("n")) for entry in self.log]
+
+
+@pytest.fixture
+def library(monkeypatch):
+    fake = _Library()
+    # the linger time (how long a collected record waits for the rest of its batch) is out of the way, so "still buffered" is a fact
+    monkeypatch.setattr(extras, "_ASYNC_LINGER", 3600.0, raising=False)
+    # the tests below pin the collecting route from the first record; the direct phase of the first records has its own tests at the end
+    monkeypatch.setattr(extras, "_ASYNC_DIRECT", 0)
+    # and a frame from two records on: the floor below which a hand-over goes one op each has its own tests at the end
+    monkeypatch.setattr(extras, "_ASYNC_FRAME_MIN", 0)
+    monkeypatch.setattr(extras, "_call", fake)
+    monkeypatch.setattr(extras, "_ensure_upcall", lambda: None)
+    monkeypatch.setattr(bulk, "_usable", lambda: True)
+    return fake
+
+
+@pytest.fixture
+def executor(library):
+    return extras.NativeAsyncExecutor(_Db())
+
+
+def _size():
+    with extras._callbacks_lock:
+        return len(extras._callbacks)
+
+
+def _rows(n, type_name="Item"):
+    return [_Doc(type_name, {"id": i, "name": f"n{i}"}) for i in range(n)]
+
+
+def test_records_of_one_type_cross_in_one_batch(library, executor):
+    seen = []
+    for doc in _rows(250):
+        executor.create_record(
+            doc, callback=seen.append, error_callback=lambda e: seen.append(e)
+        )
+    executor.wait_completion()
+
+    assert len(library.batches()) == 1
+    assert library.per_record() == []
+    _, op, header, n_spec = library.batches()[0]
+    assert op == "create_records"
+    assert header["type"] == "Item" and header["kind"] == "d" and header["n"] == 250
+    assert [c[0] for c in header["cols"]] == ["id", "name"]
+    assert len(header["cbs"]) == 250 and len(header["errs"]) == 250
+    assert all(header["cbs"]) and all(header["errs"])
+    assert (
+        len(set(header["cbs"])) == 250
+    )  # one callback id per record: each record keeps its own
+    assert n_spec == 6 * len(header["cols"])
+
+
+def test_a_record_without_callbacks_sends_zero_ids(library, executor):
+    for doc in _rows(5):
+        executor.create_record(doc)
+    executor.wait_completion()
+    ((_, _, header, _),) = library.batches()
+    assert header["cbs"] == [0] * 5 and header["errs"] == [0] * 5
+
+
+def test_the_buffer_is_bounded(library, executor):
+    for doc in _rows(2 * BATCH + 10):
+        executor.create_record(doc)
+    # the full batches went over while the records were being added, the rest waits for the next flush point
+    assert [b[2]["n"] for b in library.batches()] == [BATCH] * 2
+    executor.wait_completion()
+    assert [b[2]["n"] for b in library.batches()] == [BATCH] * 2 + [10]
+
+
+@pytest.mark.parametrize(
+    "later",
+    [
+        lambda e: e.command("sql", "SELECT 1", lambda row: None),
+        lambda e: e.wait_completion(),
+        lambda e: e.is_processing(),
+        lambda e: e.close(),
+        lambda e: e.kill(),
+        lambda e: e.get_parallel_level(),
+    ],
+    ids=["command", "wait_completion", "is_processing", "close", "kill", "a_getter"],
+)
+def test_every_other_call_hands_the_buffer_over_first(library, executor, later):
+    for doc in _rows(3):
+        executor.create_record(doc)
+    assert library.log == []  # still buffered
+    later(executor)
+    ops = library.order()
+    assert ops[0] == (
+        "create_records",
+        3,
+    )  # first, so the engine queue keeps the order of the calls
+    assert len(ops) >= 2
+
+
+def test_records_after_another_call_form_their_own_batch(library, executor):
+    for doc in _rows(3):
+        executor.create_record(doc)
+    executor.command("sql", "SELECT 1")
+    for doc in _rows(2):
+        executor.create_record(doc)
+    executor.wait_completion()
+    assert library.order()[:3] == [
+        ("create_records", 3),
+        ("command", None),
+        ("create_records", 2),
+    ]
+
+
+def test_a_change_of_type_or_kind_hands_the_buffer_over(library, executor):
+    for doc in _rows(2, "A") + _rows(2, "B"):
+        executor.create_record(doc)
+    vertex = _Doc("B", {"id": 9, "name": "v"})
+    vertex.get_out_edges = lambda: None  # what a vertex has and a document has not
+    executor.create_record(vertex)
+    executor.create_record(_Doc("B", {"id": 10, "name": "x"}))
+    executor.wait_completion()
+    batches = [(b[2]["type"], b[2]["kind"], b[2]["n"]) for b in library.batches()]
+    # a batch of one goes as the per-record op (a frame of one is not cheaper), so only the two pairs are frames
+    assert batches == [("A", "d", 2), ("B", "d", 2)]
+    singles = [(e[2]["type"], e[2]["kind"]) for e in library.per_record()]
+    assert singles == [("B", "v"), ("B", "d")]
+    order = [e[1] for e in library.log if e[1] in ("create_records", "create_record")]
+    assert order == [
+        "create_records",
+        "create_records",
+        "create_record",
+        "create_record",
+    ]
+
+
+def test_a_batch_of_one_keeps_the_per_record_op(library, executor):
+    executor.create_record(_Doc("Item", {"id": 1}), callback=lambda r: None)
+    executor.wait_completion()
+    assert library.batches() == []
+    ((_, op, args, _),) = library.per_record()
+    assert args["type"] == "Item" and args["props"] == {"id": 1} and args["cb"]
+
+
+@pytest.mark.parametrize(
+    "shape",
+    [
+        [{"a": 1}, {"b": 2}, {"a": 3}],  # different keys
+        [
+            {"a": [1, 2]},
+            {"a": [3]},
+            {"a": []},
+        ],  # a nested value the frame has no column for
+        [{"a": 1}, {"a": "x"}, {"a": 2}],  # a column of mixed types
+        [{"a": 2**70}, {"a": 1}, {"a": 2}],  # beyond 64 bits
+    ],
+    ids=["keys", "lists", "mixed", "big"],
+)
+def test_a_shape_the_frame_cannot_carry_keeps_the_per_record_op(
+    library, executor, shape
+):
+    for props in shape:
+        executor.create_record(_Doc("Item", dict(props)))
+    executor.wait_completion()
+    assert library.batches() == []
+    assert [
+        e[2]["props"] for e in library.per_record()
+    ] == shape  # every record, in the order given
+
+
+def test_a_record_changed_after_the_call_is_stored_as_it_was(
+    library, executor, monkeypatch
+):
+    captured = []
+    real_pack = columnar.pack
+
+    def spying_pack(columns, declared):
+        captured.append({k: list(v) for k, v in columns.items()})
+        return real_pack(columns, declared)
+
+    monkeypatch.setattr(columnar, "pack", spying_pack)
+    doc = _Doc("Item", {"id": 0, "name": "zero"})
+    for i in range(4):
+        doc._props["id"] = i  # the caller reuses one document object
+        doc._props["name"] = f"n{i}"
+        executor.create_record(doc)
+    executor.wait_completion()
+    assert captured == [{"id": [0, 1, 2, 3], "name": ["n0", "n1", "n2", "n3"]}]
+
+    # a list that the caller mutates later is also copied at the call (the per-record JSON op copied it by encoding it)
+    library.log.clear()
+    tags = ["a"]
+    doc = _Doc("Item", {"id": 1, "tags": tags})
+    executor.create_record(doc)
+    tags.append("b")
+    executor.create_record(_Doc("Item", {"id": 2, "tags": ["c"]}))
+    executor.wait_completion()
+    assert [e[2]["props"]["tags"] for e in library.per_record()] == [["a"], ["c"]]
+
+
+def test_a_record_the_image_refuses_in_the_middle_reaches_its_own_callback(
+    library, executor
+):
+    baseline = _size()
+    seen = []
+    docs = _rows(6)
+    for i, doc in enumerate(docs):
+        executor.create_record(
+            doc,
+            callback=lambda r, i=i: seen.append(("ok", i)),
+            error_callback=lambda e, i=i: seen.append(("err", i, str(e))),
+        )
+    # the image handed records 0 and 1 to the writers and refused record 2
+    library.refusals.append({"ok": True, "n": 2, "err": REFUSAL})
+    executor.wait_completion()
+
+    assert [b[2]["n"] for b in library.batches()] == [
+        6,
+        3,
+    ]  # the rest (3, 4, 5) went on in a second batch
+    first, second = (b[2] for b in library.batches())
+    assert second["cbs"] == first["cbs"][3:] and second["errs"] == first["errs"][3:]
+    assert [s[:2] for s in seen] == [
+        ("err", 2)
+    ]  # exactly the refused record's own error callback ran, once
+    assert "DuplicatedKeyException" in seen[0][2] and "duplicate" in seen[0][2]
+    # the refused record's ids are given back, the handed records' ids are released by wait_completion
+    assert all(
+        cid not in extras._callbacks for cid in (first["cbs"][2], first["errs"][2])
+    )
+    assert _size() == baseline
+    assert executor._cb_ids == []
+
+
+def test_a_record_the_image_refuses_without_an_error_callback_raises_after_the_rest_is_handed(
+    library, executor
+):
+    for doc in _rows(5):
+        executor.create_record(doc)
+    library.refusals.append({"ok": True, "n": 1, "err": REFUSAL})
+    with pytest.raises(ArcadeDBError, match="DuplicatedKeyException: duplicate"):
+        executor.wait_completion()
+    # the records around the refused one were still handed over, in order
+    assert [b[2]["n"] for b in library.batches()] == [5, 3]
+    # and the executor works on: a later flush point does not raise the same error again
+    executor.wait_completion()
+
+
+def test_a_batch_the_library_refuses_gives_back_its_ids(library, executor):
+    baseline = _size()
+    library.raise_on_batch = ArcadeDBError("Async executor failed: type Nope not found")
+    for doc in _rows(4, "Nope"):
+        executor.create_record(
+            doc, callback=lambda r: None, error_callback=lambda e: None
+        )
+    assert _size() > baseline  # the buffered records hold their ids
+    with pytest.raises(ArcadeDBError, match="Nope"):
+        executor.wait_completion()
+    assert _size() == baseline
+    assert executor._cb_ids == []
+
+
+def test_wait_completion_releases_the_ids_of_the_batch(library, executor):
+    baseline = _size()
+    for doc in _rows(30):
+        executor.create_record(
+            doc, callback=lambda r: None, error_callback=lambda e: None
+        )
+    assert _size() == baseline + 60
+    executor.wait_completion()
+    assert _size() == baseline
+
+
+def test_an_empty_executor_hands_nothing_over(library, executor):
+    executor.wait_completion()
+    executor.close()
+    assert library.batches() == [] and library.per_record() == []
+
+
+def _wait_for(condition, seconds=10.0):
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if condition():
+            return True
+        time.sleep(0.005)
+    return condition()
+
+
+def test_a_collected_record_is_handed_over_after_the_linger_time_with_no_other_call(
+    library, executor, monkeypatch
+):
+    # an existing async test creates one record and waits for its callback, with no other call on the executor: a record must
+    # not sit in Python until the caller happens to make one
+    monkeypatch.setattr(extras, "_ASYNC_LINGER", 0.02, raising=False)
+    for doc in _rows(3):
+        executor.create_record(doc)
+    assert _wait_for(
+        lambda: library.log
+    ), "the collected records were never handed over"
+    assert library.order() == [("create_records", 3)]
+    # a second round: the linger thread waits for the next first record of a batch
+    library.log.clear()
+    for doc in _rows(1):
+        executor.create_record(doc)
+    assert _wait_for(lambda: library.log), "the second batch was never handed over"
+    assert [(e[1], e[2].get("type")) for e in library.log] == [
+        ("create_record", "Item")
+    ]
+
+
+def test_a_failure_of_the_linger_flush_is_raised_by_the_next_call(
+    library, executor, monkeypatch
+):
+    monkeypatch.setattr(extras, "_ASYNC_LINGER", 0.02, raising=False)
+    library.raise_on_batch = ArcadeDBError("Async executor failed: type Nope not found")
+    for doc in _rows(3, "Nope"):
+        executor.create_record(doc)
+    assert _wait_for(lambda: library.batches() and executor._linger_error is not None)
+    library.raise_on_batch = None
+    with pytest.raises(ArcadeDBError, match="Nope"):
+        executor.wait_completion()
+    executor.wait_completion()  # raised once, not again
+
+
+def test_close_stops_the_linger_thread(library, executor, monkeypatch):
+    monkeypatch.setattr(extras, "_ASYNC_LINGER", 3600.0, raising=False)
+    executor.create_record(_Doc("Item", {"id": 1}))
+    thread = executor._linger_thread
+    assert thread is not None and thread.is_alive()
+    executor.close()
+    assert _wait_for(
+        lambda: not thread.is_alive()
+    ), "the linger thread outlived close()"
+    assert library.order()[0] == (
+        "create_record",
+        None,
+    )  # the record was handed over by close(), before the engine closed
+
+
+# the direct phase (ArcadeData/arcadedb-python #388, #393): the first _ASYNC_DIRECT (128) records of an executor go one op each, exactly as in post3.
+# The laptop A/B measured one record 1.57 times slower than post3; the cost is collecting (a linger thread, locks, a copy), which a small load does not repay.
+
+
+@pytest.mark.parametrize("n", [1, 2, 127, 128])
+def test_an_executor_of_up_to_128_records_sends_one_op_each_and_collects_nothing(
+    library, monkeypatch, n
+):
+    monkeypatch.setattr(extras, "_ASYNC_DIRECT", 128)
+    executor = extras.NativeAsyncExecutor(_Db())
+    seen = []
+    for doc in _rows(n):
+        executor.create_record(
+            doc, callback=seen.append, error_callback=lambda e: seen.append(e)
+        )
+    assert executor._buf == [] and executor._linger_thread is None
+    assert library.batches() == []
+    ops = library.per_record()
+    assert len(ops) == n
+    assert [o[2]["props"]["id"] for o in ops] == list(
+        range(n)
+    )  # in the order of the calls
+    assert all(
+        o[2]["cb"] and o[2]["err"] for o in ops
+    )  # every record keeps its own ids
+    executor.wait_completion()
+    assert library.batches() == [] and len(library.per_record()) == n
+
+
+@pytest.mark.parametrize("n", [129, 130, 192, 256])
+def test_from_the_129th_record_on_the_executor_collects_and_nothing_is_lost_or_reordered(
+    library, monkeypatch, n
+):
+    monkeypatch.setattr(extras, "_ASYNC_DIRECT", 128)
+    executor = extras.NativeAsyncExecutor(_Db())
+    for doc in _rows(n):
+        executor.create_record(doc, callback=lambda r: None)
+    executor.wait_completion()
+    assert len(library.per_record()) == 128 + (
+        1 if n - 128 == 1 else 0
+    )  # a collected batch of one is the per-record op
+    batches = library.batches()
+    assert sum(b[2]["n"] for b in batches) == n - len(library.per_record())
+    # the order of every crossing is the order of the calls: the 128 direct ops, then the collected rest
+    first = [e for e in library.log if e[1] == "create_record"][0]
+    assert library.log.index(first) == 0
+    ids = [o[2]["props"]["id"] for o in library.per_record()[:128]]
+    assert ids == list(range(128))
+
+
+def test_zero_turns_the_direct_phase_off(library, monkeypatch):
+    monkeypatch.setattr(extras, "_ASYNC_DIRECT", 0)
+    executor = extras.NativeAsyncExecutor(_Db())
+    for doc in _rows(5):
+        executor.create_record(doc)
+    assert len(executor._buf) == 5 and library.log == []
+    executor.wait_completion()
+    assert len(library.batches()) == 1 and library.per_record() == []
+
+
+def test_the_default_is_128():
+    assert extras._ASYNC_DIRECT == 128
+
+
+# the frame floor (ArcadeData/arcadedb-python #388, #393): a hand-over of fewer than _ASYNC_FRAME_MIN (64) collected records goes one op each, as in post3.
+# A frame has a fixed cost per crossing that a small batch does not repay (an untimed micro: with a direct phase of 32 and no floor, executors of 33 to 64 records read 1.2x to 1.7x slower than post3).
+
+
+@pytest.mark.parametrize("n", [2, 3, 63])
+def test_fewer_than_64_collected_records_go_one_op_each(library, monkeypatch, n):
+    monkeypatch.setattr(extras, "_ASYNC_FRAME_MIN", 64)
+    executor = extras.NativeAsyncExecutor(_Db())
+    for doc in _rows(n):
+        executor.create_record(
+            doc, callback=lambda r: None, error_callback=lambda e: None
+        )
+    assert len(executor._buf) == n  # collected, then handed over at the flush point
+    executor.wait_completion()
+    assert library.batches() == []
+    ops = library.per_record()
+    assert [o[2]["props"]["id"] for o in ops] == list(range(n))
+    assert all(o[2]["cb"] and o[2]["err"] for o in ops)  # every record keeps its ids
+
+
+@pytest.mark.parametrize("n", [64, 65, 100])
+def test_64_or_more_collected_records_cross_as_one_frame(library, monkeypatch, n):
+    monkeypatch.setattr(extras, "_ASYNC_FRAME_MIN", 64)
+    executor = extras.NativeAsyncExecutor(_Db())
+    for doc in _rows(n):
+        executor.create_record(doc, callback=lambda r: None)
+    executor.wait_completion()
+    assert [b[2]["n"] for b in library.batches()] == [n]
+    assert library.per_record() == []
+
+
+@pytest.mark.parametrize(
+    "n, direct, frame",
+    [
+        (1, 1, 0),
+        (127, 127, 0),
+        (128, 128, 0),
+        (129, 129, 0),
+        (191, 191, 0),
+        (192, 128, 64),
+        (256, 128, 128),
+    ],
+)
+def test_the_defaults_of_an_executor_of_n_records(
+    library, monkeypatch, n, direct, frame
+):
+    """The production values: the first 128 records one op each, the rest a frame only when 64 or more of them are collected."""
+    monkeypatch.setattr(extras, "_ASYNC_DIRECT", 128)
+    monkeypatch.setattr(extras, "_ASYNC_FRAME_MIN", 64)
+    executor = extras.NativeAsyncExecutor(_Db())
+    for doc in _rows(n):
+        executor.create_record(doc, callback=lambda r: None)
+    executor.wait_completion()
+    assert len(library.per_record()) == direct
+    assert [b[2]["n"] for b in library.batches()] == ([frame] if frame else [])
+    # the order of the calls is the order of the crossings, frame last
+    ids = [o[2]["props"]["id"] for o in library.per_record()]
+    assert ids == list(range(direct))
+
+
+def test_a_remainder_below_the_floor_after_a_refused_record_goes_one_op_each(
+    library, monkeypatch
+):
+    monkeypatch.setattr(extras, "_ASYNC_FRAME_MIN", 64)
+    executor = extras.NativeAsyncExecutor(_Db())
+    seen = []
+    for doc in _rows(100):
+        executor.create_record(
+            doc,
+            callback=lambda r: None,
+            error_callback=lambda e: seen.append(str(e)),
+        )
+    # the image handed records 0 to 39 to the writers and refused record 40: the 59 that are left are fewer than the floor
+    library.refusals.append({"ok": True, "n": 40, "err": REFUSAL})
+    executor.wait_completion()
+    assert [b[2]["n"] for b in library.batches()] == [100]
+    ops = library.per_record()
+    assert [o[2]["props"]["id"] for o in ops] == list(range(41, 100))
+    assert len(seen) == 1 and "duplicate" in seen[0]
+
+
+def test_a_floor_of_zero_turns_the_floor_off(library, monkeypatch):
+    monkeypatch.setattr(extras, "_ASYNC_FRAME_MIN", 0)
+    executor = extras.NativeAsyncExecutor(_Db())
+    for doc in _rows(2):
+        executor.create_record(doc)
+    executor.wait_completion()
+    assert [b[2]["n"] for b in library.batches()] == [2]
+
+
+def test_the_frame_floor_default_is_64():
+    assert extras._ASYNC_FRAME_MIN == 64
