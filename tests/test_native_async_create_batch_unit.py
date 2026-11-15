@@ -93,6 +93,8 @@ def library(monkeypatch):
     monkeypatch.setattr(extras, "_ASYNC_LINGER", 3600.0, raising=False)
     # the tests below pin the collecting route from the first record; the direct phase of the first records has its own tests at the end
     monkeypatch.setattr(extras, "_ASYNC_DIRECT", 0)
+    # and a frame from two records on: the floor below which a hand-over goes one op each has its own tests at the end
+    monkeypatch.setattr(extras, "_ASYNC_FRAME_MIN", 0)
     monkeypatch.setattr(extras, "_call", fake)
     monkeypatch.setattr(extras, "_ensure_upcall", lambda: None)
     monkeypatch.setattr(bulk, "_usable", lambda: True)
@@ -478,3 +480,89 @@ def test_zero_turns_the_direct_phase_off(library, monkeypatch):
 
 def test_the_default_is_32():
     assert extras._ASYNC_DIRECT == 32
+
+
+# the frame floor (ArcadeData/arcadedb-python #388, #393): a hand-over of fewer than _ASYNC_FRAME_MIN (64) collected records goes one op each, as in post3.
+# A frame has a fixed cost per crossing that a small batch does not repay (an untimed micro: executors of 33 to 64 records read 1.2x to 1.7x slower than post3 without the floor).
+
+
+@pytest.mark.parametrize("n", [2, 3, 63])
+def test_fewer_than_64_collected_records_go_one_op_each(library, monkeypatch, n):
+    monkeypatch.setattr(extras, "_ASYNC_FRAME_MIN", 64)
+    executor = extras.NativeAsyncExecutor(_Db())
+    for doc in _rows(n):
+        executor.create_record(
+            doc, callback=lambda r: None, error_callback=lambda e: None
+        )
+    assert len(executor._buf) == n  # collected, then handed over at the flush point
+    executor.wait_completion()
+    assert library.batches() == []
+    ops = library.per_record()
+    assert [o[2]["props"]["id"] for o in ops] == list(range(n))
+    assert all(o[2]["cb"] and o[2]["err"] for o in ops)  # every record keeps its ids
+
+
+@pytest.mark.parametrize("n", [64, 65, 100])
+def test_64_or_more_collected_records_cross_as_one_frame(library, monkeypatch, n):
+    monkeypatch.setattr(extras, "_ASYNC_FRAME_MIN", 64)
+    executor = extras.NativeAsyncExecutor(_Db())
+    for doc in _rows(n):
+        executor.create_record(doc, callback=lambda r: None)
+    executor.wait_completion()
+    assert [b[2]["n"] for b in library.batches()] == [n]
+    assert library.per_record() == []
+
+
+@pytest.mark.parametrize(
+    "n, direct, frame",
+    [(1, 1, 0), (32, 32, 0), (33, 33, 0), (95, 95, 0), (96, 32, 64), (100, 32, 68)],
+)
+def test_the_defaults_of_an_executor_of_n_records(
+    library, monkeypatch, n, direct, frame
+):
+    """The production values: the first 32 records one op each, the rest a frame only when 64 or more of them are collected."""
+    monkeypatch.setattr(extras, "_ASYNC_DIRECT", 32)
+    monkeypatch.setattr(extras, "_ASYNC_FRAME_MIN", 64)
+    executor = extras.NativeAsyncExecutor(_Db())
+    for doc in _rows(n):
+        executor.create_record(doc, callback=lambda r: None)
+    executor.wait_completion()
+    assert len(library.per_record()) == direct
+    assert [b[2]["n"] for b in library.batches()] == ([frame] if frame else [])
+    # the order of the calls is the order of the crossings, frame last
+    ids = [o[2]["props"]["id"] for o in library.per_record()]
+    assert ids == list(range(direct))
+
+
+def test_a_remainder_below_the_floor_after_a_refused_record_goes_one_op_each(
+    library, monkeypatch
+):
+    monkeypatch.setattr(extras, "_ASYNC_FRAME_MIN", 64)
+    executor = extras.NativeAsyncExecutor(_Db())
+    seen = []
+    for doc in _rows(100):
+        executor.create_record(
+            doc,
+            callback=lambda r: None,
+            error_callback=lambda e: seen.append(str(e)),
+        )
+    # the image handed records 0 to 39 to the writers and refused record 40: the 59 that are left are fewer than the floor
+    library.refusals.append({"ok": True, "n": 40, "err": REFUSAL})
+    executor.wait_completion()
+    assert [b[2]["n"] for b in library.batches()] == [100]
+    ops = library.per_record()
+    assert [o[2]["props"]["id"] for o in ops] == list(range(41, 100))
+    assert len(seen) == 1 and "duplicate" in seen[0]
+
+
+def test_a_floor_of_zero_turns_the_floor_off(library, monkeypatch):
+    monkeypatch.setattr(extras, "_ASYNC_FRAME_MIN", 0)
+    executor = extras.NativeAsyncExecutor(_Db())
+    for doc in _rows(2):
+        executor.create_record(doc)
+    executor.wait_completion()
+    assert [b[2]["n"] for b in library.batches()] == [2]
+
+
+def test_the_frame_floor_default_is_64():
+    assert extras._ASYNC_FRAME_MIN == 64

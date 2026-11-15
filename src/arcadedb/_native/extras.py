@@ -457,10 +457,14 @@ _ASYNC_BATCH = 1000
 _ASYNC_LINGER = 0.05
 # the first records of an executor go one op each, exactly as in 26.11.1.post3, before it starts to collect: no copy, no buffer, no linger thread, no frame. Collecting has a fixed
 # cost per executor (the linger thread and the locks, then the columnar frame) that a small load does not repay: an untimed micro of one executor call (a new executor, N records,
-# wait_completion) on the wheel of this change against post3, native, cores 14 and 15, measured 1.6x for 1 record, 2.7x for 4, 1.7x for 8 and 1.1x for 16 (slower), and 0.74 for 32,
-# 0.54 for 64 and 0.42 for 100 (faster): the crossover is near 20 records. 32 is above it, so an executor of up to 32 records cannot be slower than post3; an executor of 100
+# wait_completion) on the wheel of this change against post3, native, cores 14 and 15, measured 1.5x for 1 record, 2.6x for 4, 1.8x for 8 and 1.2x for 16 (slower), and 0.72 for 32,
+# 0.50 for 64 and 0.45 for 100 (faster): the crossover is near 20 records. 32 is above it, so an executor of up to 32 records cannot be slower than post3; an executor of 100
 # records or more still collects from its 33rd record on. Sizes 1 and 100 are the pre-registered figures of the laptop A/B (n_async_nar_1, n_async_nar_100); 0 turns this off.
 _ASYNC_DIRECT = 32
+# a hand-over of fewer collected records than this goes one op each, as in post3: a columnar frame has a fixed cost per crossing (the untimed micro put it near 270 us on this build,
+# against about 12 us per record for the per-record op and about 3 us per record inside a frame, so a frame repays itself from about 30 records), and without this floor an executor of
+# 33 to 64 records, which collects from its 33rd record on, read 1.2x to 1.7x slower than post3 in the same micro. 64 is the threshold the owner decided; 0 turns the floor off.
+_ASYNC_FRAME_MIN = 64
 # the values of a property that cannot change after create_record returns; any other value is copied at the call
 _ATOMIC = frozenset((int, float, str, bool, bytes, type(None)))
 
@@ -622,8 +626,8 @@ class NativeAsyncExecutor:
 
         The first ``_ASYNC_DIRECT`` (32) records of an executor go one op each, exactly as in 26.11.1.post3 (an executor that creates a few
         records pays nothing for collecting). From the next record on the records of one type and kind are collected (a copy of their properties, so a document that the caller changes or reuses
-        afterwards is stored as it was at this call) and cross the library boundary ``_ASYNC_BATCH`` at a time, as one columnar frame
-        with the callback ids of each record, not one JSON op per record. Every other call on the executor (``wait_completion``,
+        afterwards is stored as it was at this call) and cross the library boundary ``_ASYNC_BATCH`` at a time, as one columnar frame with the callback ids of each record (not one JSON op per record) when at least ``_ASYNC_FRAME_MIN`` (64)
+        of them are handed over together, else one op each as in post3. Every other call on the executor (``wait_completion``,
         ``is_processing``, ``query``, ``command``, ``kill``, ``close``, ...) hands the collected records over first, so the engine
         queue keeps the order of the calls and a record is never held back from a ``wait_completion`` that follows its call. A thread of
         the executor hands a batch over when its first record has waited ``_ASYNC_LINGER`` (50 ms), so a caller that waits for a
@@ -760,14 +764,14 @@ class NativeAsyncExecutor:
         caller that sees an exception (an interrupt) knows which records the engine holds.
         """
         part = batch[state[0] :]
-        if len(part) > 1 and bulk._usable():
+        if len(part) > 1 and len(part) >= _ASYNC_FRAME_MIN and bulk._usable():
             reply = self._send_frame(type_name, kind, part)
             if reply is not None:
                 handed = int(reply["n"])
                 self._remember(part[:handed])
                 state[0] += handed
                 return None if reply.get("err") is None else _error_from(reply)
-        # one op per record: a batch of one (a frame of one is not cheaper) or a shape the frame cannot carry
+        # one op per record: fewer than _ASYNC_FRAME_MIN records (a frame of one is not cheaper, a small one does not repay its fixed cost) or a shape the frame cannot carry
         for entry in part:
             try:
                 self._op_raw(
