@@ -394,7 +394,7 @@ def test_zero_turns_the_floor_off_and_the_switch_still_turns_the_route_off(
 
 def test_the_floor_is_read_from_the_environment_and_is_64_by_default():
     import os
-    import subprocess
+    import subprocess  # nosec B404 - runs this interpreter on a fixed one-line program
     import sys
 
     code = "from arcadedb._native import lib; print(lib.GB_COLP_MIN_ROWS)"
@@ -403,7 +403,7 @@ def test_the_floor_is_read_from_the_environment_and_is_64_by_default():
     }
 
     def run(e):
-        return subprocess.run(
+        return subprocess.run(  # nosec B603 - argv list, no shell: this interpreter, a fixed program
             [sys.executable, "-c", code],
             env=e,
             capture_output=True,
