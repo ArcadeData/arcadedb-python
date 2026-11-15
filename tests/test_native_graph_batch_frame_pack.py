@@ -401,8 +401,15 @@ def test_the_floor_is_read_from_the_environment_and_is_64_by_default():
     env = {
         k: v for k, v in os.environ.items() if k != "ARCADEDB_NATIVE_GB_COLP_MIN_ROWS"
     }
-    run = lambda e: subprocess.run(
-        [sys.executable, "-c", code], env=e, capture_output=True, text=True, timeout=120
-    ).stdout.strip()
+
+    def run(e):
+        return subprocess.run(
+            [sys.executable, "-c", code],
+            env=e,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        ).stdout.strip()
+
     assert run(env) == "64"
     assert run({**env, "ARCADEDB_NATIVE_GB_COLP_MIN_ROWS": "5"}) == "5"
