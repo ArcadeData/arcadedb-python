@@ -19,7 +19,6 @@
 package com.arcadedb.python;
 
 import com.arcadedb.database.Document;
-import com.arcadedb.database.RID;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 
@@ -89,12 +88,6 @@ public final class ReaderCalls {
    */
   public static String ridOf(final Result row) {
     return row.getIdentity().map(Object::toString).orElse(null);
-  }
-
-  /** The record id of a record as text, or null when it has none yet: the {@code getIdentity()} and the {@code str()} of {@code Document.get_rid()}. */
-  public static String documentRid(final Document doc) {
-    final RID rid = doc.getIdentity();
-    return rid == null ? null : rid.toString();
   }
 
   /** The vertex of a row, or null when the row is not a vertex: {@code getVertex()}, {@code isPresent()} and {@code get()} in one crossing. */
