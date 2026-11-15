@@ -20,7 +20,7 @@ from arcadedb._native import extras, lib
 
 @pytest.fixture(autouse=True)
 def _collect_from_the_first_record(monkeypatch):
-    """The tests below pin the collecting route (a frame for a batch of 12); the direct phase of the first 96 records has its own tests at the end."""
+    """The tests below pin the collecting route (a frame for a batch of 12); the direct phase of the first 128 records has its own tests at the end."""
     monkeypatch.setattr(extras, "_ASYNC_DIRECT", 0)
     monkeypatch.setattr(extras, "_ASYNC_FRAME_MIN", 0)
 
@@ -270,16 +270,16 @@ def test_the_executor_keeps_working_after_a_refused_batch(temp_db):
     assert temp_db.count_type("Item") == 5
 
 
-@pytest.mark.parametrize("n", [1, 95, 96, 97, 159, 160, 200])
+@pytest.mark.parametrize("n", [1, 127, 128, 129, 191, 192, 256])
 def test_the_direct_phase_stores_what_the_collecting_route_stores(
     temp_db, monkeypatch, n
 ):
-    """#393: the first 96 records the post3 op per record, the records after them one frame when 64 or more are collected and the post3 op each otherwise; the stored data are the same either way."""
+    """#393: the first 128 records the post3 op per record, the records after them one frame when 64 or more are collected and the post3 op each otherwise; the stored data are the same either way."""
     temp_db.command("sql", "CREATE DOCUMENT TYPE Old")
     temp_db.command("sql", "CREATE DOCUMENT TYPE New")
     rows = [SHAPES["ints"](i) for i in range(n)]
     crossings = _Crossings(monkeypatch)
-    monkeypatch.setattr(extras, "_ASYNC_DIRECT", 96)
+    monkeypatch.setattr(extras, "_ASYNC_DIRECT", 128)
     monkeypatch.setattr(extras, "_ASYNC_FRAME_MIN", 64)
     _store(temp_db, "Old", rows, one_by_one=False)
     direct_default = crossings.calls[:]
@@ -292,7 +292,7 @@ def test_the_direct_phase_stores_what_the_collecting_route_stores(
     ops = [c for c in direct_default if c[1] == "create_record"]
     frames = [c for c in direct_default if c[1] == "create_records"]
     collected = max(
-        n - 96, 0
+        n - 128, 0
     )  # the records after the direct phase: a frame when 64 or more of them, else one op each
-    assert len(ops) == min(n, 96) + (collected if collected < 64 else 0)
+    assert len(ops) == min(n, 128) + (collected if collected < 64 else 0)
     assert len(frames) == (1 if collected >= 64 else 0)
