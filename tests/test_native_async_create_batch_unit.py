@@ -91,6 +91,8 @@ def library(monkeypatch):
     fake = _Library()
     # the linger time (how long a collected record waits for the rest of its batch) is out of the way, so "still buffered" is a fact
     monkeypatch.setattr(extras, "_ASYNC_LINGER", 3600.0, raising=False)
+    # the tests below pin the collecting route from the first record; the direct phase of the first records has its own tests at the end
+    monkeypatch.setattr(extras, "_ASYNC_DIRECT", 0)
     monkeypatch.setattr(extras, "_call", fake)
     monkeypatch.setattr(extras, "_ensure_upcall", lambda: None)
     monkeypatch.setattr(bulk, "_usable", lambda: True)
@@ -412,3 +414,67 @@ def test_close_stops_the_linger_thread(library, executor, monkeypatch):
         "create_record",
         None,
     )  # the record was handed over by close(), before the engine closed
+
+
+# the direct phase (ArcadeData/arcadedb-python #388, #393): the first _ASYNC_DIRECT (32) records of an executor go one op each, exactly as in post3.
+# The laptop A/B measured one record 1.57 times slower than post3; the cost is collecting (a linger thread, locks, a copy), which a small load does not repay.
+
+
+@pytest.mark.parametrize("n", [1, 2, 31, 32])
+def test_an_executor_of_up_to_32_records_sends_one_op_each_and_collects_nothing(
+    library, monkeypatch, n
+):
+    monkeypatch.setattr(extras, "_ASYNC_DIRECT", 32)
+    executor = extras.NativeAsyncExecutor(_Db())
+    seen = []
+    for doc in _rows(n):
+        executor.create_record(
+            doc, callback=seen.append, error_callback=lambda e: seen.append(e)
+        )
+    assert executor._buf == [] and executor._linger_thread is None
+    assert library.batches() == []
+    ops = library.per_record()
+    assert len(ops) == n
+    assert [o[2]["props"]["id"] for o in ops] == list(
+        range(n)
+    )  # in the order of the calls
+    assert all(
+        o[2]["cb"] and o[2]["err"] for o in ops
+    )  # every record keeps its own ids
+    executor.wait_completion()
+    assert library.batches() == [] and len(library.per_record()) == n
+
+
+@pytest.mark.parametrize("n", [33, 34, 64, 100])
+def test_from_the_33rd_record_on_the_executor_collects_and_nothing_is_lost_or_reordered(
+    library, monkeypatch, n
+):
+    monkeypatch.setattr(extras, "_ASYNC_DIRECT", 32)
+    executor = extras.NativeAsyncExecutor(_Db())
+    for doc in _rows(n):
+        executor.create_record(doc, callback=lambda r: None)
+    executor.wait_completion()
+    assert len(library.per_record()) == 32 + (
+        1 if n - 32 == 1 else 0
+    )  # a collected batch of one is the per-record op
+    batches = library.batches()
+    assert sum(b[2]["n"] for b in batches) == n - len(library.per_record())
+    # the order of every crossing is the order of the calls: the 32 direct ops, then the collected rest
+    first = [e for e in library.log if e[1] == "create_record"][0]
+    assert library.log.index(first) == 0
+    ids = [o[2]["props"]["id"] for o in library.per_record()[:32]]
+    assert ids == list(range(32))
+
+
+def test_zero_turns_the_direct_phase_off(library, monkeypatch):
+    monkeypatch.setattr(extras, "_ASYNC_DIRECT", 0)
+    executor = extras.NativeAsyncExecutor(_Db())
+    for doc in _rows(5):
+        executor.create_record(doc)
+    assert len(executor._buf) == 5 and library.log == []
+    executor.wait_completion()
+    assert len(library.batches()) == 1 and library.per_record() == []
+
+
+def test_the_default_is_32():
+    assert extras._ASYNC_DIRECT == 32
