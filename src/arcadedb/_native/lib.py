@@ -260,7 +260,7 @@ def _load():
             "arcadedb_n_async": [P, L, S, S],
             "arcadedb_n_async_bin": [P, L, S, S, P, I],
             "arcadedb_n_vindex": [P, L, S, S],
-            "arcadedb_n_vindex_bin": [P, L, S, S, N, P, L, P, L, P, L],
+            "arcadedb_n_vindex_bin": [P, L, S, S, I, P, L, P, L, P, L],  # thread, db handle, type, property, k (int), query address, dims, allowed address, allowed pairs, out address, capacity
             "arcadedb_n_import": [P, L, S],
             "arcadedb_n_export": [P, L, S, S, I, S],
             "arcadedb_n_cb": [P, S, S],
