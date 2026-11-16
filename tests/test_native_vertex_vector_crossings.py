@@ -79,7 +79,10 @@ def spy(monkeypatch):
 
 
 @pytest.fixture
-def db(temp_db):
+def db(temp_db, monkeypatch):
+    # this file pins the vector-matrix route of arcadedb_n_gb_bin ("vecs"), which the chunks that the columnar entry cannot carry still take; a
+    # plain vector load takes arcadedb_n_gb_colp now (test_native_graph_batch_frame*.py), so the columnar route is off here
+    monkeypatch.setattr(lib, "GB_COLP", False)
     for name in ("Declared", "Free"):
         temp_db.command("sql", f"CREATE VERTEX TYPE {name}")
         temp_db.command("sql", f"CREATE PROPERTY {name}.id LONG")

@@ -9,7 +9,7 @@ import inspect
 import pytest
 
 import arcadedb
-from arcadedb._native import extras
+from arcadedb._native import bulk, extras
 from arcadedb.exceptions import ArcadeDBError
 
 _COUNT_SQL = {  # fixed statements, one for each type the tests create
@@ -85,6 +85,16 @@ class _Spy:
 
         monkeypatch.setattr(extras, "_enc", enc)
         monkeypatch.setattr(extras.NativeGraphBatch, "_op", op)
+        real_columns = bulk.create_vertices_columns
+
+        def columns(gb, type_name, rows, declared, prefix):
+            # plain rows now cross as columns (arcadedb_n_gb_colp), not through _op: the rows per crossing are read here, same numbers
+            rids = real_columns(gb, type_name, rows, declared, prefix)
+            if rids is not None:
+                self.vertex_calls.append(len(rows))
+            return rids
+
+        monkeypatch.setattr(bulk, "create_vertices_columns", columns)
 
     def commit_every_given(self):
         return [d["commit_every"] for d in self.created if "commit_every" in d]
