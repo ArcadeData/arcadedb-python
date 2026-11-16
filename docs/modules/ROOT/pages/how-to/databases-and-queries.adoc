@@ -381,6 +381,55 @@ print(db.lookup_by_rid(rid).get("name"))                # the same record, from 
 
 Compare record ids as `str(rid)`. A row also has an identity of its own: `result.get_rid()` returns it for a record row, an `expand()` row and a projection of `@rid` that does not alias it, and `None` for any other projection.
 
+==== JVM: reading a record id is one call
+
+On the `arcadedb-jvm` package, from 26.11.1.post4, `Result.get_rid()`, `Result.get_vertex()`, `Result.get_edge()` and `Result.get_element()` each make one call into the JVM, through one method of a small Java helper in the bridge jar. Before, each of these made three or four JPype calls. When the bridge class is not available, the methods keep the plain path. `Document.get_rid()` of a record object is not changed: it keeps the plain path of 26.11.1.post3. The `arcadedb` (native) package does not change.
+
+The table is one study of the `arcadedb-jvm` package on a laptop and on a second Linux machine, the mini: the time for each operation of the post4 wheel against the 26.11.1.post3 wheel. The ratio is the median of the pair ratios (below 1 means less time) with its 95% interval. Setup: Python 3.12, one fresh process for each run, two cores for the process, the two builds alternated in both orders (ABBA), the first round dropped, and an A/A control (the post3 wheel twice) whose median ratio was between 0.988 and 1.011 on the laptop and between 0.994 and 1.010 on the mini. The post4 wheels were built by CI from commit e83947e, the commit of the tag, and the post3 wheels were the ones that CI built from the post3 commit. The files on PyPI were checked for the same engine as 26.11.1 (see xref:which-package.adoc#engine-of-post4[The engine of 26.11.1.post4]) and were not timed again.
+
+[cols="5,3,3,2"]
+|===
+| What was timed | Ratio on the laptop, post4 over post3 (95% interval) | Ratio on the mini (95% interval) | Clean pairs (laptop, mini)
+
+| `Result.get_rid()` over 1 row of a document type
+| 0.735 [0.699, 0.754]
+| 0.680 [0.666, 0.688]
+| 15, 13
+
+| `Result.get_rid()` over 100,000 rows of a document type
+| 0.618 [0.605, 0.630]
+| 0.596 [0.592, 0.605]
+| 15, 13
+
+| `Result.get_rid()` over 100,000 rows of a vertex type
+| 0.604 [0.592, 0.622]
+| 0.599 [0.589, 0.605]
+| 15, 13
+
+| `Result.get_rid()` over 100,000 rows of an edge type
+| 0.616 [0.612, 0.626]
+| 0.595 [0.591, 0.600]
+| 15, 13
+
+| `Result.get_vertex()` over 100,000 rows
+| 0.743 [0.728, 0.767]
+| 0.738 [0.724, 0.756]
+| 15, 13
+
+| `Result.get_edge()` over 100,000 rows
+| 0.742 [0.727, 0.752]
+| 0.739 [0.722, 0.763]
+| 15, 13
+
+| `Result.get_element()` over 100,000 rows
+| 0.762 [0.748, 0.764]
+| 0.755 [0.740, 0.777]
+| 15, 13
+
+|===
+
+Memory did not improve: across the 172 figures of the whole post4 study the median of the peak resident size, post4 over post3, was 1.004, and this page makes no memory claim for these calls.
+
 === Pagination
 
 Page a large type by `@rid` instead of `SKIP`: each page is `WHERE @rid > ? LIMIT ?`, and the cursor is the `@rid` of the last row of the previous page. Start with `"#-1:-1"`. The script above runs the loop with a page size of one so that two short pages print.

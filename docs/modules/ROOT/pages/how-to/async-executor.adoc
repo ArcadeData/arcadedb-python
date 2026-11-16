@@ -1,5 +1,5 @@
 = The async executor
-:description: What db.async_executor() returns, how to submit SQL and transaction blocks without waiting, how to wait for them, how errors and callbacks reach you, what close() does to every caller, and what is thread-safe, on both builds.
+:description: What db.async_executor() returns, how to submit SQL and transaction blocks without waiting, how to wait for them, how errors and callbacks reach you, what close() does to every caller, and what is thread-safe, on both builds, and how the native build hands records over in batches.
 
 // Sources: src/arcadedb/async_executor.py (the JVM build), src/arcadedb/_native/extras.py (NativeAsyncExecutor, the native build), core.py (async_executor), and ArcadeDB 26.11.1 DatabaseAsyncExecutorImpl.java. Pinned by tests/test_async_executor.py, tests/test_async_transaction.py and tests/test_async_executor_behavior.py.
 
@@ -124,6 +124,53 @@ no error raised 51
 ----
 
 Give every call whose result you need an `error_callback`. `executor.on_error(callback)` sets one handler for the whole executor, and `executor.on_ok(callback)` one that runs after each batch commit; see their docstrings for what each receives. A per-record callback of `create_record` runs when the record is applied to the batch, before the commit, and `on_ok` runs after it (`tests/test_async_executor.py` pins this order).
+
+[[native-create-record]]
+== Native: `create_record` hands records over in batches
+
+On the `arcadedb` (native) package, from 26.11.1.post4, the async executor collects the records that `create_record` receives for one type and kind, and hands up to 1,000 of them to the library at once as one columnar frame. Each record keeps its own callback and its own error callback. Before, every record was one call with one JSON text. A thread of the executor hands a batch over when its first record has waited 0.05 seconds, so a record is not held back when no other call reaches the executor. The first 128 records of an executor go one by one, as before, and so does a hand-over of fewer than 64 collected records, because a frame has a fixed cost that a handful of records does not repay. The `arcadedb-jvm` package does not change.
+
+An executor that receives only about 100 records pays for the per-record counter that lets the first records run one callback each: an async `create_record` of 100 records reads 1.060 [1.055, 1.067] on the laptop and 1.050 [1.045, 1.052] on the mini, that is about 6 percent more time for executors of 100 records. Executors of 1,000 records or more are faster. A linger thread shared by the process, tracked in ArcadeData/arcadedb-python#406, would remove this cost.
+
+The table is one study of the `arcadedb` (native) package on a laptop and on a second Linux machine, the mini: the time for each operation of the post4 wheel against the 26.11.1.post3 wheel. The ratio is the median of the pair ratios (below 1 means less time) with its 95% interval. Setup: Python 3.12, one fresh process for each run, two cores for the process, the two builds alternated in both orders (ABBA), the first round dropped, and an A/A control (the post3 wheel twice) whose median ratio was between 0.994 and 1.002 on the laptop and between 0.989 and 1.002 on the mini. The post4 wheels were built by CI from commit e83947e, the commit of the tag, and the post3 wheels were the ones that CI built from the post3 commit. The files on PyPI were checked for the same engine as 26.11.1 (see xref:which-package.adoc#engine-of-post4[The engine of 26.11.1.post4]) and were not timed again.
+
+[cols="5,3,3,2"]
+|===
+| What was timed | Ratio on the laptop, post4 over post3 (95% interval) | Ratio on the mini (95% interval) | Clean pairs (laptop, mini)
+
+| async `create_record` of 100 records of one type, then `wait_completion()`
+| 1.060 [1.055, 1.067]
+| 1.050 [1.045, 1.052]
+| 20, 16
+
+| async `create_record` of 1,000 records of one type, then `wait_completion()`
+| 0.342 [0.339, 0.345]
+| 0.324 [0.322, 0.326]
+| 20, 16
+
+| async `create_record` of 100,000 records of one type, then `wait_completion()`
+| 0.166 [0.164, 0.167]
+| 0.153 [0.150, 0.155]
+| 20, 16
+
+| async `create_record` with a callback and an error callback, 1,000 records of one type, then `wait_completion()`
+| 0.673 [0.668, 0.680]
+| 0.561 [0.556, 0.568]
+| 20, 16
+
+| async `create_record` with a callback and an error callback, 100,000 records of one type, then `wait_completion()`
+| 0.703 [0.700, 0.706]
+| 0.591 [0.583, 0.599]
+| 20, 16
+
+| async `create_record` of 100,000 wide records of one type, then `wait_completion()`
+| 0.210 [0.209, 0.212]
+| 0.208 [0.206, 0.211]
+| 20, 16
+
+|===
+
+The records that the batching holds before it hands them over use memory: up to 1,000 record copies at a time. Across the 172 figures of the whole post4 study the median of the peak resident size, post4 over post3, was 1.004, and the async figures that batch records used more (for example, a control figure of 1,000 records read 234 to 326 MiB on the mini).
 
 == Blocks in a transaction
 

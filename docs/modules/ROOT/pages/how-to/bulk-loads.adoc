@@ -1,5 +1,5 @@
 = Bulk loads and commit size
-:description: The default commit size of insert_many, graph_batch and create_vertices on the arcadedb (native) and arcadedb-jvm packages, what it means for a failed load, what to do after an interrupted graph batch, how to change it, how insert_many treats Python's cyclic garbage collector on arcadedb-jvm, which property shapes a graph batch loads in bulk on the JVM build, how to pass time-series columns to append_samples (the address path is native only), a known limitation: a graph batch does not reuse the space of deleted edges, and how columnar loads, parallel loads and vertex loads through insert_dataframe and insert_arrow behave, including what a failed parallel load leaves behind.
+:description: The default commit size of insert_many, graph_batch and create_vertices on the arcadedb (native) and arcadedb-jvm packages, what it means for a failed load, what to do after an interrupted graph batch, how to change it, how insert_many treats Python's cyclic garbage collector on arcadedb-jvm, which property shapes a graph batch loads in bulk on the JVM build, how to pass time-series columns to append_samples (the address path is native only), a known limitation: a graph batch does not reuse the space of deleted edges, and how columnar loads, parallel loads and vertex loads through insert_dataframe and insert_arrow behave, including what a failed parallel load leaves behind, and how `GraphBatch.create_vertices` sends columns on the native build.
 
 `insert_many`, `graph_batch` and `GraphBatch.create_vertices` load data in transactions. The commit size is the number of rows in one transaction. It decides how much work the engine holds in memory before it commits, and how many rows stay in the database when a load fails. Data that comes as a file, a DataFrame or an Arrow table has its own pages: xref:how-to/import-export.adoc[Importing and exporting data] and xref:how-to/dataframes-and-columns.adoc[DataFrames, Arrow and columns].
 
@@ -112,7 +112,7 @@ What a failure leaves behind:
 * On the native package, an interrupt (`KeyboardInterrupt`) during a parallel call waits for the writers before it propagates, so no writer still runs when the exception reaches you.
 * In a transaction you opened, `insert_arrow` and `insert_dataframe` with `parallel=True` do not join it. The writers commit on their own, and a rollback of your transaction does not remove those rows.
 
-For one record at a time, `db.async_executor().create_record(document, callback=..., error_callback=...)` queues the record. The writers call `error_callback` with the exception when they reject it (a duplicate key under a `UNIQUE` index, or a batch abandoned at a failed commit). Without an `error_callback`, the failure reaches only the executor-wide `on_error` handler, if you set one. Call `wait_completion()` before you read the records back.
+For one record at a time, `db.async_executor().create_record(document, callback=..., error_callback=...)` queues the record (on the native package it hands the records over in batches, see xref:how-to/async-executor.adoc#native-create-record[Native: create_record hands records over in batches]). The writers call `error_callback` with the exception when they reject it (a duplicate key under a `UNIQUE` index, or a batch abandoned at a failed commit). Without an `error_callback`, the failure reaches only the executor-wide `on_error` handler, if you set one. Call `wait_completion()` before you read the records back.
 
 [[vertex-loads]]
 == Vertex types in `insert_dataframe` and `insert_arrow`
@@ -182,6 +182,49 @@ The table is one laptop study of the `arcadedb-jvm` package: per-row time of thi
 | 1.010 (0.979 to 1.027)
 
 |===
+
+== Native: `GraphBatch.create_vertices` sends columns
+
+On the `arcadedb` (native) package, from 26.11.1.post4, a chunk of rows that `GraphBatch.create_vertices` creates crosses into the library as typed columns by address, in the layout of `insert_columns`, and the library writes the new record ids into one int64 buffer. Before, every chunk was one JSON text and the ids came back as a JSON list of text.
+
+The route is taken when the rows of the chunk have the same keys in the same order and plain values. A chunk that the columns cannot carry (other keys or key order, nested lists or maps, a mixed-type column, huge integers) keeps the JSON route of 26.11.1.post3, so nothing is lost. A chunk of fewer than 64 rows keeps the JSON route as well, because the columns have a fixed cost that a handful of rows does not repay. The environment variable `ARCADEDB_NATIVE_GB_COLP_MIN_ROWS` sets that limit, and 0 turns it off. `ARCADEDB_NATIVE_GB_COLP=0` switches the whole route off. The engine method that creates the vertices, the transaction, the retries and the commit are the same as before. Float32 array vectors are stored after the other properties of the vertex, as they were.
+
+Reads after a load by this route are not all faster. In the L2 graph study on the mini, with the same wheel and the route switched off for comparison, a point read of one vertex took 1.230 [1.196, 1.248] of the post3 time with the route on (24.056 to 29.494 microseconds per read) and 0.983 [0.976, 0.991] with it off. A read of the neighbours of one vertex took 0.774 [0.769, 0.791] with the route on and 0.995 [0.985, 0.998] with it off, and the load itself 0.830 [0.829, 0.834] with the route on. The cause of the read difference is not known yet. Measure the read path of your own workload after a column load, and set `ARCADEDB_NATIVE_GB_COLP=0` to keep the JSON route if point reads matter more than the load.
+
+The table is one study of the `arcadedb` (native) package on a laptop and on a second Linux machine, the mini: the time for each operation of the post4 wheel against the 26.11.1.post3 wheel. The ratio is the median of the pair ratios (below 1 means less time) with its 95% interval. A ratio is quoted only when its interval is narrow enough to read. Setup: Python 3.12, one fresh process for each run, two cores for the process, the two builds alternated in both orders (ABBA), the first round dropped, and an A/A control (the post3 wheel twice) whose median ratio was between 0.997 and 1.006 on the laptop and between 0.981 and 1.000 on the mini. The post4 wheels were built by CI from commit e83947e, the commit of the tag, and the post3 wheels were the ones that CI built from the post3 commit. The files on PyPI were checked for the same engine as 26.11.1 (see xref:which-package.adoc#engine-of-post4[The engine of 26.11.1.post4]) and were not timed again.
+
+[cols="5,3,3,2"]
+|===
+| What was timed | Ratio on the laptop, post4 over post3 (95% interval) | Ratio on the mini (95% interval) | Clean pairs (laptop, mini)
+
+| `GraphBatch.create_vertices` of rows with the vector as a Python list, 100,000 rows per call
+| 0.134 [0.133, 0.135]
+| 0.118 [0.118, 0.118]
+| 16, 17
+
+| `GraphBatch.create_vertices` of rows with an int and a str property, 100,000 rows per call
+| 0.778 [0.760, 0.786]
+| 0.735 [0.734, 0.736]
+| 16, 17
+
+| `GraphBatch.create_vertices` of rows with an int and a str property, 100 rows per call
+| 0.944 [0.911, 0.960]
+| 0.894 [0.890, 0.901]
+| 16, 17
+
+| `GraphBatch.create_vertices` of rows with an int and a str property, 1 row per call
+| no claim (interval too wide)
+| 0.885 [0.872, 0.896]
+| 16, 17
+
+| `GraphBatch.create_vertices` of rows with a float32 vector as a numpy array, 100,000 rows per call
+| 0.990 [0.983, 0.995]
+| 0.953 [0.952, 0.964]
+| 16, 17
+
+|===
+
+Memory did not improve. Across the 172 figures of the whole post4 study, the median of the peak resident size, post4 over post3, was 1.004, so there is no systematic change, and this page makes no memory claim for this route.
 
 == Time-series samples with `append_samples`
 

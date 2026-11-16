@@ -148,6 +148,18 @@ The API is the same. The runtime is not. These are the differences you can plan 
 
 Both packages run the same ArcadeDB engine, with the same SQL and openCypher and the same database format.
 
+[[engine-of-post4]]
+=== The engine of 26.11.1.post4
+
+The engine of 26.11.1.post4 is the engine of 26.11.1 on both packages. Only the bindings changed. The check compared the Linux x86_64 wheels of 26.11.1.post4, as published on PyPI, with the published 26.11.1 wheels (read on 2026-11-16).
+
+* `{jvm-pkg-name}`: all 70 engine jars of the wheel are the same files as in the 26.11.1 wheel, and `arcadedb-engine-26.11.1.jar` carries the same build number in both (`a3a5d124572608412aa187f9c4b290e071699473`). Only the jar of the bindings, `arcadedb-python-bridge.jar`, differs.
+* `{native-pkg-name}`: the engine inside the library has the same build number and the same engine version, 26.11.1. The library file is built again for every wheel, so the file differs, and so does the source commit of the bindings (`e83947e646614bd43f149a8ea0054c8f682dcf11` for post4, the commit of the tag).
+
+Two builds of the same source can differ in speed on one operation, so a figure that moves between two wheels of the same source is not by itself a change of the code (ArcadeData/arcadedb-python#404).
+
+The single-record `UPDATE` through `command()` is slower in a paper cell on the published 26.11.1.post3 native wheel than on 26.11.1 (ArcadeData/arcadedb-python#400). The cause is the build of that wheel, not the bindings source: the wheel that CI built from the same commit runs the statement as fast as 26.11.1 (the table and the proposed process change are in #404). #400 stays open until a post4 native wheel has been measured in that cell on the mini.
+
 [[switching]]
 == Switch from one to the other
 
