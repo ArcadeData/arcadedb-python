@@ -71,6 +71,11 @@ if BACKEND != "native":
     collect_ignore.append("test_native_mixed_chunk.py")
     # the native build's ingest defaults (insert_many and graph_batch commit size), observed on the native library
     collect_ignore.append("test_native_ingest_defaults.py")
+    # create_vertices on the native library: the columnar route (arcadedb_n_gb_colp) stores what the JSON route stores
+    collect_ignore.append("test_native_graph_batch_frame.py")
+    # create_record on the native async executor hands records over as columnar frames with per-record callbacks (and its recorded-library twin)
+    collect_ignore.append("test_native_async_create_batch.py")
+    collect_ignore.append("test_native_async_create_batch_unit.py")
     # the float32 side buffer of the native GraphBatch entry (arcadedb_n_gb_bin), observed on the native library
     collect_ignore.append("test_native_graph_batch_binary_vectors.py")
     # the native library's start-up output (#477) can only be checked with the native library loaded
@@ -158,6 +163,7 @@ NATIVE_NOT_APPLICABLE = {
     "test_async_proxy_cache.py": "the JPype proxy classes of the JVM build's async executor",
     "test_read_crossings.py": "crossing counts of the JVM build's read path (JPype proxies of the Java objects and the bridge classes)",
     "test_reader_crossings.py": "crossing counts of the JVM build's record and row readers (JPype proxies of the Java objects and the bridge classes)",
+    "test_reader_identity_crossings.py": "crossing counts of get_rid, get_vertex, get_edge and get_element on the JVM build (JPype proxies of the Java row and the bridge class)",
     "test_typed_batch_guard.py": "the object_hook and the side array of the JVM build's TypedRows batches (JPype arrays, the bridge class, a spy on json.loads)",
     "test_jvm_ingest_integrity_faults.py": "rows-dropped faults put into the JVM build's column conversion and bulk vertex path (core._column_to_java, GraphBatch._create_vertices_json_bulk)",
 }

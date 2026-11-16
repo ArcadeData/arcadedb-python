@@ -7,10 +7,13 @@ Callbacks (async completions, error handlers, Python functions called from SQL) 
 ctypes takes the GIL for the call, and the reply is JSON (see the header of ``NativeExtras.java`` for GIL and exception rules).
 """
 
+import copy
 import ctypes
 import itertools
 import json
+import logging
 import threading
+import time
 import weakref
 from collections.abc import Mapping
 from typing import Callable, Optional
@@ -20,7 +23,7 @@ from ..callbacks import check_event, check_function
 from ..exceptions import ArcadeDBError
 from ..graph_batch import GraphBatch as _BaseGraphBatch
 from ..type_conversion import take_vector_columns
-from . import interrupts, lib
+from . import bulk, columnar, interrupts, lib
 from .codec import (
     _default,
     _np,
@@ -190,13 +193,32 @@ class NativeGraphBatch(_BaseGraphBatch):
             return _call(prefix, "arcadedb_n_gb", self._gb, lib.b(op), lib.b(text))
         return _call(prefix, "arcadedb_n_gb", self._gb, lib.b(op), lib.b(_enc(args)))
 
-    def _create_chunk(self, prefix: str, type_name: str, rows: list) -> list:
+    def _create_chunk(
+        self, prefix: str, type_name: str, rows: list, declared=None
+    ) -> list:
         """One crossing and one transaction for `rows` (dicts): the RIDs of the new vertices.
+
+        Rows with the same keys in the same order, whose values are scalars, strings, dates, decimals, bytes or float32 vectors of one type
+        per property, cross as columns by address and the RIDs come back in an int64 buffer (``bulk.create_vertices_columns``, no JSON text in
+        either direction). Any other chunk goes as JSON text, as follows.
 
         A property whose value in every row is a float32 numpy array of one length crosses as one float32 matrix in the side buffer
         (``take_vector_columns``, ``encode_vertex_args``), with no tag, hook call or Python code per row; every other value is
         written as :func:`encode_gb_args` writes it.
         """
+        rids = bulk.create_vertices_columns(
+            self,
+            type_name,
+            rows,
+            (
+                declared
+                if declared is not None
+                else columnar.Declared(self._db, type_name)
+            ),
+            prefix,
+        )
+        if rids is not None:
+            return rids
         taken = take_vector_columns(rows, (), undeclared=True) if lib.GB_BIN else None
         if taken is None:
             return self._op(prefix, "create_vertices", type=type_name, rows=rows)[
@@ -307,12 +329,15 @@ class NativeGraphBatch(_BaseGraphBatch):
             # chunked, as the JPype wrapper does: one crossing, one JSON text and one reply per chunk, so a 1M-vertex load
             # never holds the text, the parsed rows and the reply of all of it at once (the Serial GC copies what lives)
             rids = []
+            declared = columnar.Declared(
+                db, type_name
+            )  # the schema is read at most once for the chunks of this call
             has_none = type(None) in kinds
             for start in range(0, len(rows), chunk):
                 part = rows[start : start + chunk]
                 if has_none:
                     part = [r or {} for r in part]
-                rids.extend(self._create_chunk(prefix, type_name, part))
+                rids.extend(self._create_chunk(prefix, type_name, part, declared))
             if not rows:
                 rids = self._op(prefix, "create_vertices", type=type_name, rows=[])[
                     "rids"
@@ -446,6 +471,35 @@ class NativeGraphBatch(_BaseGraphBatch):
 # -------------------------------------------------------------------------------------------------------- async
 
 
+# records per crossing of create_record (the same size as the commit interval of insert_many on this build)
+_ASYNC_BATCH = 1000
+# seconds a collected record may wait for the rest of its batch before a thread of the executor hands it over: a caller that creates
+# records and waits for a callback, or reads after a pause, with no other call on the executor, is never kept waiting longer
+_ASYNC_LINGER = 0.05
+# the first records of an executor go one op each, exactly as in 26.11.1.post3, before it starts to collect: no copy, no buffer, no linger thread, no frame. Collecting has a fixed cost
+# per executor (the linger thread that is started for it and the locks) and a frame has its own fixed cost on top (see _ASYNC_FRAME_MIN), so a small load repays neither. In an untimed
+# micro of one executor call (a new executor, N records, wait_completion, native, cores 14 and 15) the first head of this change, which collected from the first record, read 1.6x slower
+# than post3 for 1 record and 1.2x for 16, and a direct phase of 32 with the frame floor still read 1.2x to 1.3x slower for 33 to 64 records. An executor of up to _ASYNC_DIRECT records is
+# therefore exactly post3. Beyond it the records collect, and a frame repays itself only from _ASYNC_DIRECT + 64 records, 192: an executor of 129 to 191 records collects a few records,
+# hands them over one op each and pays the collection cost without a frame, about 0.2 ms more than post3 whatever its size (10% to 15% of its time in the micro). The cost is near
+# constant per executor, so the relative slowdown falls as this number rises; 128 was chosen after a direct phase of 96 put the band on the 100-record case, and it is not tuned further.
+# A linger thread shared by all executors of the process would remove the cost (ArcadeData/arcadedb-python#406); 0 turns the direct phase off.
+_ASYNC_DIRECT = 128
+# a hand-over of fewer collected records than this goes one op each, as in post3: a columnar frame has a fixed cost per crossing (the untimed micro put it near 270 us on this build,
+# against about 12 us per record for the per-record op and about 3 us per record inside a frame, so a frame repays itself from about 30 records), and without this floor an executor of
+# 33 to 64 records (with a direct phase of 32) read 1.2x to 1.7x slower than post3 in the same micro. 64 is the threshold that was decided; 0 turns the floor off.
+_ASYNC_FRAME_MIN = 64
+# the values of a property that cannot change after create_record returns; any other value is copied at the call
+_ATOMIC = frozenset((int, float, str, bool, bytes, type(None)))
+
+
+def _snapshot(props: dict) -> dict:
+    return {
+        key: value if type(value) in _ATOMIC else copy.deepcopy(value)
+        for key, value in props.items()
+    }
+
+
 class NativeAsyncExecutor:
     """The database's async executor (one per database) with the JPype wrapper's names; callbacks run on the engine's writer
     threads and take the GIL, as the JPype proxies do."""
@@ -462,6 +516,20 @@ class NativeAsyncExecutor:
         self._cb_lock = (
             threading.Lock()
         )  # guards the three above; never held across a call into the library
+        # the records of create_record that are not handed to the library yet: (properties, callback id, error callback id, the
+        # caller's error callback), all of one type and kind (_buf_key). _buf_lock is held while the buffer is handed over, so a
+        # flush point that returns has seen every create_record that returned before it.
+        self._buf: list = []
+        self._buf_key = None
+        self._buf_lock = threading.RLock()
+        # the linger thread (started with the first collected record) hands a batch over when its first record has waited
+        # _ASYNC_LINGER; a failure it meets is kept and raised by the next call that hands records over
+        self._linger = threading.Condition(self._buf_lock)
+        self._linger_thread = None
+        self._linger_due = 0.0
+        self._linger_stop = False
+        self._linger_error = None
+        self._direct = 0  # the records that went one op each (see _ASYNC_DIRECT)
 
     def __enter__(self):
         return self
@@ -473,6 +541,10 @@ class NativeAsyncExecutor:
         return self._closed
 
     def _op(self, op: str, **args) -> dict:
+        self._flush()  # every call on the executor goes after the records that were handed to create_record before it
+        return self._op_raw(op, **args)
+
+    def _op_raw(self, op: str, **args) -> dict:
         return _call(
             "Async executor failed",
             "arcadedb_n_async",
@@ -573,16 +645,204 @@ class NativeAsyncExecutor:
         return _register(lambda message: callback(_error_from(message)))
 
     def create_record(self, document, callback=None, error_callback=None):
+        """Queue ``document`` for an async writer; ``callback(record)`` runs on the writer once it is stored, ``error_callback(error)``
+        when the engine refuses it.
+
+        The first ``_ASYNC_DIRECT`` (128) records of an executor go one op each, exactly as in 26.11.1.post3 (an executor that creates a few
+        records pays nothing for collecting). From the next record on the records of one type and kind are collected (a copy of their properties, so a document that the caller changes or reuses
+        afterwards is stored as it was at this call) and cross the library boundary ``_ASYNC_BATCH`` at a time, as one columnar frame with the callback ids of each record (not one JSON op per record) when at least ``_ASYNC_FRAME_MIN`` (64)
+        of them are handed over together, else one op each as in post3. Every other call on the executor (``wait_completion``,
+        ``is_processing``, ``query``, ``command``, ``kill``, ``close``, ...) hands the collected records over first, so the engine
+        queue keeps the order of the calls and a record is never held back from a ``wait_completion`` that follows its call. A thread of
+        the executor hands a batch over when its first record has waited ``_ASYNC_LINGER`` (50 ms), so a caller that waits for a
+        callback or reads after a pause, with no other call, is not kept waiting; a failure that thread meets is raised by the next
+        call that hands records over. Records
+        whose shape the frame cannot carry (different keys, nested values, numpy scalars, mixed-type columns, integers beyond 64 bits)
+        and a batch of one cross as the per-record op they always did. A record that the library refuses before it is queued (the frame is checked
+        before the first record is handed over; a record that cannot be built) reaches its own ``error_callback`` when one was given,
+        else it is raised by the call that hands the batch over, after the records around it were handed over.
+        """
         kind = "v" if hasattr(document, "get_out_edges") else "d"
+        if self._closed or self._direct < _ASYNC_DIRECT:
+            self._direct += 1
+            self._queue_record(
+                document._type, kind, document._props, callback, error_callback
+            )
+            return
+        cb = self._record_callback(callback, kind) if callback is not None else 0
+        err = self._error_callback(error_callback) if error_callback is not None else 0
+        entry = (_snapshot(document._props), cb, err, error_callback)
+        key = (document._type, kind)
+        with self._buf_lock:
+            if self._buf and self._buf_key != key:
+                self._flush()
+            self._buf_key = key
+            self._buf.append(entry)
+            if len(self._buf) >= _ASYNC_BATCH:
+                self._flush()
+            elif (
+                len(self._buf) == 1
+            ):  # the first record of a batch: its hand-over is due after the linger time
+                self._start_linger()
+
+    def _start_linger(self):
+        """Under ``_buf_lock``: the batch that has just got its first record is handed over at the latest after ``_ASYNC_LINGER``."""
+        self._linger_due = time.monotonic() + _ASYNC_LINGER
+        if self._linger_thread is None:
+            self._linger_thread = threading.Thread(
+                target=self._linger_loop, name="arcadedb-async-linger", daemon=True
+            )
+            self._linger_thread.start()
+        else:
+            self._linger.notify()
+
+    def _linger_loop(self):
+        with self._buf_lock:
+            while not self._linger_stop:
+                if not self._buf:
+                    self._linger.wait()
+                    continue
+                left = self._linger_due - time.monotonic()
+                if left > 0:
+                    self._linger.wait(left)
+                    continue
+                try:
+                    self._flush_buffer()
+                except (
+                    BaseException
+                ) as e:  # no caller to raise it to: the next call that hands records over raises it
+                    self._linger_error = e
+
+    def _stop_linger(self):
+        with self._buf_lock:
+            self._linger_stop = True
+            self._linger.notify_all()
+
+    def _queue_record(self, type_name, kind, props, callback, error_callback):
         cb = self._record_callback(callback, kind) if callback is not None else 0
         err = self._error_callback(error_callback) if error_callback is not None else 0
         self._queue(
-            "create_record",
-            type=document._type,
-            kind=kind,
-            props=document._props,
-            cb=cb,
-            err=err,
+            "create_record", type=type_name, kind=kind, props=props, cb=cb, err=err
+        )
+
+    def _flush(self):
+        """Hand the collected ``create_record`` calls to the library, in order, and raise what the linger thread's hand-over met."""
+        if not self._buf and self._linger_error is None:
+            return
+        with self._buf_lock:
+            self._flush_buffer()
+            error, self._linger_error = self._linger_error, None
+            if error is not None:
+                raise error
+
+    def _flush_buffer(self):
+        """Hand the collected ``create_record`` calls to the library, in order; see :meth:`create_record`."""
+        if not self._buf:
+            return
+        with self._buf_lock:
+            batch, self._buf = self._buf, []
+            if not batch:
+                return
+            type_name, kind = self._buf_key
+            problems = []
+            state = [0]  # the records of the batch that are handed over or failed
+            try:
+                while state[0] < len(batch):
+                    error = self._hand(type_name, kind, batch, state)
+                    if error is None:
+                        continue
+                    failed = batch[state[0]]
+                    state[0] += 1
+                    _forget(
+                        failed[1]
+                    )  # no callback of a record that was not queued will ever run
+                    _forget(failed[2])
+                    if failed[3] is None:
+                        problems.append(error)
+                        continue
+                    try:
+                        failed[3](error)
+                    except (
+                        Exception
+                    ):  # the batch goes on, as an async writer goes on after a failing handler
+                        logging.getLogger(__name__).exception(
+                            "the error callback of an async create_record failed"
+                        )
+            except BaseException:
+                for entry in batch[state[0] :]:
+                    _forget(entry[1])
+                    _forget(entry[2])
+                raise
+            if problems:
+                raise problems[0]
+
+    def _remember(self, entries):
+        with self._cb_lock:
+            for entry in entries:
+                self._cb_ids.extend(i for i in (entry[1], entry[2]) if i)
+
+    def _hand(self, type_name, kind, batch, state):
+        """Hand ``batch[state[0]:]`` over until one record is refused; returns that record's error, or None when all went.
+
+        ``state[0]`` is the index of the first record that is neither handed over nor failed, updated as records go, so that a
+        caller that sees an exception (an interrupt) knows which records the engine holds.
+        """
+        part = batch[state[0] :]
+        if len(part) > 1 and len(part) >= _ASYNC_FRAME_MIN and bulk._usable():
+            reply = self._send_frame(type_name, kind, part)
+            if reply is not None:
+                handed = int(reply["n"])
+                self._remember(part[:handed])
+                state[0] += handed
+                return None if reply.get("err") is None else _error_from(reply)
+        # one op per record: fewer than _ASYNC_FRAME_MIN records (a frame of one is not cheaper, a small one does not repay its fixed cost) or a shape the frame cannot carry
+        for entry in part:
+            try:
+                self._op_raw(
+                    "create_record",
+                    type=type_name,
+                    kind=kind,
+                    props=entry[0],
+                    cb=entry[1],
+                    err=entry[2],
+                )
+            except ArcadeDBError as e:
+                return e
+            self._remember([entry])
+            state[0] += 1
+        return None
+
+    def _send_frame(self, type_name, kind, part):
+        """The records of ``part`` as one columnar frame (``arcadedb_n_async_bin``, op ``create_records``), or None when a column
+        cannot be sent that way. The reply says how many records the library handed over and, when it stopped, the error of the next one.
+        """
+        columns = columnar.rows_to_columns([entry[0] for entry in part])
+        if columns is None:
+            return None
+        packed = columnar.pack(columns, columnar.Declared(self._db, type_name))
+        if packed is None:
+            return None
+        rows, cols = packed
+        if rows != len(part):
+            return None
+        spec = columnar.spec_of(cols)
+        header = {
+            "type": type_name,
+            "kind": kind,
+            "n": rows,
+            "commit": 0,
+            "cols": [[c.name, c.kind, c.dim] for c in cols],
+            "cbs": [entry[1] for entry in part],
+            "errs": [entry[2] for entry in part],
+        }
+        return _call(
+            "Async executor failed",
+            "arcadedb_n_async_bin",
+            self._db._h,
+            b"create_records",
+            lib.b(_enc(header)),
+            spec,  # `cols` holds the arrays that the addresses point into until the call returns
+            len(spec),
         )
 
     def _statement(self, op, language, text, callback, args, params, error_callback):
@@ -652,6 +912,8 @@ class NativeAsyncExecutor:
         names and three float64 arrays; whole ingest in seconds including wait_completion(), new build over old, below 1 is faster):
         0.370 (95% interval 0.362 to 0.390, median of 11 clean paired runs). The figure is for that shape.
         """
+
+        self._flush()  # the address-table call below does not go through _op
 
         def plain(values):
             kind = getattr(getattr(values, "dtype", None), "kind", None)
@@ -874,6 +1136,7 @@ class NativeAsyncExecutor:
     def wait_completion(self, timeout_ms: Optional[int] = None):
         if timeout_ms is not None and timeout_ms < 0:
             raise ValueError(f"timeout_ms must be None or >= 0, got {timeout_ms}")
+        self._flush()  # first, so that the ids of the collected records are among the ones this call releases
         # the calls queued so far: a call that another thread queues while this one waits keeps its callbacks
         with self._cb_lock:
             finished, self._cb_ids = self._cb_ids, []
@@ -916,10 +1179,18 @@ class NativeAsyncExecutor:
     def close(self):
         if self._closed:
             return
+        pending = None
         try:
-            self._op("close")
+            try:
+                self._flush()
+            except BaseException as e:  # the engine's executor is closed all the same
+                pending = e
+            self._op_raw("close")
+            if pending is not None:
+                raise pending
         finally:
             self._closed = True
+            self._stop_linger()
             self._release_callbacks()
             owner, self._owner = self._owner, None
             if owner is not None:

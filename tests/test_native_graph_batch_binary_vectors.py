@@ -22,7 +22,10 @@ N = 30
 
 
 @pytest.fixture
-def db(temp_db):
+def db(temp_db, monkeypatch):
+    # this file pins the side-buffer route of arcadedb_n_gb_bin, which the chunks that the columnar entry cannot carry still take; a plain
+    # vector load takes arcadedb_n_gb_colp now (test_native_graph_batch_frame*.py), so the columnar route is off here
+    monkeypatch.setattr(lib, "GB_COLP", False)
     temp_db.command("sql", "CREATE VERTEX TYPE Vx")
     temp_db.command("sql", "CREATE PROPERTY Vx.id LONG")
     temp_db.command("sql", "CREATE PROPERTY Vx.embedding ARRAY_OF_FLOATS")
