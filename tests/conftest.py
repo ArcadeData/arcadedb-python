@@ -106,6 +106,8 @@ if BACKEND != "native":
     collect_ignore.append("test_native_tx_crossings.py")
     # counts the statement texts the native backend hands to the engine (the JPype backend has no such layer)
     collect_ignore.append("test_native_statement_texts.py")
+    # what the native glue's bytes cache (lib.bc) keeps: statement texts and language names, never the value of a write (#412)
+    collect_ignore.append("test_native_bytes_cache.py")
     # iter_json_batches reads the cursor one batch at a time (the result set's buffer and its _fill are observed)
     collect_ignore.append("test_native_streaming_batches.py")
     # the Python part of the native point operations (lookup_by_key, edge ends, steps): spies on the codec, the cursor and the row object

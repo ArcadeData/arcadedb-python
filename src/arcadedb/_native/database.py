@@ -805,7 +805,7 @@ class NativeDatabase:
                 1,
                 lib.bc(language),
                 lib.bc(command),
-                lib.bc(text),
+                lib.b(text),
                 buf,
                 count,
                 _FIRST_BATCH,

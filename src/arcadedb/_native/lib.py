@@ -486,14 +486,24 @@ def b(value) -> bytes:
 
 
 _bytes_cache = {}
+# The cache is bounded in entries and in the length of a text, so it holds at most 4096 texts of 1024 characters (and their bytes)
+# whatever the program writes: a statement text or a language name is short, a value that travels with a write is not and is not kept.
+_BYTES_CACHE_MAX_ENTRIES = 4096
+_BYTES_CACHE_MAX_CHARS = 1024
 
 
 def bc(value: str) -> bytes:
-    """UTF-8 of a statement text or language name, remembered (the same few texts cross a million times in a load)."""
+    """UTF-8 of a statement text or language name, remembered (the same few texts cross a million times in a load).
+
+    A text is remembered only when it has at most ``_BYTES_CACHE_MAX_CHARS`` characters and the cache has fewer than
+    ``_BYTES_CACHE_MAX_ENTRIES`` entries; a longer text is encoded and returned without being hashed or stored.
+    """
+    if len(value) > _BYTES_CACHE_MAX_CHARS:
+        return value.encode("utf-8")
     r = _bytes_cache.get(value)
     if r is None:
         r = value.encode("utf-8")
-        if len(_bytes_cache) < 4096:
+        if len(_bytes_cache) < _BYTES_CACHE_MAX_ENTRIES:
             _bytes_cache[value] = r
     return r
 
