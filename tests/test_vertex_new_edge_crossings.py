@@ -9,7 +9,7 @@ path writes, which ``_old_new_edge`` below reproduces from the former code, so a
 
 import pytest
 
-from arcadedb import graph
+from arcadedb import graph, results
 from arcadedb.type_conversion import convert_python_to_java
 
 
@@ -165,3 +165,25 @@ def test_a_failure_is_the_one_the_seven_call_path_raises(ends):
     unsaved_new = _outcome(db, lambda: db.new_vertex("V").new_edge("E", b))
     unsaved_old = _outcome(db, lambda: _old_new_edge(db.new_vertex("V"), "E", d))
     assert unsaved_new == unsaved_old
+
+
+def test_without_the_bridge_class_new_edge_takes_the_plain_path_and_writes_the_same_edge(
+    ends, monkeypatch
+):
+    """A jar without GraphCalls (``_bridge_class`` answers None) sends ``new_edge`` down the seven-call path, not into an AttributeError."""
+    db, (a, b, c, d, *_) = ends
+    with db.transaction():
+        bridged = a.new_edge("E", b, **KW)
+    with monkeypatch.context() as patched:
+        patched.setitem(results._BRIDGE_CLASSES, "GraphCalls", None)
+        patched.setattr(graph, "_GRAPH_CALLS", None)
+        assert graph._graph_calls() is None
+        with db.transaction():
+            plain = c.new_edge("E", d, **KW)
+    assert plain.to_dict() == bridged.to_dict()
+    assert type(plain) is type(bridged)
+    assert str(plain._java_document.getClass().getName()) == str(
+        bridged._java_document.getClass().getName()
+    )
+    assert _edges(db, c, "out") == [plain.get_rid()]
+    assert _edges(db, d, "in") == [plain.get_rid()]
