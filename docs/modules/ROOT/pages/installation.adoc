@@ -273,6 +273,18 @@ What the native package cannot do, or does differently from `{jvm-pkg-name}`. Re
 * *Engine modules left out.* The gRPC and MongoDB wire protocols, Raft HA, Gremlin and the polyglot languages (JavaScript, Python as a query language) are not in the image. See <<what-is-included>>.
 * *Platforms.* Intel Macs, Alpine Linux (musl) and Windows on ARM have no wheel. See <<requirements>>.
 
+[[older-wheel]]
+== Open a database with an older wheel
+
+Do not open a database that a 26.11.x wheel has written with a 26.10.x or older wheel. Keep a backup of the database directory before you upgrade, because a backup is the only way back.
+
+The wheels of both packages whose engine is 26.11.1 or later write float and double arrays, a vector embedding included, in a fixed-width form (binary types 36 and 37). The engine setting `arcadedb.serializer.fixedWidthFloatArrays` is on by default (ArcadeData/arcadedb#10904, in 26.11.1). What an older wheel does with such a database:
+
+* *Today, no refusal.* 26.10.x and 26.9.1 open the database without an error. Every array in the new form reads as `null`, `vector.neighbors()` never returns those records, and the next `UPDATE` of such a record, even of an unrelated property, rewrites it without its arrays. Opening the database again with a 26.11.x wheel shows them gone for good. This is what the reporter measured on 26.10.1 and 26.9.1 (ArcadeData/arcadedb#12234). In the same test, a database with a `UNIQUE_HASH` index was refused by 26.10.1 for another reason, its page layout. Do not count on that.
+* *A later wheel refuses.* ArcadeData/arcadedb#12239 (merged on 2026-11-18, not in 26.11.1) labels the dictionary file of the database as format version 2 while the setting is on: a new database is created with the label, and an existing one gets it at its first read-write open, whether or not it holds an array. Builds from 26.8.1 to 26.11.x refuse to open a labelled database, so after that open 26.11.1 refuses it too. To keep the files openable by an older build, set the setting to `false` before the database is first opened by the new wheel. Turning it off later does not remove the label. The setting is read when the database opens, and records already written keep their form until they are updated.
+
+Set the setting as a system property before the engine starts, the way xref:how-to/durability.adoc[Durability settings] sets `arcadedb.fileSync`: `-Darcadedb.serializer.fixedWidthFloatArrays=false` in `jvm_kwargs={"jvm_args": [...]}` or in `ARCADEDB_JVM_ARGS` for `{jvm-pkg-name}`, and in `ARCADEDB_NATIVE_ISOLATE_ARGS` for `{native-pkg-name}`. No test here sets it. Check the release notes of the wheel you install to see whether it has the label.
+
 [[in-a-container]]
 == In a container
 
