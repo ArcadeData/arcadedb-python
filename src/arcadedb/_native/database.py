@@ -25,6 +25,7 @@ from .codec import (
     loads_tagged,
     row_default,
 )
+from .columnar import declared_for
 
 _LAZY_COMMAND_ROWS = os.environ.get("ARCADEDB_NATIVE_LAZY_CMD", "1") != "0"
 _BINARY_REPLY = os.environ.get("ARCADEDB_NATIVE_BIN_REPLY", "1") != "0"
@@ -706,6 +707,9 @@ class NativeDatabase:
         self._vector_dimensions: dict = {}
         self._vector_id_properties: dict = {}
         self._auto_transaction = False  # the engine default; set_auto_transaction() is the only way it changes
+        # statements run through command() on this handle: what columnar.Declared keeps the declared property types against (a schema
+        # change made on this handle is one of them); a query, a transaction call or a bulk crossing does not move it
+        self._command_count = 0
 
     # -- lifecycle
 
@@ -792,6 +796,8 @@ class NativeDatabase:
         self._check_not_closed()
         eager = flags & _EAGER
         flags &= ~_EAGER
+        if flags & 1:
+            self._command_count += 1
         if args:
             refuse_surplus_positionals(
                 "command" if flags & 1 else "query", language, command, args
@@ -1069,10 +1075,20 @@ class NativeDatabase:
         this build (the JVM build's is 10,000). Rows that are already committed stay committed if a later chunk fails, so a smaller
         ``commit_every`` keeps fewer rows of a failed load (only the transaction that was open is rolled back).
         """
+        return self._insert_many(type_name, rows, commit_every, parallel)
+
+    def _insert_many(
+        self, type_name: str, rows, commit_every: int, parallel: bool, declared=None
+    ) -> int:
+        """:meth:`insert_many`, with the call's declared property types when an entry that ran before it already has them
+        (``declared``: a ``columnar.Declared`` or a dict, see ``columnar.declared_for``). The chunks of the call share one, so the call
+        reads the schema once when a column needs the declared types, not once per chunk; it ends with the call.
+        """
         self._check_not_closed()
         if parallel:
             return self._insert_many_parallel(type_name, rows)
         sql = f"INSERT INTO `{type_name}` CONTENT :row"
+        declared = declared_for(self, type_name, declared)
         rows = iter(rows)
         was_active = self.is_transaction_active()
         every = int(commit_every)
@@ -1087,7 +1103,7 @@ class NativeDatabase:
                 chunk = list(itertools.islice(rows, size))
                 if not chunk:
                     break
-                self._insert_chunk(type_name, sql, chunk)
+                self._insert_chunk(type_name, sql, declared, chunk)
                 n += len(chunk)
                 if not was_active and every > 0 and n % every == 0:
                     self.commit()
@@ -1104,20 +1120,22 @@ class NativeDatabase:
                     pass
             raise
 
-    def _insert_chunk(self, type_name: str, sql: str, chunk) -> None:
-        """One chunk of ``insert_many`` inside the open transaction; see :meth:`insert_many` for the paths.
+    def _insert_chunk(self, type_name: str, sql: str, declared, chunk) -> None:
+        """One chunk of ``insert_many`` inside the open transaction; see :meth:`insert_many` for the paths. ``declared`` is the
+        ``columnar.Declared`` of the call, shared by its chunks. The chunk comes last: the ingest-integrity tests wrap this seam
+        as ``(type_name, *lead, chunk)``.
 
         A row with a value the JSON text cannot carry unchanged (NaN or Infinity, an integer beyond 64 bits, a date-time or decimal inside
         a list or map, a lone surrogate) goes through ``INSERT INTO t CONTENT :row`` on its own; the rows around it still go in bulk, and
         every row is inserted in the order given.
         """
         if lib.INSERT_ROWS:
-            if insert_rows_columnar(self, type_name, chunk):
+            if insert_rows_columnar(self, type_name, chunk, declared):
                 return
             try:
                 payload = json_bulk_dumps_tagged(chunk)
             except (TypeError, ValueError):
-                self._insert_chunk_runs(type_name, sql, chunk)
+                self._insert_chunk_runs(type_name, sql, declared, chunk)
                 return
             self._insert_rows_json(type_name, payload)
             return
@@ -1135,7 +1153,7 @@ class NativeDatabase:
         if not reply.get("ok"):
             raise _error(f"Failed to bulk-insert into '{type_name}'", reply)
 
-    def _insert_chunk_runs(self, type_name: str, sql: str, chunk) -> None:
+    def _insert_chunk_runs(self, type_name: str, sql: str, declared, chunk) -> None:
         """A chunk with a row the JSON text cannot carry: runs of carriable rows go in bulk, the other rows one statement each, in order."""
         ok = [bulk_row_ok(row) for row in chunk]
         n = len(chunk)
@@ -1149,7 +1167,7 @@ class NativeDatabase:
             start = end
             if not carriable:
                 self._insert_chunk_per_row(sql, run)
-            elif not insert_rows_columnar(self, type_name, run):
+            elif not insert_rows_columnar(self, type_name, run, declared):
                 self._insert_rows_json(type_name, json_bulk_dumps_tagged(run))
 
     def _insert_chunk_per_row(self, sql: str, rows) -> None:
@@ -1550,16 +1568,18 @@ class NativeDatabase:
         known = {n: len(v) for n, v in items if hasattr(v, "__len__")}
         if len(set(known.values())) > 1:
             raise ValueError(f"columns differ in length: {known}")
+        # one for the call: the columnar attempt and, when it gives up, every chunk of the row path read the schema once between them
+        declared = declared_for(self, type_name)
         if parallel:
             from .bulk import insert_columns_parallel
 
-            done = insert_columns_parallel(self, type_name, columns)
+            done = insert_columns_parallel(self, type_name, columns, declared)
             if done is not None:
                 return done
         else:
             from .bulk import insert_columns_fast
 
-            done = insert_columns_fast(self, type_name, columns, commit_every)
+            done = insert_columns_fast(self, type_name, columns, commit_every, declared)
             if done is not None:
                 return done
         names = [n for n, _ in items]
@@ -1570,7 +1590,7 @@ class NativeDatabase:
         if not data[0]:
             return 0
         rows = (dict(zip(names, vals)) for vals in zip(*data))
-        return self.insert_many(type_name, rows, commit_every, parallel)
+        return self._insert_many(type_name, rows, commit_every, parallel, declared)
 
     def insert_dataframe(
         self, type_name, df, *, batch_size: int = 10_000, parallel: bool = False

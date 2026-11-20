@@ -59,6 +59,25 @@ def spy(monkeypatch):
     return Spy(monkeypatch)
 
 
+@pytest.fixture
+def schema_reads(monkeypatch):
+    """The statements that read the schema (``FROM schema:types``) on a native handle, in the order they ran: the one thing an ingest
+    call reads the declared property types with. Counted at the statement, so it holds however the lookup is written.
+    """
+    from arcadedb._native import database as native_database
+
+    owner = native_database.NativeDatabase
+    real, seen = owner.query, []
+
+    def query(self, language, command, *args):
+        if "schema:types" in command:
+            seen.append(command)
+        return real(self, language, command, *args)
+
+    monkeypatch.setattr(owner, "query", query)
+    return seen
+
+
 def _count_sql(name):
     return f"SELECT count(*) AS n FROM {name}"  # nosec B608 - test-owned type name, no user input
 
@@ -515,3 +534,146 @@ def test_an_unknown_kind_and_a_wrong_table_size_are_errors(temp_db):
     )
     assert not reply["ok"]  # 5 entries are not a multiple of 6
     assert _count(temp_db) == 0
+
+
+# ---- the declared property types are read from the schema once per call, not once per chunk (#315)
+#
+# A vector column (a list of lists for an ARRAY_OF_FLOATS property) is laid out as a float32 matrix only when the property is declared, so
+# the packer asks for the declared types. It used to ask for every chunk of 1000 rows with a full read of the schema.
+
+
+def _vectors(n, dim=8, seed=1):
+    return np.random.default_rng(seed).standard_normal((n, dim), dtype=np.float32)
+
+
+def _bits(stored):
+    """A stored vector as the float32 bytes it holds."""
+    return np.asarray(stored, dtype=np.float32).tobytes()
+
+
+def test_insert_many_reads_the_schema_once_for_all_its_chunks(
+    temp_db, spy, schema_reads, monkeypatch
+):
+    _types(temp_db, "Ref", "Many")
+    rows = _rows(_probe(3_500))
+    _json_reference(temp_db, "Ref", rows, monkeypatch)
+    spy.calls.clear()
+    schema_reads.clear()
+    assert temp_db.insert_many("Many", rows, commit_every=1_000) == 3_500
+    assert spy.count(COLP) == 4  # chunks of 1000, 1000, 1000 and 500, all columnar
+    assert len(schema_reads) == 1, schema_reads
+    assert _stored(temp_db, "Many") == _stored(temp_db, "Ref")
+
+
+def test_insert_columns_that_falls_back_to_rows_reads_the_schema_once(
+    temp_db, spy, schema_reads, monkeypatch
+):
+    _types(temp_db, "Ref", "Fall")
+    n, x = 2_500, _vectors(2_500)
+    columns = {
+        "id": list(range(n)),
+        "vec": x.tolist(),
+        "meta": [{"k": i} for i in range(n)],  # a map cannot cross: rows, as JSON
+    }
+    _json_reference(temp_db, "Ref", _rows(columns), monkeypatch)
+    spy.calls.clear()
+    schema_reads.clear()
+    assert temp_db.insert_columns("Fall", columns, commit_every=1_000) == n
+    assert spy.count(COLP) == 0 and spy.count(ROWS) == 3  # three chunks, as JSON
+    # the columnar attempt looked at the vector column; the three chunks of the fallback reuse what it found
+    assert len(schema_reads) == 1, schema_reads
+    assert _stored(temp_db, "Fall") == _stored(temp_db, "Ref")
+
+
+def test_insert_arrow_with_a_column_that_cannot_cross_reads_the_schema_once(
+    temp_db, spy, schema_reads, monkeypatch
+):
+    import pyarrow as pa
+
+    _types(temp_db, "Ref", "Arr")
+    n, x = 2_500, _vectors(2_500)
+    table = pa.table(
+        {
+            "id": pa.array(range(n), type=pa.int64()),
+            "vec": pa.array([v.tolist() for v in x], type=pa.list_(pa.float32())),
+            "meta": pa.array([{"k": i} for i in range(n)]),  # a struct: rows, as JSON
+        }
+    )
+    _json_reference(temp_db, "Ref", table.to_pylist(), monkeypatch)
+    spy.calls.clear()
+    schema_reads.clear()
+    assert temp_db.insert_arrow("Arr", table, batch_size=1_000) == n
+    assert spy.count(COLP) == 0 and spy.count(ROWS) == 3  # three batches, as JSON
+    # the declared types are read once for the call (by insert_arrow) and not again by the row fallback of each batch
+    assert len(schema_reads) == 1, schema_reads
+    assert _stored(temp_db, "Arr") == _stored(temp_db, "Ref")
+
+
+def test_a_schema_made_and_extended_inside_the_call_is_seen_by_every_chunk(
+    temp_db, spy, schema_reads
+):
+    n, first, second = 3_000, _vectors(3_000, seed=1), _vectors(3_000, seed=2)
+
+    def rows():
+        for i in range(n):
+            # while the first chunk is read: the type and its first vector property
+            if i == 0:
+                temp_db.command("sql", "CREATE DOCUMENT TYPE Late").close()
+                temp_db.command("sql", "CREATE PROPERTY Late.a ARRAY_OF_FLOATS").close()
+            # while the second is read: another vector property
+            if i == 1_000:
+                temp_db.command("sql", "CREATE PROPERTY Late.b ARRAY_OF_FLOATS").close()
+            row = {"id": i, "a": first[i].tolist()}
+            if i >= 1_000:
+                row["b"] = second[i].tolist()
+            yield row
+
+    assert temp_db.insert_many("Late", rows(), commit_every=1_000) == n
+    # every chunk crossed as columns: the second and the third saw the property made after the first was read
+    assert spy.count(COLP) == 3 and spy.count(ROWS) == 0, spy.calls
+    # one read for the first chunk, one after the schema changed, none for the third
+    assert len(schema_reads) == 2, schema_reads
+    stored = {
+        r["id"]: r for r in temp_db.query("sql", "SELECT id, a, b FROM Late").to_list()
+    }
+    assert sorted(stored) == list(range(n))
+    for i in range(n):
+        assert _bits(stored[i]["a"]) == first[i].tobytes()
+        if i < 1_000:
+            assert stored[i].get("b") is None
+        else:
+            assert _bits(stored[i]["b"]) == second[i].tobytes()
+
+
+def test_two_calls_each_read_the_schema_and_see_a_change_made_between_them(
+    temp_db, spy, schema_reads
+):
+    temp_db.command("sql", "CREATE DOCUMENT TYPE Twice")
+    x = _vectors(1_500)
+    first = [{"id": i, "v": x[i].tolist()} for i in range(750)]
+    second = [{"id": i, "w": x[i].tolist()} for i in range(750, 1_500)]
+    temp_db.insert_many("Twice", first, commit_every=1_000)
+    assert len(schema_reads) == 1  # v is not declared: the chunk goes as JSON
+    assert spy.count(COLP) == 0 and spy.count(ROWS) == 1
+    temp_db.command("sql", "CREATE PROPERTY Twice.w ARRAY_OF_FLOATS")
+    temp_db.insert_many("Twice", second, commit_every=1_000)
+    assert (
+        len(schema_reads) == 2
+    )  # a new call reads the schema again, and w is declared
+    assert spy.count(COLP) == 1 and spy.count(ROWS) == 1
+    stored = {
+        r["id"]: r for r in temp_db.query("sql", "SELECT id, v, w FROM Twice").to_list()
+    }
+    assert sorted(stored) == list(range(1_500))
+    for i in range(750):
+        assert _bits(stored[i]["v"]) == x[i].tobytes() and stored[i].get("w") is None
+    for i in range(750, 1_500):
+        assert _bits(stored[i]["w"]) == x[i].tobytes() and stored[i].get("v") is None
+
+
+def test_a_statement_moves_the_stamp_the_declared_types_are_kept_against(temp_db):
+    before = temp_db._command_count
+    temp_db.query("sql", "SELECT FROM schema:types").to_list()
+    assert temp_db._command_count == before  # a read does not
+    temp_db.command("sql", "CREATE DOCUMENT TYPE Stamp").close()
+    assert temp_db._command_count > before

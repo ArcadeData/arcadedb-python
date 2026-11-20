@@ -621,9 +621,11 @@ def _insert_documents_native(
         else:
             # jvm-payload: not-a-crossing -- no JVM here: insert_many serialises the rows to JSON text
             lists.append(col.tolist() if hasattr(col, "tolist") else col)
-    db.insert_many(
+    # the call's declared types (read once by insert_table) go on to the row path, so it does not read the schema again per chunk
+    db._insert_many(
         type_name,
         [dict(zip(names, row)) for row in zip(*lists)],
-        commit_every=batch_size,
-        parallel=parallel,
+        batch_size,
+        parallel,
+        declared,
     )
