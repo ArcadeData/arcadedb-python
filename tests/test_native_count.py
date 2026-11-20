@@ -269,3 +269,54 @@ def test_count_reads_no_reply_text_and_builds_no_result_object(db, monkeypatch, 
     assert rs.count() == ROWS
     assert taken == []  # no batch came back as text
     assert built == []  # and no NativeResult was built for a row
+
+
+# -- facets: a FACETS statement is counted row by row, because its facets ride on the reply that drains the cursor
+
+FACETS_Q = "SELECT id FROM R ORDER BY id FACETS g TERMS TOP 10"
+
+
+def _facets_after_to_list(db):
+    """The facets of FACETS_Q after its rows were read with to_list(), or a skip on an engine that predates the FACETS clause."""
+    rs = db.query("sql", FACETS_Q)
+    try:
+        rows = rs.to_list()
+    except ArcadeDBError as e:
+        if "syntax error" in str(e).lower():
+            pytest.skip("the engine predates the FACETS clause (26.12.1)")
+        raise
+    assert len(rows) == ROWS
+    facets = rs.facets()
+    assert facets is not None
+    return facets
+
+
+def test_count_then_facets_of_a_facets_query_returns_the_facets(db, foreign):
+    expected = _facets_after_to_list(db)
+    rs = db.query("sql", FACETS_Q)
+    assert (
+        len(rs._buf) == database._FIRST_BATCH and rs._more
+    )  # rows still in the library
+    foreign.reset()
+    assert rs.count() == ROWS
+    assert "arcadedb_n_count" not in foreign.names  # the statement was read row by row
+    assert rs.facets() == expected
+
+
+def test_a_statement_that_mentions_facets_is_counted_row_by_row(db, foreign):
+    """Any text with the word, in any case and inside a literal too: a false positive costs speed, never a wrong number."""
+    rs = db.query("sql", "SELECT id, 'Facets' AS w FROM R")
+    assert rs._more
+    foreign.reset()
+    assert rs.count() == ROWS
+    assert "arcadedb_n_count" not in foreign.names
+    assert rs._closed and rs._exhausted
+
+
+def test_a_statement_without_the_word_facets_still_uses_the_counting_entry(db, foreign):
+    for query in ("SELECT id, txt FROM R", "SELECT id AS facetsum FROM R"):
+        rs = db.query("sql", query)
+        assert rs._more and not rs._may_have_facets
+        foreign.reset()
+        assert rs.count() == ROWS
+        assert foreign.names == ["arcadedb_n_count"]
