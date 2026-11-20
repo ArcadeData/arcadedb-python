@@ -17,6 +17,7 @@ import pytest
 
 import arcadedb
 from arcadedb import ArcadeDBError
+from tests.conftest import TEST_PASSWORD, free_port
 
 
 def _insert(db, statement):
@@ -166,6 +167,48 @@ def test_backup_check_and_rebuild_index_statements(temp_db, tmp_path):
     # the archive is the database: unzip it and open it
     restored = tmp_path / "restored"
     with zipfile.ZipFile(archive) as zf:
+        zf.extractall(restored)
+    with arcadedb.open_database(str(restored)) as copy:
+        assert copy.count_type("Person") == 20
+        found = copy.query(
+            "sql", "SELECT FROM Person WHERE email = 'p7@x.org'"
+        ).to_list()
+        assert len(found) == 1
+
+
+def test_backup_database_runs_through_a_server_on_both_wheels(tmp_path):
+    """BACKUP DATABASE on the JVM and on the native wheel (the test above is JVM-only).
+
+    That test sets the engine's global backup directory through JPype, which the native wheel has no JVM for. A server
+    takes its root path as an argument, and the default backup directory is `<root path>/backups`, so this one sets
+    nothing global and runs on both wheels. The statement looks `com.arcadedb.integration.backup.Backup` up by name,
+    and a native image keeps that class and its `backupDatabase()` method only when its reachability metadata names
+    them (ArcadeData/arcadedb#12556).
+    """
+    root = tmp_path / "server"
+    with arcadedb.create_server(
+        root_path=str(root),
+        root_password=TEST_PASSWORD,
+        config={"http_port": free_port()},
+    ) as server:
+        db = server.create_database("people")
+        db.command("sql", "CREATE DOCUMENT TYPE Person")
+        with db.transaction():
+            for i in range(20):
+                db.command("sql", f"INSERT INTO Person SET email = 'p{i}@x.org'")
+
+        result = db.command("sql", "BACKUP DATABASE 'person.zip'").first().to_dict()
+        assert result["result"] == "OK"
+        assert result["operation"] == "backup database"
+        db.close()
+
+    archives = list(root.rglob("person.zip"))
+    assert [a.parent.name for a in archives] == ["people"]
+    assert archives[0].stat().st_size > 0
+
+    # the archive is the database: unzip it and open it
+    restored = tmp_path / "restored"
+    with zipfile.ZipFile(archives[0]) as zf:
         zf.extractall(restored)
     with arcadedb.open_database(str(restored)) as copy:
         assert copy.count_type("Person") == 20
