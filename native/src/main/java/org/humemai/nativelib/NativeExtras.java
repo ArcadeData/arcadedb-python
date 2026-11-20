@@ -359,6 +359,7 @@ public final class NativeExtras {
    * ops: metadata {type, prop} | approximate {type, prop, vector, k, allowed} | build {type, prop}. The index is the one the type has on the
    * property; its bucket indexes are searched in turn (the caller merges). metadata describes the first bucket index, as the JPype wrapper does.
    * build rebuilds the graph of every bucket index now (buildVectorGraphNow), as the JPype wrapper's build_graph_now() does (#162).
+   * approximate has a binary twin, arcadedb_n_vindex_bin (below); this one stays for the queries that entry cannot carry.
    */
   @CEntryPoint(name = "arcadedb_n_vindex")
   @SuppressWarnings("unchecked")
@@ -367,15 +368,7 @@ public final class NativeExtras {
       final Database db = ArcadeNative.db(dbh);
       final Map<String, Object> a = args(argsJson);
       final String type = (String) a.get("type"), prop = (String) a.get("prop");
-      final TypeIndex typeIndex = db.getSchema().getType(type).getPolymorphicIndexByProperties(prop);
-      if (typeIndex == null)
-        throw new IllegalArgumentException("No vector index on " + type + "[" + prop + "]");
-      final List<LSMVectorIndex> parts = new ArrayList<>();
-      for (final IndexInternal index : typeIndex.getIndexesOnBuckets())
-        if (index instanceof LSMVectorIndex lsm)
-          parts.add(lsm);
-      if (parts.isEmpty())
-        throw new IllegalArgumentException("Underlying index is not an LSM vector index");
+      final List<LSMVectorIndex> parts = vectorParts(db, type, prop);
       final StringBuilder sb = new StringBuilder("{\"ok\":true");
       switch (ArcadeNative.str(op)) {
       case "metadata" -> {
@@ -413,15 +406,11 @@ public final class NativeExtras {
         }
         sb.append(",\"hits\":[");
         boolean firstHit = true;
-        for (final LSMVectorIndex lsm : parts) {
-          final List<Pair<RID, Float>> hits = allowed != null ? lsm.findNeighborsFromVectorApproximate(query, k, allowed)
-              : lsm.findNeighborsFromVectorApproximate(query, k);
-          for (final Pair<RID, Float> hit : hits) {
-            if (!firstHit)
-              sb.append(',');
-            firstHit = false;
-            sb.append("[\"").append(hit.getFirst()).append("\",").append(hit.getSecond()).append(']');
-          }
+        for (final Pair<RID, Float> hit : approximateHits(parts, query, k, allowed)) {
+          if (!firstHit)
+            sb.append(',');
+          firstHit = false;
+          sb.append("[\"").append(hit.getFirst()).append("\",").append(hit.getSecond()).append(']');
         }
         sb.append(']');
       }
@@ -434,6 +423,85 @@ public final class NativeExtras {
       return ArcadeNative.out(sb.append('}').toString());
     } catch (final Throwable t) {
       return ArcadeNative.err(t);
+    }
+  }
+
+  /** The bucket indexes of the vector index that `type` has on `prop`. */
+  private static List<LSMVectorIndex> vectorParts(final Database db, final String type, final String prop) {
+    final TypeIndex typeIndex = db.getSchema().getType(type).getPolymorphicIndexByProperties(prop);
+    if (typeIndex == null)
+      throw new IllegalArgumentException("No vector index on " + type + "[" + prop + "]");
+    final List<LSMVectorIndex> parts = new ArrayList<>();
+    for (final IndexInternal index : typeIndex.getIndexesOnBuckets())
+      if (index instanceof LSMVectorIndex lsm)
+        parts.add(lsm);
+    if (parts.isEmpty())
+      throw new IllegalArgumentException("Underlying index is not an LSM vector index");
+    return parts;
+  }
+
+  /** The PQ-scored hits of every bucket index in turn, one list (up to k hits per bucket index; the caller merges). */
+  private static List<Pair<RID, Float>> approximateHits(final List<LSMVectorIndex> parts, final float[] query, final int k,
+      final Set<RID> allowed) {
+    final List<Pair<RID, Float>> all = new ArrayList<>();
+    for (final LSMVectorIndex lsm : parts)
+      all.addAll(allowed != null ? lsm.findNeighborsFromVectorApproximate(query, k, allowed)
+          : lsm.findNeighborsFromVectorApproximate(query, k));
+    return all;
+  }
+
+  /**
+   * The "approximate" op of arcadedb_n_vindex with no JSON on either side: no number text for the query, no hit text for the answer.
+   * type and prop are C strings. The query is `dims` float32 values at `query` (the engine narrows the JSON route's numbers to float32
+   * as well, so the search sees the same floats). `allowed` holds `allowedPairs` (bucket, position) pairs of int64, or is NULL with 0
+   * for no filter. `out` has room for `capHits` hits of three int64 words each: the RID's bucket, its position, and the score as the bits of
+   * a double. The score is the double that the JSON route's number text of the same float parses to (Float.toString, then
+   * Double.parseDouble: the shortest decimal of the float), so a caller reads the same bits from either route.
+   *
+   * Returns the number of hits n >= 0. When n <= capHits the n hits are in `out`; when n is larger nothing is written, and the caller calls
+   * again with room for n. -1 is an error, its text is read with arcadedb_n_last_error on the same thread (no reply text: no malloc, no
+   * arcadedb_free and no JSON decode in the caller).
+   */
+  @CEntryPoint(name = "arcadedb_n_vindex_bin")
+  public static long vindexBin(final IsolateThread thread, final long dbh, final CCharPointer type, final CCharPointer prop, final int k,
+      final CFloatPointer query, final long dims, final CCharPointer allowed, final long allowedPairs, final CCharPointer out,
+      final long capHits) {
+    try {
+      if (dims < 0 || dims > Integer.MAX_VALUE || allowedPairs < 0 || capHits < 0 || capHits > Integer.MAX_VALUE / 24)
+        throw new IllegalArgumentException(
+            "vector search arguments out of range (dims " + dims + ", allowed " + allowedPairs + ", capacity " + capHits + ")");
+      if (dims > 0 && query.isNull())
+        throw new IllegalArgumentException("no query vector");
+      final Database db = ArcadeNative.db(dbh);
+      final List<LSMVectorIndex> parts = vectorParts(db, ArcadeNative.str(type), ArcadeNative.str(prop));
+      final float[] q = new float[(int) dims];
+      for (int i = 0; i < q.length; i++)
+        q[i] = query.read(i);
+      Set<RID> allowedSet = null;
+      if (allowedPairs > 0) {
+        if (allowed.isNull())
+          throw new IllegalArgumentException("no allowed RIDs");
+        final Pointer pairs = (Pointer) allowed;
+        allowedSet = new HashSet<>();
+        for (long i = 0; i < allowedPairs; i++)
+          allowedSet.add(
+              new RID((int) pairs.readLong(WordFactory.signed(16L * i)), pairs.readLong(WordFactory.signed(16L * i + 8))));
+      }
+      final List<Pair<RID, Float>> hits = approximateHits(parts, q, k, allowedSet);
+      final int n = hits.size();
+      if (n > capHits)
+        return n;
+      final Pointer o = (Pointer) out;
+      for (int i = 0; i < n; i++) {
+        final Pair<RID, Float> hit = hits.get(i);
+        o.writeLong(24 * i, hit.getFirst().getBucketId());
+        o.writeLong(24 * i + 8, hit.getFirst().getPosition());
+        o.writeLong(24 * i + 16, Double.doubleToRawLongBits(Double.parseDouble(Float.toString(hit.getSecond()))));
+      }
+      return n;
+    } catch (final Throwable t) {
+      ArcadeNative.recordError(t);
+      return -1;
     }
   }
 
