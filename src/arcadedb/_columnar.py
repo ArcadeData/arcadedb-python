@@ -5,8 +5,11 @@ little-endian ``int32`` header length, a JSON header (``count``, ``cols``: name,
 vector, ``dim``), then for each column its null bitmap (bit i of byte i/8 set means row i is null) and its buffer. A column type is
 ``i8`` (int64), ``f8`` (float64), ``b1`` (one byte per bool), ``dt`` and ``dtu`` (int64 epoch milliseconds and microseconds),
 ``f4v`` and ``f8v`` (``dim`` floats per row), ``str`` (int32 offsets, count + 1 of them, then the UTF-8 bytes: Arrow's own string
-layout), ``dec`` (a BigDecimal as text in the string layout) and ``json`` (a JSON array of the column, for values no fixed layout
-carries: nested lists and maps, RIDs, a DATE next to datetimes, a mixed column).
+layout), ``dec`` (a BigDecimal as text in the string layout), ``rid`` (two int64 per row: the bucket and the position of a record
+link), ``li8`` and ``lf8`` (a list of int64 or of float64 per row: int32 offsets, count + 1 of them, a bitmap of the null elements, one
+bit per element of the flat array, then the elements of every list one after the other) and ``json`` (a JSON array of the column, for
+values no fixed layout carries: maps, nested lists, lists of anything else, embedded records, a DATE next to datetimes, a mixed
+column). A writer that does not know ``rid``, ``li8`` and ``lf8`` writes ``json`` for those columns, and the decoder reads both.
 
 The interface and the format are shared, the plumbing is per wheel: what differs is how the bytes get here (JPype or ctypes) and the
 text of a ``json`` column (the JVM wheel's tagged JSON with a side array of Java objects, the native library's tagged JSON), so the
@@ -64,6 +67,34 @@ def _decode_decimals(data, count: int, mask) -> list:
     return [
         None if s is None else Decimal(s) for s in _decode_strings(data, count, mask)
     ]
+
+
+def rid_texts(pairs) -> list:
+    """The RID texts (``"#bucket:position"``) of the ``(count, 2)`` int64 array of a ``rid`` column."""
+    return [f"#{b}:{p}" for b, p in pairs.tolist()]
+
+
+def _decode_list_column(data, count: int, ctype: str):
+    """``(offsets, flat, null_elements)`` of a ``li8`` or ``lf8`` column buffer: int32 offsets (count + 1), the bitmap of the null
+    elements, then the flat int64 or float64 array of every list's elements. ``null_elements`` is a bool array (True = null) or None
+    when no element is null."""
+    import numpy as np
+
+    offs = np.frombuffer(data[: (count + 1) * 4], dtype="<i4")
+    total = int(offs[count])
+    start = (count + 1) * 4
+    bitmap = (total + 7) // 8
+    bits = np.frombuffer(data[start : start + bitmap], dtype=np.uint8)
+    emask = (
+        np.unpackbits(bits, bitorder="little")[:total].astype(bool)
+        if bits.any()
+        else None
+    )
+    start += bitmap
+    flat = np.frombuffer(
+        data[start : start + total * 8], dtype="<i8" if ctype == "li8" else "<f8"
+    )
+    return offs, flat, emask
 
 
 def _missing_column_part(count: int, template):
@@ -235,7 +266,7 @@ def read_header(buf) -> Tuple[Dict[str, Any], int]:
 
 
 def decode_columns_frame(
-    buf, side, json_values: Callable, micros: bool = False
+    buf, side, json_values: Callable, micros: bool = False, rid_values: Callable = None
 ) -> Tuple[int, Dict[str, Any], Dict[str, Any]]:
     """``(count, parts, header)`` of one frame as ``to_columns`` columns: ``parts`` maps a column name to a numpy array
     (int64, float64, bool, datetime64) or a Python list (text, JSON-typed values, a bool column with nulls); a count of 0 has
@@ -243,6 +274,10 @@ def decode_columns_frame(
 
     ``micros`` is the ``to_dataframe`` form: a naive datetime column is ``datetime64[us]`` (``dtu``), and a vector column is a
     list with one numpy array per cell and None for a null (a NaN row would read as a vector of NaN, not as a missing value).
+
+    A ``rid`` column is a list of what ``rid_values(pairs, side, col)`` makes of the ``(count, 2)`` int64 array of its cells (the
+    wheel's own RID object; the null rows are set to None here), or of the RID texts without it. A ``li8`` or ``lf8`` column is a list
+    of Python lists (ints or floats, None for a null element), None for a null row.
     """
     import numpy as np
 
@@ -301,6 +336,27 @@ def decode_columns_frame(
                 values = [
                     None if has_nulls and mask[i] else values[i] for i in range(count)
                 ]
+        elif ctype == "rid":
+            pairs = np.frombuffer(data, dtype="<i8").reshape(count, 2)
+            values = (
+                rid_texts(pairs)
+                if rid_values is None
+                else list(rid_values(pairs, side, col))
+            )
+            if has_nulls:
+                for i in np.flatnonzero(mask).tolist():
+                    values[i] = None
+        elif ctype in ("li8", "lf8"):
+            offs, flat, emask = _decode_list_column(data, count, ctype)
+            items = flat.tolist()
+            if emask is not None:
+                for j in np.flatnonzero(emask).tolist():
+                    items[j] = None
+            bounds = offs.tolist()
+            values = [
+                None if has_nulls and mask[i] else items[bounds[i] : bounds[i + 1]]
+                for i in range(count)
+            ]
         elif ctype == "json":
             values = json_values(data, side, count)
         elif ctype == "dec":
@@ -463,6 +519,26 @@ def decode_arrow_frame(
                 arr = pa.FixedSizeListArray.from_arrays(child, dim)
                 if mask is not None:
                     arr = pa.array(arr.to_pylist(), type=arr.type, mask=mask)
+        elif ctype == "rid":
+            # text, as the column of RID objects of the json form degrades to (pyarrow has no type for a RID object)
+            texts = rid_texts(np.frombuffer(data, dtype="<i8").reshape(count, 2))
+            if has_nulls:
+                for i in np.flatnonzero(mask).tolist():
+                    texts[i] = None
+            arr = pa.array(texts, type=pa.string())
+        elif ctype in ("li8", "lf8"):
+            # a list<int64> or list<double> over the frame's own offsets and flat array, with a validity for null rows and elements
+            offs, flat, emask = _decode_list_column(data, count, ctype)
+            child = pa.array(flat, mask=emask)
+            validity = (
+                None if not has_nulls else pa.py_buffer(np.invert(null_bits).tobytes())
+            )
+            arr = pa.ListArray.from_buffers(
+                pa.list_(child.type),
+                count,
+                [validity, pa.py_buffer(offs.tobytes())],
+                children=[child],
+            )
         elif ctype == "json":
             values = json_values(data, side, count)
             try:
