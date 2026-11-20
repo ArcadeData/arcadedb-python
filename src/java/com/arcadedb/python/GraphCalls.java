@@ -13,6 +13,7 @@
 package com.arcadedb.python;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
@@ -48,6 +49,28 @@ public final class GraphCalls {
   /** The edges of {@code vertex.getEdges(Vertex.DIRECTION.BOTH, labels)}, in iteration order. */
   public static Edge[] bothEdges(final Vertex vertex, final String... labels) {
     return drain(vertex.getEdges(Vertex.DIRECTION.BOTH, labels));
+  }
+
+  /**
+   * {@code Vertex.new_edge()} in one crossing. Both ends are resolved by record id inside the active transaction: a vertex object is the
+   * state it had when it was read, and the first edge of a vertex rewrites its record (the head chunk of its edge list), so an object read
+   * before that commit would make the engine's update fail with ConcurrentModificationException. The source is looked up again by its
+   * identity (when it has a valid one and a database is given, else it is used as it is), the target goes in as its identity when that is
+   * valid and the engine loads it. Whether the edge is bidirectional is the EdgeType's. Python made seven calls for this
+   * (getIdentity, isValid, lookupByRID, asVertex, getIdentity, isValid, newEdge).
+   */
+  public static Edge newEdge(final Database db, final Vertex source, final String label, final Identifiable target, final Object... props) {
+    Vertex from = source;
+    final RID sourceRid = source.getIdentity();
+    if (db != null && sourceRid != null && sourceRid.isValid())
+      from = db.lookupByRID(sourceRid, true).asVertex();
+    Identifiable to = target;
+    if (target != null) {
+      final RID targetRid = target.getIdentity();
+      if (targetRid != null && targetRid.isValid())
+        to = targetRid;
+    }
+    return from.newEdge(label, to, props);
   }
 
   /**
