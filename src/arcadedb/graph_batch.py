@@ -489,24 +489,16 @@ class GraphBatch:
                     row[key] = value
                 rows.append(row)
 
-            if not tagged:
-                import json
-
-                for start in range(0, len(rows), self._BULK_CHUNK):
-                    edge_batcher.newEdgesJson(
-                        self._java_graph_batch,
-                        edge_type,
-                        json.dumps(rows[start : start + self._BULK_CHUNK]),
-                    )
-                return self
-
             # Every chunk is written before the first one crosses, so a value the
             # text cannot carry (a NaN, an integer beyond 64 bits or a date-time
             # inside a list or map, a subnormal) can still start the per-edge
-            # path over with nothing buffered.
+            # path over with nothing buffered. The engine's JSON parser reads the
+            # text of a subnormal as a DECIMAL, so the untagged text is checked
+            # for one as well.
+            dumps = json_bulk_dumps_tagged if tagged else json_bulk_dumps
             try:
                 texts = [
-                    json_bulk_dumps_tagged(rows[start : start + self._BULK_CHUNK])
+                    dumps(rows[start : start + self._BULK_CHUNK])
                     for start in range(0, len(rows), self._BULK_CHUNK)
                 ]
             except (TypeError, ValueError):
