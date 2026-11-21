@@ -9,9 +9,11 @@ ctypes takes the GIL for the call, and the reply is JSON (see the header of ``Na
 
 import copy
 import ctypes
+import heapq
 import itertools
 import json
 import logging
+import os
 import threading
 import time
 import weakref
@@ -473,17 +475,18 @@ class NativeGraphBatch(_BaseGraphBatch):
 
 # records per crossing of create_record (the same size as the commit interval of insert_many on this build)
 _ASYNC_BATCH = 1000
-# seconds a collected record may wait for the rest of its batch before a thread of the executor hands it over: a caller that creates
+# seconds a collected record may wait for the rest of its batch before a thread of the process (_Linger) hands it over: a caller that creates
 # records and waits for a callback, or reads after a pause, with no other call on the executor, is never kept waiting longer
 _ASYNC_LINGER = 0.05
 # the first records of an executor go one op each, exactly as in 26.11.1.post3, before it starts to collect: no copy, no buffer, no linger thread, no frame. Collecting has a fixed cost
-# per executor (the linger thread that is started for it and the locks) and a frame has its own fixed cost on top (see _ASYNC_FRAME_MIN), so a small load repays neither. In an untimed
+# per executor (the linger thread that each executor started when this was measured, and the locks) and a frame has its own fixed cost on top (see _ASYNC_FRAME_MIN), so a small load repays neither. In an untimed
 # micro of one executor call (a new executor, N records, wait_completion, native, cores 14 and 15) the first head of this change, which collected from the first record, read 1.6x slower
 # than post3 for 1 record and 1.2x for 16, and a direct phase of 32 with the frame floor still read 1.2x to 1.3x slower for 33 to 64 records. An executor of up to _ASYNC_DIRECT records is
 # therefore exactly post3. Beyond it the records collect, and a frame repays itself only from _ASYNC_DIRECT + 64 records, 192: an executor of 129 to 191 records collects a few records,
 # hands them over one op each and pays the collection cost without a frame, about 0.2 ms more than post3 whatever its size (10% to 15% of its time in the micro). The cost is near
 # constant per executor, so the relative slowdown falls as this number rises; 128 was chosen after a direct phase of 96 put the band on the 100-record case, and it is not tuned further.
-# A linger thread shared by all executors of the process would remove the cost (ArcadeData/arcadedb-python#406); 0 turns the direct phase off.
+# The linger thread is now one for the whole process (_Linger, ArcadeData/arcadedb-python#406): an executor starts no thread of its own. Whether that removes the cost of the band (and so
+# whether this number can fall or go) is not measured yet; the cost of a copy and a lock per collected record stays. 0 turns the direct phase off.
 _ASYNC_DIRECT = 128
 # a hand-over of fewer collected records than this goes one op each, as in post3: a columnar frame has a fixed cost per crossing (the untimed micro put it near 270 us on this build,
 # against about 12 us per record for the per-record op and about 3 us per record inside a frame, so a frame repays itself from about 30 records), and without this floor an executor of
@@ -498,6 +501,81 @@ def _snapshot(props: dict) -> dict:
         key: value if type(value) in _ATOMIC else copy.deepcopy(value)
         for key, value in props.items()
     }
+
+
+class _Linger:
+    """The one thread of the process that keeps the due times of collected batches (``create_record``) and hands a batch over when
+    its time is up.
+
+    An executor starts no thread: the first record of a batch registers the batch here with its due time (:meth:`add`). A flush point
+    that hands the batch over earlier leaves the entry to expire; it is dropped, without a thread, when its time comes. When a batch
+    is due and still the executor's current one, this thread starts a short-lived thread for the hand-over (``_linger_fire``), so that
+    a hand-over that blocks in the engine (a full queue, back pressure) holds back no other executor. The locks have one order: an
+    executor's ``_buf_lock``, then this lock. This thread never holds its lock while it touches an executor.
+    """
+
+    def __init__(self):
+        self._wake = threading.Condition(threading.Lock())
+        self._heap: list = (
+            []
+        )  # (due, serial, executor), the earliest first; the serial keeps the executors from being compared
+        self._serial = itertools.count()
+        self._thread = None
+
+    def add(self, executor, due: float):
+        with self._wake:
+            if self._thread is None or not self._thread.is_alive():
+                thread = threading.Thread(
+                    target=self._run, name="arcadedb-async-linger-timer", daemon=True
+                )
+                thread.start()
+                self._thread = thread
+            entry = (due, next(self._serial), executor)
+            heapq.heappush(self._heap, entry)
+            if self._heap[0] is entry:  # the new earliest: the thread sleeps too long
+                self._wake.notify()
+
+    def _run(self):
+        while True:
+            with self._wake:
+                while True:
+                    if not self._heap:
+                        self._wake.wait()
+                        continue
+                    left = self._heap[0][0] - time.monotonic()
+                    if left > 0:
+                        self._wake.wait(left)
+                        continue
+                    due, _, executor = heapq.heappop(self._heap)
+                    break
+            if executor._linger_pending(due):
+                try:
+                    threading.Thread(
+                        target=executor._linger_fire,
+                        args=(due,),
+                        name="arcadedb-async-linger",
+                        daemon=True,
+                    ).start()
+                except (
+                    RuntimeError
+                ):  # no thread to be had: hand over here, a delay for the others is better than a batch that stays
+                    executor._linger_fire(due)
+            executor = (
+                None  # an executor that is dropped is not kept alive by this frame
+            )
+
+
+_linger = _Linger()
+
+
+def _linger_after_fork():
+    """A forked child has none of the threads of its parent, and the lock of ``_linger`` may be held by one of them: start afresh."""
+    global _linger
+    _linger = _Linger()
+
+
+if hasattr(os, "register_at_fork"):  # not on Windows
+    os.register_at_fork(after_in_child=_linger_after_fork)
 
 
 class NativeAsyncExecutor:
@@ -522,10 +600,8 @@ class NativeAsyncExecutor:
         self._buf: list = []
         self._buf_key = None
         self._buf_lock = threading.RLock()
-        # the linger thread (started with the first collected record) hands a batch over when its first record has waited
-        # _ASYNC_LINGER; a failure it meets is kept and raised by the next call that hands records over
-        self._linger = threading.Condition(self._buf_lock)
-        self._linger_thread = None
+        # the linger thread of the process (_Linger) hands a batch over when its first record has waited _ASYNC_LINGER (_linger_due,
+        # set with the first record of each batch); a failure it meets is kept and raised by the next call that hands records over
         self._linger_due = 0.0
         self._linger_stop = False
         self._linger_error = None
@@ -653,8 +729,8 @@ class NativeAsyncExecutor:
         afterwards is stored as it was at this call) and cross the library boundary ``_ASYNC_BATCH`` at a time, as one columnar frame with the callback ids of each record (not one JSON op per record) when at least ``_ASYNC_FRAME_MIN`` (64)
         of them are handed over together, else one op each as in post3. Every other call on the executor (``wait_completion``,
         ``is_processing``, ``query``, ``command``, ``kill``, ``close``, ...) hands the collected records over first, so the engine
-        queue keeps the order of the calls and a record is never held back from a ``wait_completion`` that follows its call. A thread of
-        the executor hands a batch over when its first record has waited ``_ASYNC_LINGER`` (50 ms), so a caller that waits for a
+        queue keeps the order of the calls and a record is never held back from a ``wait_completion`` that follows its call. A thread
+        that the process shares between its executors (``_Linger``) hands a batch over when its first record has waited ``_ASYNC_LINGER`` (50 ms), so a caller that waits for a
         callback or reads after a pause, with no other call, is not kept waiting; a failure that thread meets is raised by the next
         call that hands records over. Records
         whose shape the frame cannot carry (different keys, nested values, numpy scalars, mixed-type columns, integers beyond 64 bits)
@@ -688,35 +764,29 @@ class NativeAsyncExecutor:
     def _start_linger(self):
         """Under ``_buf_lock``: the batch that has just got its first record is handed over at the latest after ``_ASYNC_LINGER``."""
         self._linger_due = time.monotonic() + _ASYNC_LINGER
-        if self._linger_thread is None:
-            self._linger_thread = threading.Thread(
-                target=self._linger_loop, name="arcadedb-async-linger", daemon=True
-            )
-            self._linger_thread.start()
-        else:
-            self._linger.notify()
+        _linger.add(self, self._linger_due)
 
-    def _linger_loop(self):
+    def _linger_pending(self, due):
+        """Without the lock, for the thread of the process: is the batch that was registered with ``due`` still waiting? A false answer
+        is final (the batch was handed over, a later batch has its own entry, or the executor is closed); a true one is checked again
+        under the lock by :meth:`_linger_fire`."""
+        return self._linger_due == due and bool(self._buf) and not self._linger_stop
+
+    def _linger_fire(self, due):
+        """The hand-over of the batch that was registered with ``due``, on a thread of its own (see :class:`_Linger`)."""
         with self._buf_lock:
-            while not self._linger_stop:
-                if not self._buf:
-                    self._linger.wait()
-                    continue
-                left = self._linger_due - time.monotonic()
-                if left > 0:
-                    self._linger.wait(left)
-                    continue
-                try:
-                    self._flush_buffer()
-                except (
-                    BaseException
-                ) as e:  # no caller to raise it to: the next call that hands records over raises it
-                    self._linger_error = e
+            if self._linger_stop or not self._buf or self._linger_due != due:
+                return
+            try:
+                self._flush_buffer()
+            except (
+                BaseException
+            ) as e:  # no caller to raise it to: the next call that hands records over raises it
+                self._linger_error = e
 
     def _stop_linger(self):
         with self._buf_lock:
             self._linger_stop = True
-            self._linger.notify_all()
 
     def _queue_record(self, type_name, kind, props, callback, error_callback):
         cb = self._record_callback(callback, kind) if callback is not None else 0
