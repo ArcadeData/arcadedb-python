@@ -1135,6 +1135,19 @@ def _engine_version(db):
 WHERE_SINCE = (26, 11, 1)
 
 
+HIERARCHY_SINCE = (26, 12, 1)  # the engine builds a hierarchy by default from here
+
+
+def _engine_version(db):
+    """The engine's x.y.z through SQL `SELECT version()`; a SNAPSHOT or a build suffix is dropped."""
+    raw = str(db.query("sql", "SELECT version() AS v").first().get("v"))
+    parts = [
+        int(p) if p.isdigit() else 0
+        for p in raw.split()[0].split("-")[0].split(".")[:3]
+    ]
+    return tuple(parts + [0] * (3 - len(parts)))
+
+
 class TestVectorSearchOptionsSql:
     """The vector.neighbors option map and index metadata the vector guide documents.
 
@@ -1321,12 +1334,17 @@ class TestVectorSearchOptionsSql:
         assert float(meta.alphaDiversityRelaxation) == pytest.approx(1.4)
         assert bool(meta.addHierarchy) is True
 
-    def test_add_hierarchy_default_agrees_between_sql_and_python(self, test_db):
-        """From engine 26.12.1 (ArcadeData/arcadedb#12616) SQL and create_vector_index() both build a hierarchy; quantization still differs."""
+    def test_add_hierarchy_default_follows_the_engine_and_python_builds_a_hierarchy(
+        self, test_db
+    ):
+        """SQL follows the engine: a flat graph before engine 26.12.1, a hierarchy from it
+        (ArcadeData/arcadedb#12616). create_vector_index() builds a hierarchy on every engine.
+        """
+        engine_default = _engine_version(test_db) >= HIERARCHY_SINCE
         self._make_docs(test_db)
         meta = test_db.schema.get_vector_index("OptDoc", "embedding").get_metadata()
-        assert meta["add_hierarchy"] is True
-        # Quantization still differs, as the vector guide says: SQL is the engine's NONE.
+        assert meta["add_hierarchy"] is engine_default
+        # Quantization differs on every engine, as the vector guide says: SQL is the engine's NONE.
         assert meta["quantization"] == "NONE"
 
         test_db.command("sql", "CREATE VERTEX TYPE PyHier")
@@ -1342,7 +1360,7 @@ class TestVectorSearchOptionsSql:
         engine_default_index = test_db.create_vector_index(
             "PyEngineDefault", "embedding", dimensions=2, add_hierarchy=None
         )
-        assert engine_default_index.get_metadata()["add_hierarchy"] is True
+        assert engine_default_index.get_metadata()["add_hierarchy"] is engine_default
 
     def test_sql_graph_settings_default_to_the_engines(self, test_db):
         self._make_docs(test_db)

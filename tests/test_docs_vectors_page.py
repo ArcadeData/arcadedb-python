@@ -37,6 +37,23 @@ def _blocks():
     return found
 
 
+HIERARCHY_SINCE = (
+    26,
+    12,
+    1,
+)  # the engine builds a hierarchy by default from here (ArcadeData/arcadedb#12616)
+
+
+def _engine_version(db):
+    """The engine's x.y.z through SQL `SELECT version()`; a SNAPSHOT or a build suffix is dropped."""
+    raw = str(db.query("sql", "SELECT version() AS v").first().get("v"))
+    parts = [
+        int(p) if p.isdigit() else 0
+        for p in raw.split()[0].split("-")[0].split(".")[:3]
+    ]
+    return tuple(parts + [0] * (3 - len(parts)))
+
+
 def test_the_page_has_its_blocks():
     blocks = _blocks()
     assert len(blocks) >= 10
@@ -45,14 +62,17 @@ def test_the_page_has_its_blocks():
 
 def test_every_block_runs_in_order_and_prints_what_the_page_says(temp_db):
     namespace = {"db": temp_db, "__name__": "vectors_page"}
+    newer = _engine_version(temp_db) >= HIERARCHY_SINCE
     for number, (code, expected) in enumerate(_blocks(), start=1):
         captured = io.StringIO()
         compiled = compile(code, f"vectors.adoc python block {number}", "exec")
         with contextlib.redirect_stdout(captured):
             exec(compiled, namespace)  # nosec B102 - the page of this repository
         if expected is not None:
+            # the page shows the engine of this release; an older engine (the parity job's 26.11.1) builds a flat graph from SQL
+            want = expected if newer else expected.replace("NONE True", "NONE False")
             assert (
-                captured.getvalue().strip() == expected.strip()
+                captured.getvalue().strip() == want.strip()
             ), f"block {number} printed other text than the page shows:\n{code}"
         else:
             assert (
