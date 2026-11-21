@@ -6,6 +6,7 @@ Tests cover:
 - LSMVectorIndex operations (find_nearest)
 """
 
+import numpy as np
 import pytest
 
 import arcadedb
@@ -694,6 +695,50 @@ class TestLSMVectorIndex:
         results = index.find_nearest(query, k=5, allowed_rids=allowed_rids)
         assert len(results) == 1
         assert str(results[0][0].get_identity()) == rids[3]
+
+    @pytest.mark.parametrize(
+        "make_empty",
+        [list, tuple, lambda: iter(()), lambda: np.array([], dtype=object)],
+        ids=["list", "tuple", "iterator", "ndarray"],
+    )
+    def test_an_empty_allowed_rids_returns_nothing(self, test_db, make_empty):
+        """``allowed_rids=None`` is no filter; an empty collection allows no record, so the search
+        returns nothing. It used to be read as "no filter" and return the nearest records of the
+        whole index (and a numpy array raised "truth value of an array is ambiguous").
+        """
+        test_db.command("sql", "CREATE VERTEX TYPE Doc")
+        test_db.command("sql", "CREATE PROPERTY Doc.embedding ARRAY_OF_FLOATS")
+        index = test_db.create_vector_index("Doc", "embedding", dimensions=3)
+        with test_db.transaction():
+            for vec in ([1.0, 0.0, 0.0], [0.9, 0.1, 0.0], [0.0, 1.0, 0.0]):
+                test_db.command(
+                    "sql",
+                    "INSERT INTO Doc SET embedding = ?",
+                    arcadedb.to_java_float_array(vec),
+                )
+        query = [1.0, 0.0, 0.0]
+        assert len(index.find_nearest(query, k=3)) == 3
+        assert index.find_nearest(query, k=3, allowed_rids=make_empty()) == []
+
+    def test_allowed_rids_accepts_a_numpy_array(self, test_db):
+        """A truth test of ``allowed_rids`` raised "truth value of an array is ambiguous" for an array of two or more RIDs."""
+        test_db.command("sql", "CREATE VERTEX TYPE Doc")
+        test_db.command("sql", "CREATE PROPERTY Doc.embedding ARRAY_OF_FLOATS")
+        index = test_db.create_vector_index("Doc", "embedding", dimensions=3)
+        with test_db.transaction():
+            for vec in ([1.0, 0.0, 0.0], [0.9, 0.1, 0.0], [0.0, 1.0, 0.0]):
+                test_db.command(
+                    "sql",
+                    "INSERT INTO Doc SET embedding = ?",
+                    arcadedb.to_java_float_array(vec),
+                )
+        rids = [str(r.get_rid()) for r in test_db.query("sql", "SELECT FROM Doc")]
+        hits = index.find_nearest(
+            [1.0, 0.0, 0.0], k=3, allowed_rids=np.array(rids[1:], dtype=object)
+        )
+        assert sorted(str(record.get_identity()) for record, _ in hits) == sorted(
+            rids[1:]
+        )
 
     def test_lsm_vector_search_looks_up_all_hits_in_one_bridge_call(
         self, test_db, monkeypatch
