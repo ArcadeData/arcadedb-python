@@ -59,6 +59,20 @@ def test_to_java_byte_array_accepts_bytes_like_fast_paths(jvm):
     ) == [0, 127, -1]
 
 
+def test_to_java_float_array_without_numpy_on_the_native_build_says_what_to_install(
+    monkeypatch,
+):
+    """NumPy is an optional extra of the ``arcadedb`` package. The native conversion read ``_np.asarray`` unguarded, so a list
+    raised "'NoneType' object has no attribute 'asarray'" instead of naming the extra.
+    """
+    from arcadedb import vector
+
+    monkeypatch.setattr(vector, "_native_enabled", lambda: True)
+    monkeypatch.setattr(vector, "_np", None)
+    with pytest.raises(ImportError, match=r"arcadedb\[numpy\]"):
+        arcadedb.to_java_float_array([0.1, 0.2])
+
+
 def test_to_java_float_array_accepts_numpy_directly(jvm):
     """to_java_float_array should accept NumPy arrays without Python-list copies."""
     np = pytest.importorskip("numpy")
