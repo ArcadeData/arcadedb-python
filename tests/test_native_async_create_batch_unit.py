@@ -13,6 +13,7 @@ values and the callbacks of the real library are in test_native_async_create_bat
 """
 
 import json
+import threading
 import time
 
 import pytest
@@ -98,6 +99,8 @@ def library(monkeypatch):
     monkeypatch.setattr(extras, "_call", fake)
     monkeypatch.setattr(extras, "_ensure_upcall", lambda: None)
     monkeypatch.setattr(bulk, "_usable", lambda: True)
+    # a linger thread of its own for each test: the due times of another test (3600 s) are not in this one's way
+    monkeypatch.setattr(extras, "_linger", extras._Linger())
     return fake
 
 
@@ -403,19 +406,161 @@ def test_a_failure_of_the_linger_flush_is_raised_by_the_next_call(
     executor.wait_completion()  # raised once, not again
 
 
-def test_close_stops_the_linger_thread(library, executor, monkeypatch):
+def test_close_leaves_nothing_for_the_linger_thread_to_hand_over(
+    library, executor, monkeypatch
+):
     monkeypatch.setattr(extras, "_ASYNC_LINGER", 3600.0, raising=False)
     executor.create_record(_Doc("Item", {"id": 1}))
-    thread = executor._linger_thread
-    assert thread is not None and thread.is_alive()
+    assert extras._linger._thread.is_alive()
+    due = executor._linger_due
     executor.close()
-    assert _wait_for(
-        lambda: not thread.is_alive()
-    ), "the linger thread outlived close()"
     assert library.order()[0] == (
         "create_record",
         None,
     )  # the record was handed over by close(), before the engine closed
+    assert not executor._linger_pending(due)
+    executor._linger_fire(
+        due
+    )  # the entry of the closed executor, when its time comes: nothing
+    assert library.order().count(("create_record", None)) == 1
+
+
+def test_an_executor_starts_no_thread_of_its_own(library, monkeypatch):
+    # ArcadeData/arcadedb-python#406: the thread that each executor started with its first collected record is the one of the process
+    first = extras.NativeAsyncExecutor(_Db())
+    first.create_record(_Doc("Item", {"id": 0}))
+    before = threading.active_count()
+    executors = [extras.NativeAsyncExecutor(_Db()) for _ in range(20)]
+    for executor in executors:
+        for doc in _rows(3):
+            executor.create_record(doc)
+    assert threading.active_count() == before
+    assert (
+        len(extras._linger._heap) == 21
+    )  # one entry for the first record of each batch
+    for executor in executors:
+        executor.wait_completion()
+    assert len(library.batches()) == 20
+
+
+def test_many_executors_get_their_batches_handed_over_in_time(library, monkeypatch):
+    monkeypatch.setattr(extras, "_ASYNC_LINGER", 0.02, raising=False)
+    executors = [extras.NativeAsyncExecutor(_Db()) for _ in range(10)]
+    for index, executor in enumerate(executors):
+        for doc in _rows(3, f"T{index}"):
+            executor.create_record(doc)
+    assert _wait_for(lambda: len(library.batches()) == 10)
+    assert sorted(b[2]["type"] for b in library.batches()) == sorted(
+        f"T{i}" for i in range(10)
+    )
+    assert all(b[2]["n"] == 3 for b in library.batches())
+
+
+def test_a_batch_that_a_flush_point_handed_over_is_not_handed_over_again(
+    library, executor, monkeypatch
+):
+    monkeypatch.setattr(extras, "_ASYNC_LINGER", 0.02, raising=False)
+    fired = []
+    real = executor._linger_fire
+    monkeypatch.setattr(
+        executor, "_linger_fire", lambda due: (fired.append(due), real(due))
+    )
+    for doc in _rows(3):
+        executor.create_record(doc)
+    executor.wait_completion()
+    assert library.order() == [("create_records", 3), ("wait", None)]
+    assert _wait_for(lambda: not extras._linger._heap), "the entry never came due"
+    time.sleep(0.05)
+    assert fired == []  # a stale entry starts no thread
+    assert library.order() == [("create_records", 3), ("wait", None)]
+
+
+def test_the_entry_of_an_earlier_batch_does_not_cut_a_later_batch_short(
+    library, executor, monkeypatch
+):
+    monkeypatch.setattr(extras, "_ASYNC_LINGER", 0.1, raising=False)
+    fired = []
+    real = executor._linger_fire
+    monkeypatch.setattr(
+        executor, "_linger_fire", lambda due: (fired.append(due), real(due))
+    )
+    for doc in _rows(2):
+        executor.create_record(doc)
+    executor.wait_completion()  # the first batch is handed over by this call; its entry stays
+    first_due = executor._linger_due
+    for doc in _rows(2):
+        executor.create_record(doc)
+    second_due = executor._linger_due
+    assert second_due > first_due
+    assert _wait_for(lambda: library.batches() and len(library.batches()) == 2)
+    assert fired == [second_due]  # only the entry of the batch that was still waiting
+    assert time.monotonic() >= second_due  # and not before its own time
+
+
+def test_the_order_of_the_calls_holds_across_linger_hand_overs_and_flush_points(
+    library, executor, monkeypatch
+):
+    # one op each (a frame of a few records is a column layout; the id of each record shows in the per-record op)
+    monkeypatch.setattr(extras, "_ASYNC_FRAME_MIN", 1000)
+    monkeypatch.setattr(extras, "_ASYNC_LINGER", 0.02, raising=False)
+    sent = 0
+    for round_ in range(4):
+        for _ in range(3):
+            executor.create_record(_Doc("Item", {"id": sent}))
+            sent += 1
+        if round_ % 2 == 0:
+            assert _wait_for(lambda: len(library.per_record()) == sent)
+        else:
+            executor.is_processing()  # a flush point of its own
+    executor.wait_completion()
+    assert [o[2]["props"]["id"] for o in library.per_record()] == list(range(sent))
+
+
+def test_a_hand_over_that_blocks_holds_back_no_other_executor(library, monkeypatch):
+    # the engine can block a hand-over (a full queue): the linger thread of the process must not wait for it
+    monkeypatch.setattr(extras, "_ASYNC_LINGER", 0.02, raising=False)
+    entered, release = threading.Event(), threading.Event()
+
+    def gated(prefix, name, handle, op, text, *rest):
+        if json.loads(text).get("type") == "Blocked":
+            entered.set()
+            assert release.wait(30), "the test never released the blocked hand-over"
+        return library(prefix, name, handle, op, text, *rest)
+
+    monkeypatch.setattr(extras, "_call", gated)
+    blocked, other = extras.NativeAsyncExecutor(_Db()), extras.NativeAsyncExecutor(
+        _Db()
+    )
+    try:
+        for doc in _rows(3, "Blocked"):
+            blocked.create_record(doc)
+        assert entered.wait(10), "the first hand-over was never started"
+        for doc in _rows(3, "Free"):
+            other.create_record(doc)
+        assert _wait_for(
+            lambda: any(b[2]["type"] == "Free" for b in library.batches())
+        ), "an executor waited for the hand-over of another"
+    finally:
+        release.set()
+    assert _wait_for(lambda: any(b[2]["type"] == "Blocked" for b in library.batches()))
+
+
+def test_a_forked_child_starts_a_linger_thread_afresh(library, executor, monkeypatch):
+    monkeypatch.setattr(extras, "_ASYNC_LINGER", 3600.0, raising=False)
+    executor.create_record(_Doc("Item", {"id": 1}))
+    parents = extras._linger
+    assert parents._thread is not None and len(parents._heap) == 1
+    extras._linger_after_fork()  # what os.register_at_fork runs in the child
+    children = extras._linger
+    assert children is not parents
+    assert children._thread is None and children._heap == []
+    monkeypatch.setattr(extras, "_ASYNC_LINGER", 0.02, raising=False)
+    child_executor = extras.NativeAsyncExecutor(_Db())
+    for doc in _rows(3):
+        child_executor.create_record(doc)
+    assert _wait_for(
+        lambda: library.batches()
+    ), "the child's batch was never handed over"
 
 
 # the direct phase (ArcadeData/arcadedb-python #388, #393): the first _ASYNC_DIRECT (128) records of an executor go one op each, exactly as in post3.
@@ -433,7 +578,8 @@ def test_an_executor_of_up_to_128_records_sends_one_op_each_and_collects_nothing
         executor.create_record(
             doc, callback=seen.append, error_callback=lambda e: seen.append(e)
         )
-    assert executor._buf == [] and executor._linger_thread is None
+    assert executor._buf == [] and extras._linger._thread is None
+    assert extras._linger._heap == []
     assert library.batches() == []
     ops = library.per_record()
     assert len(ops) == n
