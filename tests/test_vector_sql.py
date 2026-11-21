@@ -1321,12 +1321,12 @@ class TestVectorSearchOptionsSql:
         assert float(meta.alphaDiversityRelaxation) == pytest.approx(1.4)
         assert bool(meta.addHierarchy) is True
 
-    def test_add_hierarchy_defaults_differ_between_sql_and_python(self, test_db):
-        """SQL follows the engine (flat graph); create_vector_index() builds a hierarchy."""
+    def test_add_hierarchy_default_agrees_between_sql_and_python(self, test_db):
+        """From engine 26.12.1 (ArcadeData/arcadedb#12616) SQL and create_vector_index() both build a hierarchy; quantization still differs."""
         self._make_docs(test_db)
         meta = test_db.schema.get_vector_index("OptDoc", "embedding").get_metadata()
-        assert meta["add_hierarchy"] is False
-        # The vector guide says the same of quantization: SQL is the engine's NONE.
+        assert meta["add_hierarchy"] is True
+        # Quantization still differs, as the vector guide says: SQL is the engine's NONE.
         assert meta["quantization"] == "NONE"
 
         test_db.command("sql", "CREATE VERTEX TYPE PyHier")
@@ -1342,7 +1342,7 @@ class TestVectorSearchOptionsSql:
         engine_default_index = test_db.create_vector_index(
             "PyEngineDefault", "embedding", dimensions=2, add_hierarchy=None
         )
-        assert engine_default_index.get_metadata()["add_hierarchy"] is False
+        assert engine_default_index.get_metadata()["add_hierarchy"] is True
 
     def test_sql_graph_settings_default_to_the_engines(self, test_db):
         self._make_docs(test_db)

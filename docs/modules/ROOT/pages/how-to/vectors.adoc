@@ -35,7 +35,7 @@ The same index is available as a method. `db.create_vector_index(...)` runs the 
 
 === The two paths have different defaults
 
-The statement follows the engine, and the method follows the choices of these bindings. The two build different indexes from the same dimensions and similarity:
+The statement follows the engine, and the method follows the choices of these bindings. The two build different indexes from the same dimensions and similarity (on 26.11.1 and earlier the graph shape differs as well):
 
 [cols="2,2,2"]
 |===
@@ -46,7 +46,7 @@ The statement follows the engine, and the method follows the choices of these bi
 | `"INT8"`
 
 | `addHierarchy` (`add_hierarchy`)
-| `false` (a flat graph)
+| `true` (HNSW hierarchy layers) from engine 26.12.1; `false` (a flat graph) on 26.11.1 and earlier
 | `True` (HNSW hierarchy layers)
 |===
 
@@ -61,10 +61,10 @@ print(meta["quantization"], meta["add_hierarchy"])
 
 [source,text]
 ----
-NONE False
+NONE True
 ----
 
-Name the setting in the statement or in the call when you compare results or need the same index from both paths. `"quantization": "INT8"` and `"addHierarchy": true` in the `METADATA` give the method's index; `quantization=None` and `add_hierarchy=False` in the call give the statement's. Do not take `INT8` as the best choice from its being the method's default: check recall and speed on your own data.
+Name the setting in the statement or in the call when you compare results or need the same index from both paths. `"quantization": "INT8"` and `"addHierarchy": true` in the `METADATA` give the method's index; `quantization=None` in the call gives the statement's (and `add_hierarchy=False` on 26.11.1 and earlier, where the statement builds a flat graph). Do not take `INT8` as the best choice from its being the method's default: check recall and speed on your own data.
 
 == Insert vectors
 
