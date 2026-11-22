@@ -47,8 +47,15 @@ def to_java_float_array(vector):
 
     Returns:
         Java float array compatible with ArcadeDB vector indexes
+
+    Raises:
+        ImportError: On the ``arcadedb`` (native) package when NumPy is not installed; the array it returns is a NumPy array.
     """
     if _native_enabled():
+        if _np is None:
+            raise ImportError(
+                "to_java_float_array() needs NumPy on the arcadedb package: install it with 'uv add \"arcadedb[numpy]\"'"
+            )
         return _np.asarray(
             vector if hasattr(vector, "__array__") else list(vector), dtype=_np.float32
         )
