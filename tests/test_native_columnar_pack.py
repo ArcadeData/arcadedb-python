@@ -399,3 +399,66 @@ def test_arrow_numbers_with_nulls_and_arrow_vectors():
         columnar.pack({"v": ragged}, columnar.Declared(known={"v": "ARRAY_OF_FLOATS"}))
         is None
     )
+
+
+# ---- Declared: the schema is read once per object, so once per ingest call (#315)
+
+
+class _Rows:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def to_list(self):
+        return self._rows
+
+
+class _Handle:
+    """Just enough of a database handle for ``Declared``: a ``query`` that counts the schema reads, and ``_command_count``, which a
+    test moves the way a statement run on the handle does."""
+
+    def __init__(self, properties):
+        self.properties = properties
+        self.reads = 0
+        self.unreadable = False
+        self._command_count = 0
+
+    def query(self, language, command):
+        self.reads += 1
+        if self.unreadable:
+            raise RuntimeError("the schema cannot be read")
+        entries = [{"name": n, "type": t} for n, t in self.properties.items()]
+        return _Rows([{"name": "T", "properties": entries, "parentTypes": []}])
+
+
+def test_declared_reads_the_schema_once_and_again_only_after_a_statement():
+    handle = _Handle({"v": "ARRAY_OF_FLOATS"})
+    declared = columnar.Declared(handle, "T")
+    assert handle.reads == 0  # nothing is read until a column asks
+    assert [declared.get("v") for _ in range(50)] == ["ARRAY_OF_FLOATS"] * 50
+    assert declared.get("w") is None
+    assert handle.reads == 1
+    handle.properties["w"] = "FLOAT"
+    assert declared.get("w") is None and handle.reads == 1  # no statement ran: kept
+    handle._command_count += 1  # a statement ran on the handle (a DDL, say)
+    assert declared.get("w") == "FLOAT" and handle.reads == 2
+    assert declared.get("v") == "ARRAY_OF_FLOATS" and handle.reads == 2
+
+
+def test_declared_with_known_types_never_reads_the_schema():
+    handle = _Handle({"v": "FLOAT"})
+    declared = columnar.Declared(handle, "T", {"v": "ARRAY_OF_FLOATS"})
+    handle._command_count += 1
+    assert declared.get("v") == "ARRAY_OF_FLOATS" and handle.reads == 0
+
+
+def test_declared_asks_again_while_the_schema_cannot_be_read():
+    handle = _Handle({"v": "FLOAT"})
+    handle.unreadable = True
+    declared = columnar.Declared(handle, "T")
+    assert declared.get("v") is None and handle.reads == 1
+    handle.unreadable = False
+    assert declared.get("v") == "FLOAT" and handle.reads == 2
+
+
+def test_declared_without_a_handle_or_types_answers_none():
+    assert columnar.Declared().get("v") is None
