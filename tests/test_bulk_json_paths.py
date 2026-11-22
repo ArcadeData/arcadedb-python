@@ -153,3 +153,14 @@ def test_text_that_only_looks_like_an_exponent_skips_the_subnormal_walk(monkeypa
         type_conversion.json_bulk_dumps([{"x": 5e-324}])
     with pytest.raises(ValueError):
         type_conversion.json_bulk_dumps([{"x": 2.2250738585072009e-308}])
+
+
+@pytest.mark.parametrize("entry", ENTRY_POINTS)
+@pytest.mark.parametrize("value", [5e-324, -5e-324, 1e-310])
+def test_subnormal_doubles_stay_doubles(temp_db_path, entry, value):
+    # the engine's JSON parser reads the text of a subnormal (5e-324) as a BigDecimal, so a bulk path that
+    # writes it unchecked stores a DECIMAL where every per-value path stores a double
+    with arcadedb.create_database(temp_db_path) as db:
+        _create_types(db)
+        (stored,) = _write(db, entry, value)
+        assert type(stored) is float and stored == value
