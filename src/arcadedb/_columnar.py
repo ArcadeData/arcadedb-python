@@ -412,13 +412,22 @@ def _pandas_would_round(values) -> bool:
     return any(type(v) is int and not -_TWO53 <= v <= _TWO53 for v in values)
 
 
-def dataframe_from_columns(columns):
+def frame_row_total(batches) -> int:
+    """The number of rows in the decoded frames ``batches`` (a list of ``(count, parts)``)."""
+    return sum(count for count, _ in batches)
+
+
+def dataframe_from_columns(columns, rows: int = 0):
     """The ``pandas.DataFrame`` of the ``to_columns`` dict ``columns`` (what both wheels' ``to_dataframe`` builds). A column that is a
     list holding an integer beyond +-2**53 next to a float is an ``object`` column of the exact Python values, as ``to_columns()``
     returns them: pandas would make it float64 and round the integer (#340). Every other column is handed to pandas as it was.
+    ``rows`` is the row count of the result: a dict with no column cannot carry it, so rows that have no property come as it.
     """
     import pandas as pd
 
+    if not columns and rows:
+        # rows that have no property: a frame of that many rows and no column, as pandas.DataFrame([{}, {}]) is (#429)
+        return pd.DataFrame(index=pd.RangeIndex(rows))
     exact = {
         name: pd.Series(values, dtype=object)
         for name, values in columns.items()
@@ -523,8 +532,12 @@ def merge_arrow(
     :func:`_unify_arrow_chunk_types`), a frame that lacks a column adds nulls."""
     import pyarrow as pa
 
-    if not batches or not names:
+    if not batches:
         return empty_arrow(columns)
+    if not names:
+        # rows that have no property: a table of that many rows and no column (#429). pa.table({}) would have no rows.
+        rows = frame_row_total(batches)
+        return pa.Table.from_struct_array(pa.array([{}] * rows, pa.struct([])))
     return pa.table(
         {
             n: pa.chunked_array(

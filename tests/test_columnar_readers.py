@@ -223,6 +223,39 @@ def test_to_columns_of_differing_rows_keeps_what_to_list_returns(
         assert _typed(column) == _typed(expected)
 
 
+@pytest.mark.parametrize("batch_size", [25_000, 2])
+def test_rows_without_properties_keep_their_count(temp_db_path, batch_size):
+    """#429: three vertices created with no property were three rows in to_list() and count(), and no row in to_arrow(),
+    to_polars() and to_dataframe(): the readers dropped the row count with the (empty) column names.
+    """
+    import polars as pl  # in the test extra; the repository accepts no skips
+
+    with arcadedb.create_database(temp_db_path) as db:
+        db.command("sql", "CREATE VERTEX TYPE Bare")
+        with db.transaction():
+            for _ in range(3):
+                db.command("sql", "CREATE VERTEX Bare")
+        q = "SELECT FROM Bare"
+        assert len(db.query("sql", q).to_list()) == 3
+        table = db.query("sql", q).to_arrow(batch_size=batch_size)
+        assert (table.num_rows, table.num_columns) == (3, 0)
+        assert db.query("sql", q).to_dataframe().shape == (3, 0)
+        frame = db.query("sql", q).to_polars(batch_size=batch_size)
+        assert isinstance(frame, pl.DataFrame) and frame.shape == (3, 0)
+        # a dict of columns has no place for a row count: documented, not a loss of rows elsewhere
+        assert db.query("sql", q).to_columns(batch_size=batch_size) == {}
+
+
+def test_an_empty_result_is_still_empty_in_every_reader(temp_db_path):
+    with arcadedb.create_database(temp_db_path) as db:
+        db.command("sql", "CREATE VERTEX TYPE Bare")
+        q = "SELECT FROM Bare"
+        table = db.query("sql", q).to_arrow()
+        assert (table.num_rows, table.num_columns) == (0, 0)
+        assert db.query("sql", q).to_dataframe().shape == (0, 0)
+        assert db.query("sql", q).to_columns() == {}
+
+
 DECIMAL_CASES = {
     "36 digits": [Decimal("12345678901234567890.123456789012345678")],
     "whole amounts only": [Decimal("2"), Decimal("3")],
