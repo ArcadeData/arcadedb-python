@@ -1,0 +1,151 @@
+# Opens or updates one issue when a test workflow is red on `main` or in a nightly run (ArcadeData/arcadedb-python#447).
+#
+# A pull request runs only the fast tier (Linux x86-64, #443), so a failure that only macOS, Windows, arm64 or an example leg shows is first seen
+# on `main` after the merge. The badges in the README show it, but nobody has to look at them. This workflow is the push that does not wait for a look.
+#
+# It reacts to the end of `Test JVM (arcadedb-jvm)`, `Test native (arcadedb)` and `Test Python Examples`, and only when the run was
+#   - on `main` (a push, the nightly schedule, or a manual run on `main`) and from this repository: never a pull request, and the
+#     release workflows are other workflows (a workflow that another one calls does not start a `workflow_run` of its own);
+#   - red: the run ended as `failure`, `timed_out` or `startup_failure`. A run that was `cancelled` is not red, because a newer push to `main` cancels
+#     the run in progress (test-native.yml) and replaces a run that still waits (test-jvm.yml), and a person can cancel by hand. The one cancelled
+#     run that is red is the one where a job hit its time limit: its check-run annotation says "exceeded the maximum execution time".
+#
+# One issue per workflow, titled "Full CI is red on main: <workflow name>". A red run adds a comment to the open issue with that title, or opens it.
+# A green run of the same workflow adds the comment "Green again" and nothing else: a person closes the issue (a green run can be a run that
+# tested less, for example the nightly native run that skips itself when nothing changed, which is why it must have more passed than skipped jobs).
+#
+# What it does not do: it does not name the failing test. The job log is the only place for that, and the log endpoint needs `actions: read`
+# (it answers 403 without it), which this job does not hold. A known flaky failure (the vector read-your-writes race, #409) is linked by a person.
+#
+# Security: `workflow_run` runs from the default branch with this repository's token, so the job never checks out or runs code of a pull
+# request. It reads the event payload and the GitHub API only (`gh`, `jq`), passes every payload value through `env`, and holds
+# `issues: write` and `contents: read` and nothing else. Issues opened with the workflow token start no other workflow, so the labels and the
+# assignee are set here, and the milestone is left to a person.
+#
+# A `workflow_run` workflow runs only from the default branch: a change to this file is first live after the merge.
+#
+# REMOVE WHEN: the full tier no longer runs on `main`, or the test workflows report red some other way.
+name: Report a red full run on main
+
+on:
+  workflow_run:
+    workflows:
+      - "Test JVM (arcadedb-jvm)"
+      - "Test native (arcadedb)"
+      - "Test Python Examples"
+    types: [completed]
+
+permissions: {}
+
+jobs:
+  report:
+    name: Report a red full run on main
+    if: >-
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      contains(fromJSON('["push", "schedule", "workflow_dispatch"]'), github.event.workflow_run.event)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    # One report at a time for each workflow, so two runs that end together do not open the issue twice.
+    concurrency:
+      group: report-red-main-${{ github.event.workflow_run.name }}
+      cancel-in-progress: false
+    steps:
+      - name: Open the issue, or comment on the open one
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          WORKFLOW: ${{ github.event.workflow_run.name }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+          RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          EVENT: ${{ github.event.workflow_run.event }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          title="Full CI is red on main: $WORKFLOW"
+          where="a \`$EVENT\` run"
+          if [ "${RUN_ATTEMPT:-1}" != 1 ]; then where="a \`$EVENT\` run, attempt $RUN_ATTEMPT"; fi
+          body="$RUNNER_TEMP/report.md"
+
+          # The jobs of the attempt that just ended (an empty list when none started or the call fails).
+          jobs_json="$(gh api --paginate "repos/$REPO/actions/runs/$RUN_ID/jobs?filter=latest&per_page=100" --jq '.jobs[]' | jq -s .)" || jobs_json='[]'
+
+          # Is this run red, green, or neither?
+          what=""
+          timeout_ids=""
+          case "$CONCLUSION" in
+            failure | timed_out | startup_failure) what="ended as \`$CONCLUSION\`" ;;
+            success) what=green ;;
+            cancelled)
+              # Cancelled by a newer run or by a person: not a failure. A job that hit its time limit ends as cancelled too, and only that
+              # one says so in its annotations. Look at the jobs that started (a job cancelled in the queue has no steps), 20 at most.
+              while read -r id; do
+                notes="$(gh api "repos/$REPO/check-runs/$id/annotations" --jq '.[].message' 2> /dev/null)" || notes=""
+                if grep -q 'exceeded the maximum execution time' <<< "$notes"; then timeout_ids="$timeout_ids $id"; fi
+              done < <(jq -r '[.[] | select(.conclusion == "cancelled" and (.steps | length) > 0) | .id][:20][]' <<< "$jobs_json")
+              if [ -n "$timeout_ids" ]; then
+                what="ended as \`cancelled\` after a job hit its time limit"
+              fi
+              ;;
+          esac
+          if [ -z "$what" ]; then
+            echo "$WORKFLOW ended as $CONCLUSION on $EVENT: nothing to report"
+            exit 0
+          fi
+
+          # The open issue with this title, if any (a pull request has the same API shape and is left out).
+          number="$(gh api --paginate "repos/$REPO/issues?state=open&per_page=100" |
+            jq -r --arg t "$title" '.[] | select(.pull_request == null and .title == $t) | .number' | sed -n '1p')"
+
+          if [ "$what" = green ]; then
+            if [ -z "$number" ]; then
+              echo "green and no open issue: nothing to report"
+              exit 0
+            fi
+            passed="$(jq '[.[] | select(.conclusion == "success")] | length' <<< "$jobs_json")"
+            skipped="$(jq '[.[] | select(.conclusion == "skipped")] | length' <<< "$jobs_json")"
+            if [ "$passed" -le "$skipped" ]; then
+              echo "$passed jobs passed and $skipped were skipped: this run tested too little to say green again"
+              exit 0
+            fi
+            echo "Green again: \`$WORKFLOW\` ended as \`success\` on \`main\` at \`${SHA:0:7}\` ($where): [run $RUN_ID]($RUN_URL). $passed jobs passed and $skipped were skipped. This issue stays open: close it when the cause is fixed or linked." > "$body"
+            gh api --method POST "repos/$REPO/issues/$number/comments" -F body=@"$body" --jq .html_url
+            exit 0
+          fi
+
+          # Red: the failing jobs with the step that failed (the step name is what the API gives without the log).
+          failing="$(jq -r --arg ids " $timeout_ids " '
+            [.[] | select(.conclusion == "failure" or .conclusion == "timed_out" or ((" \(.id) ") as $key | $ids | contains($key)))] as $bad
+            | ($bad[:15][] | "- [\(.name)](\(.html_url)), step `\(first(.steps[]? | select(.conclusion == "failure" or .conclusion == "cancelled") | .name) // "none")`"),
+              (if ($bad | length) > 15 then "- and \(($bad | length) - 15) more" else empty end),
+              (if ($bad | length) == 0 then "- no failed job is listed (no job started, or the job list could not be read)" else empty end)
+          ' <<< "$jobs_json")"
+
+          {
+            if [ -n "$number" ]; then echo -n "Still red: "; fi
+            echo "\`$WORKFLOW\` $what on \`main\` at \`${SHA:0:7}\` ($where): [run $RUN_ID]($RUN_URL)."
+            echo
+            echo "Failing jobs:"
+            echo
+            echo "$failing"
+            echo
+            if [ -z "$number" ]; then
+              echo "A pull request runs only the fast tier, so this can be the first run that shows the failure. If it is a known flaky failure, link the run under its own issue and close this one (the vector read-your-writes race is #409 and shows on macOS and arm64). A later red run of this workflow on \`main\` adds a comment here and a green one adds \"Green again\". Close this issue when the cause is fixed or linked."
+            fi
+          } > "$body"
+
+          if [ -n "$number" ]; then
+            gh api --method POST "repos/$REPO/issues/$number/comments" -F body=@"$body" --jq .html_url
+          else
+            case "$WORKFLOW" in
+              "Test native"*) package=native ;;
+              *) package=jvm ;;
+            esac
+            gh api --method POST "repos/$REPO/issues" -f title="$title" -F body=@"$body" \
+              -f 'labels[]=bug' -f 'labels[]=github_actions' -f "labels[]=$package" -f 'assignees[]=tae898' --jq .html_url
+          fi
