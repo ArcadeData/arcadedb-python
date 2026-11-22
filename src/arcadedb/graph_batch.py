@@ -375,6 +375,12 @@ class GraphBatch:
                 f"Failed to buffer batch edge '{edge_type}': {e}"
             ) from e
 
+    @staticmethod
+    def _rid_text(value) -> str:
+        """The RID text of a vertex or document (a record wrapper), or the text of a RID given as a string or a Java ``RID``."""
+        get_rid = getattr(value, "get_rid", None)
+        return get_rid() if get_rid is not None else str(value)
+
     def new_edges(
         self,
         source_rids,
@@ -387,8 +393,8 @@ class GraphBatch:
 
         The bulk counterpart of :meth:`new_edge` (which costs one boundary
         crossing per edge — measured ~24x slower than Java-native for large
-        edge lists). RIDs may be strings ("#1:0") or objects with a string
-        representation.
+        edge lists). Each source and destination is a RID string ("#1:0"), a
+        Java ``RID``, or a vertex or document, as for :meth:`new_edge`.
 
         Args:
             source_rids: Sequence of source vertex RIDs.
@@ -453,8 +459,8 @@ class GraphBatch:
                 # copy; a Python list of N strings would be converted
                 # element-by-element by JPype and eat the batching win.
                 # Chunked so huge ingests never build one giant string.
-                sources = [str(r) for r in source_rids]
-                dests = [str(r) for r in destination_rids]
+                sources = [self._rid_text(r) for r in source_rids]
+                dests = [self._rid_text(r) for r in destination_rids]
                 for start in range(0, len(sources), self._BULK_CHUNK):
                     edge_batcher.newEdgesJoined(
                         self._java_graph_batch,
@@ -467,7 +473,7 @@ class GraphBatch:
             rows = []
             tagged = False  # a value that needs the tagged text; False keeps the untagged code of before
             for src, dst, p in zip(source_rids, destination_rids, properties):
-                row = {"_src": str(src), "_dst": str(dst)}
+                row = {"_src": self._rid_text(src), "_dst": self._rid_text(dst)}
                 for key, value in (p or {}).items():
                     ok = type(key) is str and key not in ("_src", "_dst")
                     if ok and not json_bulk_scalar_ok(value):

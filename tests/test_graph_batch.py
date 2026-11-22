@@ -381,6 +381,27 @@ def test_graph_batch_edge_keeps_a_null_in_a_declared_property(temp_db_path, bulk
         assert [(r.get("weight"), r.get("note")) for r in rows] == [(None, "hello")]
 
 
+@pytest.mark.parametrize("with_properties", [False, True], ids=["plain", "properties"])
+def test_new_edges_takes_vertex_objects_as_new_edge_does(temp_db_path, with_properties):
+    """new_edge accepts a Vertex or its RID. new_edges stringified each item, so a Vertex became
+    "<Vertex rid=#1:0 type=P>" and the engine refused it as an invalid RID."""
+    with arcadedb.create_database(temp_db_path) as db:
+        _declared_edge_types(db)
+        with db.transaction():
+            a = db.new_vertex("P").set("id", 1).save()
+            b = db.new_vertex("P").set("id", 2).save()
+            c = db.new_vertex("P").set("id", 3).save()
+        properties = [{"note": "x"}] * 3 if with_properties else None
+        with db.graph_batch(parallel_flush=False) as batch:
+            batch.new_edges(
+                [a, b.get_rid(), c], "ViaBulk", [b, c, a.get_identity()], properties
+            )
+        rows = db.query(
+            "sql", "SELECT out.id AS src, in.id AS dst FROM ViaBulk ORDER BY src"
+        ).to_list()
+        assert [(r.get("src"), r.get("dst")) for r in rows] == [(1, 2), (2, 3), (3, 1)]
+
+
 def test_graph_batch_edge_refuses_an_out_of_range_short(temp_db_path):
     """ArcadeData/arcadedb#9019, fixed in 26.10.1 (upstream PR #9108): a GraphBatch edge
     skipped the declared property's conversion, so 40000 in a SHORT was stored as -25536.
