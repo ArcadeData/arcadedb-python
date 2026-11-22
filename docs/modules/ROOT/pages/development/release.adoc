@@ -113,6 +113,7 @@ The version rule above holds for both packages. One tag starts both release work
 ** The repository variable `ARCADEDB_NATIVE_READINESS_BAR_MET` is `true`. A maintainer sets it after checking the readiness bar: the correctness fixes are merged; the full suite is green on every platform, Windows included, and on Python 3.11 to 3.14; the fault and concurrency probes pass; and the documented API raises no `NotOnNativeYet`.
 ** The parity run of every platform and every Python version passes with zero `NotOnNativeYet` skips.
 * Speed parity with the JVM build is not part of the bar.
+* The speed of the single-record `UPDATE` of the wheel that is published is checked by hand before the publish job is approved, because two native builds of one commit can differ by about a third (xref:development/release-native-smoke.adoc[Speed smoke of the native wheel], https://github.com/ArcadeData/arcadedb-python/issues/404[#404]).
 
 [[_release_day]]
 == Release day
