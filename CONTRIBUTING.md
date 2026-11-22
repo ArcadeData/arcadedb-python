@@ -38,12 +38,43 @@ Add a dependency (a Python extra, or anything bundled in a wheel) only when it i
 
 ### Prepare your environment
 
-You need [uv](https://docs.astral.sh/uv/), Git, and Python 3.11 to 3.14. This repository is a package definition, not a uv project (`pyproject.toml` sets `managed = false`), so there is no environment to sync. You build a wheel, and `uv run --no-project --with <wheel>` makes a throwaway environment from it. Nothing is installed into your system Python.
+You need [uv](https://docs.astral.sh/uv/), Git, and Python 3.11 to 3.14. This repository is a package definition, not a uv project (`pyproject.toml` sets `managed = false`), so there is no environment to sync. You build a wheel (or, for a change to Python files only, [borrow one](#change-python-code-without-building-a-wheel)), and `uv run --no-project --with <wheel>` makes a throwaway environment from it. Nothing is installed into your system Python.
 
 ```shell
 git clone git@github.com:ArcadeData/arcadedb-python.git
 cd arcadedb-python
 ```
+
+### Change Python code without building a wheel
+
+A change that touches only Python files (`src/arcadedb`, `tests`) needs no build. `scripts/dev_overlay.py` puts the Python sources of your checkout over a wheel that is already built, and runs a command against the result. The jars, the JRE, the native library and the generated files stay the wheel's. For the native wheel the script applies the rewrite of the wheel build (`nativize_sources` in `native/wheel/build_wheel.py`), so the Python text is what a built wheel would hold.
+
+Take a wheel that CI built from `main`. You need the [GitHub CLI](https://cli.github.com/), signed in. The artifact of `arcadedb-jvm` is `wheel-<platform>` (`linux-amd64`, `linux-arm64`, `darwin-arm64`, `windows-amd64`; kept 7 days) from `test-jvm.yml`, and the artifact of `arcadedb` is `native-wheel-<platform>` (`linux-x86_64`, `linux-aarch64`, `macos-arm64`, `windows-x64`; kept 30 days) from `test-native.yml`.
+
+```shell
+gh run list -R ArcadeData/arcadedb-python --workflow test-jvm.yml --branch main --limit 5
+gh run download <run id> -R ArcadeData/arcadedb-python --name wheel-linux-amd64 --dir .dev-overlay/wheels
+W="$(ls .dev-overlay/wheels/arcadedb_jvm-*.whl | head -1)"
+uv run --no-project --with "$W[test]" python scripts/dev_overlay.py -m pytest tests/test_core.py -v
+```
+
+The native wheel has no `test` extra, so name what the test file needs:
+
+```shell
+gh run list -R ArcadeData/arcadedb-python --workflow test-native.yml --branch main --limit 5
+gh run download <run id> -R ArcadeData/arcadedb-python --name native-wheel-linux-x86_64 --dir .dev-overlay/wheels
+W="$(ls .dev-overlay/wheels/arcadedb-*.whl | head -1)"
+uv run --no-project --with "$W" --with pytest --with numpy python scripts/dev_overlay.py -m pytest tests/test_core.py -v
+```
+
+Everything after the script name runs as `python <arguments>` with the overlay first on `PYTHONPATH`, and the overlay is made again on every run, so your next edit is picked up. A released wheel works too (`--with "arcadedb-jvm[test]==<version>"`), as long as nothing the wheel is built from changed since the release; the script checks that and lists the files that changed.
+
+When the shortcut is valid:
+
+- Valid: a change to Python files only.
+- Not valid: a change in `src/java` (the bridge jar), a change under `native/` (the C entry points, the native library, the wheel build), and a change that needs a newer engine than the wheel carries. Build the wheel for these.
+- When the script prints a warning, the wheel is older than the files it is built from. The import or a test can then fail for a reason that is not in your change. Take a newer wheel.
+- CI does not use the overlay. Every pull request still builds both wheels and runs the tests against them, so a green overlay run does not replace the checks.
 
 ### Build and test `arcadedb-jvm`
 
