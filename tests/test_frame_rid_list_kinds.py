@@ -4,9 +4,9 @@ A column frame has carried a RID, a list or a map as one JSON array of the colum
 writer that knows the new kinds writes ``rid`` (bucket and position, two int64 per row) and ``li8`` / ``lf8`` (a list of int64 or of
 float64 per row: offsets, a bitmap of null elements, one flat array) for those columns, and keeps ``json`` for every other shape: maps,
 nested lists, lists of strings, of booleans or of RIDs, lists that mix ints and floats, a list of nothing but nulls. The JVM bridge
-(``ColumnBatcher``) writes them in this change; the writer of the native library (``ColumnFrames``) is a separate change stacked on this
-one and still writes ``json`` here. ``KINDS`` below says what each writer writes, so the tests of each change pass alone; the decoder
-reads both forms, and every other test here holds for either.
+(``ColumnBatcher``) and the native library (``ColumnFrames``) both write them. ``KINDS`` below says what each writer writes (the
+two writers came in two changes, and the tests of each passed alone); the decoder reads both forms, and every other test here holds for
+either.
 
 Three kinds of check, all on the wheel that runs the tests (no branch on ``arcadedb.__backend__`` except ``KINDS`` and the stored output,
 and where a wheel's frames differ in how they start, noted below):
@@ -86,9 +86,7 @@ GROUPS = {
     "g3": "SELECT n, lin, lfn FROM g3 ORDER BY n",
     "g4": "SELECT n, lfx FROM g4 ORDER BY n",
 }
-# The kind of each column in the frames of a read (the shapes in the table above). ``_BINARY`` is what a writer that knows the new kinds
-# writes, ``_JSON`` what a writer that does not know them writes. The JVM bridge writes the new kinds in this change; the native library
-# writes ``json`` here, and the change that teaches its writer the new kinds sets the ``native`` entry of ``KINDS`` to ``_BINARY``.
+# The kind of each column in the frames of a read (the shapes in the table above), per writer: both know the new kinds.
 _BINARY = {
     "g1": {
         "li": "li8",
@@ -106,8 +104,7 @@ _BINARY = {
     "g3": {"lin": "li8", "lfn": "lf8"},
     "g4": {"lfx": "lf8"},
 }
-_JSON = {g: {c: "json" for c in cols} for g, cols in _BINARY.items()}
-KINDS = {"jvm": _BINARY, "native": _JSON}
+KINDS = {"jvm": _BINARY, "native": _BINARY}
 
 
 def build(db, group):
