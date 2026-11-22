@@ -379,7 +379,7 @@ python
 
 === Filtered search
 
-`allowed_rids` restricts `find_nearest` to the records whose ids you list, as strings. The search considers only those records, so it still returns `k` of them.
+`allowed_rids` restricts `find_nearest` to the records whose ids you list, as strings. The search considers only those records, so it still returns `k` of them. `allowed_rids=None` (the default) is no filter. An empty list allows no record, so the search returns an empty list.
 
 [source,python]
 ----

@@ -424,7 +424,8 @@ class VectorIndex:
         return query_vector
 
     def _build_allowed_rids_set(self, allowed_rids):
-        if not allowed_rids:
+        """The Java set of the RIDs a search may return; None for ``allowed_rids=None`` (no filter). An empty collection is an empty set."""
+        if allowed_rids is None:
             return None
 
         from .graph import _graph_calls
@@ -570,6 +571,10 @@ class VectorIndex:
     ):
         java_vector = to_java_float_array(query_vector)
         allowed_rids_set = self._build_allowed_rids_set(allowed_rids)
+        if allowed_rids_set is not None and allowed_rids_set.isEmpty():
+            return (
+                []
+            )  # no record is allowed; an empty set must not reach the engine as "no filter"
 
         return self._collect_search_results(
             java_vector=java_vector,

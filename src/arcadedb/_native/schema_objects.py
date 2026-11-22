@@ -231,6 +231,12 @@ class NativeVectorIndex(_BaseVectorIndex):
         ef_search=None,
         include_vector=True,
     ):
+        if allowed_rids is not None:
+            allowed_rids = list(allowed_rids)
+            if not allowed_rids:
+                return (
+                    []
+                )  # allowed_rids=None is no filter; an empty collection allows no record
         if approximate:
             return self._run_approximate(query_vector, k, allowed_rids)
         if not include_vector:
