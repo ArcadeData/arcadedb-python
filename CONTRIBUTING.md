@@ -152,7 +152,7 @@ CI has two tiers, so that a pull request does not wait for the macOS and Windows
 
 The wait of a pull request is set by the native image build and the parity suite that follows it. A pull request that changes no native path waits for the `arcadedb-jvm` tests only.
 
-A problem that only another platform or an example shows is found on `main` after the merge: the badges at the top of the README turn red, and the fix or the revert comes before the next release. [Continuous integration](docs/modules/ROOT/pages/development/ci.adoc) lists the legs of each event.
+A problem that only another platform or an example shows is found on `main` after the merge: the badges at the top of the README turn red, and the fix or the revert comes before the next release. A red full run on `main` or in the nightly runs also opens an issue, `Full CI is red on main: <workflow name>` (`report-red-main.yml`): one issue for each test workflow, a later red run adds a comment to it, a green run adds "Green again", and a person closes it. A known flaky failure goes under its own issue, such as #409 for the vector read-your-writes race, and the issue of the run is closed as a duplicate. [Continuous integration](docs/modules/ROOT/pages/development/ci.adoc) lists the legs of each event.
 
 A commit message starts with a short subject that says what changes and where, for example `Native find_nearest: send the query vector as one float32 array, not a Python list`. The body says why. Link the issue with `Closes #N` in the pull request.
 
