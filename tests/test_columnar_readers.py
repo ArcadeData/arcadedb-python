@@ -169,6 +169,60 @@ def test_a_column_of_mixed_types_becomes_strings_in_arrow(temp_db_path):
         assert table.column("mixed").to_pylist() == ["1", "seven"]
 
 
+# Documents are schemaless, so one property can hold values of different kinds from row to row. Each case is read with the
+# first row alone in a batch (batch_size=1) and with every row in one batch: the readers must agree.
+DIFFERING_ROWS = {
+    "int then bool": [1, True],
+    "float then bool": [1.5, True],
+    "str then bool": ["x", True],
+    "float then str": [1.0, "x"],
+    "maps with different keys": [{"a": 1}, {"b": 2}],
+    "lists of int then float": [[1, 2], [1, 2.5]],
+}
+
+
+def _load_differing(db, values):
+    db.command("sql", "CREATE DOCUMENT TYPE Differing")
+    with db.transaction():
+        for n, value in enumerate(values):
+            document = db.new_document("Differing")
+            document.set("n", n)
+            document.set("v", value)
+            document.save()
+
+
+def _typed(values):
+    """Values with their Python types, so that True and 1 are told apart."""
+    return [(type(v).__name__, v) for v in values]
+
+
+@pytest.mark.parametrize("case", DIFFERING_ROWS)
+def test_to_arrow_of_differing_rows_does_not_depend_on_batch_size(temp_db_path, case):
+    with arcadedb.create_database(temp_db_path) as db:
+        _load_differing(db, DIFFERING_ROWS[case])
+        q = "SELECT v FROM Differing ORDER BY n"
+        one = db.query("sql", q).to_arrow(batch_size=1)
+        whole = db.query("sql", q).to_arrow(batch_size=25_000)
+        assert one.schema == whole.schema
+        assert _typed(one.column("v").to_pylist()) == _typed(
+            whole.column("v").to_pylist()
+        )
+
+
+@pytest.mark.parametrize("case", DIFFERING_ROWS)
+@pytest.mark.parametrize("batch_size", [25_000, 1])
+def test_to_columns_of_differing_rows_keeps_what_to_list_returns(
+    temp_db_path, case, batch_size
+):
+    with arcadedb.create_database(temp_db_path) as db:
+        _load_differing(db, DIFFERING_ROWS[case])
+        q = "SELECT v FROM Differing ORDER BY n"
+        expected = [row["v"] for row in db.query("sql", q).to_list()]
+        column = db.query("sql", q).to_columns(batch_size=batch_size)["v"]
+        column = column.tolist() if isinstance(column, np.ndarray) else list(column)
+        assert _typed(column) == _typed(expected)
+
+
 DECIMAL_CASES = {
     "36 digits": [Decimal("12345678901234567890.123456789012345678")],
     "whole amounts only": [Decimal("2"), Decimal("3")],

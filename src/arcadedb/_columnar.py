@@ -19,23 +19,23 @@ from typing import Any, Callable, Dict, List, Tuple
 
 def _cast_all_to_string(arrs: list, pa) -> list:
     """
-    Cast every array to a string type.
+    Make every array a string array, as ``str()`` writes its values.
 
-    Tolerates a type pyarrow cannot cast directly (e.g. a vector/list column)
-    by going through Python objects instead.
+    A column that mixes kinds inside one frame becomes ``str(value)`` of each value (see ``decode_arrow_frame``), so a column that
+    mixes kinds across frames has to give the same text: Arrow's own cast writes ``true`` for ``True`` and ``1`` for ``1.0``, and
+    would make the text depend on where the frames end.
     """
-    unified = []
-    for a in arrs:
-        try:
-            unified.append(a.cast(pa.string()))
-        except pa.ArrowException:
-            unified.append(
-                pa.array(
-                    [None if v is None else str(v) for v in a.to_pylist()],
-                    type=pa.string(),
-                )
+    return [
+        (
+            a
+            if pa.types.is_string(a.type)
+            else pa.array(
+                [None if v is None else str(v) for v in a.to_pylist()],
+                type=pa.string(),
             )
-    return unified
+        )
+        for a in arrs
+    ]
 
 
 def _decode_strings(data, count: int, mask) -> list:
@@ -130,7 +130,13 @@ def _unify_arrow_chunk_types(arrs: list, pa) -> list:
     Java integer type (Long/Integer/Short/Byte) to the same "i8" wire encoding
     and every Java floating type (Double/Float) to "f8" *within* one batch, so
     across batches the only numeric type mismatch this ever has to unify is
-    exactly this pair - there is no int32/int64 or bool/int64 case to widen.
+    exactly this pair - there is no int32/int64 case to widen. A bool next to an
+    int is not widened: it degrades to string, as it does inside one frame. A bool next
+    to a float is 1.0 or 0.0, as ``pa.array`` reads the rows of one frame.
+
+    Lists and maps that differ between frames (a list of ints next to a list of
+    floats, maps with different keys) are typed from all their values at once,
+    which is what ``pa.array`` does with the rows of a single frame.
     """
     types = {a.type for a in arrs}
     if len(types) <= 1:
@@ -159,7 +165,8 @@ def _unify_arrow_chunk_types(arrs: list, pa) -> list:
                     return _cast_all_to_string(arrs, pa)
         return out
 
-    if types <= {pa.int64(), pa.float64()}:
+    if types <= {pa.int64(), pa.float64()} or types == {pa.float64(), pa.bool_()}:
+        # a bool next to a float is 1.0 or 0.0, as pa.array reads the rows of one frame; next to an int it is text (below)
         try:
             return [a.cast(pa.float64()) for a in arrs]
         except pa.ArrowException:
@@ -184,6 +191,17 @@ def _unify_arrow_chunk_types(arrs: list, pa) -> list:
                 return [pa.array(a.to_pylist(), type=target) for a in arrs]
             except pa.ArrowException:
                 pass
+
+    if all(pa.types.is_struct(t) for t in types) or all(
+        pa.types.is_list(t) or pa.types.is_fixed_size_list(t) for t in types
+    ):
+        # maps with different keys, lists with different element types: the type Arrow infers from the rows of one frame, taken
+        # over the rows of all of them
+        try:
+            target = pa.array([v for a in arrs for v in a.to_pylist()]).type
+            return [pa.array(a.to_pylist(), type=target) for a in arrs]
+        except pa.ArrowException:
+            pass
 
     if all(pa.types.is_decimal(t) for t in types):
         common = _common_decimal_type(list(types), pa)
@@ -365,10 +383,13 @@ def merge_columns(
             for c, p in batches
         ]
         np_parts = [p for p in parts if not isinstance(p, list)]
+        kinds = {p.dtype.kind for p in np_parts}
         if (
             parts
             and len(np_parts) == len(parts)
             and not _int64_beyond_2_53_next_to_float64(typed)
+            # np.concatenate would make a bool next to an int or a float 1 or 1.0, and a frame that mixes them keeps the bool
+            and not ("b" in kinds and len(kinds) > 1)
         ):
             try:
                 out[name] = np.concatenate(parts) if len(parts) > 1 else parts[0]
