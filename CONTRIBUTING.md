@@ -146,11 +146,13 @@ shellcheck and hadolint run as `docker_image` hooks (Docker pulls the images aut
 
 CI has two tiers, so that a pull request does not wait for the macOS and Windows runners that the organisation shares with ArcadeData/arcadedb.
 
-- **A pull request runs the fast tier.** The static checks (pre-commit, Bandit, the dependency audits) run as before. The builds and tests run on Linux x86-64 only: the `arcadedb-jvm` wheel with the tests on Python 3.11 and 3.14 and the examples on Python 3.14 and, when a native path changed, the native image and wheel with the tests and the examples on Python 3.12. A pull request that changes only documentation runs no platform job.
-- **`main` runs the full tier.** A push to `main` and the nightly run (03:00 to 04:00 UTC) test all four platforms: Linux x86-64, Linux arm64, macOS arm64 and Windows x86-64. A release tests every platform on every Python version.
+- **A pull request runs the fast tier.** The static checks (pre-commit, Bandit, the dependency audits) run as before. The builds and tests run on Linux x86-64 only: the `arcadedb-jvm` wheel with the tests on Python 3.11 and 3.14 and, when a native path changed, the native image and wheel with the parity suite on Python 3.12 and a short subset on Python 3.11 and 3.14. The examples do not run, unless the pull request changes a file under `examples/` or their runner (`scripts/run_examples.sh`, `scripts/native_examples_skip.txt`). A pull request that changes only documentation runs no platform job.
+- **`main` runs the full tier.** A push to `main` and the nightly run (03:00 to 04:00 UTC) test all four platforms (Linux x86-64, Linux arm64, macOS arm64 and Windows x86-64) and run the examples on each. A release tests every platform on every Python version.
 - **To run the full tier on a pull request**, add the label `ci:full`, then push a commit or choose "Re-run all jobs" on its test workflows. The pull request then runs what a push to `main` runs. Use it for a change that can behave differently on another platform: file paths, processes and signals, the wheel build, the native library, a workflow file. If you cannot add labels, ask for it in the pull request. Dependabot pull requests always run the full tier.
 
-A problem that only another platform shows is found on `main` after the merge: the badges at the top of the README turn red, and the fix or the revert comes before the next release. [Continuous integration](docs/modules/ROOT/pages/development/ci.adoc) lists the legs of each event.
+The wait of a pull request is set by the native image build and the parity suite that follows it. A pull request that changes no native path waits for the `arcadedb-jvm` tests only.
+
+A problem that only another platform or an example shows is found on `main` after the merge: the badges at the top of the README turn red, and the fix or the revert comes before the next release. [Continuous integration](docs/modules/ROOT/pages/development/ci.adoc) lists the legs of each event.
 
 A commit message starts with a short subject that says what changes and where, for example `Native find_nearest: send the query vector as one float32 array, not a Python list`. The body says why. Link the issue with `Closes #N` in the pull request.
 

@@ -36,8 +36,17 @@ def test_the_workflow_asks_ci_tier_for_the_event_and_skips_an_empty_python_versi
     assert tier < plan.index('scripts/select_native_matrix.py "$event"')
     # a change to the script that picks the tier starts this workflow
     assert '      - "scripts/ci_tier.py"\n' in workflow.split("\njobs:\n", 1)[0]
-    # the fast tier has no pyver legs, and an empty matrix is an error: the job is skipped then, and no other job needs it
-    assert sel.select("pull_request")["pyver"] == []
+    # the fast tier has no example leg, and an empty matrix is an error: the job is skipped then, and the summary expects that
+    assert sel.select("pull_request")["examples"] == []
+    assert (
+        "needs.plan.outputs.examples != '[]'"
+        in _job(workflow, "examples").split("steps:", 1)[0]
+    )
+    summary = _job(workflow, "examples-summary")
+    assert "LEGS: ${{ needs.plan.outputs.examples }}" in summary
+    assert """if [ "$LEGS" = '[]' ]; then want=skipped; fi""" in summary
+    assert '[ "$RESULT" = "$want" ]' in summary
+    # the same guard on the pyver job, which no other job needs
     assert (
         "needs.plan.outputs.pyver != '[]'"
         in _job(workflow, "pyver").split("steps:", 1)[0]
@@ -97,8 +106,12 @@ def test_the_script_prints_github_output_lines():
         "examples",
     ]
     assert json.loads(out[0].split("=", 1)[1])[0]["key"] == "linux-x86_64"
-    # the fast tier is one Python: no pyver legs, and the list is the text the workflow compares with '[]'
-    assert out[2] == "pyver=[]"
+    # the fast tier: the pyver subset on the oldest and the newest Python, and no example leg (the text the workflow compares with '[]')
+    assert [leg["python"] for leg in json.loads(out[2].split("=", 1)[1])] == [
+        "3.11",
+        "3.14",
+    ]
+    assert out[3] == "examples=[]"
     full = subprocess.run(  # nosec B603 - fixed argv, no shell
         [sys.executable, str(SCRIPT), "pull_request_full"],
         capture_output=True,
@@ -121,8 +134,13 @@ def _pyver(event):
 
 
 def test_the_python_version_job_covers_what_the_full_parity_run_leaves_out():
-    # a pull request (the fast tier) tests 3.12 only and has no Python-version legs
-    assert _pyver("pull_request") == []
+    # a pull request (the fast tier) runs the parity suite on 3.12 and the subset on the ends of the supported range; 3.13, 3.15 and
+    # the free-threaded build wait for the full tier
+    for event in ("pull_request", "pull_request_examples"):
+        assert _pyver(event) == [
+            ("3.11", False, True, True),
+            ("3.14", False, True, True),
+        ]
     # the selection itself still knows what one full Python leaves out: the other three Pythons, 3.15 (no jpype1 wheel yet) and the
     # free-threaded one
     assert [
@@ -230,8 +248,14 @@ def test_the_linux_legs_build_in_the_manylinux_container_of_the_tag_and_the_work
 
 
 def test_the_examples_job_runs_on_the_parity_pythons_3_12_and_3_14_of_every_platform_it_builds():
-    pr = sel.select("pull_request")["examples"]
+    # a pull request has no example leg, unless it changes the examples or their runner (scripts/ci_tier.py): then one, on the parity Python
+    assert sel.select("pull_request")["examples"] == []
+    pr = sel.select("pull_request_examples")["examples"]
     assert [(leg["key"], leg["python"]) for leg in pr] == [("linux-x86_64", "3.12")]
+    for key in ("build", "test", "pyver"):
+        assert (
+            sel.select("pull_request_examples")[key] == sel.select("pull_request")[key]
+        )
     for event in (
         "pull_request_full",
         "push",

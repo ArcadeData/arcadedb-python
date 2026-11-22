@@ -125,12 +125,49 @@ def test_jvm_builds_one_wheel_for_each_platform_whatever_the_python(event):
 
 
 def test_pull_request_examples_matrix():
-    # the fast tier: the newest Python on linux/amd64, one build
-    pairs = _pairs(sm.select("examples", "pull_request"))
+    # the fast tier has no example leg and builds no wheel for one: the examples are the slowest jobs
+    assert sm.select("examples", "pull_request") == {"include": []}
+    assert sm.select_wheels("examples", "pull_request") == {"include": []}
+    # a pull request that changes the examples or their runner (scripts/ci_tier.py): the newest Python on linux/amd64, one build
+    pairs = _pairs(sm.select("examples", "pull_request_examples"))
     assert pairs == {("linux/amd64", "3.14")}
-    assert sm.select_wheels("examples", "pull_request") == {
+    assert sm.select_wheels("examples", "pull_request_examples") == {
         "include": [{"platform": "linux/amd64", "runs-on": "ubuntu-24.04"}]
     }
+    # its unit tests are those of every pull request
+    assert sm.select("jvm", "pull_request_examples") == sm.select("jvm", "pull_request")
+
+
+def test_the_examples_workflow_skips_its_jobs_when_the_matrix_is_empty_and_the_summary_knows_it():
+    # An empty matrix is an error for a job. The first job says whether the run has legs, the two jobs that take the matrix are
+    # skipped when it has none, and the summary is green for exactly that case (the bash is run in the pull request of issue 442).
+    text = WORKFLOWS["examples"].read_text(encoding="utf-8")
+    one_line = subprocess.run(  # nosec B603 - fixed argument list, no untrusted input
+        [sys.executable, "-I", str(SCRIPT_PATH), "examples", "--event", "pull_request"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert one_line == '{"include":[]}\n'
+    assert (
+        """if [ "$matrix" = '{"include":[]}' ]; then run=false; else run=true; fi"""
+        in text
+    )
+    assert "      run: ${{ steps.matrix.outputs.run }}\n" in text
+    build, rest = text.split("\n  build:\n")[1].split("\n  test-examples:\n")
+    test, summary = rest.split("\n  test-examples-summary:\n")
+    for job in (build, test):
+        condition = job.split("    if: ", 1)[1].split("\n", 1)[0]
+        assert condition.endswith("&& needs.download-jars.outputs.run == 'true'")
+    assert "needs: [download-jars, build, test-examples]" in summary
+    assert "if: always() &&" in summary
+    for line in (
+        "PLAN: ${{ needs.download-jars.result }}",
+        "RUN: ${{ needs.download-jars.outputs.run }}",
+        "BUILD: ${{ needs.build.result }}",
+        "LEGS: ${{ needs.test-examples.result }}",
+    ):
+        assert f"          {line}\n" in summary, line
 
 
 @pytest.mark.parametrize("workflow", ["jvm", "examples"])

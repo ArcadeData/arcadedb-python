@@ -2,13 +2,14 @@
 """Choose the legs of the native test workflow (.github/workflows/test-native.yml) for one event.
 
 A native image build takes about 5 to 30 minutes per platform and the ArcadeData organisation shares a runner cap with
-upstream ArcadeDB, so a pull request (the fast tier) builds one platform (linux-x86_64) and tests one Python (3.12, no `pyver` legs),
-and only when native paths changed (the workflow's `paths` filter). Push to main, the nightly run and a dispatch build all four
+upstream ArcadeDB, so a pull request (the fast tier) builds one platform (linux-x86_64), runs the parity suite on one Python (3.12) and the
+`pyver` subset on the oldest and the newest Python (3.11, 3.14), and only when native paths changed (the workflow's `paths` filter). It runs
+no example leg, unless it changes the examples or their runner (the event `pull_request_examples`, scripts/ci_tier.py). Push to main, the nightly run and a dispatch build all four
 platforms and test Python 3.12 and 3.14 on each. A release (release-native.yml calls the workflow with `release: true`) tests every
 supported Python (3.11 to 3.14) on all four. A pull request that asks for the full tier (the label `ci:full`, or a Dependabot author;
 scripts/ci_tier.py decides and passes the event `pull_request_full`) runs the legs of a push to main.
 
-usage: select_native_matrix.py EVENT     EVENT: pull_request | pull_request_full | push | schedule | workflow_dispatch | release
+usage: select_native_matrix.py EVENT     EVENT: pull_request | pull_request_examples | pull_request_full | push | schedule | workflow_dispatch | release
 
 Prints `build=<json>`, `test=<json>`, `pyver=<json>` and `examples=<json>` lines (GITHUB_OUTPUT format). Publishing is not decided here:
 release-native.yml does it. `pyver` is the cheap Python-version job (see PYVER_NOTE): a subset of the tests against the built
@@ -105,6 +106,8 @@ PYVER_NOTE = "gates a release: release-native.yml requires a native-passed-pyver
 
 PULL_REQUEST_PLATFORMS = ["linux-x86_64"]
 PULL_REQUEST_PYTHONS = ["3.12"]
+# The legs of the `pyver` job on a pull request: the oldest and the newest supported Python.
+PULL_REQUEST_PYVER = [ALL_PYTHONS[0], ALL_PYTHONS[-1]]
 MAIN_PYTHONS = ["3.12", "3.14"]
 # The Pythons of the `examples` job (the examples of examples/ against the installed wheel): the parity Pythons of a push, the nightly run and a
 # dispatch. A release runs the parity suite on every supported Python, but the examples only on these two.
@@ -128,7 +131,7 @@ def pyver_legs(covered: list[str]) -> list[dict]:
 def select(event: str) -> dict:
     if event == "pull_request_full":
         event = "push"
-    if event == "pull_request":
+    if event in ("pull_request", "pull_request_examples"):
         platforms, pythons = PULL_REQUEST_PLATFORMS, PULL_REQUEST_PYTHONS
     elif event in ("push", "schedule", "workflow_dispatch"):
         platforms, pythons = ALL_PLATFORMS, MAIN_PYTHONS
@@ -148,12 +151,19 @@ def select(event: str) -> dict:
         for py in pythons
     ]
     examples = [leg for leg in test if leg["python"] in EXAMPLES_PYTHONS]
+    pyver = pyver_legs(pythons)
+    if event in ("pull_request", "pull_request_examples"):
+        # The fast tier: the Python-version subset on the ends of the supported range only (the parity suite runs the Python between
+        # them). 3.13, 3.15 and the free-threaded 3.14t run on main, every night and for a release (where 3.15 and 3.14t are a gate).
+        pyver = [leg for leg in pyver if leg["python"] in PULL_REQUEST_PYVER]
+    if event == "pull_request":
+        # The examples are the slowest job (about 20 minutes): the full tier runs them, and a pull request only when it changes them.
+        # test-native.yml skips the job when this list is empty.
+        examples = []
     return {
         "build": build,
         "test": test,
-        # The fast tier is one Python: the Python-version legs run on main, every night and for a release (where they are a gate),
-        # and on a pull request that asks for the full tier. test-native.yml skips the job when this list is empty.
-        "pyver": [] if event == "pull_request" else pyver_legs(pythons),
+        "pyver": pyver,
         "examples": examples,
     }
 
@@ -164,6 +174,7 @@ def main(argv: list[str] | None = None) -> int:
         "event",
         choices=[
             "pull_request",
+            "pull_request_examples",
             "pull_request_full",
             "push",
             "schedule",

@@ -3,10 +3,12 @@
 
 The wheels support four platforms and four Python versions.
 
-CI has two tiers. A pull request runs the fast tier: linux/amd64 only, so it does not wait for the macOS and Windows
-runners the organisation shares with ArcadeData/arcadedb. Every other event runs the full tier, and a pull request
-that asks for it (the label `ci:full`, or a Dependabot author; scripts/ci_tier.py decides and passes the event
-`pull_request_full`) runs the legs of a push to main.
+CI has two tiers. A pull request runs the fast tier: linux/amd64 only and no example legs, so it does not wait for
+the macOS and Windows runners the organisation shares with ArcadeData/arcadedb, nor for the examples (the slowest
+jobs). Every other event runs the full tier, and a pull request that asks for it (the label `ci:full`, or a
+Dependabot author; scripts/ci_tier.py decides and passes the event `pull_request_full`) runs the legs of a push to
+main. A pull request that changes the examples or their runner gets the event `pull_request_examples`: the fast
+tier and the example leg of linux/amd64.
 
 - `jvm` (test-jvm.yml) runs 2 legs on a pull request (linux/amd64, the oldest and the newest Python), 10 legs on
   a push to main and the nightly schedule, and all 16 for a release (release-jvm.yml calls the workflow with
@@ -16,8 +18,9 @@ that asks for it (the label `ci:full`, or a Dependabot author; scripts/ci_tier.p
   platforms: a bug that depends on the interpreter shows on the ends of the range, and one that depends on the
   platform shows on any version of it. What is published, and a run started by hand before a release, gets every
   combination, like test-native.yml.
-- `examples` (test-python-examples.yml) runs the newest Python on linux/amd64 on a pull request, and every
-  combination (16 legs) on every other event.
+- `examples` (test-python-examples.yml) runs no leg on a pull request (the matrix is empty and the workflow skips
+  its jobs), the newest Python on linux/amd64 on a pull request that changes the examples, and every combination
+  (16 legs) on every other event.
 
 The selection fails open to the full matrix: an event name this script does not know runs everything, never less
 (for `jvm` too: only a pull request, a push and the nightly schedule get fewer than 16 legs).
@@ -78,12 +81,19 @@ JVM_REDUCED_EVENTS = ("push", "schedule")
 # carries the label `ci:full`.
 #
 # jvm: the oldest and the newest Python, the ends of the range.
-# examples: the newest Python. The examples are slow (torch, sentence-transformers); their platform-specific
+# examples: no leg. The examples are the slowest jobs (about 20 to 30 minutes: they build the vectors of a dataset
+# and run 30 scripts), so they run in the full tier. A pull request that changes the examples or their runner
+# (the event `pull_request_examples`, scripts/ci_tier.py) runs them on the newest Python; their platform-specific
 # code (`os.name == "nt"` branches in examples 07 to 12) and the per-platform steps of the workflow (a CPU torch
 # index on macOS, UTF-8 on Windows) are covered by the full tier.
 FAST_PLATFORM = "linux/amd64"
 PULL_REQUEST_LEGS = {
     "jvm": {FAST_PLATFORM: (OLDEST, NEWEST)},
+    "examples": {},
+}
+PULL_REQUEST_EXAMPLES = "pull_request_examples"
+PULL_REQUEST_EXAMPLES_LEGS = {
+    "jvm": PULL_REQUEST_LEGS["jvm"],
     "examples": {FAST_PLATFORM: (NEWEST,)},
 }
 # The event scripts/ci_tier.py passes for a pull request that asks for the full tier: the legs of a push to main.
@@ -110,6 +120,8 @@ def select(workflow: str, event: str) -> dict[str, list[dict[str, str]]]:
         event = "push"
     if event == "pull_request":
         return {"include": _legs(PULL_REQUEST_LEGS[workflow])}
+    if event == PULL_REQUEST_EXAMPLES:
+        return {"include": _legs(PULL_REQUEST_EXAMPLES_LEGS[workflow])}
     if workflow == "jvm" and event in JVM_REDUCED_EVENTS:
         return {"include": _legs(JVM_LEGS)}
     return {"include": _legs({platform: PYTHONS for platform in RUNNERS})}
