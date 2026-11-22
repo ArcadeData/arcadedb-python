@@ -18,6 +18,7 @@ from ._columnar import (
     decode_columns_frame,
     empty_arrow,
     empty_columns,
+    frame_row_total,
     frame_rows,
     merge_arrow,
     merge_columns,
@@ -758,10 +759,10 @@ class ResultSet:
             # Datetimes cross with their microseconds (datetime64[us]) and dates as
             # date objects, the values to_list() returns; to_columns() and
             # to_arrow() keep the documented milliseconds.
-            columns = self._read_columns(25_000, None, micros=True)
-            if columns is not None:
+            found = self._read_columns_counted(25_000, None, micros=True)
+            if found is not None:
                 # a vector column is already one numpy array per cell, None for a null
-                return dataframe_from_columns(columns)
+                return dataframe_from_columns(*found)
 
         return pd.DataFrame(self.to_list(convert_types=convert_types))
 
@@ -826,7 +827,9 @@ class ResultSet:
         holds only nulls for it takes the type of the batches that have
         values. The arrays are writable. A vector column is a ``(count, dim)`` matrix
         and a null vector is a row of NaN in it (``to_dataframe()`` and ``to_arrow()`` keep
-        it a null). An empty result is ``{}``, or, when
+        it a null). Rows that have no property are ``{}`` as well: a dict of
+        columns has no place for a row count, so read such a result with
+        ``to_arrow()``, ``to_dataframe()`` or ``count()``. An empty result is ``{}``, or, when
         ``columns`` is given, those columns as empty lists.
 
         The columns are the union of every row's property names, in order of
@@ -848,7 +851,14 @@ class ResultSet:
         return self._read_columns(batch_size, columns, micros=False)
 
     def _read_columns(self, batch_size, columns, micros):
-        """``to_columns()``; with ``micros`` a column of datetimes is a
+        """The dict of :meth:`_read_columns_counted`, or None."""
+        found = self._read_columns_counted(batch_size, columns, micros)
+        return None if found is None else found[0]
+
+    def _read_columns_counted(self, batch_size, columns, micros):
+        """``(columns, rows)``: the ``to_columns()`` dict and the row count of the
+        result, which the dict cannot carry when the rows have no property (#429).
+        With ``micros`` a column of datetimes is a
         ``datetime64[us]`` array and a column holding DATE values is an object
         column of ``date`` objects, which is what ``to_dataframe()`` needs to
         return the values ``to_list()`` does."""
@@ -874,7 +884,7 @@ class ResultSet:
         spec = json.dumps(list(columns)) if columns is not None else ""
         size = frame_rows(batch_size)
         if not self._readable():
-            return empty_columns(columns)
+            return empty_columns(columns), 0
         while True:
             try:
                 java_batch = column_batcher.nextColumnBatch(
@@ -894,7 +904,7 @@ class ResultSet:
                     names.append(name)
             batches.append((count, parts))
 
-        return merge_columns(names, batches, columns)
+        return merge_columns(names, batches, columns), frame_row_total(batches)
 
     def to_arrow(
         self, batch_size: int = 25_000, columns: Optional[Sequence[str]] = None

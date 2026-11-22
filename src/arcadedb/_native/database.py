@@ -573,9 +573,16 @@ class NativeResultSet:
         """
         # availability check: a missing pandas raises before the cursor is read
         __import__("pandas")
-        return _columnar.dataframe_from_columns(self._columns(25_000, None, True))
+        return _columnar.dataframe_from_columns(
+            *self._columns_counted(25_000, None, True)
+        )
 
     def _columns(self, batch_size, columns, micros):
+        return self._columns_counted(batch_size, columns, micros)[0]
+
+    def _columns_counted(self, batch_size, columns, micros):
+        """``(columns, rows)``: the ``to_columns()`` dict and the row count of the result, which the dict cannot carry when the rows
+        have no property (#429)."""
         from . import colframes
 
         head_rows, batches = self._read_frames(
@@ -584,8 +591,12 @@ class NativeResultSet:
             lambda raw: colframes.decode_columns(raw, micros),
             1 if micros else 0,
         )
-        return colframes.columns_result(
-            head_rows, columns, micros, batches, self._vectors
+        rows = len(head_rows) + _columnar.frame_row_total(batches)
+        return (
+            colframes.columns_result(
+                head_rows, columns, micros, batches, self._vectors
+            ),
+            rows,
         )
 
     def to_columns(self, batch_size: int = 25_000, columns=None):
@@ -593,7 +604,8 @@ class NativeResultSet:
         values, an object array of Decimal), decoded from column frames by the decoder both builds share. The arrays are writable,
         and a column's type belongs to the whole result, not to where a batch ends. A column is a float32 matrix when the property is
         a ``float[]`` (ARRAY_OF_FLOATS), and a list of lists when it is a LIST of numbers whatever the values; a null vector is a row of
-        NaN in the matrix (``to_dataframe()`` and ``to_arrow()`` keep it a null). An empty result is
+        NaN in the matrix (``to_dataframe()`` and ``to_arrow()`` keep it a null). Rows that have no property are ``{}`` as well: a
+        dict of columns has no place for a row count, so read such a result with ``to_arrow()``, ``to_dataframe()`` or ``count()``. An empty result is
         ``{}``, or the ``columns`` asked for as empty lists. None when numpy is missing.
         """
         try:

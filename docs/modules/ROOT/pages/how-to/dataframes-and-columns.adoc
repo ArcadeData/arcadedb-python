@@ -280,6 +280,8 @@ The next block stores one record with every value and one record with none, then
 * `to_polars()` goes through Arrow, so it keeps the type too.
 * `to_dataframe()` returns a pandas frame with the pandas types, `NaN` for a gap in a number and `NaT` in a date-time.
 
+A result whose rows have no property at all (records created with none) keeps its rows in `to_arrow()`, `to_polars()` and `to_dataframe()`: a table or frame of that many rows and no column. `to_columns()` returns `{}` for it, because a dict of columns has no place for a row count.
+
 [source,python]
 ----
 db.command("sql", "CREATE DOCUMENT TYPE Rec")
