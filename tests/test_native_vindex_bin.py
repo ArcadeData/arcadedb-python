@@ -185,10 +185,26 @@ def test_a_filter_gives_the_same_hits_by_text_and_by_record(pq_index, monkeypatc
         assert 0 < len(binary) <= 25
 
 
-def test_an_empty_filter_is_no_filter(pq_index, monkeypatch):
-    binary, text, via_bin, _ = _both(pq_index, monkeypatch, pq_index.vectors[3], 10, [])
+def test_no_filter_sends_no_pairs(pq_index, monkeypatch):
+    """``allowed_rids=None`` is no filter: the binary entry gets no pairs and answers as the JSON route does."""
+    binary, text, via_bin, _ = _both(pq_index, monkeypatch, pq_index.vectors[3], 10)
     assert via_bin.binary[0]["pairs"] == 0
     assert _signature(binary) == _signature(text) and len(binary) == 10
+
+
+@pytest.mark.parametrize(
+    "empty",
+    [[], (), np.array([], dtype=object)],
+    ids=["list", "tuple", "ndarray"],
+)
+def test_an_empty_filter_allows_no_record_on_both_routes(pq_index, monkeypatch, empty):
+    """An empty collection is not "no filter" (issue 423, PR 425): the answer is empty and no library entry is called, on either route."""
+    binary, text, via_bin, via_text = _both(
+        pq_index, monkeypatch, pq_index.vectors[3], 10, empty
+    )
+    assert binary == [] and text == []
+    assert via_bin.binary == [] and via_bin.text == []
+    assert via_text.binary == [] and via_text.text == []
 
 
 def test_a_buffer_too_small_for_the_answer_is_asked_for_again(pq_index, monkeypatch):
