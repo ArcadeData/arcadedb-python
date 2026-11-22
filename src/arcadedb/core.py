@@ -349,6 +349,14 @@ _TYPED_KINDS = {
     datetime: "datetime",
 }
 _DICT_ONLY = frozenset((dict,))
+# The types a value of a typed chunk may have: when the first row of a chunk holds another one (a Decimal, bytes, a list), the
+# chunk is refused there, before any column is read (see _typed_chunk_columns).
+_TYPED_TYPES = frozenset(_TYPED_KINDS) | {_NONE_TYPE}
+# A chunk of fewer rows keeps the JSON text. The typed route builds at least one bridge array per column, a fixed cost per call
+# that the JSON text does not have: in the first timed A/B (ArcadeData/arcadedb-python#392, 2026-11-22) a call of one row took
+# 1.9 to 2.5 times as long on the typed route. A probe of both routes at 1 to 128 rows put the crossover between 16 and 64 rows
+# for four row shapes (it depends on the kinds of the columns); at 64 rows the typed route was the faster one for all four.
+_TYPED_MIN_ROWS = 64
 _STR_ONLY = frozenset((str,))
 _NO_ZONE = frozenset((None,))
 _EPOCH_ORDINAL = date(1970, 1, 1).toordinal()
@@ -429,18 +437,28 @@ def _typed_java_column(name, values, kind, nullable):
 def _typed_chunk_columns(chunk):
     """``(names, columns)`` for one chunk of insert_many rows that can cross as typed columns, else None (the chunk keeps the JSON text).
 
-    The chunk qualifies when every row is a ``dict`` with the same str keys in the same order (a row that lacks a key, has another
+    The chunk qualifies when it has at least ``_TYPED_MIN_ROWS`` rows (below that the bridge arrays cost more than the text they
+    replace), every row is a ``dict`` with the same str keys in the same order (a row that lacks a key, has another
     one, or lists them in another order is a different shape, and a record keeps its properties in the order they were set), and every
     column holds one kind of value (``_typed_kind``). Whether a column qualifies is decided from the types alone before any bridge
-    array is built, so a chunk that cannot cross this way costs the census and nothing else. The result is stored as the JSON text
+    array is built, so a chunk that cannot cross this way costs the census and nothing else, and a chunk whose first row holds a
+    value of a type no typed column carries (a ``Decimal``, ``bytes``, a list) costs one look at that row: such a column is refused
+    before any column is read, so a load of such rows does not pay for the census chunk after chunk. The result is stored as the JSON text
     stores it: ``DocumentBatcher.insertManyColumns`` stores a whole number as an Integer when it fits an int, as the text parser
     does, and ``None`` is a null property, never a missing one. A row with a NaN, an infinity or a subnormal float is the exception: the
     text cannot carry it, so the JSON route inserts that row on the per-row path, which stores its whole numbers as Long, and the
     bridge stores them as Long for that row too.
     """
-    if _np is None or not chunk or set(map(type, chunk)) != _DICT_ONLY:
+    if _np is None or not chunk or len(chunk) < _TYPED_MIN_ROWS:
         return None
-    names = tuple(chunk[0])
+    first = chunk[0]
+    if type(first) is not dict or not _TYPED_TYPES.issuperset(
+        map(type, first.values())
+    ):
+        return None
+    if set(map(type, chunk)) != _DICT_ONLY:
+        return None
+    names = tuple(first)
     if not names or set(map(type, names)) != _STR_ONLY:
         return None
     if len(set(map(tuple, chunk))) != 1:
@@ -894,7 +912,7 @@ class Database:
 
         The iterable is read 10,000 rows at a time; each chunk crosses once and
         is looped Java-side (``DocumentBatcher``), avoiding the per-row JNI cost
-        that caps ``new_document``-loop ingest. A chunk whose rows are dicts with
+        that caps ``new_document``-loop ingest. A chunk of at least 64 rows whose rows are dicts with
         the same keys in the same order, and whose columns each hold ``None`` and
         values of one type (``int`` within 64 bits, ``float``, ``bool``, ``str``,
         ``date``, or a ``datetime`` without a zone), crosses as typed columns, with
@@ -1078,7 +1096,7 @@ class Database:
         still go in bulk, and every row is inserted in the order given. Dates, date-times, Decimals, bytes, numpy scalars and
         pandas NA and NaT sitting directly in a row cross inside the text as tagged values (see json_bulk_dumps_tagged).
         """
-        # A chunk of rows with the same keys whose columns each hold one kind of value crosses as typed columns, with no text
+        # A chunk of at least _TYPED_MIN_ROWS rows with the same keys whose columns each hold one kind of value crosses as typed columns, with no text
         # (see _typed_chunk_columns); every other chunk keeps the JSON text below, as it was.
         typed = _typed_chunk_columns(chunk)
         if typed is not None:
