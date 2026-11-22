@@ -835,9 +835,8 @@ def _worker_body(args, result: dict) -> object | None:
         from arcadedb._native import lib as native_lib
 
         lib_path = Path(native_lib.library_path())
-    except (
-        Exception
-    ):  # noqa: BLE001 - an older wheel: the library sits next to the module
+    except Exception:
+        # an older wheel: the library sits next to the module
         lib_path = Path(a.__file__).parent / "_native" / LIB_NAMES[0]
     result["lib_path"] = str(lib_path)
     result["lib_sha256"] = sha256_file(lib_path)
@@ -913,9 +912,8 @@ def worker_main(args) -> int:
     try:
         db = _worker_body(args, result)
         result["ok"] = not result.get("problems") and "figures" in result
-    except (
-        BaseException
-    ) as err:  # noqa: BLE001 - reported in the result line, the parent decides
+    except BaseException as err:
+        # reported in the result line, the parent decides
         result["ok"] = False
         result["error"] = f"{type(err).__name__}: {err}"[:500]
         traceback.print_exc()
@@ -923,7 +921,7 @@ def worker_main(args) -> int:
     if db is not None:
         try:
             db.close()
-        except BaseException as err:  # noqa: BLE001 - the line is already written
+        except BaseException as err:  # the line is already written
             print(f"close failed: {type(err).__name__}: {err}", file=sys.stderr)
     os._exit(0 if result["ok"] else 3)
 
