@@ -225,11 +225,9 @@ def test_to_columns_of_differing_rows_keeps_what_to_list_returns(
 
 @pytest.mark.parametrize("batch_size", [25_000, 2])
 def test_rows_without_properties_keep_their_count(temp_db_path, batch_size):
-    """#429: three vertices created with no property were three rows in to_list() and count(), and no row in to_arrow(),
-    to_polars() and to_dataframe(): the readers dropped the row count with the (empty) column names.
+    """#429: three vertices created with no property were three rows in to_list() and count(), and no row in to_arrow()
+    and to_dataframe(): the readers dropped the row count with the (empty) column names.
     """
-    import polars as pl  # in the test extra; the repository accepts no skips
-
     with arcadedb.create_database(temp_db_path) as db:
         db.command("sql", "CREATE VERTEX TYPE Bare")
         with db.transaction():
@@ -240,8 +238,6 @@ def test_rows_without_properties_keep_their_count(temp_db_path, batch_size):
         table = db.query("sql", q).to_arrow(batch_size=batch_size)
         assert (table.num_rows, table.num_columns) == (3, 0)
         assert db.query("sql", q).to_dataframe().shape == (3, 0)
-        frame = db.query("sql", q).to_polars(batch_size=batch_size)
-        assert isinstance(frame, pl.DataFrame) and frame.shape == (3, 0)
         # a dict of columns has no place for a row count: documented, not a loss of rows elsewhere
         assert db.query("sql", q).to_columns(batch_size=batch_size) == {}
 

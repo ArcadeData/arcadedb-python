@@ -195,6 +195,16 @@ def test_a_uint64_column_at_the_signed_limit_loads(temp_db):
     ]
 
 
+def test_to_polars_keeps_rows_that_have_no_property(temp_db):
+    """#429: to_polars() reads to_arrow(), which now keeps the rows of a result whose rows have no property."""
+    temp_db.command("sql", "CREATE VERTEX TYPE Bare")
+    with temp_db.transaction():
+        for _ in range(3):
+            temp_db.command("sql", "CREATE VERTEX Bare")
+    frame = temp_db.query("sql", "SELECT FROM Bare").to_polars()
+    assert isinstance(frame, pl.DataFrame) and frame.shape == (3, 0)
+
+
 def test_a_type_with_no_mapping_is_refused_before_a_row_is_written(temp_db):
     temp_db.command("sql", "CREATE DOCUMENT TYPE NoMap")
     with pytest.raises(TypeError, match="no ArcadeDB mapping"):
