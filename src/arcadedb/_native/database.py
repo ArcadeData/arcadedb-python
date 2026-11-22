@@ -200,8 +200,20 @@ class NativeResult:
         )
 
 
+_FACETS_WORD = re.compile(r"\bfacets\b", re.IGNORECASE)
+
+
+def _mentions_facets(command) -> bool:
+    """Whether a statement's text holds the word FACETS (any case, a string literal included: a false positive only costs speed)."""
+    return isinstance(command, str) and _FACETS_WORD.search(command) is not None
+
+
 class NativeResultSet:
     """Cursor over a statement's rows, fetched in batches through ``arcadedb_n_next``."""
+
+    # a result of a statement that may have a FACETS clause: the facets ride on the reply that drains the cursor, so count() reads
+    # such a result row by row and does not drain it in the library with arcadedb_n_count (set by Database._exec)
+    _may_have_facets = False
 
     def __init__(self, database, reply: dict, tagged: bool = True):
         self._database = database  # strong reference: a result keeps its database alive
@@ -657,9 +669,35 @@ class NativeResultSet:
             yield chunk
 
     def count(self) -> int:
-        n = 0
-        for _ in self:
-            n += 1
+        """The number of rows still to be read; the result is finished. The rows already in this object (the first reply) are counted
+        as ``len``, the rows still in the library by one crossing, ``arcadedb_n_count``, which returns a long: the library drains and
+        closes the cursor and encodes no row, and no ``NativeResult`` or dict is built for a counted row. A result of a statement that
+        may have a FACETS clause is counted row by row instead: its facets come with the reply that drains the cursor, and a drain
+        in the library would lose them.
+        """
+        if self._may_have_facets:
+            n = 0
+            for _ in self:
+                n += 1
+            return n
+        if not self._readable():
+            return 0
+        buf = self._buf
+        n = len(buf)
+        buf.clear()
+        if self._pending_error is not None:
+            self._fill()  # the error of the first reply: raised, as reading the rows before it would
+        if self._more and self._rs:
+            rows = lib.count(self._rs)
+            # the library closed the cursor, on success and on an error alike: this object holds no cursor any more
+            self._more = False
+            self._rs = 0
+            if rows < 0:
+                self._closed = True
+                self._exhausted = True
+                raise _read_error(json.loads(lib.last_error()))
+            n += rows
+        self._finish()
         return n
 
     def first(self) -> Optional[NativeResult]:
@@ -830,7 +868,9 @@ class NativeDatabase:
             )
             if rid < 0:
                 raise _error(prefix, json.loads(lib.last_error()))
-            return NativeResultSet._lazy(self, rid)
+            rs = NativeResultSet._lazy(self, rid)
+            rs._may_have_facets = _mentions_facets(command)
+            return rs
         # phase 7 (arcadedb_n_exec flags): 2 = a command's rows are pulled but encoded only when read, 4 = float arrays come back as a float32 tail
         if flags & 1 and _LAZY_COMMAND_ROWS and not eager:
             flags |= 2
@@ -872,7 +912,9 @@ class NativeDatabase:
         reply, tagged = loads_tagged(raw, floats)
         if not reply.get("ok"):
             raise _error(prefix, reply)
-        return NativeResultSet(self, reply, tagged)
+        rs = NativeResultSet(self, reply, tagged)
+        rs._may_have_facets = _mentions_facets(command)
+        return rs
 
     def query(self, language: str, command: str, *args) -> NativeResultSet:
         """Run a read statement. Parameters bind as on the JPype path (``?`` positional, ``:name`` from one dict)."""
