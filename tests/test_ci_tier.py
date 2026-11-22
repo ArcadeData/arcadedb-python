@@ -91,6 +91,7 @@ def test_only_the_exact_label_counts():
         "examples/scripts/anything.sh",
         "scripts/run_examples.sh",
         "scripts/native_examples_skip.txt",
+        ".github/workflows/test-python-examples.yml",
     ],
 )
 def test_a_pull_request_that_changes_the_examples_or_their_runner_runs_the_example_legs(
@@ -112,6 +113,8 @@ def test_a_pull_request_that_changes_the_examples_or_their_runner_runs_the_examp
         "scripts/run_examples.sh.bak",
         "tests/test_examples.py",
         "examples",
+        ".github/workflows/test-native.yml",
+        ".github/workflows/test-jvm.yml",
     ],
 )
 def test_other_paths_do_not_start_the_example_legs(path):

@@ -41,10 +41,16 @@ FAST_EVENT = "pull_request"
 EXAMPLES_EVENT = "pull_request_examples"
 FULL_EVENT = "pull_request_full"
 
-# A pull request that changes one of these runs the example legs: a file under examples/ (the scripts, their data loader), or the
-# runner both example jobs call and the list of examples the native wheel leaves out. examples/README.md is prose only.
+# A pull request that changes one of these runs the example legs: a file under examples/ (the scripts, their data loader), the
+# runner both example jobs call, the list of examples the native wheel leaves out, or the workflow whose only work is to run the
+# examples. examples/README.md is prose only. test-native.yml and test-jvm.yml are not here: they change for many other reasons,
+# and a change to the example job of test-native.yml can ask for the full tier with the label.
 EXAMPLE_DIRS = ("examples/",)
-EXAMPLE_FILES = ("scripts/run_examples.sh", "scripts/native_examples_skip.txt")
+EXAMPLE_FILES = (
+    "scripts/run_examples.sh",
+    "scripts/native_examples_skip.txt",
+    ".github/workflows/test-python-examples.yml",
+)
 NOT_EXAMPLES = ("examples/README.md",)
 
 
