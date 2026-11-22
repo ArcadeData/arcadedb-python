@@ -255,9 +255,13 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # The platform x Python legs of this run (scripts/select_matrix.py): a small matrix on
-      # pull requests, the full one on every other event. The organisation shares one runner
-      # cap with ArcadeData/arcadedb, so a pull request does not run every combination.
+      # The platform x Python legs of this run (scripts/select_matrix.py). A pull request runs
+      # the fast tier (linux/amd64 only); every other event runs the legs of the full tier. The
+      # organisation shares one runner cap with ArcadeData/arcadedb, so a pull request does not
+      # wait for the macOS and Windows runners. A pull request with the label ci:full, and one
+      # Dependabot opened, runs the legs of a push to main: scripts/ci_tier.py turns its event
+      # into pull_request_full (it reads the labels again from the API, so a re-run after adding
+      # the label is enough).
       # The wheel matrix is the platforms of those legs, one build each: the wheel is
       # py3-none-<platform>, the same file for every Python.
       # Done first, so a failure here costs no Docker pull.
@@ -267,7 +271,13 @@ jobs:
         env:
           # In a workflow_call github.event_name is the caller's event (a tag push), so a release says so through its input
           EVENT_NAME: ${{ inputs.release && 'release' || github.event_name }}
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
         run: |
+          EVENT_NAME="$(python3 scripts/ci_tier.py "$EVENT_NAME")"
+          echo "legs of the event: $EVENT_NAME"
           matrix="$(python3 scripts/select_matrix.py jvm --event "$EVENT_NAME")"
           wheel_matrix="$(python3 scripts/select_matrix.py jvm --event "$EVENT_NAME" --wheels)"
           echo "$matrix"
@@ -447,7 +457,8 @@ jobs:
       fail-fast: false
       # Chosen by the "Select the test matrix" step of download-jars from the event that
       # started the run (scripts/select_matrix.py holds the platform and Python lists):
-      # small on pull requests, the full 4 platforms x 4 Pythons on every other event.
+      # linux/amd64 on the oldest and the newest Python on a pull request (the fast tier), 10 legs
+      # on a push to main and the nightly run, the full 4 platforms x 4 Pythons on a release and a manual run.
       # Every leg carries platform, runs-on and python-version, so the job names stay
       # "Test arcadedb (<platform>, Python <version>)".
       matrix: ${{ fromJSON(needs.download-jars.outputs.matrix) }}
@@ -757,7 +768,9 @@ jobs:
             .coverage
           retention-days: 7
 
-  # Summary job that checks all platforms
+  # Summary job that checks every leg this run started. `build` and `test` are matrices, so the result of each is "success" only when
+  # every leg of it passed, whatever their number: 1 build and 2 test legs on a pull request (the fast tier), 4 and 10 or 16 on the
+  # other events. A leg that failed, was cancelled or never started (its build failed) makes the result something else, and this job red.
   test-summary:
     name: Test Summary
     needs: [build, test]
@@ -771,17 +784,19 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
 
           if [ "${{ needs.build.result }}" = "success" ] && [ "${{ needs.test.result }}" = "success" ]; then
-            echo "✅ **All platforms passed testing!**" >> $GITHUB_STEP_SUMMARY
+            echo "✅ **Every leg of this run passed testing!**" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "The arcadedb package has been successfully built (one py3-none wheel for each platform) and tested." >> $GITHUB_STEP_SUMMARY
+            echo "The arcadedb package has been successfully built (one py3-none wheel for each platform of this run) and tested." >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "**Package**: arcadedb" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "ℹ️ **Note**: Some platform/Python combinations are excluded from testing:" >> $GITHUB_STEP_SUMMARY
+            echo "**Legs**: a pull request runs linux/amd64 only (the fast tier). A push to main, the nightly run, a manual run and a pull request with the label ci:full run every platform. The jobs of this run list its legs." >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "ℹ️ **Note**: Some platform/Python combinations are excluded from testing on every event:" >> $GITHUB_STEP_SUMMARY
             echo "- Windows ARM64 (GitHub-hosted windows-11-arm runners exist, but jpype1 1.7.1 ships no win_arm64 wheel and GraalVM CE 25.4.4.1.1 has no Windows ARM64 build, so neither package can be built there)" >> $GITHUB_STEP_SUMMARY
             echo "- macOS x86_64 (temporarily disabled)" >> $GITHUB_STEP_SUMMARY
           else
-            echo "❌ **Some platforms failed testing**" >> $GITHUB_STEP_SUMMARY
+            echo "❌ **Some legs failed testing**" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "Please check the individual test jobs for details." >> $GITHUB_STEP_SUMMARY
             exit 1

@@ -132,15 +132,23 @@ jobs:
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     outputs:
       arcadedb-tag: ${{ steps.jars.outputs.arcadedb-tag }}
+      # "true" when this run has example legs, "false" when it has none on purpose (a pull request, the fast tier)
+      run: ${{ steps.matrix.outputs.run }}
       matrix: ${{ steps.matrix.outputs.matrix }}
       wheel-matrix: ${{ steps.matrix.outputs.wheel-matrix }}
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # The platform x Python legs of this run (scripts/select_matrix.py): a small matrix on
-      # pull requests, the full one on every other event. The organisation shares one runner
-      # cap with ArcadeData/arcadedb, so a pull request does not run every combination.
+      # The platform x Python legs of this run (scripts/select_matrix.py). A pull request runs
+      # the fast tier, which has NO example leg: the examples are the slowest jobs (20 to 30
+      # minutes), so they run on a push to main, in the nightly run and on a manual run. The
+      # matrix is then empty, `run` is false, the rest of this job and the two jobs below are
+      # skipped, and the summary job says so and stays green. A pull request that changes the
+      # examples or their runner runs the leg of linux/amd64 on the newest Python
+      # (pull_request_examples). A pull request with the label ci:full, and one Dependabot
+      # opened, runs the legs of a push to main (pull_request_full). scripts/ci_tier.py decides:
+      # it reads the labels again from the API, so a re-run after adding the label is enough.
       # The wheel matrix is the platforms of those legs, one build each: the wheel is
       # py3-none-<platform>, the same file for every Python.
       # Done first, so a failure here costs no Docker pull.
@@ -149,18 +157,30 @@ jobs:
         shell: bash
         env:
           EVENT_NAME: ${{ github.event_name }}
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
         run: |
+          EVENT_NAME="$(python3 scripts/ci_tier.py "$EVENT_NAME")"
+          echo "legs of the event: $EVENT_NAME"
           matrix="$(python3 scripts/select_matrix.py examples --event "$EVENT_NAME")"
           wheel_matrix="$(python3 scripts/select_matrix.py examples --event "$EVENT_NAME" --wheels)"
           echo "$matrix"
           echo "$wheel_matrix"
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
           echo "wheel-matrix=$wheel_matrix" >> "$GITHUB_OUTPUT"
+          # An empty matrix is an error for a job, so the jobs that take it are skipped when there is no leg
+          if [ "$matrix" = '{"include":[]}' ]; then run=false; else run=true; fi
+          echo "example legs in this run: $run"
+          echo "run=$run" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
+        if: steps.matrix.outputs.run == 'true'
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Download JARs from ArcadeDB Docker image
+        if: steps.matrix.outputs.run == 'true'
         id: jars
         shell: bash
         run: |
@@ -200,6 +220,7 @@ jobs:
       # Unfiltered on purpose: build-native.sh applies scripts/jar_exclusions.txt
       # to whatever lands in the jars directory, so the list lives in one place.
       - name: Upload JARs as artifact
+        if: steps.matrix.outputs.run == 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: arcadedb-jars-examples
@@ -214,7 +235,7 @@ jobs:
     name: Build wheel for examples (${{ matrix.platform }})
     runs-on: ${{ matrix.runs-on }}
     needs: download-jars
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    if: (github.event_name != 'pull_request' || github.event.pull_request.draft == false) && needs.download-jars.outputs.run == 'true'
     env:
       BUILD_VERSION: ${{ inputs.build-version }}
     strategy:
@@ -319,7 +340,7 @@ jobs:
     name: Test Python Examples (${{ matrix.platform }}, Python ${{ matrix.python-version }})
     runs-on: ${{ matrix.runs-on }}
     needs: [download-jars, build]
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    if: (github.event_name != 'pull_request' || github.event.pull_request.draft == false) && needs.download-jars.outputs.run == 'true'
     env:
       # Pin the Hugging Face cache inside the workspace so it is cacheable with
       # one path on every platform (the default differs per OS). The examples
@@ -331,7 +352,8 @@ jobs:
       fail-fast: false
       # Chosen by the "Select the test matrix" step of download-jars from the event that
       # started the run (scripts/select_matrix.py holds the platform and Python lists):
-      # small on pull requests, the full 4 platforms x 4 Pythons on every other event.
+      # linux/amd64 on the newest Python on a pull request (the fast tier), the full
+      # 4 platforms x 4 Pythons on every other event.
       # Every leg carries platform, runs-on and python-version, so the job names stay
       # "Test Python Examples (<platform>, Python <version>)".
       matrix: ${{ fromJSON(needs.download-jars.outputs.matrix) }}
@@ -574,29 +596,43 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
-  # Summary job that checks all platforms
+  # Summary job that checks every leg this run started, and the one check that always reports for this workflow.
+  # - The run has example legs (`run` is true): green only when the build and the example legs both ended with "success". They are
+  #   matrix jobs, so the result is one word for the whole matrix whatever the number of legs; a leg that failed, was cancelled or
+  #   never started (its build failed) makes it something else, and this job red.
+  # - The run has no example leg on purpose (`run` is false: a pull request, the fast tier): green only when the first job
+  #   succeeded and both jobs were skipped.
+  # - Anything else is red: the first job failed, `run` is empty, or a job that should have been skipped ran.
   test-examples-summary:
     name: Examples Test Summary
-    needs: [build, test-examples]
+    needs: [download-jars, build, test-examples]
     runs-on: ubuntu-latest
     # Skipped (not red) when the matrix was skipped for a draft PR.
     if: always() && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
     steps:
       - name: Check test results
         shell: bash
+        env:
+          PLAN: ${{ needs.download-jars.result }}
+          RUN: ${{ needs.download-jars.outputs.run }}
+          BUILD: ${{ needs.build.result }}
+          LEGS: ${{ needs.test-examples.result }}
         run: |
-          echo "## 🎯 Overall Examples Test Summary" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## 🎯 Overall Examples Test Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "first job: $PLAN, example legs in this run: ${RUN:-unknown}, build: $BUILD, examples: $LEGS"
 
-          if [ "${{ needs.build.result }}" = "success" ] && [ "${{ needs.test-examples.result }}" = "success" ]; then
-            echo "✅ **All platforms passed example testing!**" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "All examples ran successfully across all enabled platforms, against one wheel built for each platform." >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "**Platforms tested**: linux/amd64, linux/arm64, darwin/arm64, windows/amd64" >> $GITHUB_STEP_SUMMARY
+          if [ "$PLAN" = success ] && [ "$RUN" = false ] && [ "$BUILD" = skipped ] && [ "$LEGS" = skipped ]; then
+            echo "⏭️ **No example leg in this run**" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "A pull request runs the examples only when it changes them or their runner, or carries the label ci:full. A push to main, the nightly run and a manual run run them on every platform." >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$PLAN" = success ] && [ "$RUN" = true ] && [ "$BUILD" = success ] && [ "$LEGS" = success ]; then
+            echo "✅ **Every leg of this run passed example testing!**" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "All examples ran successfully on every leg this run started, against one wheel built for each platform. The jobs of this run list its legs." >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "❌ **Some platforms failed example testing**" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "Please check the individual platform jobs for details." >> $GITHUB_STEP_SUMMARY
+            echo "❌ **Some legs failed example testing**" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "Please check the individual platform jobs for details." >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi

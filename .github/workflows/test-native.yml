@@ -4,7 +4,9 @@
 #
 # A native image build takes about 5 to 30 minutes per platform and the ArcadeData organisation shares a runner cap with
 # upstream ArcadeDB, so the load is selective (scripts/select_native_matrix.py holds the legs, tests/test_select_native_matrix.py pins them):
-#   pull request   only when a native path changed (the `paths` filter below); linux-x86_64, Python 3.12; not for a draft
+#   pull request   only when a native path changed (the `paths` filter below); linux-x86_64, Python 3.12, no example leg (the fast tier);
+#                  not for a draft. The example leg runs when the pull request changes the examples or their runner. With the label
+#                  ci:full, or opened by Dependabot: the legs of a push to main (scripts/ci_tier.py decides all three)
 #   push to main   only when a native path changed; all four platforms, Python 3.12 and 3.14
 #   nightly        all four platforms, Python 3.12 and 3.14, but only when something besides docs changed in the last 25 hours (a full run on Mondays)
 #   dispatch       all four platforms, Python 3.12 and 3.14
@@ -12,12 +14,12 @@
 # This workflow never publishes: it has no id-token permission and no environment.
 #
 # Beside the full parity runs, the `pyver` job installs the already built linux-x86_64 wheel (py3-none: no rebuild) into the Pythons the full
-# runs of the event leave out (a pull request: 3.11, 3.13, 3.14; main, nightly, dispatch: 3.11, 3.13; a release: none), into 3.15 (always: the full suite
+# runs of the event leave out (main, nightly, dispatch: 3.11, 3.13; a release: none; a pull request runs only 3.11 and 3.14 of this job), into 3.15 (the full suite
 # needs jpype1 and ladybug, which have no cp315 wheel yet, so 3.15 runs without the test files that need jpype1) and into the free-threaded 3.14t, and runs a small subset of the tests there (about 20 s of tests per Python). A release needs it: a leg that passes uploads a marker (native-passed-pyver-py<version>), and release-native.yml
 # publishes nothing unless the legs of a release (3.15 and the free-threaded 3.14t) passed. Only linux-x86_64 is checked on them.
 # scripts/select_native_matrix.py decides its legs.
 #
-# The `examples` job runs every script of examples/ against the installed wheel of each platform (Python 3.12 and 3.14; a pull request: linux-x86_64, 3.12), through
+# The `examples` job runs every script of examples/ against the installed wheel of each platform (Python 3.12 and 3.14; a pull request: none, or linux-x86_64 on 3.12 when it changes the examples), through
 # scripts/run_examples.sh, the runner test-python-examples.yml uses too. scripts/native_examples_skip.txt lists, with a reason, the examples that need the JVM package.
 # `examples-summary` is the one check for all its legs. They do not decide what a release publishes (release-native.yml reads the markers and the wheels only).
 #
@@ -52,6 +54,7 @@ on:
       - "src/arcadedb/**"
       - "tests/**"
       - "scripts/select_native_matrix.py"
+      - "scripts/ci_tier.py"
       - "scripts/smoke_wheel.py"
       - "scripts/run_examples.sh"
       - "scripts/native_examples_skip.txt"
@@ -225,10 +228,19 @@ jobs:
           EVENT: ${{ github.event_name }}
           RELEASE: ${{ inputs.release }}
           LEGS: ${{ inputs.legs }}
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
         run: |
           set -euo pipefail
           run=true
-          event="$EVENT"
+          # A pull request runs the fast tier (one platform, one Python, no examples). scripts/ci_tier.py turns its event into
+          # pull_request_examples when it changes the examples or their runner (the example leg too), and into pull_request_full with the
+          # label ci:full or a Dependabot author (the legs of a push to main; it reads the labels again from the API, so a re-run after
+          # adding the label is enough). Every other event passes through unchanged.
+          event="$(python3 -I scripts/ci_tier.py "$EVENT")"
+          echo "legs of the event: $event"
           if [ "$RELEASE" = true ]; then event=release; fi
           # a manual run may ask for the legs of a pull request (one platform, one Python): the runner cap is shared with upstream
           if [ "$EVENT" = workflow_dispatch ] && [ "${LEGS:-full}" = pull-request ]; then event=pull_request; fi
@@ -760,7 +772,9 @@ jobs:
     name: Examples on the installed wheel (${{ matrix.key }}, Python ${{ matrix.python }})
     needs: [plan, build]
     # A platform whose build failed has no wheel to download and shows red here; the other platforms still run.
-    if: ${{ !cancelled() && needs.plan.outputs.run == 'true' }}
+    # A pull request (the fast tier) has no example leg unless it changes the examples or their runner (scripts/ci_tier.py): the list is
+    # empty then and the job is skipped, because an empty matrix is an error. `Examples summary` below knows that case.
+    if: ${{ !cancelled() && needs.plan.outputs.run == 'true' && needs.plan.outputs.examples != '[]' }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 240
     defaults:
@@ -945,6 +959,8 @@ jobs:
           retention-days: 3
 
   # One check for the examples of every platform and Python: red when any leg of the `examples` job failed or the job did not run to the end.
+  # When the plan has no example leg on purpose (the list is `[]`: a pull request, the fast tier) it is green only if the job was skipped.
+  # An empty list text (the plan step failed half way) is not that case: the job must then have succeeded, so the check is red.
   examples-summary:
     name: Examples summary
     needs: [plan, examples]
@@ -955,17 +971,22 @@ jobs:
       - name: Check the examples legs
         env:
           RESULT: ${{ needs.examples.result }}
+          LEGS: ${{ needs.plan.outputs.examples }}
         run: |
+          want=success
+          if [ "$LEGS" = '[]' ]; then want=skipped; fi
           {
             echo "## Examples on the installed wheel"
             echo
-            if [ "$RESULT" = success ]; then
-              echo "All example legs passed."
+            if [ "$RESULT" != "$want" ]; then
+              echo "The examples job ended with: $RESULT (expected: $want). See the legs of the job \"Examples on the installed wheel\"."
+            elif [ "$want" = skipped ]; then
+              echo "No example leg in this run: a pull request runs the examples only when it changes them or their runner, or carries the label ci:full."
             else
-              echo "The examples job ended with: $RESULT. See the legs of the job \"Examples on the installed wheel\"."
+              echo "All example legs passed."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
-          [ "$RESULT" = success ]
+          [ "$RESULT" = "$want" ]
 
   # The cheap Python-version coverage of the wheel of linux-x86_64 (py3-none: the same file for every Python, nothing is rebuilt): a subset of
   # the test files, not the whole suite. The legs are the supported Pythons the full parity runs of this event leave out, plus the
@@ -980,7 +1001,9 @@ jobs:
     name: Python ${{ matrix.python }} on the wheel (linux-x86_64)
     needs: [plan, build]
     # The linux-x86_64 build may have failed: then there is no wheel to download and this shows red, as the test job does.
-    if: ${{ !cancelled() && needs.plan.outputs.run == 'true' }}
+    # Skipped when the list is empty, because an empty matrix is an error (every event has legs today: a pull request the oldest and the
+    # newest Python). No other job needs this one, so a skipped pyver job changes no summary.
+    if: ${{ !cancelled() && needs.plan.outputs.run == 'true' && needs.plan.outputs.pyver != '[]' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     defaults:
