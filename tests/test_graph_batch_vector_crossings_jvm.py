@@ -45,6 +45,8 @@ class _Counting:
 @pytest.fixture
 def crossings(monkeypatch):
     """What the load does: property-matrix fallbacks, per-value conversions, bridge calls, Matrix constructions, per-row inserts."""
+    # the floor of the typed route (tests/test_graph_batch_typed_jvm.py) is off: these tests count crossings of calls of 25 to 250 rows
+    monkeypatch.setattr(gbm, "_TYPED_MIN_VERTICES", 1)
     log = {"fallback": [], "convert": [], "bridge": [], "matrix": [], "per_row": []}
 
     real_matrix_path = GraphBatch._to_java_property_matrix

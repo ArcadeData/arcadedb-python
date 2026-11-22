@@ -33,6 +33,30 @@ _LOGGER = get_logger(__name__)
 _NONE_KIND = type(None)
 # what a masked (null) row of a typed column holds: any value of the column's kind, never read
 _FILL = {int: 0, float: 0.0, bool: False}
+# A call of fewer rows keeps the old route (the JSON text). The typed route has a fixed cost per call that the text does not have:
+# the names array, the columns array, one bridge array per column and a StringColumn per str column, and the engine call is the same
+# one. The floors come from a probe of both routes of this change (ArcadeData/arcadedb-python#391, 2026-11-23, one process, the
+# efficiency cores 18 and 19 of the mini, a JVM of two processors, 300 to 1,500 calls per size and route in alternating blocks), with
+# the typed route forced off by making _scalar_columns answer None. Time of one call on the typed route over the time on the text
+# (below 1.00: the typed route is faster):
+#
+# create_vertices, rows per call:
+#                         1     8    16    64   128   256   512  1024  5000
+# 2 ints               1.30  1.53  1.34  1.13  1.03  0.96  0.92  0.87  0.84
+# l2: 2 int, 2 str     2.72  2.33  1.97  1.34  1.14  1.00  0.91  0.87  0.85
+# l2 with nulls        3.15  2.67  2.29  1.49  1.24  1.07  0.97  0.92  0.86
+# 7 props, 2 str       2.54  1.98  1.65  1.05  0.88  0.77  0.69  0.65  0.63
+# int, int, float[64]  1.21  1.17  1.10  0.99  0.93  0.91  0.87  0.88  0.87
+#
+# new_edges, edges per call:
+#                     1     8    16    32    64   256
+# since (int)      1.55  1.11  0.82  0.62  0.45  0.35
+# int, float, str  3.79  1.86  1.32  0.87  0.62  0.39
+#
+# The floor is the first size at which no probed shape is slower on the typed route and none is slower at the sizes above it.
+# It counts the rows (edges) of the call, not of a chunk, so a call over the floor crosses every one of its chunks typed.
+_TYPED_MIN_VERTICES = 512
+_TYPED_MIN_EDGES = 32
 
 
 def _scalar_column(column):
@@ -311,13 +335,15 @@ class GraphBatch:
                 per-element path stores it. A list of only numbers keeps the
                 property-matrix path, which crosses it as one double[].
 
-        Rows that are all dicts with the same keys in the same order, each property
-        holding one kind of ``int``, ``float``, ``bool`` or ``str`` (``None`` for a
-        null), plus the float vectors above, cross as one typed column per property,
-        and the RIDs come back as one ``long[]``: no JSON text on either side. Any
-        other rows (a row that is ``None``, rows with other keys, a list, dict,
-        date-time, date, Decimal or bytes value, a column of mixed kinds) cross as the
-        JSON text described above. The stored values are the same on both routes.
+        In a call of at least 512 rows, rows that are all dicts with the same keys in
+        the same order, each property holding one kind of ``int``, ``float``, ``bool``
+        or ``str`` (``None`` for a null), plus the float vectors above, cross as one
+        typed column per property, and the RIDs come back as one ``long[]``: no JSON
+        text on either side. A smaller call keeps the JSON text, which costs less
+        than the fixed cost per call of the typed columns. Any other rows (a row that
+        is ``None``, rows with other keys, a list, dict, date-time, date, Decimal or
+        bytes value, a column of mixed kinds) cross as the JSON text described above.
+        The stored values are the same on both routes.
 
         Large inputs cross in chunks of 100,000 rows on this build. On the native build (the ``arcadedb`` package) the chunk is the
         batch's ``commit_every``, 1000 unless ``graph_batch()`` got another value, and each chunk is its own transaction. Chunks that
@@ -426,6 +452,9 @@ class GraphBatch:
                 max(self._VECTOR_BLOCK_MIN_ROWS, self._VECTOR_BLOCK_FLOATS // width),
             )
         rids = []
+        typed_ok = (
+            len(rows) >= _TYPED_MIN_VERTICES
+        )  # a call below the floor keeps the text route (see _TYPED_MIN_VERTICES)
         for start in range(0, len(rows), step):
             # the previous chunk's rest rows, text and matrices go before this chunk's are built: two float[] buffers were alive at once
             split = rest = text = typed = names = columns = nulls = packed = None
@@ -434,7 +463,7 @@ class GraphBatch:
                 self._java_db, type_name, chunk, declared, undeclared=True
             )
             rest = split[0] if split else chunk
-            typed = _scalar_columns(rest)
+            typed = _scalar_columns(rest) if typed_ok else None
             if typed is not None:
                 # rows of exact scalars and float vectors: one typed column per property, the RIDs back as one long[]
                 names, columns, nulls = typed
@@ -603,7 +632,11 @@ class GraphBatch:
                     )
                 return self
 
-            typed = self._typed_edge_columns(properties)
+            typed = (
+                self._typed_edge_columns(properties)
+                if len(properties) >= _TYPED_MIN_EDGES
+                else None
+            )
             if typed is not None:
                 # properties of exact scalars: the RIDs cross as the joined texts above, the values as typed columns, one per property
                 sources = [self._rid_text(r) for r in source_rids]

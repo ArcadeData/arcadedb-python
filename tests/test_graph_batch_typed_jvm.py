@@ -21,6 +21,13 @@ from arcadedb import results as results_module
 from arcadedb.graph_batch import GraphBatch
 
 CHUNK = 100  # rows per crossing in these tests: 250 rows are three crossings
+VFLOOR = (
+    gbm._TYPED_MIN_VERTICES
+)  # the shipped floors: a call of fewer rows (edges) keeps the old route (see the last section)
+EFLOOR = gbm._TYPED_MIN_EDGES
+assert (
+    VFLOOR >= 2 and EFLOOR >= 2
+), "the tests of the floors read a call of one row below it"
 
 
 class _Counting:
@@ -39,6 +46,13 @@ class _Counting:
             return attribute(*args)
 
         return call
+
+
+@pytest.fixture(autouse=True)
+def _no_floor(monkeypatch):
+    """The tests before the last section are about which shapes cross typed, on calls of any size: both floors are off in them."""
+    monkeypatch.setattr(gbm, "_TYPED_MIN_VERTICES", 1)
+    monkeypatch.setattr(gbm, "_TYPED_MIN_EDGES", 1)
 
 
 @pytest.fixture
@@ -476,3 +490,125 @@ def test_an_edge_chunk_that_is_not_carried_sends_the_whole_call_the_old_way(db, 
     _new_edges(db, "EA", vertices, vertices[1:] + vertices[:1], properties)
     assert "newEdgesColumns" not in bridge["edge"]
     assert len(_stored(db, "EA")) == 250
+
+
+# ---------------------------------------------------------------------------
+# the floors: a create_vertices call of fewer than _TYPED_MIN_VERTICES rows and a new_edges call of fewer than _TYPED_MIN_EDGES edges
+# keep the old route (the typed route has a fixed cost per call that the text does not have; the probe that sets the values is in the
+# comment of the constants). These tests count routes, they time nothing.
+
+
+def _crossings(n):
+    return -(-n // CHUNK)
+
+
+def _vector_rows(n):
+    x = np.random.default_rng(7).standard_normal((n, 8)).astype(np.float32)
+    return [
+        {"id": i, "views": i % 11, "embedding": jpype.JArray(jpype.JFloat)(x[i])}
+        for i in range(n)
+    ]
+
+
+@pytest.mark.parametrize("n", [1, VFLOOR - 1])
+def test_a_vertex_call_below_the_floor_takes_the_text_route_and_stores_the_same_records(
+    db, bridge, monkeypatch, n
+):
+    rows = _scalar_rows(n)
+    monkeypatch.setattr(gbm, "_TYPED_MIN_VERTICES", VFLOOR)
+    assert len(_load(db, "A", rows)) == n
+    assert bridge["vertex"] == ["createVerticesJson"] * _crossings(n)
+    assert bridge["matrix"] == []
+    monkeypatch.setattr(gbm, "_TYPED_MIN_VERTICES", 1)
+    assert len(_load(db, "B", rows)) == n
+    assert bridge["vertex"][_crossings(n) :] == ["createVerticesColumns"] * _crossings(
+        n
+    )
+    stored = _stored(db, "A")
+    assert len(stored) == n and stored == _stored(db, "B")
+
+
+@pytest.mark.parametrize("n", [VFLOOR, VFLOOR + 1])
+def test_a_vertex_call_of_the_floor_or_more_takes_the_typed_route(
+    db, bridge, monkeypatch, n
+):
+    monkeypatch.setattr(gbm, "_TYPED_MIN_VERTICES", VFLOOR)
+    assert len(_load(db, "A", _scalar_rows(n))) == n
+    assert bridge["vertex"] == ["createVerticesColumns"] * _crossings(n)
+    assert bridge["matrix"] == []
+
+
+def test_the_vertex_floor_counts_the_rows_of_the_call_not_of_a_chunk(
+    db, bridge, monkeypatch
+):
+    # a call of VFLOOR rows in four crossings: every chunk is below the floor, and every chunk crosses typed with the call
+    chunk = VFLOOR // 4 + 1
+    monkeypatch.setattr(GraphBatch, "_BULK_CHUNK", chunk)
+    monkeypatch.setattr(gbm, "_TYPED_MIN_VERTICES", VFLOOR)
+    assert len(_load(db, "A", _scalar_rows(VFLOOR))) == VFLOOR
+    assert bridge["vertex"] == ["createVerticesColumns"] * -(-VFLOOR // chunk)
+    assert chunk < VFLOOR
+    # and a call of one row less is one text crossing per chunk, whatever the chunk
+    bridge["vertex"].clear()
+    assert len(_load(db, "B", _scalar_rows(VFLOOR - 1))) == VFLOOR - 1
+    assert bridge["vertex"] == ["createVerticesJson"] * -(-(VFLOOR - 1) // chunk)
+
+
+def test_vertices_with_a_vector_follow_the_floor_too(db, bridge, monkeypatch):
+    monkeypatch.setattr(gbm, "_TYPED_MIN_VERTICES", VFLOOR)
+    assert len(_load(db, "A", _vector_rows(VFLOOR - 1))) == VFLOOR - 1
+    assert bridge["vertex"] == ["createVerticesJson"] * _crossings(VFLOOR - 1)
+    assert bridge["matrix"] == []
+    bridge["vertex"].clear()
+    assert len(_load(db, "B", _vector_rows(VFLOOR))) == VFLOOR
+    assert bridge["vertex"] == ["createVerticesColumns"] * _crossings(VFLOOR)
+    assert len(_stored(db, "A")) == VFLOOR - 1 and len(_stored(db, "B")) == VFLOOR
+
+
+@pytest.mark.parametrize("n", [1, EFLOOR - 1])
+def test_an_edge_call_below_the_floor_takes_the_text_route_and_stores_the_same_records(
+    db, bridge, monkeypatch, n
+):
+    vertices = _edge_setup(db, n + 1)
+    sources, destinations = vertices[:n], vertices[1:]
+    properties = _edge_props(n)
+    monkeypatch.setattr(gbm, "_TYPED_MIN_EDGES", EFLOOR)
+    _new_edges(db, "EA", sources, destinations, properties)
+    assert bridge["edge"] == ["newEdgesJson"] * _crossings(n)
+    monkeypatch.setattr(gbm, "_TYPED_MIN_EDGES", 1)
+    _new_edges(db, "EB", sources, destinations, properties)
+    assert bridge["edge"][_crossings(n) :] == ["newEdgesColumns"] * _crossings(n)
+    typed, old = _stored(db, "EB"), _stored(db, "EA")
+    assert len(typed) == len(old) == n and typed == old
+
+
+@pytest.mark.parametrize("n", [EFLOOR, EFLOOR + 1])
+def test_an_edge_call_of_the_floor_or_more_takes_the_typed_route(
+    db, bridge, monkeypatch, n
+):
+    vertices = _edge_setup(db, n + 1)
+    monkeypatch.setattr(gbm, "_TYPED_MIN_EDGES", EFLOOR)
+    _new_edges(db, "EA", vertices[:n], vertices[1:], _edge_props(n))
+    assert bridge["edge"] == ["newEdgesColumns"] * _crossings(n)
+    assert len(_stored(db, "EA")) == n
+
+
+def test_the_edge_floor_counts_the_edges_of_the_call_not_of_a_chunk(
+    db, bridge, monkeypatch
+):
+    chunk = EFLOOR // 2 + 1
+    monkeypatch.setattr(GraphBatch, "_BULK_CHUNK", chunk)
+    vertices = _edge_setup(db, EFLOOR + 1)
+    monkeypatch.setattr(gbm, "_TYPED_MIN_EDGES", EFLOOR)
+    _new_edges(db, "EA", vertices[:EFLOOR], vertices[1:], _edge_props(EFLOOR))
+    assert bridge["edge"] == ["newEdgesColumns"] * -(-EFLOOR // chunk)
+    assert chunk < EFLOOR
+
+
+def test_the_floors_do_not_touch_edges_without_property_values(db, bridge, monkeypatch):
+    # [{}] * n is the call for edges without properties on every size: the floors are about the typed columns only
+    vertices = _edge_setup(db, 3)
+    monkeypatch.setattr(gbm, "_TYPED_MIN_EDGES", EFLOOR)
+    _new_edges(db, "EA", vertices[:2], vertices[1:], [{}, {}])
+    assert bridge["edge"] == ["newEdgesJoined"]
+    assert len(_stored(db, "EA")) == 2
