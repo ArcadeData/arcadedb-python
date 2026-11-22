@@ -11,12 +11,28 @@ embedded list. Every float32 input is written as the exact float64 widening of t
 the literal. ``to_json_list()`` of a FLOAT or a float32 vector used to differ: the JVM build printed the shortest
 float32 text (``0.1``), which Python reads as a different double than the exact widening
 (``0.10000000149011612``) that the native build and ``to_list()`` return.
+
+Four more cases of #314 follow the first six tests: the text of ``Result.to_json()``, the float-list columns of ``to_arrow()``, the
+distances of a vector search and an integral DECIMAL in ``to_json_list()``. Each asserts what the two builds return alike. Where they
+do not return the same today, the test pins the part that is equal and its docstring gives the value of each build, measured on the
+wheels CI built from ``62195709b7`` (``arcadedb-jvm`` on engine 26.12.1-SNAPSHOT, ``arcadedb`` on engine 26.11.1) and on
+``arcadedb-jvm`` 26.11.1.post4. These differences are open in #314, a literal for them would fail on one build:
+
+- ``to_json()`` writes a FLOAT and a float32 ``float[]`` as the shortest float32 text on the JVM build (``0.1``) and as the exact
+  widening on the native build (``0.10000000149011612``); a DECIMAL keeps its scale on the JVM build (``1.50``) and is a float text on
+  the native build (``1.5``); in a projection row a DATE is epoch milliseconds and a DATETIME is text on the JVM build, days and
+  milliseconds on the native build; the keys of a record row come in a different order.
+- ``to_json_list()`` returns a DECIMAL of scale 0 as an ``int`` on the JVM build and as a ``float`` on the native build.
+- The distance of a vector search can differ in the last bits of the float32 between the builds, and between two calls on the JVM
+  build.
 """
 
+import json
 from datetime import date, datetime
 from decimal import Decimal
 
 import numpy as np
+import pyarrow as pa
 import pytest
 
 SELECT = "SELECT n, f, d, v3, v9, dec, big, day, ts, maybe, lst FROM Golden ORDER BY n"
@@ -213,3 +229,284 @@ def test_to_columns_decimal_and_list_columns(golden):
     assert list(columns["dec"]) == [Decimal("1.50"), Decimal("-0.25")]
     assert all(type(v) is Decimal for v in columns["dec"])
     assert _as_list(columns["lst"]) == [[1, "a", 2.5], ["x"]]
+
+
+# ---- Result.to_json(): the text of a row ----
+
+# INTEGER, DOUBLE, LONG, NULL and LIST: the text is the same on both builds, with no space and in the order of the projection
+JSON_TEXT_SELECT = "SELECT n, d, big, maybe, lst FROM Golden ORDER BY n"
+GOLDEN_JSON_TEXT = [
+    '{"n":0,"d":0.1,"big":9007199254740993,"maybe":0.25,"lst":[1,"a",2.5]}',
+    '{"n":1,"d":0.3333333333333333,"big":-9007199254740993,"maybe":null,"lst":["x"]}',
+]
+
+# a record row (SELECT FROM Golden), parsed: a DATE is epoch days there, a DATETIME epoch milliseconds, a DECIMAL a JSON number
+GOLDEN_RECORD_JSON = [
+    {
+        "n": 0,
+        "d": 0.1,
+        "dec": 1.5,
+        "big": 9007199254740993,
+        "day": 20455,
+        "ts": 1767323045678,
+        "maybe": 0.25,
+        "lst": [1, "a", 2.5],
+        "@cat": "d",
+        "@type": "Golden",
+    },
+    {
+        "n": 1,
+        "d": 1 / 3,
+        "dec": -0.25,
+        "big": -9007199254740993,
+        "day": -1,
+        "ts": -1,
+        "maybe": None,
+        "lst": ["x"],
+        "@cat": "d",
+        "@type": "Golden",
+    },
+]
+RECORD_JSON_KEYS = {
+    "n",
+    "f",
+    "d",
+    "v3",
+    "v9",
+    "dec",
+    "big",
+    "day",
+    "ts",
+    "maybe",
+    "lst",
+    "@cat",
+    "@type",
+    "@rid",
+}
+
+
+def test_to_json_text_of_a_projection_row_golden(golden):
+    """The text of ``Result.to_json()`` for the columns both builds write alike: INTEGER, DOUBLE, LONG beyond 2**53, NULL and LIST.
+
+    The other columns are not in this projection because their text differs today (#314, open). For row 0 the JVM build wrote
+    ``"f":0.1``, ``"v3":[0.1,0.33333334,0.5]``, ``"dec":1.50``, ``"day":1767312000000`` and ``"ts":"2026-01-02 03:04:05"``; the native
+    build wrote ``"f":0.10000000149011612``, ``"v3":[0.10000000149011612,0.3333333432674408,0.5]``, ``"dec":1.5``, ``"day":20455`` and
+    ``"ts":1767323045678``.
+    """
+    texts = [row.to_json() for row in golden.query("sql", JSON_TEXT_SELECT)]
+    assert texts == GOLDEN_JSON_TEXT
+
+
+def test_to_json_of_a_record_row_golden(golden):
+    """``Result.to_json()`` of a record row reads back to the same values on both builds, the float32 values as float32.
+
+    The text itself is not compared: the keys come in a different order on the two builds, the JVM build writes a FLOAT and a
+    float32 ``float[]`` as the shortest float32 text (``0.1``) where the native build writes the exact widening
+    (``0.10000000149011612``), and a DECIMAL as ``1.50`` where the native build writes ``1.5`` (#314, open). Both texts of a float32
+    value name the same float32, which is what the last three assertions pin.
+    """
+    rows = list(golden.query("sql", "SELECT FROM Golden ORDER BY n"))
+    assert len(rows) == len(GOLDEN_RECORD_JSON)
+    for row, want, stored in zip(rows, GOLDEN_RECORD_JSON, ROWS):
+        have = json.loads(row.to_json())
+        assert set(have) == RECORD_JSON_KEYS
+        assert {name: have[name] for name in want} == want
+        assert have["@rid"] == str(row.get_rid())
+        assert np.float32(have["f"]) == np.float32(stored["f"])
+        for name in ("v3", "v9"):
+            np.testing.assert_array_equal(
+                np.array(have[name], dtype=np.float32),
+                np.array(stored[name], dtype=np.float32),
+            )
+
+
+# ---- to_arrow(): float-list columns, and to_json_list(): an integral DECIMAL ----
+
+# fl holds doubles that every float32 can hold, fd holds doubles that no float32 can hold: both are a LIST of doubles
+MORE_ROWS = [
+    {
+        "n": 0,
+        "whole": Decimal("3"),
+        "scaled": Decimal("2.00"),
+        "fl": [0.5, 0.25, -2.75],
+        "fd": [0.1, 1 / 3],
+    },
+    {
+        "n": 1,
+        "whole": Decimal("-7"),
+        "scaled": Decimal("-4.0"),
+        "fl": [1.0, 2.0, 4.0],
+        "fd": [0.2, 0.7],
+    },
+]
+MORE_SELECT = "SELECT n, whole, scaled, fl, fd FROM GoldenMore ORDER BY n"
+
+
+@pytest.fixture
+def golden_more(temp_db):
+    db = temp_db
+    db.command("sql", "CREATE DOCUMENT TYPE GoldenMore")
+    for name, type_name in [
+        ("n", "INTEGER"),
+        ("whole", "DECIMAL"),
+        ("scaled", "DECIMAL"),
+        ("fl", "LIST"),
+        ("fd", "LIST"),
+    ]:
+        db.command("sql", f"CREATE PROPERTY GoldenMore.{name} {type_name}")
+    db.insert_many("GoldenMore", [dict(row) for row in MORE_ROWS])
+    return db
+
+
+def test_to_arrow_float32_vector_columns_golden(golden):
+    """A float32 ``float[]`` column is a ``FixedSizeList<float32>`` Arrow column on both builds, its values the stored float32."""
+    table = golden.query("sql", SELECT).to_arrow()
+    for name, size in (("v3", 3), ("v9", 9)):
+        column_type = table.schema.field(name).type
+        assert column_type == pa.list_(pa.float32(), size), (name, column_type)
+        assert column_type.value_type == pa.float32()
+        assert column_type.list_size == size
+        assert table.column(name).to_pylist() == [row[name] for row in ROWS], name
+
+
+@pytest.mark.parametrize("name", ["fl", "fd"])
+def test_to_arrow_list_of_doubles_column_golden(golden_more, name):
+    """A LIST of floats is a ``list<double>`` Arrow column on both builds, also when every value would fit a float32."""
+    table = golden_more.query("sql", MORE_SELECT).to_arrow()
+    column_type = table.schema.field(name).type
+    assert column_type == pa.list_(pa.float64()), column_type
+    assert column_type.value_type == pa.float64()
+    assert table.column(name).to_pylist() == [row[name] for row in MORE_ROWS]
+
+
+def test_to_json_list_integral_decimal(golden_more):
+    """An integral DECIMAL in ``to_json_list()``: the number is equal on both builds, its Python type is not yet (#314, open).
+
+    ``to_json_list()`` documents a DECIMAL as a float. For ``Decimal("3")`` the native build returned the float ``3.0`` and the
+    JVM build returned the int ``3``, on engine 26.11.1 and on 26.12.1-SNAPSHOT: a DECIMAL of scale 0 has no fraction digit in the
+    JSON of the JVM build. ``3 == 3.0`` holds for both, so the first assertion is the part that is equal, and the type is asserted
+    as one of the two until the builds agree. With a fraction digit (``Decimal("2.00")``) both builds return a float. ``to_list()``
+    returns the ``Decimal`` on both.
+    """
+    rows = golden_more.query("sql", MORE_SELECT).to_json_list()
+    assert [row["whole"] for row in rows] == [3, -7]
+    assert [float(row["whole"]) for row in rows] == [3.0, -7.0]
+    assert all(type(row["whole"]) in (int, float) for row in rows)
+    assert [row["scaled"] for row in rows] == [2.0, -4.0]
+    assert all(type(row["scaled"]) is float for row in rows)
+    as_list = golden_more.query("sql", MORE_SELECT).to_list()
+    assert [row["whole"] for row in as_list] == [Decimal("3"), Decimal("-7")]
+    assert all(type(row["whole"]) is Decimal for row in as_list)
+
+
+# ---- vector distances ----
+
+VECTORS = [
+    [1.0, 0.0, 0.0, 0.0],
+    [0.0, 1.0, 0.0, 0.0],
+    [1.0, 1.0, 0.0, 0.0],
+    [0.5, 0.5, 0.5, 0.5],
+    [3.0, 4.0, 0.0, 0.0],
+    [-1.0, 0.0, 0.0, 0.0],
+    # float32(0.1), float32(0.2), float32(0.3), float32(0.4)
+    [0.10000000149011612, 0.20000000298023224, 0.30000001192092896, 0.4000000059604645],
+    # float32(0.7), float32(0.9), float32(1/3), float32(0.001)
+    [0.699999988079071, 0.8999999761581421, 0.3333333432674408, 0.0010000000474974513],
+]
+UNIT_QUERY = [1.0, 0.0, 0.0, 0.0]
+# float32(0.3), float32(0.6), float32(0.9), float32(0.1)
+F32_QUERY = [
+    0.30000001192092896,
+    0.6000000238418579,
+    0.8999999761581421,
+    0.10000000149011612,
+]
+
+# UNIT_QUERY against vectors 0 to 5: every product and every partial sum is exact in a float32, so the order of the additions
+# cannot change a bit. EUCLIDEAN is the squared distance, COSINE is 1 - cosine: 0.3999999761581421 is 1 - float32(0.6), not 0.4.
+GOLDEN_EXACT_DISTANCES = {
+    "euclidean": {0: 0.0, 1: 2.0, 2: 1.0, 3: 1.0, 4: 20.0, 5: 4.0},
+    "cosine": {0: 0.0, 1: 1.0, 3: 0.5, 4: 0.3999999761581421, 5: 2.0},
+}
+# F32_QUERY against all eight: the values of the native build, which returns the same bits on every call
+GOLDEN_F32_DISTANCES = {
+    "euclidean": {
+        0: 1.6700000762939453,
+        1: 1.0699999332427979,
+        2: 1.4699997901916504,
+        3: 0.3700000047683716,
+        4: 19.670001983642578,
+        5: 2.869999885559082,
+        6: 0.6499999761581421,
+        7: 0.5809118747711182,
+    },
+    "cosine": {
+        0: 0.7337930202484131,
+        1: 0.46758604049682617,
+        2: 0.43528974056243896,
+        3: 0.1570112705230713,
+        4: 0.4143446683883667,
+        5: 1.266206979751587,
+        6: 0.25476133823394775,
+        7: 0.21558105945587158,
+    },
+}
+# a few float32 steps: the builds differed by up to 4 steps of the last float32 bit (relative 6e-7), this leaves room for the
+# SIMD widths of the other platforms and still tells a distance from a wrong one
+F32_DISTANCE_TOLERANCE = 1e-5
+
+
+def _vector_index(db, metric):
+    type_name = f"GoldenVec{metric.capitalize()}"
+    db.command("sql", f"CREATE VERTEX TYPE {type_name}")
+    db.command("sql", f"CREATE PROPERTY {type_name}.id INTEGER")
+    db.command("sql", f"CREATE PROPERTY {type_name}.emb ARRAY_OF_FLOATS")
+    with db.transaction():
+        for i, vector in enumerate(VECTORS):
+            db.command("sql", f"INSERT INTO {type_name} SET id = ?, emb = ?", i, vector)
+    # quantization NONE: the distance is that of the stored float32 values, not of an INT8 approximation
+    return db.create_vector_index(
+        type_name,
+        "emb",
+        dimensions=4,
+        id_property="id",
+        distance_function=metric,
+        quantization="NONE",
+    )
+
+
+def _distances(index, query):
+    hits = index.find_nearest(query, k=len(VECTORS))
+    assert all(type(score) is float for _, score in hits)
+    return {int(record.get("id")): score for record, score in hits}
+
+
+@pytest.mark.parametrize("metric", sorted(GOLDEN_EXACT_DISTANCES))
+def test_vector_distances_exact_golden(temp_db, metric):
+    """Distances that are exact in float32 arithmetic are the same bits on both builds, on every call."""
+    index = _vector_index(temp_db, metric)
+    want = GOLDEN_EXACT_DISTANCES[metric]
+    for _ in range(20):
+        have = _distances(index, UNIT_QUERY)
+        assert set(have) == set(range(len(VECTORS)))
+        assert {i: have[i] for i in want} == want
+
+
+@pytest.mark.parametrize("metric", sorted(GOLDEN_F32_DISTANCES))
+def test_vector_distances_float32_golden(temp_db, metric):
+    """Distances that round in float32 are equal to the golden within a few float32 steps, not to the bit (#314, open).
+
+    Measured with this table: the native build returned the golden bits on each of 400 calls. The JVM build on engine
+    26.12.1-SNAPSHOT returned ``19.670000076293945`` for vector 4 and ``2.869999408721924`` for vector 5 (EUCLIDEAN) on 396 of 400
+    calls and the golden bits on the other 4, and ``0.2547614574432373`` and ``0.21558117866516113`` for vectors 6 and 7 (COSINE) on
+    every call. Why the JVM build changes between calls was not looked into here.
+    """
+    index = _vector_index(temp_db, metric)
+    want = GOLDEN_F32_DISTANCES[metric]
+    for _ in range(20):
+        have = _distances(index, F32_QUERY)
+        assert set(have) == set(want)
+        for i, distance in want.items():
+            assert have[i] == pytest.approx(
+                distance, rel=F32_DISTANCE_TOLERANCE, abs=F32_DISTANCE_TOLERANCE
+            ), (i, have[i], distance)
