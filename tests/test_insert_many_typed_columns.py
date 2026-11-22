@@ -882,3 +882,69 @@ def test_a_decimal_behind_a_null_in_the_first_row_still_keeps_the_json_text(
     stored = _stored(temp_db, "T")
     assert dict(stored[0])["amount"] == ("null",)
     assert dict(stored[4])["amount"] == ("java.math.BigDecimal", "4")
+
+
+def _key_tuples(monkeypatch):
+    """The key tuples the route decision builds: ``tuple`` as ``core`` sees it, one entry per call."""
+    built = []
+
+    def spy(iterable=()):
+        built.append(1)
+        return tuple(iterable)
+
+    monkeypatch.setattr(core, "tuple", spy, raising=False)
+    return built
+
+
+@pytest.mark.parametrize("odd", ["a key more", "a key less"])
+@pytest.mark.parametrize("where", [0, 100, 199], ids=["second", "middle", "last"])
+def test_a_row_with_another_number_of_keys_refuses_the_chunk_before_any_key_tuple_is_built(
+    temp_db, monkeypatch, bridge, odd, where
+):
+    """A chunk that is not uniform must not pay a tuple and a hash per row to find that out.
+
+    The timed A/B of this change measured rows whose last row of each chunk has a key more, which keep the JSON text in both arms,
+    1.2 to 2.5 percent slower: the decision built the key tuple of every row and one set of them. The number of keys says the same
+    with nothing built per row.
+    """
+    rows = [{"id": i, "a": i * 2, "b": f"row {i}"} for i in range(200)]
+    at = max(
+        where, 1
+    )  # never the first row: its keys are the ones the others are compared with
+    rows[at] = {**rows[at], "c": 1} if odd == "a key more" else {"id": at, "a": at * 2}
+    built = _key_tuples(monkeypatch)
+    assert core._typed_chunk_columns(rows) is None
+    assert built == [1], "only the keys of the first row are read"
+    _make(temp_db, "T")
+    assert temp_db.insert_many("T", rows) == 200
+    assert "insertManyColumns" not in bridge
+    assert len(_stored(temp_db, "T")) == 200
+
+
+def test_rows_with_the_keys_in_another_order_stop_the_key_check_at_the_first_such_row(
+    temp_db, monkeypatch, bridge
+):
+    rows = [{"id": i, "a": i * 2, "b": f"row {i}"} for i in range(200)]
+    rows[3] = {"id": 3, "b": "row 3", "a": 6}
+    built = _key_tuples(monkeypatch)
+    assert core._typed_chunk_columns(rows) is None
+    assert len(built) == 1 + 4, "the keys of the first row, then rows 0 to 3"
+    _make(temp_db, "T")
+    assert temp_db.insert_many("T", rows) == 200
+    assert "insertManyColumns" not in bridge
+    stored = _stored(temp_db, "T")
+    assert [name for name, _ in stored[3]] == ["id", "b", "a"]
+    assert [name for name, _ in stored[4]] == ["id", "a", "b"]
+
+
+def test_a_uniform_chunk_still_has_the_keys_of_every_row_compared(
+    temp_db, monkeypatch, bridge
+):
+    """The order of the keys is part of what a record stores, so the check that passes still reads every row."""
+    rows = [{"id": i, "a": i * 2, "b": f"row {i}"} for i in range(50)]
+    built = _key_tuples(monkeypatch)
+    assert core._typed_chunk_columns(rows) is not None
+    assert len(built) == 1 + 50
+    _make(temp_db, "T")
+    assert temp_db.insert_many("T", rows) == 50
+    assert bridge == ["insertManyColumns"]
