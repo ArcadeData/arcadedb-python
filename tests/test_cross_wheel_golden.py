@@ -22,7 +22,6 @@ wheels CI built from ``62195709b7`` (``arcadedb-jvm`` on engine 26.12.1-SNAPSHOT
   widening on the native build (``0.10000000149011612``); a DECIMAL keeps its scale on the JVM build (``1.50``) and is a float text on
   the native build (``1.5``); in a projection row a DATE is epoch milliseconds and a DATETIME is text on the JVM build, days and
   milliseconds on the native build; the keys of a record row come in a different order.
-- ``to_json_list()`` returns a DECIMAL of scale 0 as an ``int`` on the JVM build and as a ``float`` on the native build.
 - The distance of a vector search can differ in the last bits of the float32 between the builds, and between two calls on the JVM
   build.
 """
@@ -328,6 +327,7 @@ MORE_ROWS = [
         "n": 0,
         "whole": Decimal("3"),
         "scaled": Decimal("2.00"),
+        "huge": Decimal("12345678901234567890"),
         "fl": [0.5, 0.25, -2.75],
         "fd": [0.1, 1 / 3],
     },
@@ -335,11 +335,13 @@ MORE_ROWS = [
         "n": 1,
         "whole": Decimal("-7"),
         "scaled": Decimal("-4.0"),
+        "huge": Decimal("-12345678901234567890"),
         "fl": [1.0, 2.0, 4.0],
         "fd": [0.2, 0.7],
     },
 ]
 MORE_SELECT = "SELECT n, whole, scaled, fl, fd FROM GoldenMore ORDER BY n"
+DECIMAL_SELECT = "SELECT n, whole, scaled, huge FROM GoldenMore ORDER BY n"
 
 
 @pytest.fixture
@@ -350,6 +352,7 @@ def golden_more(temp_db):
         ("n", "INTEGER"),
         ("whole", "DECIMAL"),
         ("scaled", "DECIMAL"),
+        ("huge", "DECIMAL"),
         ("fl", "LIST"),
         ("fd", "LIST"),
     ]:
@@ -380,23 +383,33 @@ def test_to_arrow_list_of_doubles_column_golden(golden_more, name):
 
 
 def test_to_json_list_integral_decimal(golden_more):
-    """An integral DECIMAL in ``to_json_list()``: the number is equal on both builds, its Python type is not yet (#314, open).
+    """Every DECIMAL in ``to_json_list()`` is a float on both builds, whatever its scale (#452).
 
-    ``to_json_list()`` documents a DECIMAL as a float. For ``Decimal("3")`` the native build returned the float ``3.0`` and the
-    JVM build returned the int ``3``, on engine 26.11.1 and on 26.12.1-SNAPSHOT: a DECIMAL of scale 0 has no fraction digit in the
-    JSON of the JVM build. ``3 == 3.0`` holds for both, so the first assertion is the part that is equal, and the type is asserted
-    as one of the two until the builds agree. With a fraction digit (``Decimal("2.00")``) both builds return a float. ``to_list()``
-    returns the ``Decimal`` on both.
+    ``to_json_list()`` documents a DECIMAL as a float. The JVM build used to return the int ``3`` for ``Decimal("3")`` (a DECIMAL
+    of scale 0 has no fraction digit in its JSON) and the int ``12345678901234567890`` for the 20-digit value, where the native
+    build returned the floats ``3.0`` and ``1.2345678901234567e+19``, so a column held two Python types and the numbers differed.
+    Both builds return the float of the value now: ``3.0``, ``-7.0``, the scaled ``2.0`` (a float on both before) and the
+    20-digit values, rounded to the nearest double. ``to_list()`` returns the ``Decimal`` with every digit on both.
     """
-    rows = golden_more.query("sql", MORE_SELECT).to_json_list()
-    assert [row["whole"] for row in rows] == [3, -7]
-    assert [float(row["whole"]) for row in rows] == [3.0, -7.0]
-    assert all(type(row["whole"]) in (int, float) for row in rows)
+    rows = golden_more.query("sql", DECIMAL_SELECT).to_json_list()
+    assert [row["whole"] for row in rows] == [3.0, -7.0]
     assert [row["scaled"] for row in rows] == [2.0, -4.0]
-    assert all(type(row["scaled"]) is float for row in rows)
-    as_list = golden_more.query("sql", MORE_SELECT).to_list()
+    assert [row["huge"] for row in rows] == [
+        1.2345678901234567e19,
+        -1.2345678901234567e19,
+    ]
+    for name in ("whole", "scaled", "huge"):
+        assert all(type(row[name]) is float for row in rows), name
+    batches = golden_more.query("sql", DECIMAL_SELECT).iter_json_batches(batch_size=1)
+    assert [row for batch in batches for row in batch] == rows
+    as_list = golden_more.query("sql", DECIMAL_SELECT).to_list()
     assert [row["whole"] for row in as_list] == [Decimal("3"), Decimal("-7")]
-    assert all(type(row["whole"]) is Decimal for row in as_list)
+    assert [row["huge"] for row in as_list] == [
+        Decimal("12345678901234567890"),
+        Decimal("-12345678901234567890"),
+    ]
+    for name in ("whole", "scaled", "huge"):
+        assert all(type(row[name]) is Decimal for row in as_list), name
 
 
 # ---- vector distances ----

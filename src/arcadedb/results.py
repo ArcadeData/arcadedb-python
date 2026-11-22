@@ -634,6 +634,12 @@ class ResultSet:
         floats. Use ``to_list()`` when you want ``date``, ``datetime`` and
         ``Decimal`` values: it costs about the same.
 
+        A DECIMAL is a ``float`` whatever its scale, on both builds, so one
+        column has one Python type: ``Decimal("3")`` arrives as ``3.0``, not
+        ``3``. A float keeps about 17 significant digits, so a DECIMAL with more
+        digits is rounded (``Decimal("12345678901234567890")`` arrives as
+        ``1.2345678901234567e+19``); ``to_list()`` keeps every digit.
+
         A record id (a ``LINK`` value, ``@rid``) arrives as its text
         (``"#10:5"``), at the top level and inside a list or a map, and a map key
         that is not a string arrives as text (``"1"``, ``"true"``, ``"null"``),

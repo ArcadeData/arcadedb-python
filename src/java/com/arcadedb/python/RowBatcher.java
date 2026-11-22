@@ -25,8 +25,8 @@
  * Compiled into arcadedb-python-bridge.jar during the wheel build
  * (scripts/Dockerfile.build and scripts/build-native.sh) and consumed by
  * ResultSet.to_json_list() in the Python bindings. Values carry JSON-native
- * types (DATE and DATETIME as epoch-millisecond integers), as documented on
- * the Python side.
+ * types (DATE and DATETIME as epoch-millisecond integers, every DECIMAL as a
+ * double), as documented on the Python side.
  */
 package com.arcadedb.python;
 
@@ -35,6 +35,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
+import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.LinkedHashMap;
@@ -54,9 +55,10 @@ public final class RowBatcher {
    * NaN, Infinity and -Infinity (a Double or Float, or an element of a float[], a double[], a Collection or a Map, at any
    * depth) replaced by the tag {@code {"\u0001": ["f", "NaN"]}} (the text is {@code Double.toString}), which Python turns
    * back into a float. A Float, and each element of a float[], is also widened to a double (a float[] becomes a double[]),
-   * so the JSON text is the exact double and Python reads the same float that to_list() returns (#314). A value that is
-   * neither a Float nor a float[] and has nothing non-finite is returned as it is, with no copy, so the common row costs
-   * one type test per value.
+   * so the JSON text is the exact double and Python reads the same float that to_list() returns (#314). A BigDecimal is
+   * turned into the double nearest to it, whatever its scale, so a DECIMAL is a Python float on both builds (#452); a value
+   * that is too large for a double is the tagged infinity. A value that is none of these and has nothing non-finite is
+   * returned as it is, with no copy, so the common row costs a few type tests per value.
    */
   static Object keepNonFinite(final Object value) {
     if (value instanceof Double) {
@@ -67,6 +69,12 @@ public final class RowBatcher {
       // widened to a Double: the JSON writer prints a Float as the shortest float32 text ("0.1"), which Python reads as a
       // different double than the exact widening of the float32 that to_list() and the native build return
       final double d = ((Float) value).doubleValue();
+      return Double.isFinite(d) ? (Object) d : tag(d);
+    }
+    if (value instanceof BigDecimal decimal) {
+      // the JSON writer prints a BigDecimal with its own digits, so a scale of 0 has no fraction ("3"), which Python reads
+      // as an int; the native build returns float(Decimal) for every DECIMAL, and so does this
+      final double d = decimal.doubleValue();
       return Double.isFinite(d) ? (Object) d : tag(d);
     }
     if (value instanceof float[] floats) {
