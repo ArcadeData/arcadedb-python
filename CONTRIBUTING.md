@@ -142,6 +142,16 @@ shellcheck and hadolint run as `docker_image` hooks (Docker pulls the images aut
 3. Open a pull request that says `Closes #N`. Fill in the pull request template (`.github/pull_request_template.md`): what changed, the issue, the timed result for a performance change, the docs you updated, and the checklist.
 4. The checks must pass before a pull request is merged. A draft pull request skips the platform jobs; mark it ready for review to start them.
 
+### What CI runs
+
+CI has two tiers, so that a pull request does not wait for the macOS and Windows runners that the organisation shares with ArcadeData/arcadedb.
+
+- **A pull request runs the fast tier.** The static checks (pre-commit, Bandit, the dependency audits) run as before. The builds and tests run on Linux x86-64 only: the `arcadedb-jvm` wheel with the tests on Python 3.11 and 3.14 and the examples on Python 3.14 and, when a native path changed, the native image and wheel with the tests and the examples on Python 3.12. A pull request that changes only documentation runs no platform job.
+- **`main` runs the full tier.** A push to `main` and the nightly run (03:00 to 04:00 UTC) test all four platforms: Linux x86-64, Linux arm64, macOS arm64 and Windows x86-64. A release tests every platform on every Python version.
+- **To run the full tier on a pull request**, add the label `ci:full`, then push a commit or choose "Re-run all jobs" on its test workflows. The pull request then runs what a push to `main` runs. Use it for a change that can behave differently on another platform: file paths, processes and signals, the wheel build, the native library, a workflow file. If you cannot add labels, ask for it in the pull request. Dependabot pull requests always run the full tier.
+
+A problem that only another platform shows is found on `main` after the merge: the badges at the top of the README turn red, and the fix or the revert comes before the next release. [Continuous integration](docs/modules/ROOT/pages/development/ci.adoc) lists the legs of each event.
+
 A commit message starts with a short subject that says what changes and where, for example `Native find_nearest: send the query vector as one float32 array, not a Python list`. The body says why. Link the issue with `Closes #N` in the pull request.
 
 ### Performance changes

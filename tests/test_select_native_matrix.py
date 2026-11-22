@@ -24,6 +24,28 @@ def test_pull_request_builds_one_platform_and_tests_one_python():
     ]
 
 
+def test_a_pull_request_that_asks_for_the_full_tier_runs_the_legs_of_a_push_to_main():
+    # scripts/ci_tier.py passes pull_request_full for the label ci:full and for a Dependabot pull request
+    assert sel.select("pull_request_full") == sel.select("push")
+
+
+def test_the_workflow_asks_ci_tier_for_the_event_and_skips_an_empty_python_version_job():
+    workflow = (ROOT / ".github" / "workflows" / "test-native.yml").read_text()
+    plan = _job(workflow, "plan")
+    tier = plan.index('event="$(python3 -I scripts/ci_tier.py "$EVENT")"')
+    assert tier < plan.index('scripts/select_native_matrix.py "$event"')
+    # a change to the script that picks the tier starts this workflow
+    assert '      - "scripts/ci_tier.py"\n' in workflow.split("\njobs:\n", 1)[0]
+    # the fast tier has no pyver legs, and an empty matrix is an error: the job is skipped then, and no other job needs it
+    assert sel.select("pull_request")["pyver"] == []
+    assert (
+        "needs.plan.outputs.pyver != '[]'"
+        in _job(workflow, "pyver").split("steps:", 1)[0]
+    )
+    for needs in re.findall(r"^    needs: (.*)$", workflow, re.M):
+        assert "pyver" not in needs, needs
+
+
 def test_main_nightly_and_dispatch_build_all_four_platforms():
     for event in ("push", "schedule", "workflow_dispatch"):
         chosen = sel.select(event)
@@ -75,10 +97,17 @@ def test_the_script_prints_github_output_lines():
         "examples",
     ]
     assert json.loads(out[0].split("=", 1)[1])[0]["key"] == "linux-x86_64"
-    assert [leg["python"] for leg in json.loads(out[2].split("=", 1)[1])] == [
+    # the fast tier is one Python: no pyver legs, and the list is the text the workflow compares with '[]'
+    assert out[2] == "pyver=[]"
+    full = subprocess.run(  # nosec B603 - fixed argv, no shell
+        [sys.executable, str(SCRIPT), "pull_request_full"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.splitlines()
+    assert [leg["python"] for leg in json.loads(full[2].split("=", 1)[1])] == [
         "3.11",
         "3.13",
-        "3.14",
         "3.15",
         "3.14t",
     ]
@@ -92,16 +121,22 @@ def _pyver(event):
 
 
 def test_the_python_version_job_covers_what_the_full_parity_run_leaves_out():
-    # a pull request tests 3.12 only: the other three Pythons, 3.15 (no jpype1 wheel yet) and the free-threaded one run the cheap subset
-    assert _pyver("pull_request") == [
+    # a pull request (the fast tier) tests 3.12 only and has no Python-version legs
+    assert _pyver("pull_request") == []
+    # the selection itself still knows what one full Python leaves out: the other three Pythons, 3.15 (no jpype1 wheel yet) and the
+    # free-threaded one
+    assert [
+        (leg["python"], leg["freethreaded"], leg["polars"], leg["jpype"])
+        for leg in sel.pyver_legs(sel.PULL_REQUEST_PYTHONS)
+    ] == [
         ("3.11", False, True, True),
         ("3.13", False, True, True),
         ("3.14", False, True, True),
         ("3.15", False, True, False),
         ("3.14t", True, False, True),
     ]
-    # main, nightly and dispatch test 3.12 and 3.14 in full
-    for event in ("push", "schedule", "workflow_dispatch"):
+    # main, nightly, dispatch and a pull request that asks for the full tier test 3.12 and 3.14 in full
+    for event in ("pull_request_full", "push", "schedule", "workflow_dispatch"):
         assert _pyver(event) == [
             ("3.11", False, True, True),
             ("3.13", False, True, True),
@@ -116,7 +151,13 @@ def test_the_python_version_job_covers_what_the_full_parity_run_leaves_out():
 
 
 def test_the_python_version_job_never_repeats_a_full_parity_leg_and_has_no_polars_on_a_free_threaded_python():
-    for event in ("pull_request", "push", "schedule", "workflow_dispatch", "release"):
+    for event in (
+        "pull_request_full",
+        "push",
+        "schedule",
+        "workflow_dispatch",
+        "release",
+    ):
         chosen = sel.select(event)
         full = {t["python"] for t in chosen["test"]}
         assert not full & {leg["python"] for leg in chosen["pyver"]}, event
@@ -191,7 +232,13 @@ def test_the_linux_legs_build_in_the_manylinux_container_of_the_tag_and_the_work
 def test_the_examples_job_runs_on_the_parity_pythons_3_12_and_3_14_of_every_platform_it_builds():
     pr = sel.select("pull_request")["examples"]
     assert [(leg["key"], leg["python"]) for leg in pr] == [("linux-x86_64", "3.12")]
-    for event in ("push", "schedule", "workflow_dispatch", "release"):
+    for event in (
+        "pull_request_full",
+        "push",
+        "schedule",
+        "workflow_dispatch",
+        "release",
+    ):
         legs = sel.select(event)["examples"]
         assert {leg["key"] for leg in legs} == set(sel.ALL_PLATFORMS), event
         assert {leg["python"] for leg in legs} == {"3.12", "3.14"}, event

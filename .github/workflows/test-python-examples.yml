@@ -138,9 +138,13 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # The platform x Python legs of this run (scripts/select_matrix.py): a small matrix on
-      # pull requests, the full one on every other event. The organisation shares one runner
-      # cap with ArcadeData/arcadedb, so a pull request does not run every combination.
+      # The platform x Python legs of this run (scripts/select_matrix.py). A pull request runs
+      # the fast tier (linux/amd64, the newest Python); every other event runs the full matrix.
+      # The organisation shares one runner cap with ArcadeData/arcadedb, so a pull request does
+      # not wait for the macOS and Windows runners. A pull request with the label ci:full, and
+      # one Dependabot opened, runs the legs of a push to main: scripts/ci_tier.py turns its
+      # event into pull_request_full (it reads the labels again from the API, so a re-run after
+      # adding the label is enough).
       # The wheel matrix is the platforms of those legs, one build each: the wheel is
       # py3-none-<platform>, the same file for every Python.
       # Done first, so a failure here costs no Docker pull.
@@ -149,7 +153,13 @@ jobs:
         shell: bash
         env:
           EVENT_NAME: ${{ github.event_name }}
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
         run: |
+          EVENT_NAME="$(python3 scripts/ci_tier.py "$EVENT_NAME")"
+          echo "legs of the event: $EVENT_NAME"
           matrix="$(python3 scripts/select_matrix.py examples --event "$EVENT_NAME")"
           wheel_matrix="$(python3 scripts/select_matrix.py examples --event "$EVENT_NAME" --wheels)"
           echo "$matrix"
@@ -331,7 +341,8 @@ jobs:
       fail-fast: false
       # Chosen by the "Select the test matrix" step of download-jars from the event that
       # started the run (scripts/select_matrix.py holds the platform and Python lists):
-      # small on pull requests, the full 4 platforms x 4 Pythons on every other event.
+      # linux/amd64 on the newest Python on a pull request (the fast tier), the full
+      # 4 platforms x 4 Pythons on every other event.
       # Every leg carries platform, runs-on and python-version, so the job names stay
       # "Test Python Examples (<platform>, Python <version>)".
       matrix: ${{ fromJSON(needs.download-jars.outputs.matrix) }}
@@ -574,7 +585,9 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
-  # Summary job that checks all platforms
+  # Summary job that checks every leg this run started. The legs are a matrix, so the result of the job is "success" only when
+  # every leg of it passed, whatever their number: one leg on a pull request (the fast tier), 16 on the other events. A leg that
+  # failed, was cancelled or never started (its build failed) makes the result something else, and this job red.
   test-examples-summary:
     name: Examples Test Summary
     needs: [build, test-examples]
@@ -589,13 +602,13 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
 
           if [ "${{ needs.build.result }}" = "success" ] && [ "${{ needs.test-examples.result }}" = "success" ]; then
-            echo "✅ **All platforms passed example testing!**" >> $GITHUB_STEP_SUMMARY
+            echo "✅ **Every leg of this run passed example testing!**" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "All examples ran successfully across all enabled platforms, against one wheel built for each platform." >> $GITHUB_STEP_SUMMARY
+            echo "All examples ran successfully on every leg this run started, against one wheel built for each platform." >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "**Platforms tested**: linux/amd64, linux/arm64, darwin/arm64, windows/amd64" >> $GITHUB_STEP_SUMMARY
+            echo "**Legs**: a pull request runs linux/amd64 only (the fast tier). A push to main, the nightly run, a manual run and a pull request with the label ci:full run linux/amd64, linux/arm64, darwin/arm64 and windows/amd64. The jobs of this run list its legs." >> $GITHUB_STEP_SUMMARY
           else
-            echo "❌ **Some platforms failed example testing**" >> $GITHUB_STEP_SUMMARY
+            echo "❌ **Some legs failed example testing**" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "Please check the individual platform jobs for details." >> $GITHUB_STEP_SUMMARY
             exit 1

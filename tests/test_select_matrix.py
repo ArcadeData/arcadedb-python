@@ -1,4 +1,4 @@
-"""Which platform x Python legs CI runs per event: a small matrix on pull requests, the full one everywhere else."""
+"""Which platform x Python legs CI runs per event: the fast tier (linux/amd64) on pull requests, the full tier everywhere else."""
 
 from __future__ import annotations
 
@@ -30,6 +30,7 @@ PLATFORMS = {
 PYTHONS = ["3.11", "3.12", "3.13", "3.14"]
 FULL = {(p, v) for p, v in itertools.product(PLATFORMS, PYTHONS)}
 NON_PULL_REQUEST_EVENTS = [
+    "pull_request_full",
     "push",
     "schedule",
     "workflow_dispatch",
@@ -68,8 +69,8 @@ def test_every_event_but_pull_request_runs_the_full_examples_matrix(event):
     assert _pairs(matrix) == FULL
 
 
-@pytest.mark.parametrize("event", ["pull_request", "push", "schedule"])
-def test_jvm_tests_the_one_wheel_of_a_platform_on_ten_legs_on_a_pull_request_a_push_and_the_nightly(
+@pytest.mark.parametrize("event", ["pull_request_full", "push", "schedule"])
+def test_jvm_tests_the_one_wheel_of_a_platform_on_ten_legs_on_a_push_the_nightly_and_a_full_tier_pull_request(
     event,
 ):
     # The wheel is py3-none-<platform>: every Python of linux/amd64, the oldest and the newest elsewhere (as test-native.yml)
@@ -93,7 +94,29 @@ def test_jvm_tests_every_platform_and_python_for_a_release_a_dispatch_and_any_ot
     assert _pairs(matrix) == FULL
 
 
-@pytest.mark.parametrize("event", ["pull_request", *NON_PULL_REQUEST_EVENTS])
+def test_a_pull_request_runs_the_fast_tier_of_the_jvm_tests():
+    # linux/amd64 only, the oldest and the newest Python: no macOS, Windows or arm64 runner is waited for
+    assert _pairs(sm.select("jvm", "pull_request")) == {
+        ("linux/amd64", "3.11"),
+        ("linux/amd64", "3.14"),
+    }
+    assert sm.select_wheels("jvm", "pull_request") == {
+        "include": [{"platform": "linux/amd64", "runs-on": "ubuntu-24.04"}]
+    }
+
+
+@pytest.mark.parametrize("workflow", ["jvm", "examples"])
+def test_a_pull_request_that_asks_for_the_full_tier_runs_the_legs_of_a_push_to_main(
+    workflow,
+):
+    # scripts/ci_tier.py passes pull_request_full for the label ci:full and for a Dependabot pull request
+    assert sm.select(workflow, "pull_request_full") == sm.select(workflow, "push")
+    assert sm.select_wheels(workflow, "pull_request_full") == sm.select_wheels(
+        workflow, "push"
+    )
+
+
+@pytest.mark.parametrize("event", NON_PULL_REQUEST_EVENTS)
 def test_jvm_builds_one_wheel_for_each_platform_whatever_the_python(event):
     # One build leg for each platform of the test legs, in the order of RUNNERS; no Python in it
     assert sm.select_wheels("jvm", event) == {
@@ -102,8 +125,12 @@ def test_jvm_builds_one_wheel_for_each_platform_whatever_the_python(event):
 
 
 def test_pull_request_examples_matrix():
+    # the fast tier: the newest Python on linux/amd64, one build
     pairs = _pairs(sm.select("examples", "pull_request"))
-    assert pairs == {(p, "3.14") for p in PLATFORMS}
+    assert pairs == {("linux/amd64", "3.14")}
+    assert sm.select_wheels("examples", "pull_request") == {
+        "include": [{"platform": "linux/amd64", "runs-on": "ubuntu-24.04"}]
+    }
 
 
 @pytest.mark.parametrize("workflow", ["jvm", "examples"])
@@ -112,6 +139,19 @@ def test_pull_request_matrix_is_part_of_the_full_matrix(workflow):
     assert _pairs(sm.select(workflow, "pull_request")) <= _pairs(
         sm.select(workflow, "push")
     )
+
+
+@pytest.mark.parametrize("workflow", sorted(WORKFLOWS))
+def test_workflow_asks_ci_tier_for_the_event_before_it_selects_the_legs(workflow):
+    # the tier of a pull request is decided in one place (scripts/ci_tier.py), and before the matrix is selected
+    text = WORKFLOWS[workflow].read_text(encoding="utf-8")
+    step = text.split("      - name: Select the test matrix\n", 1)[1].split(
+        "\n      - name:", 1
+    )[0]
+    tier = step.index('EVENT_NAME="$(python3 scripts/ci_tier.py "$EVENT_NAME")"')
+    assert tier < step.index(f"scripts/select_matrix.py {workflow}")
+    for name in ("GH_TOKEN", "PR_NUMBER", "PR_AUTHOR", "PR_LABELS"):
+        assert f"          {name}: ${{{{ " in step, name
 
 
 def test_unknown_workflow_is_refused():
@@ -141,7 +181,12 @@ def test_pythons_match_the_classifiers_of_pyproject():
 
 
 def test_command_line_prints_one_line_of_matrix_json():
-    for event, count in (("pull_request", 10), ("push", 10), ("release", 16)):
+    for event, count in (
+        ("pull_request", 2),
+        ("pull_request_full", 10),
+        ("push", 10),
+        ("release", 16),
+    ):
         out = subprocess.run(  # nosec B603 - fixed argument list, no untrusted input
             [sys.executable, "-I", str(SCRIPT_PATH), "jvm", "--event", event],
             capture_output=True,
@@ -210,8 +255,8 @@ def test_the_examples_workflow_builds_each_platform_once_and_runs_the_examples_a
     assert "dist/" not in test
     # release-jvm.yml publishes every wheel-* artifact of the run, and the release runs this workflow beside test-jvm.yml
     assert "name: wheel-" not in text
-    # the legs of the pull request and of the other events are the same platforms, one build each
-    for event in ["pull_request", *NON_PULL_REQUEST_EVENTS]:
+    # every event but a pull request (the fast tier, one platform) builds the same four platforms, one build each
+    for event in NON_PULL_REQUEST_EVENTS:
         assert sm.select_wheels("examples", event) == {
             "include": [{"platform": p, "runs-on": r} for p, r in PLATFORMS.items()]
         }

@@ -4,7 +4,8 @@
 #
 # A native image build takes about 5 to 30 minutes per platform and the ArcadeData organisation shares a runner cap with
 # upstream ArcadeDB, so the load is selective (scripts/select_native_matrix.py holds the legs, tests/test_select_native_matrix.py pins them):
-#   pull request   only when a native path changed (the `paths` filter below); linux-x86_64, Python 3.12; not for a draft
+#   pull request   only when a native path changed (the `paths` filter below); linux-x86_64, Python 3.12 (the fast tier); not for a draft.
+#                  With the label ci:full, or opened by Dependabot: the legs of a push to main (scripts/ci_tier.py)
 #   push to main   only when a native path changed; all four platforms, Python 3.12 and 3.14
 #   nightly        all four platforms, Python 3.12 and 3.14, but only when something besides docs changed in the last 25 hours (a full run on Mondays)
 #   dispatch       all four platforms, Python 3.12 and 3.14
@@ -12,7 +13,7 @@
 # This workflow never publishes: it has no id-token permission and no environment.
 #
 # Beside the full parity runs, the `pyver` job installs the already built linux-x86_64 wheel (py3-none: no rebuild) into the Pythons the full
-# runs of the event leave out (a pull request: 3.11, 3.13, 3.14; main, nightly, dispatch: 3.11, 3.13; a release: none), into 3.15 (always: the full suite
+# runs of the event leave out (main, nightly, dispatch: 3.11, 3.13; a release: none; a pull request has no `pyver` legs, the fast tier is one Python), into 3.15 (the full suite
 # needs jpype1 and ladybug, which have no cp315 wheel yet, so 3.15 runs without the test files that need jpype1) and into the free-threaded 3.14t, and runs a small subset of the tests there (about 20 s of tests per Python). A release needs it: a leg that passes uploads a marker (native-passed-pyver-py<version>), and release-native.yml
 # publishes nothing unless the legs of a release (3.15 and the free-threaded 3.14t) passed. Only linux-x86_64 is checked on them.
 # scripts/select_native_matrix.py decides its legs.
@@ -52,6 +53,7 @@ on:
       - "src/arcadedb/**"
       - "tests/**"
       - "scripts/select_native_matrix.py"
+      - "scripts/ci_tier.py"
       - "scripts/smoke_wheel.py"
       - "scripts/run_examples.sh"
       - "scripts/native_examples_skip.txt"
@@ -225,10 +227,18 @@ jobs:
           EVENT: ${{ github.event_name }}
           RELEASE: ${{ inputs.release }}
           LEGS: ${{ inputs.legs }}
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
         run: |
           set -euo pipefail
           run=true
-          event="$EVENT"
+          # A pull request runs the fast tier (one platform, one Python). With the label ci:full, or opened by Dependabot, it runs the legs
+          # of a push to main: scripts/ci_tier.py turns its event into pull_request_full (it reads the labels again from the API, so a re-run
+          # after adding the label is enough). Every other event passes through unchanged.
+          event="$(python3 -I scripts/ci_tier.py "$EVENT")"
+          echo "legs of the event: $event"
           if [ "$RELEASE" = true ]; then event=release; fi
           # a manual run may ask for the legs of a pull request (one platform, one Python): the runner cap is shared with upstream
           if [ "$EVENT" = workflow_dispatch ] && [ "${LEGS:-full}" = pull-request ]; then event=pull_request; fi
@@ -980,7 +990,9 @@ jobs:
     name: Python ${{ matrix.python }} on the wheel (linux-x86_64)
     needs: [plan, build]
     # The linux-x86_64 build may have failed: then there is no wheel to download and this shows red, as the test job does.
-    if: ${{ !cancelled() && needs.plan.outputs.run == 'true' }}
+    # A pull request (the fast tier) has no legs here: the list is empty and the job is skipped, because an empty matrix is an error.
+    # No other job needs this one, so a skipped pyver job changes no summary.
+    if: ${{ !cancelled() && needs.plan.outputs.run == 'true' && needs.plan.outputs.pyver != '[]' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     defaults:

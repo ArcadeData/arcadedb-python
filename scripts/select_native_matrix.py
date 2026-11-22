@@ -2,12 +2,13 @@
 """Choose the legs of the native test workflow (.github/workflows/test-native.yml) for one event.
 
 A native image build takes about 5 to 30 minutes per platform and the ArcadeData organisation shares a runner cap with
-upstream ArcadeDB, so a pull request builds one platform (linux-x86_64) and tests one Python (3.12), and only when
-native paths changed (the workflow's `paths` filter). Push to main, the nightly run and a dispatch build all four
+upstream ArcadeDB, so a pull request (the fast tier) builds one platform (linux-x86_64) and tests one Python (3.12, no `pyver` legs),
+and only when native paths changed (the workflow's `paths` filter). Push to main, the nightly run and a dispatch build all four
 platforms and test Python 3.12 and 3.14 on each. A release (release-native.yml calls the workflow with `release: true`) tests every
-supported Python (3.11 to 3.14) on all four.
+supported Python (3.11 to 3.14) on all four. A pull request that asks for the full tier (the label `ci:full`, or a Dependabot author;
+scripts/ci_tier.py decides and passes the event `pull_request_full`) runs the legs of a push to main.
 
-usage: select_native_matrix.py EVENT     EVENT: pull_request | push | schedule | workflow_dispatch | release
+usage: select_native_matrix.py EVENT     EVENT: pull_request | pull_request_full | push | schedule | workflow_dispatch | release
 
 Prints `build=<json>`, `test=<json>`, `pyver=<json>` and `examples=<json>` lines (GITHUB_OUTPUT format). Publishing is not decided here:
 release-native.yml does it. `pyver` is the cheap Python-version job (see PYVER_NOTE): a subset of the tests against the built
@@ -125,6 +126,8 @@ def pyver_legs(covered: list[str]) -> list[dict]:
 
 
 def select(event: str) -> dict:
+    if event == "pull_request_full":
+        event = "push"
     if event == "pull_request":
         platforms, pythons = PULL_REQUEST_PLATFORMS, PULL_REQUEST_PYTHONS
     elif event in ("push", "schedule", "workflow_dispatch"):
@@ -148,7 +151,9 @@ def select(event: str) -> dict:
     return {
         "build": build,
         "test": test,
-        "pyver": pyver_legs(pythons),
+        # The fast tier is one Python: the Python-version legs run on main, every night and for a release (where they are a gate),
+        # and on a pull request that asks for the full tier. test-native.yml skips the job when this list is empty.
+        "pyver": [] if event == "pull_request" else pyver_legs(pythons),
         "examples": examples,
     }
 
@@ -157,7 +162,14 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument(
         "event",
-        choices=["pull_request", "push", "schedule", "workflow_dispatch", "release"],
+        choices=[
+            "pull_request",
+            "pull_request_full",
+            "push",
+            "schedule",
+            "workflow_dispatch",
+            "release",
+        ],
     )
     a = ap.parse_args(argv)
     chosen = select(a.event)
