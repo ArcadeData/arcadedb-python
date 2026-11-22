@@ -332,6 +332,21 @@ OK
 EXPORT DATABASE file://nightly.jsonl.tgz
 ----
 
+// The two blocks of text below, on the WITH settings, are read from the engine source (ExporterSettings, ExportDatabaseStatement, AbstractExporterFormat, ParallelDeflater.autoThreads) and from its tests Issue11523ExportOverwriteSettingTest and Issue11539ExportCompressionSettingsTest. No test of this repository pins them: the behaviour differs between engine 26.11.1 and 26.12.1.
+
+A `WITH name = value, ...` clause after the file name passes settings to the exporter. What the clause accepts changes with engine 26.12.1 (https://github.com/ArcadeData/arcadedb/pull/11524[ArcadeData/arcadedb#11524]). `SELECT version()` gives the engine of your wheel. Where the text below says refused, the statement raises `ArcadeDBError`.
+
+* `overwrite`: from 26.12.1 the value is read, and it must be `true` or `false`. `WITH overwrite = false` keeps an existing file and the export is refused, the same as when you leave the setting out. Any other value, such as `'yes'` or `1`, is refused. On 26.11.1 and earlier the value was ignored: `WITH overwrite = false` replaced an existing file, as `WITH overwrite = true` does.
+* A setting name that the exporter does not know: from 26.12.1 it is refused, and a name close to a known one gets a hint (`overwite` gives "Did you mean 'overwrite'?"). The known names are `format`, `overwrite`, `includeTypes`, `excludeTypes`, `includeRecords`, `verboseLevel`, `compressionLevel`, and `compressionThreads`. `file` and `f` are not among them, so the clause cannot send the export to another file. On 26.11.1 and earlier an unknown name was accepted and did nothing, and `file` or `f` replaced the target.
+* An empty list: from 26.12.1 `includeTypes`, `excludeTypes`, and `includeRecords` refuse a value without an entry, such as `''` or `','`.
+
+Engine 26.12.1 also adds two settings for the gzip compression of the export file (https://github.com/ArcadeData/arcadedb/pull/11540[ArcadeData/arcadedb#11540]):
+
+* `compressionLevel` is the deflate level, from `0` (stored, no compression) to `9` (smallest). The default is `6`, the level of every export before the setting existed.
+* `compressionThreads` is the number of threads that compress. The default, `-1`, is automatic: half the processors of the machine, at most 8 and at least 1. `0` is the single-threaded gzip that 26.11.1 and earlier used, and a number up to `256` is a pool of that size.
+
+A value outside these ranges is refused before anything is written. With every value the file is one standard gzip stream that `IMPORT DATABASE` reads back. `db.export_database(...)` has no argument for either setting, so on engine 26.12.1 it exports with the two defaults, and the statement is the way to set them. On 26.11.1 and earlier the statement accepts both names and they do nothing, like any unknown name.
+
 An open transaction does not survive this statement. The engine rolls back every transaction of your thread before it exports, so rows that you wrote in it and did not commit are gone, and `db.is_transaction_active()` is `False` afterwards. Commit before you export, with this statement and with `db.export_database(...)`. The Python call does not share the folder rule of the statement: it accepts an absolute path.
 
 == Exporting a query to CSV
