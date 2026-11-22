@@ -274,17 +274,25 @@ def test_count_reads_no_reply_text_and_builds_no_result_object(db, monkeypatch, 
 # -- facets: a FACETS statement is counted row by row, because its facets ride on the reply that drains the cursor
 
 FACETS_Q = "SELECT id FROM R ORDER BY id FACETS g TERMS TOP 10"
+FACETS_SINCE = (26, 12, 1)  # the engine release that has the FACETS clause
+
+
+def _engine_version(db):
+    """The engine's x.y.z through SQL ``SELECT version()``; a SNAPSHOT or a build suffix is dropped. The suite runs on two engines (the
+    snapshot and the installed release), so a test of the clause asks which one it is on.
+    """
+    raw = str(db.query("sql", "SELECT version() AS v").first().get("v"))
+    parts = [
+        int(p) if p.isdigit() else 0
+        for p in raw.split()[0].split("-")[0].split(".")[:3]
+    ]
+    return tuple(parts + [0] * (3 - len(parts)))
 
 
 def _facets_after_to_list(db):
-    """The facets of FACETS_Q after its rows were read with to_list(), or a skip on an engine that predates the FACETS clause."""
+    """The facets of FACETS_Q after its rows were read with to_list()."""
     rs = db.query("sql", FACETS_Q)
-    try:
-        rows = rs.to_list()
-    except ArcadeDBError as e:
-        if "syntax error" in str(e).lower():
-            pytest.skip("the engine predates the FACETS clause (26.12.1)")
-        raise
+    rows = rs.to_list()
     assert len(rows) == ROWS
     facets = rs.facets()
     assert facets is not None
@@ -292,6 +300,11 @@ def _facets_after_to_list(db):
 
 
 def test_count_then_facets_of_a_facets_query_returns_the_facets(db, foreign):
+    if _engine_version(db) < FACETS_SINCE:
+        # an engine without the clause refuses the statement, so there is nothing to count: pin the refusal instead
+        with pytest.raises(ArcadeDBError):
+            db.query("sql", FACETS_Q).to_list()
+        return
     expected = _facets_after_to_list(db)
     rs = db.query("sql", FACETS_Q)
     assert (
