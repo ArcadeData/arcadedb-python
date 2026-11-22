@@ -4,6 +4,8 @@ ArcadeDB Python Bindings - GraphBatch wrapper
 Pythonic wrapper for ArcadeDB's high-throughput graph ingest API.
 """
 
+import itertools
+import operator
 from typing import Any, Iterable, Optional
 
 import jpype
@@ -12,6 +14,8 @@ from ._logging import get_logger, log_swallowed_exception
 from .exceptions import ArcadeDBError
 from .graph import Document, Vertex
 from .type_conversion import (
+    _FLOAT_NORMAL_MIN,
+    _np,
     convert_python_to_java,
     declared_float_vectors,
     declared_scalars_ok,
@@ -25,6 +29,173 @@ from .type_conversion import (
 )
 
 _LOGGER = get_logger(__name__)
+
+_NONE_KIND = type(None)
+# what a masked (null) row of a typed column holds: any value of the column's kind, never read
+_FILL = {int: 0, float: 0.0, bool: False}
+# A call of fewer rows keeps the old route (the JSON text). The typed route has a fixed cost per call that the text does not have:
+# the names array, the columns array, one bridge array per column and a StringColumn per str column, and the engine call is the same
+# one. The floors come from a probe of both routes of this change (ArcadeData/arcadedb-python#391, 2026-11-23, one process, the
+# efficiency cores 18 and 19 of the mini, a JVM of two processors, 300 to 1,500 calls per size and route in alternating blocks), with
+# the typed route forced off by making _scalar_columns answer None. Time of one call on the typed route over the time on the text
+# (below 1.00: the typed route is faster):
+#
+# create_vertices, rows per call:
+#                         1     8    16    64   128   256   512  1024  5000
+# 2 ints               1.30  1.53  1.34  1.13  1.03  0.96  0.92  0.87  0.84
+# l2: 2 int, 2 str     2.72  2.33  1.97  1.34  1.14  1.00  0.91  0.87  0.85
+# l2 with nulls        3.15  2.67  2.29  1.49  1.24  1.07  0.97  0.92  0.86
+# 7 props, 2 str       2.54  1.98  1.65  1.05  0.88  0.77  0.69  0.65  0.63
+# int, int, float[64]  1.21  1.17  1.10  0.99  0.93  0.91  0.87  0.88  0.87
+#
+# new_edges, edges per call:
+#                     1     8    16    32    64   256
+# since (int)      1.55  1.11  0.82  0.62  0.45  0.35
+# int, float, str  3.79  1.86  1.32  0.87  0.62  0.39
+#
+# The floor is the first size at which no probed shape is slower on the typed route and none is slower at the sizes above it.
+# It counts the rows (edges) of the call, not of a chunk, so a call over the floor crosses every one of its chunks typed.
+_TYPED_MIN_VERTICES = 512
+_TYPED_MIN_EDGES = 32
+
+
+# What a typed column can hold, besides None: one of these per column. A value of any other type (a list, a dict, a date-time, a Decimal,
+# bytes, a numpy scalar, a subclass) keeps the call on the JSON text path, and the first row is enough to see that for most rows.
+_TYPED_VALUE_TYPES = frozenset((int, float, bool, str, _NONE_KIND))
+
+
+def _column_kind(column):
+    """``(kind, has None)`` of one column the typed route can carry, else None, from the types of its values alone: no array is built.
+
+    ``kind`` is ``int``, ``float``, ``bool`` or ``str``, or ``NoneType`` for a column of nothing but ``None``.
+    """
+    kinds = set(map(type, column))
+    has_none = _NONE_KIND in kinds
+    kinds.discard(_NONE_KIND)
+    if not kinds:
+        return _NONE_KIND, has_none
+    if len(kinds) != 1:
+        return None
+    (kind,) = kinds
+    return (kind, has_none) if kind in _FILL or kind is str else None
+
+
+def _build_column(column, kind, has_none):
+    """``(bridge column, bridge null flags or None)`` of a column that ``_column_kind`` accepted, or None when its values cannot cross
+    unchanged (an integer beyond 64 bits, a NaN, an infinity, a subnormal, a lone surrogate): the JSON text path stores or refuses those.
+    """
+    n = len(column)
+    if kind is _NONE_KIND:
+        return jpype.JArray(jpype.JBoolean)(_np.zeros(n, dtype=_np.bool_)), (
+            jpype.JArray(jpype.JBoolean)(_np.ones(n, dtype=_np.bool_))
+        )
+    if kind is str:
+        from .core import _string_column
+
+        built = _string_column(column)
+        return None if built is None else (built, None)
+    mask = None
+    if has_none:
+        mask = _np.fromiter(
+            map(operator.is_, column, itertools.repeat(None)), dtype=_np.bool_, count=n
+        )
+        fill = _FILL[kind]
+        column = [fill if value is None else value for value in column]
+    if kind is int:
+        try:
+            built = jpype.JArray(jpype.JLong)(_np.array(column, dtype=_np.int64))
+        except OverflowError:
+            return None
+    elif kind is float:
+        array = _np.array(column, dtype=_np.float64)
+        if not _np.isfinite(array).all():
+            return None
+        nonzero = array[array != 0.0]
+        if (_np.abs(nonzero) < _FLOAT_NORMAL_MIN).any():
+            return None
+        built = jpype.JArray(jpype.JDouble)(array)
+    else:
+        built = jpype.JArray(jpype.JBoolean)(_np.array(column, dtype=_np.bool_))
+    return built, None if mask is None else jpype.JArray(jpype.JBoolean)(mask)
+
+
+def _scalar_column(column):
+    """One column of exact scalars as ``(bridge column, bridge null flags or None)`` for ``VertexBatcher.createVerticesColumns`` and
+    ``EdgeBatcher.newEdgesColumns``, or None when the column is not one the typed route carries.
+
+    Carried: every value of one exact type among ``int`` (in 64 bits, a ``long[]``), ``float`` (finite, no subnormal, a ``double[]``),
+    ``bool`` (a ``boolean[]``) and ``str`` (a ``StringColumn``, with its own null rows), with ``None`` for a null; a column of nothing
+    but ``None``. Anything else (mixed kinds, a bool beside ints, a subclass, a numpy scalar, a list, a date, a lone surrogate, an
+    integer beyond 64 bits, a NaN, an infinity or a subnormal) is left to the JSON text path, which stores or refuses it as before.
+    """
+    decided = _column_kind(column)
+    return None if decided is None else _build_column(column, *decided)
+
+
+def _scalar_columns(rows, reserved=()):
+    """The columns of ``rows`` for the typed route as ``(names, columns, null flags)`` (lists, one entry per property), or None.
+
+    Carried: every row an exact ``dict`` with the same keys in the same order (str names, none of ``reserved``) and each column one
+    that ``_scalar_column`` carries. A row that is None or has other keys, another key order or any other value keeps the JSON text
+    path, which writes each row's own keys in its own order. Needs numpy, as every other typed route of the bindings does.
+
+    A call the typed route cannot carry pays little before it is refused: the first row is looked at first (a value of a type no typed
+    column holds, such as a list, refuses the call there), then the types of every column are decided one column after the other, and
+    only when all of them are carried is a bridge array built.
+    """
+    if _np is None or not rows:
+        return None
+    first = rows[0]
+    if type(first) is not dict or not _TYPED_VALUE_TYPES.issuperset(
+        map(type, first.values())
+    ):
+        return None
+    if set(map(type, rows)) != {dict}:
+        return None
+    names = tuple(first)
+    if not set(map(type, names)) <= {str} or any(name in reserved for name in names):
+        return None
+    decided = []
+    try:
+        for name in names:
+            column = list(map(operator.itemgetter(name), rows))
+            kind = _column_kind(column)
+            if kind is None:
+                return None
+            decided.append((column, kind))
+    except KeyError:  # a row without this key
+        return None
+    if len(set(map(tuple, rows))) != 1:
+        return None
+    columns = []
+    nulls = []
+    for column, (kind, has_none) in decided:
+        built = _build_column(column, kind, has_none)
+        if built is None:
+            return None
+        columns.append(built[0])
+        nulls.append(built[1])
+    return list(names), columns, nulls
+
+
+def _bridge_columns(names, columns, nulls):
+    """``(String[], Object[], Object[] or None)`` for the bridge: the null flags cross only when some column has a null."""
+    flags = (
+        jpype.JArray(jpype.JObject)(nulls)
+        if any(flag is not None for flag in nulls)
+        else None
+    )
+    return (
+        jpype.JArray(jpype.JString)(names),
+        jpype.JArray(jpype.JObject)(columns),
+        flags,
+    )
+
+
+def _rids_from_pairs(packed):
+    """The RID texts (``"#12:345"``, what ``str(rid)`` gives) of a ``long[]`` of ``[bucket id, position]`` pairs."""
+    numbers = _np.asarray(packed, dtype=_np.int64)
+    return list(map("#{}:{}".format, numbers[0::2].tolist(), numbers[1::2].tolist()))
 
 
 class GraphBatch:
@@ -205,6 +376,16 @@ class GraphBatch:
                 per-element path stores it. A list of only numbers keeps the
                 property-matrix path, which crosses it as one double[].
 
+        In a call of at least 512 rows, rows that are all dicts with the same keys in
+        the same order, each property holding one kind of ``int``, ``float``, ``bool``
+        or ``str`` (``None`` for a null), plus the float vectors above, cross as one
+        typed column per property, and the RIDs come back as one ``long[]``: no JSON
+        text on either side. A smaller call keeps the JSON text, which costs less
+        than the fixed cost per call of the typed columns. Any other rows (a row that
+        is ``None``, rows with other keys, a list, dict, date-time, date, Decimal or
+        bytes value, a column of mixed kinds) cross as the JSON text described above.
+        The stored values are the same on both routes.
+
         Large inputs cross in chunks of 100,000 rows on this build. On the native build (the ``arcadedb`` package) the chunk is the
         batch's ``commit_every``, 1000 unless ``graph_batch()`` got another value, and each chunk is its own transaction. Chunks that
         already went in stay stored if a later chunk fails.
@@ -312,14 +493,33 @@ class GraphBatch:
                 max(self._VECTOR_BLOCK_MIN_ROWS, self._VECTOR_BLOCK_FLOATS // width),
             )
         rids = []
+        typed_ok = (
+            len(rows) >= _TYPED_MIN_VERTICES
+        )  # a call below the floor keeps the text route (see _TYPED_MIN_VERTICES)
         for start in range(0, len(rows), step):
             # the previous chunk's rest rows, text and matrices go before this chunk's are built: two float[] buffers were alive at once
-            split = rest = text = None
+            split = rest = text = typed = names = columns = nulls = packed = None
             chunk = rows[start : start + step]
             split = split_float_vectors(
                 self._java_db, type_name, chunk, declared, undeclared=True
             )
             rest = split[0] if split else chunk
+            typed = _scalar_columns(rest) if typed_ok else None
+            if typed is not None:
+                # rows of exact scalars and float vectors: one typed column per property, the RIDs back as one long[]
+                names, columns, nulls = typed
+                if split:
+                    names = names + [str(name) for name in split[1]]
+                    columns = columns + list(split[2])
+                    nulls = nulls + [None] * len(split[2])
+                packed = vertex_batcher.createVerticesColumns(
+                    self._java_graph_batch,
+                    type_name,
+                    *_bridge_columns(names, columns, nulls),
+                    len(chunk),
+                )
+                rids.extend(_rids_from_pairs(packed))
+                continue
             text = None
             if declared_scalars_ok(rest, declared):
                 try:
@@ -454,6 +654,9 @@ class GraphBatch:
             return self
 
         try:
+            if properties is not None and not any(properties):
+                # no edge has a property: the same call as no properties at all (a plain newEdge per edge)
+                properties = None
             if properties is None:
                 # One joined string crosses the boundary in a single bulk
                 # copy; a Python list of N strings would be converted
@@ -467,6 +670,27 @@ class GraphBatch:
                         ";".join(sources[start : start + self._BULK_CHUNK]),
                         edge_type,
                         ";".join(dests[start : start + self._BULK_CHUNK]),
+                    )
+                return self
+
+            typed = (
+                self._typed_edge_columns(properties)
+                if len(properties) >= _TYPED_MIN_EDGES
+                else None
+            )
+            if typed is not None:
+                # properties of exact scalars: the RIDs cross as the joined texts above, the values as typed columns, one per property
+                sources = [self._rid_text(r) for r in source_rids]
+                dests = [self._rid_text(r) for r in destination_rids]
+                step = self._BULK_CHUNK
+                for k, (names, columns, nulls) in enumerate(typed):
+                    start = k * step
+                    edge_batcher.newEdgesColumns(
+                        self._java_graph_batch,
+                        ";".join(sources[start : start + step]),
+                        edge_type,
+                        ";".join(dests[start : start + step]),
+                        *_bridge_columns(names, columns, nulls),
                     )
                 return self
 
@@ -518,6 +742,23 @@ class GraphBatch:
             raise ArcadeDBError(
                 f"Failed to buffer batch edges '{edge_type}': {e}"
             ) from e
+
+    def _typed_edge_columns(self, properties):
+        """The typed columns of every chunk of the edge ``properties``, or None when any chunk is not carried.
+
+        Every chunk is built before the first crosses, so a chunk the typed route cannot carry still sends the whole call down the
+        JSON text path with nothing buffered (as the tagged text is written before it crosses). A property named ``_src`` or ``_dst``
+        stays on that path, where the rows hold the endpoints under those names.
+        """
+        chunks = []
+        for start in range(0, len(properties), self._BULK_CHUNK):
+            columns = _scalar_columns(
+                properties[start : start + self._BULK_CHUNK], ("_src", "_dst")
+            )
+            if columns is None:
+                return None
+            chunks.append(columns)
+        return chunks
 
     def flush(self) -> "GraphBatch":
         """Flush buffered edges to disk.
