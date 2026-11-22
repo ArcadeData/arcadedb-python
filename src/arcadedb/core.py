@@ -2230,7 +2230,8 @@ class Database:
             docs/modules/ROOT/pages/how-to/bulk-loads.adoc.
 
         Args:
-            batch_size: Maximum buffered edges before auto-flush.
+            batch_size: Maximum buffered edges before auto-flush. The engine sizes its buffers for it when the batch is created, so a
+                batch that holds a few edges should pass a small value (see ``chunk_cache_capacity``).
             expected_edge_count: Hint for auto-tuning batch size when not set.
             edge_list_initial_size: Initial edge-segment size in bytes.
             light_edges: Create property-less edges as light edges when True. From engine
@@ -2264,7 +2265,9 @@ class Database:
                 just reloads the vertex's head chunk from disk; bounding them keeps
                 memory flat on a long-lived stream instead of growing with the number
                 of distinct vertices touched. Default 1,000,000 (roughly 100-150 MB
-                per cache).
+                per cache). The engine also sizes the caches for it when the batch is created: a
+                batch of one edge allocated about 41 MiB and took about 2 ms with the defaults, and about 0.6 MiB and
+                0.2 ms with ``batch_size=100, chunk_cache_capacity=1000``. Pass small values for many small batches.
             max_deferred_incoming_edges: Buffered deferred incoming edges allowed
                 before the incoming-edge connection pass runs early from `flush()`
                 rather than once at `close()`, amortizing it over the load. Default

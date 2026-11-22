@@ -269,6 +269,48 @@ The engine-level Java run, repeated on the merge of the fix, kept the batch's ed
 
 From 26.11.1 on, `graph_batch()` is fine for a workload that deletes and inserts again. On an engine older than 26.11.1, write the edges with SQL (`CREATE EDGE`) or with `Vertex.new_edge` inside `db.transaction()` instead. Both stayed flat in the measurement (0.25 MiB in the table).
 
+[[many-small-batches]]
+== Many small graph batches
+
+A `graph_batch()` has a fixed cost that does not depend on how many edges it gets: with the default arguments the engine sizes its buffers and its head-chunk caches for a large load when the batch is created. A load that opens one batch for a few edges, such as a writer that stores the relationships of each request, pays that cost every time.
+
+The measurement is a laptop A/B, macOS arm64, Python 3.12, one `with db.graph_batch(...)` block with one `new_edge` call, 1,000 blocks after 200 warm-up blocks. The allocation is the JVM's, read with `ThreadMXBean.getThreadAllocatedBytes`, and applies to `arcadedb-jvm` only.
+
+[cols="3,1,1,1"]
+|===
+| Arguments | `arcadedb` (native), time | `arcadedb-jvm`, time | `arcadedb-jvm`, allocated
+
+| default
+| about 2.5 ms
+| about 2.2 ms
+| about 41 MiB
+
+| `chunk_cache_capacity=1000`
+|
+|
+| about 8.6 MiB
+
+| `batch_size=100`
+|
+|
+| about 33 MiB
+
+| `batch_size=100, chunk_cache_capacity=1000`
+| about 0.22 ms
+| about 0.25 ms
+| about 0.6 MiB
+|===
+
+When you write small batches, pass a `batch_size` near the number of edges a batch holds and a `chunk_cache_capacity` near the number of vertices it touches:
+
+[source,python]
+----
+with db.graph_batch(batch_size=100, chunk_cache_capacity=1_000) as batch:
+    batch.new_edge(alice, "Knows", bob)
+----
+
+Both arguments are bounds, not allocations you must reach: a batch that holds more edges than `batch_size` flushes early, and a cache that fills evicts entries and reloads them from the database on a miss. Leave them at their defaults for a bulk load of many edges in one batch. The numbers are one machine and single runs, so read them as an order of magnitude.
+
 == If a graph batch is interrupted
 
 This section is about a `graph_batch()` load that stops before `close()` returns, for example when the process is killed (`kill -9`, the out-of-memory killer, power loss). An exception inside a `with db.graph_batch() as batch:` block still runs `close()`. The numbers below come from a kill probe on the `arcadedb` (native) package: `kill -9` in the middle of the edge phase, the default `commit_every=1000`, with and without `use_wal=True`. In the 40 kills of the probe, no committed vertex or edge chunk was lost, no record was torn, no edge pointed at a missing vertex, and every database reopened and accepted writes. The example below is one of these kills: 30,000 vertices and 70,000 edge records were in the database afterwards.
