@@ -280,7 +280,12 @@ def _load():
         # the entry points that answer with a number, not with the address of a reply text: a cursor id (arcadedb_n_cmd), the
         # transaction state (arcadedb_n_tx), a row count (arcadedb_n_count) and the hit count of arcadedb_n_vindex_bin; -1 is an error for
         # all of them, its text is read with arcadedb_n_last_error
-        returns_long = ("arcadedb_n_cmd", "arcadedb_n_tx", "arcadedb_n_count", "arcadedb_n_vindex_bin")
+        returns_long = (
+            "arcadedb_n_cmd",
+            "arcadedb_n_tx",
+            "arcadedb_n_count",
+            "arcadedb_n_vindex_bin",
+        )
         for name, argtypes in sigs.items():
             fn = getattr(lib, name, None)
             if fn is None:  # a library built before this entry point existed
