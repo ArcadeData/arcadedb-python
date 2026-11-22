@@ -101,6 +101,66 @@ def platform_tag(lib: Path, policy: str) -> str:
     sys.exit(f"unsupported platform {sys.platform}")
 
 
+def nativize_sources(dst: Path) -> None:
+    """Rewrite a copy of src/arcadedb at ``dst`` in place into the Python sources of the native wheel.
+
+    The install hints name the extras of ``arcadedb``, ``import jpype`` becomes the bundled stub, the default backend is native,
+    and ``__init__.py`` imports the names of ``_build_info.py`` (the caller writes that file and adds the libraries).
+    ``scripts/dev_overlay.py`` calls it too, so a contributor's overlay holds the same Python text as a built wheel.
+    """
+    jp = re.compile(
+        r"^(\s*)(?:import jpype(?:\.imports)?|import jpype as _jpype|import jpype\.types as jtypes|from jpype import JException)\s*$",
+        re.M,
+    )
+    left = []
+    for f in dst.rglob("*.py"):
+        t = f.read_text(encoding="utf-8")
+        t = t.replace(
+            "'arcadedb-jvm[", "'arcadedb["
+        )  # the extras named in install hints
+
+        def sub(m):
+            line = m.group(0).strip()
+            ind = m.group(1)
+            if line == "import jpype.imports":
+                return f"{ind}pass  # jpype.imports: no JVM in this wheel"
+            tail = {
+                "import jpype as _jpype": "_jpype",
+                "import jpype.types as jtypes": "jtypes",
+            }.get(line, "jpype")
+            if line == "from jpype import JException":
+                return f"{ind}from arcadedb._jpype_stub import JException"
+            return f"{ind}from arcadedb import _jpype_stub as {tail}"
+
+        t = jp.sub(sub, t)
+        if re.search(r"^\s*(import|from)\s+jpype", t, re.M):
+            left.append(f.name)
+        f.write_text(t, encoding="utf-8")
+    if left:
+        sys.exit(f"jpype imports left in: {left}")
+    init = dst / "_native" / "__init__.py"
+    t = init.read_text(encoding="utf-8")
+    assert t.count('_DEFAULT_BACKEND = "jpype"') == 1, "default-backend line not found"
+    init.write_text(
+        t.replace('_DEFAULT_BACKEND = "jpype"', '_DEFAULT_BACKEND = "native"'),
+        encoding="utf-8",
+    )
+    shutil.copy(HERE / "_jpype_stub.py", dst / "_jpype_stub.py")
+    ip = dst / "__init__.py"
+    t = ip.read_text(encoding="utf-8")
+    t = t.replace(
+        "# Import async execution\n",
+        "from ._build_info import ENGINE_IMAGE_DIGEST, ENGINE_SNAPSHOT, ENGINE_VERSION, NATIVE_IMAGE, NATIVE_MARCH, SOURCE_COMMIT  # noqa: F401\n\n# Import async execution\n",
+        1,
+    )
+    t = t.replace(
+        '__all__ = [\n    "__version__",',
+        '__all__ = [\n    "__version__",\n    "ENGINE_VERSION",\n    "NATIVE_IMAGE",\n    "SOURCE_COMMIT",',
+        1,
+    )
+    ip.write_text(t, encoding="utf-8")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument(
@@ -217,44 +277,7 @@ def main():
         ),
     )
 
-    jp = re.compile(
-        r"^(\s*)(?:import jpype(?:\.imports)?|import jpype as _jpype|import jpype\.types as jtypes|from jpype import JException)\s*$",
-        re.M,
-    )
-    left = []
-    for f in dst.rglob("*.py"):
-        t = f.read_text(encoding="utf-8")
-        t = t.replace(
-            "'arcadedb-jvm[", "'arcadedb["
-        )  # the extras named in install hints
-
-        def sub(m):
-            line = m.group(0).strip()
-            ind = m.group(1)
-            if line == "import jpype.imports":
-                return f"{ind}pass  # jpype.imports: no JVM in this wheel"
-            tail = {
-                "import jpype as _jpype": "_jpype",
-                "import jpype.types as jtypes": "jtypes",
-            }.get(line, "jpype")
-            if line == "from jpype import JException":
-                return f"{ind}from arcadedb._jpype_stub import JException"
-            return f"{ind}from arcadedb import _jpype_stub as {tail}"
-
-        t = jp.sub(sub, t)
-        if re.search(r"^\s*(import|from)\s+jpype", t, re.M):
-            left.append(f.name)
-        f.write_text(t, encoding="utf-8")
-    if left:
-        sys.exit(f"jpype imports left in: {left}")
-    init = dst / "_native" / "__init__.py"
-    t = init.read_text(encoding="utf-8")
-    assert t.count('_DEFAULT_BACKEND = "jpype"') == 1, "default-backend line not found"
-    init.write_text(
-        t.replace('_DEFAULT_BACKEND = "jpype"', '_DEFAULT_BACKEND = "native"'),
-        encoding="utf-8",
-    )
-    shutil.copy(HERE / "_jpype_stub.py", dst / "_jpype_stub.py")
+    nativize_sources(dst)
 
     commit = subprocess.run(
         ["git", "-C", str(REPO), "rev-parse", "HEAD"], capture_output=True, text=True
@@ -269,19 +292,6 @@ def main():
         f'SOURCE_COMMIT = "{commit}"  # ArcadeData/arcadedb-python commit of the bindings and the Java glue\n',
         encoding="utf-8",
     )
-    ip = dst / "__init__.py"
-    t = ip.read_text(encoding="utf-8")
-    t = t.replace(
-        "# Import async execution\n",
-        "from ._build_info import ENGINE_IMAGE_DIGEST, ENGINE_SNAPSHOT, ENGINE_VERSION, NATIVE_IMAGE, NATIVE_MARCH, SOURCE_COMMIT  # noqa: F401\n\n# Import async execution\n",
-        1,
-    )
-    t = t.replace(
-        '__all__ = [\n    "__version__",',
-        '__all__ = [\n    "__version__",\n    "ENGINE_VERSION",\n    "NATIVE_IMAGE",\n    "SOURCE_COMMIT",',
-        1,
-    )
-    ip.write_text(t, encoding="utf-8")
 
     ship = libraries_to_ship(sys.platform, host_arch(), libname)
     for n in ship:
