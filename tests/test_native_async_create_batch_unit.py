@@ -429,12 +429,13 @@ def test_an_executor_starts_no_thread_of_its_own(library, monkeypatch):
     # ArcadeData/arcadedb-python#406: the thread that each executor started with its first collected record is the one of the process
     first = extras.NativeAsyncExecutor(_Db())
     first.create_record(_Doc("Item", {"id": 0}))
-    before = threading.active_count()
+    before = set(threading.enumerate())
     executors = [extras.NativeAsyncExecutor(_Db()) for _ in range(20)]
     for executor in executors:
         for doc in _rows(3):
             executor.create_record(doc)
-    assert threading.active_count() == before
+    # a thread of another test that ends meanwhile is not an executor's: only a thread that did not exist before counts
+    assert not (set(threading.enumerate()) - before)
     assert (
         len(extras._linger._heap) == 21
     )  # one entry for the first record of each batch
@@ -488,6 +489,11 @@ def test_the_entry_of_an_earlier_batch_does_not_cut_a_later_batch_short(
         executor.create_record(doc)
     executor.wait_completion()  # the first batch is handed over by this call; its entry stays
     first_due = executor._linger_due
+    tick = time.monotonic()
+    while (
+        time.monotonic() == tick
+    ):  # the clock of Windows moves in steps of about 16 ms: two batches within one step get one due time
+        time.sleep(0.001)
     for doc in _rows(2):
         executor.create_record(doc)
     second_due = executor._linger_due
@@ -509,7 +515,17 @@ def test_the_order_of_the_calls_holds_across_linger_hand_overs_and_flush_points(
             executor.create_record(_Doc("Item", {"id": sent}))
             sent += 1
         if round_ % 2 == 0:
-            assert _wait_for(lambda: len(library.per_record()) == sent)
+            assert _wait_for(lambda: len(library.per_record()) == sent), (
+                round_,
+                sent,
+                len(library.per_record()),
+                executor._linger_due,
+                len(executor._buf),
+                executor._linger_error,
+                extras._linger._heap,
+                extras._linger._thread and extras._linger._thread.is_alive(),
+                time.monotonic(),
+            )
         else:
             executor.is_processing()  # a flush point of its own
     executor.wait_completion()
