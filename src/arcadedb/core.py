@@ -1301,8 +1301,9 @@ class Database:
         Raises:
             ImportError: If pyarrow is not installed.
             ValueError: If the frame has no columns, duplicate or non-string
-                column names, ``batch_size`` is not a positive integer, or
-                ``parallel`` is used with a vertex type.
+                column names, ``batch_size`` is not a positive integer,
+                ``parallel`` is used with a vertex type, or a ``uint64`` column
+                holds a value above 2**63 - 1. Raised before anything is written.
             TypeError: If a column has a type with no ArcadeDB mapping (time of
                 day, duration, map), or one that does not load into the property
                 type ``type_name`` declares for it (a float column into an

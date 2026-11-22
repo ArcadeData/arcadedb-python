@@ -153,6 +153,48 @@ def test_a_uint64_value_past_the_signed_range_is_refused(temp_db):
     assert _count(temp_db, "Big") == 0
 
 
+@pytest.mark.parametrize(
+    "values",
+    [[1, 2, 3, 2**63 + 5], [1, 2, None, 2**63 + 5]],
+    ids=["no_null", "with_null"],
+)
+def test_a_uint64_past_the_signed_range_in_a_late_batch_is_refused_before_any_row_is_written(
+    temp_db, values
+):
+    """The range check read each batch as it was written, so the batches before the bad value were
+    committed when the ValueError came (and on the JVM build a column with nulls raised OverflowError).
+    """
+    temp_db.command("sql", "CREATE DOCUMENT TYPE Big")
+    table = pa.table({"v": pa.array(values, pa.uint64())})
+    with pytest.raises(ValueError, match="64-bit signed"):
+        temp_db.insert_arrow("Big", table, batch_size=2)
+    assert _count(temp_db, "Big") == 0
+
+
+def test_a_uint64_dictionary_column_past_the_signed_range_is_refused(temp_db):
+    temp_db.command("sql", "CREATE DOCUMENT TYPE Big")
+    column = pa.array([1, 2**63, 1], pa.uint64()).dictionary_encode()
+    with pytest.raises(ValueError, match="64-bit signed"):
+        temp_db.insert_arrow("Big", pa.table({"v": column}), batch_size=2)
+    assert _count(temp_db, "Big") == 0
+
+
+def test_a_uint64_column_at_the_signed_limit_loads(temp_db):
+    temp_db.command("sql", "CREATE DOCUMENT TYPE Big")
+    values = [1, None, 2**63 - 1]
+    assert (
+        temp_db.insert_arrow(
+            "Big", pa.table({"v": pa.array(values, pa.uint64())}), batch_size=2
+        )
+        == 3
+    )
+    rows = temp_db.query("sql", "SELECT v FROM Big").to_list()
+    assert sorted(r.get("v") for r in rows if r.get("v") is not None) == [
+        1,
+        2**63 - 1,
+    ]
+
+
 def test_a_type_with_no_mapping_is_refused_before_a_row_is_written(temp_db):
     temp_db.command("sql", "CREATE DOCUMENT TYPE NoMap")
     with pytest.raises(TypeError, match="no ArcadeDB mapping"):

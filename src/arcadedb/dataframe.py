@@ -414,15 +414,6 @@ def _column_values(
         ):  # uint64 keeps the range check below
             return chunk
     if kind in ("integer", "floating", "bool"):
-        if native and types.is_uint64(chunk.type) and len(chunk) > chunk.null_count:
-            import pyarrow.compute as pc
-
-            if (
-                pc.max(chunk).as_py() > 2**63 - 1
-            ):  # insert_columns refuses it on the JPype path, with this text
-                raise ValueError(
-                    f"column {name!r} holds a value beyond the 64-bit signed range"
-                )
         if chunk.null_count == 0:
             values = chunk.to_numpy(zero_copy_only=False)
             if values.dtype.kind == "f" and values.dtype.itemsize < 8:
@@ -446,6 +437,30 @@ def _column_values(
     # strings, binary, decimal, list, struct: Python values, which insert_columns converts element by element
     # (str, bytes -> byte[], Decimal -> BigDecimal, list -> LIST, dict -> MAP)
     return chunk.to_pylist()
+
+
+def _check_uint64_range(pa, table) -> None:
+    """Raise ``ValueError`` when a uint64 column of ``table`` (a dictionary-encoded one included) holds a value beyond the 64-bit signed range.
+
+    The engine stores integers as signed 64-bit longs. The whole table is checked before the first batch is written: a check
+    made as each batch is converted would leave the batches before the bad value committed, and a batch with nulls reaches the
+    JPype build as Python ints, where the value raised ``OverflowError`` instead.
+    """
+    import pyarrow.compute as pc
+
+    for field, column in zip(table.schema, table.columns):
+        value_type = (
+            field.type.value_type if pa.types.is_dictionary(field.type) else field.type
+        )
+        if not pa.types.is_uint64(value_type):
+            continue
+        if value_type is not field.type:
+            column = column.cast(value_type)
+        largest = pc.max(column).as_py()  # None when every value is null
+        if largest is not None and largest > 2**63 - 1:
+            raise ValueError(
+                f"column {field.name!r} holds a value beyond the 64-bit signed range"
+            )
 
 
 def insert_table(
@@ -491,6 +506,7 @@ def insert_table(
         )
     if table.num_rows == 0:
         return 0
+    _check_uint64_range(pa, table)
 
     native = _is_native(db)
     written = 0
