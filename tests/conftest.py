@@ -173,6 +173,7 @@ NATIVE_NOT_APPLICABLE = {
     "test_vertex_new_edge_crossings.py": "crossing counts of Vertex.new_edge on the JVM build (JPype proxies of the Java vertex, database and bridge class)",
     "test_typed_batch_guard.py": "the object_hook and the side array of the JVM build's TypedRows batches (JPype arrays, the bridge class, a spy on json.loads)",
     "test_jvm_ingest_integrity_faults.py": "rows-dropped faults put into the JVM build's column conversion and bulk vertex path (core._column_to_java, GraphBatch._create_vertices_json_bulk)",
+    "test_insert_many_typed_columns.py": "the typed-column route of the JVM wheel's insert_many (the bridge's DocumentBatcher.insertManyColumns, core._typed_chunk_columns, the Java classes of the stored values)",
 }
 if BACKEND == "native" and not os.environ.get("NATIVE_PARITY_ALL"):
     collect_ignore.extend(NATIVE_NOT_APPLICABLE)
