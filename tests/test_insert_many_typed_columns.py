@@ -3,7 +3,8 @@
 Before, every chunk of 10,000 rows became one JSON text (``json_bulk_dumps_tagged``), which the engine parsed again into one JSON tree and
 copied key by key (``DocumentBatcher.insertManyJson``). Now a homogeneous chunk takes ``DocumentBatcher.insertManyColumns``: one numpy
 buffer per int, float or bool column, one UTF-8 buffer per string column, one ``TemporalColumn`` per date or date-time column, and no text.
-Every other chunk keeps the JSON text exactly as it was.
+Every other chunk keeps the JSON text exactly as it was, and so does a chunk of fewer than ``core._TYPED_MIN_ROWS`` rows: the bridge
+arrays are a fixed cost per call, which a call of one row paid twice over in the first timed A/B (the tests at the end of this file).
 
 The stored data has to be the same on both routes, so each parity test stores the same rows twice, once with the typed route switched off
 (``core._typed_chunk_columns`` returns None: the old route) and once as shipped, and compares every record property by property
@@ -59,6 +60,19 @@ def bridge(monkeypatch):
 
     monkeypatch.setattr(core, "_java_class", spy)
     return log
+
+
+# The row count from which a chunk takes the typed route, as shipped (1 on a build that has no threshold).
+SHIPPED_MIN_ROWS = getattr(core, "_TYPED_MIN_ROWS", 1)
+
+
+@pytest.fixture(autouse=True)
+def typed_route_from_one_row(monkeypatch):
+    """The tests of this file store a handful of rows and compare the two routes, so the typed route is open to a chunk of any size.
+
+    The tests of the threshold itself, at the end of the file, set it back to ``SHIPPED_MIN_ROWS``.
+    """
+    monkeypatch.setattr(core, "_TYPED_MIN_ROWS", 1, raising=False)
 
 
 def _old_route(monkeypatch):
@@ -683,3 +697,188 @@ def test_which_columns_qualify(values, expected):
 )
 def test_which_chunks_qualify(chunk):
     assert core._typed_chunk_columns(chunk) is None
+
+
+def _census(monkeypatch):
+    """The columns the route decision reads (one entry per ``core._typed_kind`` call)."""
+    read = []
+    real = core._typed_kind
+
+    def spy(values):
+        read.append(len(values))
+        return real(values)
+
+    monkeypatch.setattr(core, "_typed_kind", spy)
+    return read
+
+
+def _bridge_arrays(monkeypatch):
+    """The bridge arrays the typed route builds (one entry per ``core._typed_java_column`` call)."""
+    built = []
+    real = core._typed_java_column
+
+    def spy(*args):
+        built.append(args[0])
+        return real(*args)
+
+    monkeypatch.setattr(core, "_typed_java_column", spy)
+    return built
+
+
+def test_a_call_of_one_row_keeps_the_json_text_and_builds_no_bridge_array(
+    temp_db, monkeypatch, bridge
+):
+    """One row on the typed route is one bridge array per column, the names array and the columns array: more than the text it replaces.
+
+    The first timed A/B of this change measured a call of one row at 1.9 to 2.5 times the time of the JSON route. A chunk below the
+    threshold is refused on its row count alone: no column is read and nothing is built.
+    """
+    monkeypatch.setattr(core, "_TYPED_MIN_ROWS", SHIPPED_MIN_ROWS, raising=False)
+    read = _census(monkeypatch)
+    built = _bridge_arrays(monkeypatch)
+    _make(temp_db, "T")
+    row = {
+        "id": 1,
+        "x": 0.5,
+        "name": "one",
+        "day": DATES[0],
+        "at": DATETIMES[0],
+    }
+    assert temp_db.insert_many("T", [row]) == 1
+    assert bridge == ["insertManyJson"]
+    assert read == []
+    assert built == []
+    assert len(_stored(temp_db, "T")) == 1
+
+
+def test_a_chunk_takes_the_typed_route_from_the_threshold_on(
+    temp_db, monkeypatch, bridge
+):
+    assert (
+        SHIPPED_MIN_ROWS > 1
+    ), "no row threshold: a small chunk pays for the bridge arrays"
+    monkeypatch.setattr(core, "_TYPED_MIN_ROWS", SHIPPED_MIN_ROWS, raising=False)
+    _make(temp_db, "Below")
+    _make(temp_db, "At")
+    rows = [
+        {"id": i, "x": i * 0.5, "name": f"row {i}"} for i in range(SHIPPED_MIN_ROWS)
+    ]
+    assert temp_db.insert_many("Below", rows[:-1]) == SHIPPED_MIN_ROWS - 1
+    assert bridge == ["insertManyJson"]
+    del bridge[:]
+    assert temp_db.insert_many("At", rows) == SHIPPED_MIN_ROWS
+    assert bridge == ["insertManyColumns"]
+    # the two routes store the same records: the rows the two types share are equal, property by property
+    assert _stored(temp_db, "Below") == _stored(temp_db, "At")[:-1]
+
+
+def test_the_short_last_chunk_of_a_load_keeps_the_json_text_and_stores_the_same_values(
+    temp_db, monkeypatch, bridge
+):
+    """The threshold is per chunk: the rest of a load, and a chunk that a commit boundary cut short, go as text beside typed chunks."""
+    assert (
+        SHIPPED_MIN_ROWS > 1
+    ), "no row threshold: a small chunk pays for the bridge arrays"
+    monkeypatch.setattr(core, "_TYPED_MIN_ROWS", SHIPPED_MIN_ROWS, raising=False)
+    size = 2 * SHIPPED_MIN_ROWS
+    monkeypatch.setattr(core, "_INSERT_MANY_CHUNK", size)
+    rows = [
+        {
+            "id": i,
+            "n": (i - 3) * 2**29,  # an Integer and a Long in every chunk
+            "x": i * 0.5,
+            "ok": i % 2 == 0,
+            "name": None if i % 7 == 0 else f"row {i}",
+            "day": DATES[i % len(DATES)],
+            "at": DATETIMES[i % len(DATETIMES)],
+        }
+        for i in range(2 * size + 5)
+    ]
+    _make(temp_db, "Old")
+    _make(temp_db, "New")
+    with monkeypatch.context() as old:
+        _old_route(old)
+        assert temp_db.insert_many("Old", rows) == len(rows)
+    assert bridge == ["insertManyJson"] * 3
+    del bridge[:]
+    assert temp_db.insert_many("New", rows) == len(rows)
+    assert bridge == ["insertManyColumns", "insertManyColumns", "insertManyJson"]
+    assert _stored(temp_db, "New") == _stored(temp_db, "Old")
+
+
+def test_the_parallel_mode_has_the_same_threshold(temp_db, monkeypatch, bridge):
+    assert (
+        SHIPPED_MIN_ROWS > 1
+    ), "no row threshold: a small chunk pays for the bridge arrays"
+    monkeypatch.setattr(core, "_TYPED_MIN_ROWS", SHIPPED_MIN_ROWS, raising=False)
+    _make(temp_db, "T")
+    rows = [
+        {"id": i, "x": i * 0.5, "name": f"row {i}"} for i in range(SHIPPED_MIN_ROWS)
+    ]
+    assert temp_db.insert_many("T", rows[:1], parallel=True) == 1
+    assert bridge == ["insertManyJsonParallel"]
+    del bridge[:]
+    assert temp_db.insert_many("T", rows, parallel=True) == SHIPPED_MIN_ROWS
+    assert bridge == ["insertManyColumnsParallel"]
+    assert len(_stored(temp_db, "T")) == SHIPPED_MIN_ROWS + 1
+
+
+def test_a_load_with_a_decimal_column_reads_no_column_on_any_chunk(
+    temp_db, monkeypatch, bridge
+):
+    """A row set the typed route cannot carry must not pay for the attempt chunk after chunk.
+
+    The first timed A/B measured 100,000 rows with a Decimal column about 5 percent slower: every chunk read the three columns before
+    the Decimal one (a list, a set of types, a minimum and a maximum each) to find out that the fourth cannot cross. The first row of
+    the chunk says so at once.
+    """
+    monkeypatch.setattr(core, "_INSERT_MANY_CHUNK", 100)
+    read = _census(monkeypatch)
+    built = _bridge_arrays(monkeypatch)
+    _make(temp_db, "T")
+    rows = [
+        {"id": i, "x": i * 0.5, "name": f"row {i}", "amount": decimal.Decimal(i) / 100}
+        for i in range(250)
+    ]
+    assert temp_db.insert_many("T", rows) == 250
+    assert bridge == ["insertManyJson"] * 3  # chunks of 100, 100, 50
+    assert read == [], "a chunk read its columns before it gave up"
+    assert built == []
+    stored = _stored(temp_db, "T")
+    assert len(stored) == 250
+    assert dict(stored[249])["amount"] == ("java.math.BigDecimal", "2.49")
+
+
+@pytest.mark.parametrize(
+    "value",
+    [decimal.Decimal("1.5"), b"\x00\x01", [1, 2], {"k": 1}, (1, 2), np.float64(1.5)],
+    ids=["decimal", "bytes", "list", "dict", "tuple", "numpy_scalar"],
+)
+def test_a_first_row_with_a_value_no_typed_column_carries_refuses_the_chunk_at_once(
+    temp_db, monkeypatch, bridge, value
+):
+    read = _census(monkeypatch)
+    _make(temp_db, "T")
+    assert temp_db.insert_many("T", [{"id": i, "v": value} for i in range(4)]) == 4
+    assert "insertManyColumns" not in bridge
+    assert read == []
+    assert len(_stored(temp_db, "T")) == 4
+
+
+def test_a_decimal_behind_a_null_in_the_first_row_still_keeps_the_json_text(
+    temp_db, monkeypatch, bridge
+):
+    """The first row is a shortcut, not the decision: a column whose first value is None is still read as a whole."""
+    read = _census(monkeypatch)
+    built = _bridge_arrays(monkeypatch)
+    _make(temp_db, "T")
+    rows = [{"id": 0, "amount": None}] + [
+        {"id": i, "amount": decimal.Decimal(i)} for i in range(1, 5)
+    ]
+    assert temp_db.insert_many("T", rows) == 5
+    assert bridge == ["insertManyJson"]
+    assert read == [5, 5]  # the id column, then the column that holds the Decimal
+    assert built == []
+    stored = _stored(temp_db, "T")
+    assert dict(stored[0])["amount"] == ("null",)
+    assert dict(stored[4])["amount"] == ("java.math.BigDecimal", "4")
