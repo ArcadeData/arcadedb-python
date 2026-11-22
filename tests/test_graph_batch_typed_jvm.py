@@ -612,3 +612,117 @@ def test_the_floors_do_not_touch_edges_without_property_values(db, bridge, monke
     _new_edges(db, "EA", vertices[:2], vertices[1:], [{}, {}])
     assert bridge["edge"] == ["newEdgesJoined"]
     assert len(_stored(db, "EA")) == 2
+
+
+# ---------------------------------------------------------------------------
+# the refusal is cheap: a call the typed route cannot carry reads the first row and the types of the columns, and builds no bridge array
+# (the first timed run, ab391-r1, found create_vertices of 5,000 rows with a list-valued property 6.9 percent slower than before: the
+# columns before the list were built and thrown away). These tests count the calls that read and build columns, they time nothing.
+
+
+@pytest.fixture
+def column_calls(monkeypatch):
+    """How often the types of a column were decided (``_column_kind``), a bridge array was built (``_build_column``), and
+    ``_scalar_columns`` and ``GraphBatch._typed_edge_columns`` ran."""
+    log = {"kind": 0, "build": 0, "columns": 0, "edge_columns": 0}
+
+    def counting(name, fn):
+        def wrapper(*args, **kwargs):
+            log[name] += 1
+            return fn(*args, **kwargs)
+
+        return wrapper
+
+    monkeypatch.setattr(gbm, "_column_kind", counting("kind", gbm._column_kind))
+    monkeypatch.setattr(gbm, "_build_column", counting("build", gbm._build_column))
+    monkeypatch.setattr(
+        gbm, "_scalar_columns", counting("columns", gbm._scalar_columns)
+    )
+    monkeypatch.setattr(
+        GraphBatch,
+        "_typed_edge_columns",
+        counting("edge_columns", GraphBatch._typed_edge_columns),
+    )
+    return log
+
+
+def _listed(n, at):
+    """n rows of {id, name, tags} where tags is a list in the rows of ``at`` and a str elsewhere."""
+    return [
+        {"id": i, "name": f"n{i}", "tags": ["a", f"t{i}"] if i in at else "x"}
+        for i in range(n)
+    ]
+
+
+def test_a_list_in_the_first_row_is_refused_before_any_column_is_read(
+    db, bridge, column_calls, monkeypatch
+):
+    monkeypatch.setattr(gbm, "_TYPED_MIN_VERTICES", VFLOOR)
+    rows = _listed(VFLOOR, range(VFLOOR))
+    assert len(_load(db, "A", rows)) == VFLOOR
+    assert bridge["vertex"] == ["createVerticesJson"] * _crossings(VFLOOR)
+    assert column_calls["columns"] == _crossings(VFLOOR)  # asked once per chunk
+    assert column_calls["kind"] == 0 and column_calls["build"] == 0
+    stored = db.query("sql", "SELECT id, tags FROM A").to_list()
+    assert len(stored) == VFLOOR and all(len(r["tags"]) == 2 for r in stored)
+
+
+@pytest.mark.parametrize("where", ["row_3_4", "last_row"])
+def test_a_list_in_a_late_row_is_refused_after_the_types_and_before_any_array(
+    db, column_calls, where
+):
+    rows = _listed(VFLOOR, {3 * VFLOOR // 4} if where == "row_3_4" else {VFLOOR - 1})
+    assert gbm._scalar_columns(rows) is None
+    # the types of id and name were decided, then those of tags, which refused; nothing was built
+    assert column_calls["kind"] == 3 and column_calls["build"] == 0
+
+
+def test_rows_with_another_shape_are_refused_before_any_array(db, column_calls):
+    rows = _listed(VFLOOR, set())
+    rows[VFLOOR // 2] = {"id": 1, "name": "x"}  # a row without a key
+    assert gbm._scalar_columns(rows) is None
+    assert column_calls["build"] == 0
+    rows = _listed(VFLOOR, set())
+    rows[VFLOOR // 2] = {
+        "id": 1,
+        "name": "x",
+        "tags": "y",
+        "more": 2,
+    }  # a row with another key
+    assert gbm._scalar_columns(rows) is None
+    assert column_calls["build"] == 0
+    rows = _listed(VFLOOR, set())
+    rows[VFLOOR // 2] = {"name": "x", "id": 1, "tags": "y"}  # another key order
+    assert gbm._scalar_columns(rows) is None
+    assert column_calls["build"] == 0
+
+
+def test_a_carried_call_decides_every_column_and_then_builds_every_column(
+    db, column_calls
+):
+    rows = _scalar_rows(VFLOOR)
+    got = gbm._scalar_columns(rows)
+    assert got is not None and len(got[0]) == len(rows[0])
+    assert column_calls["kind"] == len(rows[0]) == column_calls["build"]
+
+
+def test_a_value_no_column_carries_in_the_first_row_is_found_by_the_first_row():
+    for value in (["a"], {"k": 1}, b"x", np.int64(1), object()):
+        assert gbm._scalar_columns([{"id": 1, "v": value}] * 3) is None
+
+
+def test_a_call_below_the_floors_reads_no_column(db, bridge, column_calls, monkeypatch):
+    monkeypatch.setattr(gbm, "_TYPED_MIN_VERTICES", VFLOOR)
+    monkeypatch.setattr(gbm, "_TYPED_MIN_EDGES", EFLOOR)
+    assert len(_load(db, "A", _scalar_rows(VFLOOR - 1))) == VFLOOR - 1
+    vertices = _edge_setup(db, EFLOOR)
+    column_calls["columns"] = (
+        0  # the vertices of the setup are above the floor of vertices or not: only the edges count here
+    )
+    _new_edges(db, "EA", vertices[: EFLOOR - 1], vertices[1:], _edge_props(EFLOOR - 1))
+    assert column_calls["edge_columns"] == 0 and column_calls["columns"] == 0
+    assert column_calls["kind"] == 0 and column_calls["build"] == 0
+    _new_edges(
+        db, "EB", vertices[:EFLOOR], vertices[1:] + vertices[:1], _edge_props(EFLOOR)
+    )
+    assert column_calls["edge_columns"] == 1 and column_calls["build"] > 0

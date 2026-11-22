@@ -59,33 +59,41 @@ _TYPED_MIN_VERTICES = 512
 _TYPED_MIN_EDGES = 32
 
 
-def _scalar_column(column):
-    """One column of exact scalars as ``(bridge column, bridge null flags or None)`` for ``VertexBatcher.createVerticesColumns`` and
-    ``EdgeBatcher.newEdgesColumns``, or None when the column is not one the typed route carries.
+# What a typed column can hold, besides None: one of these per column. A value of any other type (a list, a dict, a date-time, a Decimal,
+# bytes, a numpy scalar, a subclass) keeps the call on the JSON text path, and the first row is enough to see that for most rows.
+_TYPED_VALUE_TYPES = frozenset((int, float, bool, str, _NONE_KIND))
 
-    Carried: every value of one exact type among ``int`` (in 64 bits, a ``long[]``), ``float`` (finite, no subnormal, a ``double[]``),
-    ``bool`` (a ``boolean[]``) and ``str`` (a ``StringColumn``, with its own null rows), with ``None`` for a null; a column of nothing
-    but ``None``. Anything else (mixed kinds, a bool beside ints, a subclass, a numpy scalar, a list, a date, a lone surrogate, an
-    integer beyond 64 bits, a NaN, an infinity or a subnormal) is left to the JSON text path, which stores or refuses it as before.
+
+def _column_kind(column):
+    """``(kind, has None)`` of one column the typed route can carry, else None, from the types of its values alone: no array is built.
+
+    ``kind`` is ``int``, ``float``, ``bool`` or ``str``, or ``NoneType`` for a column of nothing but ``None``.
     """
-    n = len(column)
     kinds = set(map(type, column))
     has_none = _NONE_KIND in kinds
     kinds.discard(_NONE_KIND)
     if not kinds:
-        return jpype.JArray(jpype.JBoolean)(_np.zeros(n, dtype=_np.bool_)), (
-            jpype.JArray(jpype.JBoolean)(_np.ones(n, dtype=_np.bool_))
-        )
+        return _NONE_KIND, has_none
     if len(kinds) != 1:
         return None
     (kind,) = kinds
+    return (kind, has_none) if kind in _FILL or kind is str else None
+
+
+def _build_column(column, kind, has_none):
+    """``(bridge column, bridge null flags or None)`` of a column that ``_column_kind`` accepted, or None when its values cannot cross
+    unchanged (an integer beyond 64 bits, a NaN, an infinity, a subnormal, a lone surrogate): the JSON text path stores or refuses those.
+    """
+    n = len(column)
+    if kind is _NONE_KIND:
+        return jpype.JArray(jpype.JBoolean)(_np.zeros(n, dtype=_np.bool_)), (
+            jpype.JArray(jpype.JBoolean)(_np.ones(n, dtype=_np.bool_))
+        )
     if kind is str:
         from .core import _string_column
 
         built = _string_column(column)
         return None if built is None else (built, None)
-    if kind not in _FILL:
-        return None
     mask = None
     if has_none:
         mask = _np.fromiter(
@@ -111,25 +119,58 @@ def _scalar_column(column):
     return built, None if mask is None else jpype.JArray(jpype.JBoolean)(mask)
 
 
+def _scalar_column(column):
+    """One column of exact scalars as ``(bridge column, bridge null flags or None)`` for ``VertexBatcher.createVerticesColumns`` and
+    ``EdgeBatcher.newEdgesColumns``, or None when the column is not one the typed route carries.
+
+    Carried: every value of one exact type among ``int`` (in 64 bits, a ``long[]``), ``float`` (finite, no subnormal, a ``double[]``),
+    ``bool`` (a ``boolean[]``) and ``str`` (a ``StringColumn``, with its own null rows), with ``None`` for a null; a column of nothing
+    but ``None``. Anything else (mixed kinds, a bool beside ints, a subclass, a numpy scalar, a list, a date, a lone surrogate, an
+    integer beyond 64 bits, a NaN, an infinity or a subnormal) is left to the JSON text path, which stores or refuses it as before.
+    """
+    decided = _column_kind(column)
+    return None if decided is None else _build_column(column, *decided)
+
+
 def _scalar_columns(rows, reserved=()):
     """The columns of ``rows`` for the typed route as ``(names, columns, null flags)`` (lists, one entry per property), or None.
 
     Carried: every row an exact ``dict`` with the same keys in the same order (str names, none of ``reserved``) and each column one
     that ``_scalar_column`` carries. A row that is None or has other keys, another key order or any other value keeps the JSON text
     path, which writes each row's own keys in its own order. Needs numpy, as every other typed route of the bindings does.
+
+    A call the typed route cannot carry pays little before it is refused: the first row is looked at first (a value of a type no typed
+    column holds, such as a list, refuses the call there), then the types of every column are decided one column after the other, and
+    only when all of them are carried is a bridge array built.
     """
-    if _np is None or not rows or set(map(type, rows)) != {dict}:
+    if _np is None or not rows:
         return None
-    shapes = set(map(tuple, rows))
-    if len(shapes) != 1:
+    first = rows[0]
+    if type(first) is not dict or not _TYPED_VALUE_TYPES.issuperset(
+        map(type, first.values())
+    ):
         return None
-    (names,) = shapes
+    if set(map(type, rows)) != {dict}:
+        return None
+    names = tuple(first)
     if not set(map(type, names)) <= {str} or any(name in reserved for name in names):
+        return None
+    decided = []
+    try:
+        for name in names:
+            column = list(map(operator.itemgetter(name), rows))
+            kind = _column_kind(column)
+            if kind is None:
+                return None
+            decided.append((column, kind))
+    except KeyError:  # a row without this key
+        return None
+    if len(set(map(tuple, rows))) != 1:
         return None
     columns = []
     nulls = []
-    for name in names:
-        built = _scalar_column(list(map(operator.itemgetter(name), rows)))
+    for column, (kind, has_none) in decided:
+        built = _build_column(column, kind, has_none)
         if built is None:
             return None
         columns.append(built[0])
