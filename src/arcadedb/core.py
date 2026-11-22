@@ -461,7 +461,14 @@ def _typed_chunk_columns(chunk):
     names = tuple(first)
     if not names or set(map(type, names)) != _STR_ONLY:
         return None
-    if len(set(map(tuple, chunk))) != 1:
+    # Every row has the keys of the first one, in its order. The number of keys first: one pass that builds nothing per row, and
+    # it finds the row with a key more or a key less. Then the keys themselves, which stops at the first row that lists them
+    # otherwise. One set of the key tuples of all rows did both at once, and a chunk that keeps the JSON text paid a tuple and a
+    # hash per row for it: 1.2 to 2.5 percent of the whole call in the timed A/B of 2026-11-22 (rows of nine keys, the last row
+    # of each chunk with a key more).
+    if set(map(len, chunk)) != {len(names)} or not all(
+        map(names.__eq__, map(tuple, chunk))
+    ):
         return None
     lists = []
     shapes = []
