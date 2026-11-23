@@ -146,12 +146,12 @@ Each step is a script, CI, or the owner's decision. The owner's tag push is the 
 | owner (the only publishing step)
 
 | 4
-| `release-jvm.yml` and `release-native.yml` validate the tag, build and test the wheels, check them, and publish with trusted publishing. A failed upload is retried by re-running only the publish job. When both have succeeded, `release-notes.yml` creates the GitHub Release and, for a final release, closes the milestone (<<_github_release,GitHub Release>>).
+| `release-jvm.yml` and `release-native.yml` validate the tag, build and test the wheels, check them, and publish with trusted publishing. A failed upload is retried by re-running only the publish job. For a final or `postN` release the `pypi` deployment of the native package waits for the owner, and the speed smoke of the native wheel runs before it is approved (xref:development/release-native-smoke.adoc[Speed smoke of the native wheel]). When both have succeeded, `release-notes.yml` creates the GitHub Release and, for a final release, closes the milestone (<<_github_release,GitHub Release>>).
 | CI
 
 | 5
-| After-tag verification of both packages: the workflow run and its publish step, the file set and sizes on PyPI, the sha256 of every file against the wheels the workflow checked, and a fresh `uv run --with` install on Python 3.12 and 3.14 that opens a database and runs one SQL and one openCypher query.
-| script: `scripts/after_tag_verify.sh` and `PACKAGE=native scripts/after_tag_verify.sh`
+| After-tag verification of both packages: the workflow run and its publish step, the file set and sizes on PyPI, the sha256 of every file against the wheels the workflow checked, and a fresh `uv run --with` install on Python 3.12 and 3.14 that opens a database and runs one SQL and one openCypher query. For the native package, the library hash of the wheel on PyPI is also compared with the one that passed the speed smoke.
+| script: `scripts/after_tag_verify.sh` and `PACKAGE=native scripts/after_tag_verify.sh`, then `native_update_smoke.py --hash-only`
 
 | 6
 | The dev-engine bump PR. `scripts/bump_engine.py` moves the pins that dev, PR and nightly builds link: `DEV_ENGINE`, `DEFAULT_VERSION` and the default of the manual-run input `version` in `test-native.yml`, `arcadedb.version` in `native/pom.xml`, the default in `native/scripts/build-image.sh`, and the default of `--version` in `native/wheel/build_wheel.py`. `--check` reports drift and writes nothing; it refuses a `<NEXT_DEV>` that `check_version.py` would refuse.
