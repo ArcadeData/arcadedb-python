@@ -124,7 +124,8 @@ jobs:
 
       # Only a final release closes its milestone. A dev tag leaves it open (the cycle goes on); a post tag has no milestone of its own
       # (its notes come from the commit range, not from a milestone). Items still open in the milestone move to the next one first, and
-      # every move is logged. The next one is the open milestone with the earliest due date after this one. When there is none, the
+      # every move is logged. The next one is the open milestone with the earliest due date after this one; an open milestone without a due
+      # date counts as the latest, as in assign-milestone.yml, so it is taken when no dated one follows. When there is none, the
       # milestone is created, named after the next upstream engine version (due 30 days after this one; the base of the upstream `main` version, as in
       # development/release.adoc), when that can be read. Otherwise nothing is moved or closed and the job fails, so the maintainer
       # creates the next milestone and re-runs this workflow (the release step is a no-op edit the second time).
@@ -146,7 +147,7 @@ jobs:
             exit 0
           fi
           if [ "$open_issues" != 0 ]; then
-            next="$(jq -r --arg n "$number" --arg due "$due" '[.[] | select(.state == "open" and (.number | tostring) != $n and .due_on != null and ($due == "" or .due_on > $due))] | sort_by(.due_on) | .[0].number // empty' <<< "$milestones")"
+            next="$(jq -r --arg n "$number" --arg due "$due" '[.[] | select(.state == "open" and (.number | tostring) != $n and ($due == "" or .due_on == null or .due_on > $due))] | sort_by(.due_on // "9999-12-31T23:59:59Z") | .[0].number // empty' <<< "$milestones")"
             if [ -z "$next" ]; then
               upstream="$(curl -fsS https://raw.githubusercontent.com/ArcadeData/arcadedb/main/pom.xml | sed -n '/<artifactId>arcadedb-parent<\/artifactId>/,/<\/version>/ s/.*<version>\(.*\)-SNAPSHOT<\/version>.*/\1/p' | head -n 1 || true)"
               if [[ "$upstream" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ && "$upstream" != "$BASE" ]]; then
