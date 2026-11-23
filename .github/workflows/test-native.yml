@@ -688,7 +688,7 @@ jobs:
           # the pyver job has a copy of this awk: keep the two in sync
           awk -F'\t' '
             NR == 1 { next }
-            $1 == "TOTAL" { passed = $2; failed = $3; err = $4; notyet = $5; na = $6; skipped = $7; tot = 1; next }
+            $1 == "TOTAL" { passed = $2; failed = $3; err = $4; notyet = $5; na = $6; skipped = $7; tot = 1; if (match($8, /flaky_race=[0-9]+/)) race = substr($8, RSTART + 11, RLENGTH - 11); next }
             $8 ~ /^FLAKY-CRASH/ { flaky = flaky " " $1 "(" $8 ")"; next }
             $8 != "" { bad = bad " " $1 "(" $8 ")" }
             END {
@@ -696,6 +696,8 @@ jobs:
               printf "parity %s py%s: passed=%s failed=%s error=%s notyet=%s na_jvm=%s skipped=%s\n", ENVIRON["KEY"], ENVIRON["PY"], passed, failed, err, notyet, na, skipped
               # a file that crashed and passed when run once more: the leg may pass, the summary says it did only because of the retry
               if (flaky != "") printf "FLAKY-CRASH (died without a result, passed on the one retry; first exit code in brackets):%s\n", flaky
+              # tests that passed only after the rerun of the known engine race (issue 409): printed, never a failure
+              if (race + 0 != 0) printf "FLAKY-RACE (tests that passed only after a rerun of the known engine race of ArcadeData/arcadedb-python#409): %s\n", race
               if (bad != "") { print "files with a status:" bad > "/dev/stderr"; exit 1 }
               if (passed + 0 == 0 || failed + 0 != 0 || err + 0 != 0) exit 1
               # this repository accepts no skips; NOTYET and NA-JVM are the two counted kinds of the native build
@@ -1102,7 +1104,7 @@ jobs:
           # the same awk as the gate of the test job: keep the two in sync
           awk -F'\t' '
             NR == 1 { next }
-            $1 == "TOTAL" { passed = $2; failed = $3; err = $4; notyet = $5; na = $6; skipped = $7; tot = 1; next }
+            $1 == "TOTAL" { passed = $2; failed = $3; err = $4; notyet = $5; na = $6; skipped = $7; tot = 1; if (match($8, /flaky_race=[0-9]+/)) race = substr($8, RSTART + 11, RLENGTH - 11); next }
             $8 ~ /^FLAKY-CRASH/ { flaky = flaky " " $1 "(" $8 ")"; next }
             $8 != "" { bad = bad " " $1 "(" $8 ")" }
             END {
@@ -1110,6 +1112,8 @@ jobs:
               printf "parity %s py%s: passed=%s failed=%s error=%s notyet=%s na_jvm=%s skipped=%s\n", ENVIRON["KEY"], ENVIRON["PY"], passed, failed, err, notyet, na, skipped
               # a file that crashed and passed when run once more: the leg may pass, the summary says it did only because of the retry
               if (flaky != "") printf "FLAKY-CRASH (died without a result, passed on the one retry; first exit code in brackets):%s\n", flaky
+              # tests that passed only after the rerun of the known engine race (issue 409): printed, never a failure
+              if (race + 0 != 0) printf "FLAKY-RACE (tests that passed only after a rerun of the known engine race of ArcadeData/arcadedb-python#409): %s\n", race
               if (bad != "") { print "files with a status:" bad > "/dev/stderr"; exit 1 }
               if (passed + 0 == 0 || failed + 0 != 0 || err + 0 != 0) exit 1
               # this repository accepts no skips; NOTYET and NA-JVM are the two counted kinds of the native build

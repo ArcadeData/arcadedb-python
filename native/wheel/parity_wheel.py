@@ -13,6 +13,8 @@ that produces a result is FLAKY-CRASH(rc=...) in the status column (the gate let
 crash stays CRASH and fails the leg. A failing test, a TIMEOUT and a BADXML are never retried. The decision is native/wheel/parity_crash.py.
 On Windows each process also writes a faulthandler trace to <name>.attemptN.fault.txt next to its XML (tests/conftest.py,
 ARCADEDB_TEST_FAULTHANDLER_FILE); an empty one is deleted. Beside the table, <out stem>.meta.json lists the wheel, the Python and every crash.
+A test that passed only after tests/conftest.py's rerun of the known engine race (issue 409) carries the junit property `flaky_race`: the TOTAL line
+counts those tests as flaky_race=N, the log prints a ::warning:: for each, and the metadata lists them. A count, never a failure.
 """
 
 import argparse
@@ -32,6 +34,9 @@ COUNT_KEYS = ["passed", "failed", "error", "notyet", "na_jvm", "skipped"]
 
 # On Windows the test process writes a faulthandler trace to this file (tests/conftest.py, native backend only).
 FAULT_FILE_ENV = "ARCADEDB_TEST_FAULTHANDLER_FILE"
+
+# The junit property of a test that passed after a rerun of the known engine race (tests/conftest.py KNOWN_RACE_PROPERTY); the value is the reruns it took.
+RACE_PROPERTY = "flaky_race"
 
 
 def parse_args(argv=None):
@@ -134,6 +139,35 @@ def count_xml(xml):
     return c, fails
 
 
+def race_events(xml, name):
+    """One record per test of a junit XML that passed only after the known engine race rerun (the property `flaky_race`); [] when the XML does not parse."""
+    found = []
+    try:
+        for tc in ET.parse(xml).getroot().iter("testcase"):
+            if tc.find("failure") is not None or tc.find("error") is not None:
+                continue
+            for prop in tc.iter("property"):
+                if prop.get("name") == RACE_PROPERTY:
+                    found.append(
+                        {
+                            "file": name,
+                            "test": tc.get("name"),
+                            "reruns": prop.get("value"),
+                        }
+                    )
+    except ET.ParseError:
+        return []
+    return found
+
+
+def total_row(tot):
+    """The TOTAL line of the table: the counts, then the status column (timeouts, flaky_crash, crash, flaky_race; the gate reads only the counts)."""
+    return (
+        f"TOTAL\t{tot['passed']}\t{tot['failed']}\t{tot['error']}\t{tot['notyet']}\t{tot['na_jvm']}\t{tot['skipped']}\t"
+        f"timeouts={tot['timeout']} flaky_crash={tot['flaky_crash']} crash={tot['crash']} flaky_race={tot['flaky_race']}\t\t\t\n"
+    )
+
+
 def main(argv=None):
     a = parse_args(argv)
     pkg = os.path.abspath(a.repo)
@@ -196,8 +230,10 @@ def main(argv=None):
             f"CRASH RETRY: on, a file that dies without a result is run once more (at most {policy.budget} files)",
             flush=True,
         )
-    rows, events = [], []
-    tot = dict.fromkeys([*COUNT_KEYS, "timeout", "flaky_crash", "crash"], 0)
+    rows, events, races = [], [], []
+    tot = dict.fromkeys(
+        [*COUNT_KEYS, "timeout", "flaky_crash", "crash", "flaky_race"], 0
+    )
 
     for f in files:
         name = os.path.basename(f)
@@ -300,6 +336,10 @@ def main(argv=None):
         tot["timeout"] += out.timed_out
         tot["flaky_crash"] += out.flaky
         tot["crash"] += out.hard_crash
+        # the XML on disk is the one of the last attempt, which is the one that counts
+        file_races = race_events(xml, name) if out.final.result else []
+        tot["flaky_race"] += len(file_races)
+        races.extend(file_races)
         ev = pc.event_of(name, out, c["failed"] + c["error"])
         if ev:
             ev.update(traces_of(name, xmldir, range(1, len(out.attempts) + 1)))
@@ -319,6 +359,11 @@ def main(argv=None):
                 f"the run once more: {'a result' if out.final.result else 'no result again'} ({pc.format_rc(out.final.rc)})",
                 flush=True,
             )
+        for race in file_races:
+            print(
+                f"::warning::{name}: {race['test']} passed only after {race['reruns']} rerun(s) of the known engine race (ArcadeData/arcadedb-python#409)",
+                flush=True,
+            )
         for n, at in enumerate(out.attempts, 1):
             if pc.dirty_exit(at):
                 print(
@@ -333,9 +378,7 @@ def main(argv=None):
             fh.write(
                 f"{name}\t{c['passed']}\t{c['failed']}\t{c['error']}\t{c['notyet']}\t{c['na_jvm']}\t{c['skipped']}\t{status}\t{';'.join(fails[:40])}\t{attempts}\t{pc.format_rc(rc)}\n"
             )
-        fh.write(
-            f"TOTAL\t{tot['passed']}\t{tot['failed']}\t{tot['error']}\t{tot['notyet']}\t{tot['na_jvm']}\t{tot['skipped']}\ttimeouts={tot['timeout']} flaky_crash={tot['flaky_crash']} crash={tot['crash']}\t\t\t\n"
-        )
+        fh.write(total_row(tot))
     with open(os.path.splitext(a.out)[0] + ".meta.json", "w") as fh:
         json.dump(
             {
@@ -347,6 +390,7 @@ def main(argv=None):
                 "source_commit": ident.get("source_commit", ""),
                 "retry_crash": policy.enabled,
                 "crash_events": events,
+                "race_events": races,
             },
             fh,
             indent=1,

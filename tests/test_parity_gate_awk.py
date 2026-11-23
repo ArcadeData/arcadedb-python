@@ -13,9 +13,17 @@ from __future__ import annotations
 import os
 import re
 import subprocess  # nosec B404 - test-controlled child processes
+import sys
 from pathlib import Path
 
 import pytest
+
+WHEEL_DIR = Path(__file__).resolve().parents[1] / "native" / "wheel"
+if str(WHEEL_DIR) not in sys.path:
+    sys.path.insert(
+        0, str(WHEEL_DIR)
+    )  # the harness imports parity_crash as a sibling of the script
+import parity_wheel  # noqa: E402
 
 WORKFLOW = (
     Path(__file__).resolve().parents[1] / ".github" / "workflows" / "test-native.yml"
@@ -39,6 +47,28 @@ def total(
     passed=10, failed=0, error=0, skipped=0, status="timeouts=0 flaky_crash=0 crash=0"
 ):
     return f"TOTAL\t{passed}\t{failed}\t{error}\t0\t0\t{skipped}\t{status}\t\t\t\n"
+
+
+def totals(**counts):
+    """The `tot` dict of parity_wheel.main with the given counts (the others 0), for total_row."""
+    tot = dict.fromkeys(
+        [
+            "passed",
+            "failed",
+            "error",
+            "notyet",
+            "na_jvm",
+            "skipped",
+            "timeout",
+            "flaky_crash",
+            "crash",
+            "flaky_race",
+        ],
+        0,
+    )
+    tot["passed"] = 10
+    tot.update(counts)
+    return tot
 
 
 def run_gate(program, tmp_path, *rows):
@@ -161,6 +191,54 @@ def test_a_timeout_an_unreadable_xml_a_failure_and_a_skip_still_fail_the_gate(
         run_gate(program, tmp_path, row("test_a.py"), total(skipped=1)).returncode == 1
     )
     assert run_gate(program, tmp_path, row("test_a.py")).returncode == 1  # no TOTAL row
+
+
+def test_a_test_that_passed_after_the_race_rerun_is_printed_and_never_fails_the_gate(
+    program, tmp_path
+):
+    # the TOTAL line that native/wheel/parity_wheel.py writes (total_row), so the gate reads what the harness writes
+    clean = parity_wheel.total_row(totals())
+    two = parity_wheel.total_row(totals(flaky_race=2))
+    r0 = run_gate(program, tmp_path, row("test_a.py"), clean)
+    assert r0.returncode == 0, r0.stderr
+    assert "FLAKY-RACE" not in r0.stdout
+    r2 = run_gate(program, tmp_path, row("test_a.py"), two)
+    assert r2.returncode == 0, r2.stderr
+    assert (
+        "FLAKY-RACE (tests that passed only after a rerun of the known engine race of ArcadeData/arcadedb-python#409): 2"
+        in r2.stdout
+    )
+    # the line that the gate prints first is the same with and without the count
+    first = "parity windows-x64 py3.14: passed=10 failed=0 error=0"
+    assert r0.stdout.startswith(first) and r2.stdout.startswith(first)
+
+
+def test_the_race_count_does_not_hide_a_failure_a_crash_or_a_skip(program, tmp_path):
+    two = parity_wheel.total_row(totals(flaky_race=2))
+    assert (
+        run_gate(
+            program,
+            tmp_path,
+            row("test_a.py", failed=1),
+            parity_wheel.total_row(totals(failed=1, flaky_race=2)),
+        ).returncode
+        == 1
+    )
+    assert (
+        run_gate(
+            program, tmp_path, row("test_a.py", status="CRASH(rc=1)"), two
+        ).returncode
+        == 1
+    )
+    assert (
+        run_gate(
+            program,
+            tmp_path,
+            row("test_a.py"),
+            parity_wheel.total_row(totals(skipped=1, flaky_race=2)),
+        ).returncode
+        == 1
+    )
 
 
 def test_a_file_that_died_after_its_result_does_not_fail_the_gate(program, tmp_path):

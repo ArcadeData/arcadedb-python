@@ -3,6 +3,7 @@ Shared pytest fixtures and configuration for ArcadeDB tests.
 """
 
 import os
+import re
 import shutil
 import sys
 import threading
@@ -625,3 +626,79 @@ def small_chunks(monkeypatch):
 
         monkeypatch.setattr(core, "_INSERT_MANY_CHUNK", CHUNK)
         monkeypatch.setattr(arcadedb.GraphBatch, "_BULK_CHUNK", CHUNK)
+
+
+# ---------------------------------------------------------------------------------------------------------------------------------
+# The known engine race of ArcadeData/arcadedb-python#409: a bounded, visible, counted rerun for tests/test_vector_read_your_writes.py.
+#
+# The engine of 26.11.1 can miss a vector that a commit has just returned (a graph rebuild trims it between the two phases of its commit);
+# the engine fix is the open pull request ArcadeData/arcadedb#12087. The test must keep detecting the race, and a red `main` on about every
+# other run hides every other regression. So the test body runs again (at most KNOWN_RACE_RERUNS more times, each on a fresh database)
+# when, and only when, it failed with one of the three messages the race produces. Any other failure is raised at once, a body that fails
+# every run fails, and a pass after a rerun is a UserWarning that names the issue and a junit property that native/wheel/parity_wheel.py
+# counts as `flaky_race`. The tests of this block are in tests/test_known_engine_race_rerun.py.
+#
+# REMOVE WHEN the engine release that contains ArcadeData/arcadedb#12087 is merged and released AND tests/test_vector_read_your_writes.py has
+# passed 100 consecutive scheduled runs: delete this block, its use in tests/test_vector_read_your_writes.py, tests/test_known_engine_race_rerun.py,
+# the `flaky_race` counter (native/wheel/parity_wheel.py, native/wheel/report_flaky_crash.py, the FLAKY-RACE lines of the two gate awk programs in
+# test-native.yml and their tests) and the paragraph in docs/modules/ROOT/pages/development/ci.adoc, then close ArcadeData/arcadedb-python#409.
+# ---------------------------------------------------------------------------------------------------------------------------------
+KNOWN_RACE_ISSUE = "ArcadeData/arcadedb-python#409"
+# The number of reruns is a constant on purpose: no environment variable, option or marker raises it.
+KNOWN_RACE_RERUNS = 2
+# The junit property of a test that passed only after a rerun; its value is the number of reruns that it took.
+KNOWN_RACE_PROPERTY = "flaky_race"
+# (name of the exception class, pattern of its message). The class is matched by name along its bases, so this needs no import of the engine.
+KNOWN_RACE_SIGNATURES = (
+    # the assertion of the tests: a committed vector that the next search did not return
+    ("AssertionError", re.compile(r"\d+ of \d+ committed vectors were not found")),
+    # find_nearest wraps what the engine raised, so this also covers the next one on the JVM build
+    ("ArcadeDBError", re.compile(r"Vector search failed")),
+    # the search loaded an RID that the index returned and whose record was not readable yet
+    ("ArcadeDBError", re.compile(r"Record #\d+:\d+ not found")),
+)
+
+
+def is_known_engine_race(exc):
+    """True when `exc` is one of the three failures of the known engine race (issue 409), and nothing else."""
+    text = str(exc)
+    bases = {cls.__name__ for cls in type(exc).__mro__}
+    return any(
+        kind in bases and pattern.search(text)
+        for kind, pattern in KNOWN_RACE_SIGNATURES
+    )
+
+
+def run_with_known_race_rerun(attempt, request=None, label="the test"):
+    """Call `attempt(n)` (n counts from 1; it runs the whole test body on a fresh database) until it passes.
+
+    A failure that is not one of the three signatures is raised at once. A known one runs the body again, at most KNOWN_RACE_RERUNS more
+    times, with a UserWarning that names issue 409 and the run. The last failure is raised. When a run after the first passes and `request`
+    is given, the property `flaky_race` (the number of reruns) is added to the test's junit record. Returns the number of reruns used.
+    """
+    import warnings
+
+    runs = 1 + KNOWN_RACE_RERUNS
+    for n in range(1, runs + 1):
+        try:
+            attempt(n)
+        except Exception as exc:
+            if not is_known_engine_race(exc):
+                raise
+            if n == runs:
+                exc.add_note(
+                    f"{KNOWN_RACE_ISSUE}: this test body failed on all {runs} runs with the known engine race"
+                )
+                raise
+            first = (str(exc).splitlines() or [""])[0][:160]
+            warnings.warn(
+                f"{KNOWN_RACE_ISSUE}: {label} met the known engine race on run {n} of {runs} ({first}); "
+                f"running it again on a fresh database (rerun {n} of {KNOWN_RACE_RERUNS})",
+                UserWarning,
+                stacklevel=2,
+            )
+            continue
+        if n > 1 and request is not None:
+            # what the record_property fixture does; the fixture itself warns on every use with the junit_family of the JVM jobs
+            request.node.user_properties.append((KNOWN_RACE_PROPERTY, n - 1))
+        return n - 1

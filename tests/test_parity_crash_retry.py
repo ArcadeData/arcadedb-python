@@ -403,7 +403,7 @@ def test_the_harness_is_strict_without_the_flag(harness):
         assert rows[name]["status"] == f"CRASH(rc={HIGH_TEXT})", name
         assert rows[name]["attempts"] == "1", name
         assert rows[name]["exit"] == HIGH_TEXT, name
-    assert rows["TOTAL"]["status"] == "timeouts=0 flaky_crash=0 crash=2"
+    assert rows["TOTAL"]["status"] == "timeouts=0 flaky_crash=0 crash=2 flaky_race=0"
     assert meta["retry_crash"] is False
     assert [e["kind"] for e in meta["crash_events"]] == ["CRASH", "CRASH"]
     assert not (xmldir / "test_dies_once.py.attempt1.log").exists()
@@ -427,7 +427,7 @@ def test_the_harness_retries_only_the_crashes_with_the_flag(harness):
     always = rows["test_dies_always.py"]
     assert always["status"] == f"CRASH(rc={HIGH_TEXT};retry rc={HIGH_TEXT})"
     assert always["attempts"] == "2"
-    assert rows["TOTAL"]["status"] == "timeouts=0 flaky_crash=1 crash=1"
+    assert rows["TOTAL"]["status"] == "timeouts=0 flaky_crash=1 crash=1 flaky_race=0"
     # the log of the first attempt is kept beside the log of the retry
     assert (xmldir / "test_dies_once.py.attempt1.log").exists()
     assert (xmldir / "test_dies_once.py.log").exists()
@@ -851,7 +851,7 @@ def test_a_process_that_dies_after_its_result_is_a_dirty_exit_and_fails_nothing(
         row["attempts"],
         row["exit"],
     ) == ("", "1", "0", "1", HIGH_TEXT)
-    assert rows["TOTAL"]["status"] == "timeouts=0 flaky_crash=0 crash=0"
+    assert rows["TOTAL"]["status"] == "timeouts=0 flaky_crash=0 crash=0 flaky_race=0"
     assert [
         (e["kind"], e["file"], e["first_rc"], e["attempt"], e["log"])
         for e in meta["crash_events"]
