@@ -63,8 +63,24 @@ notes = _load()
         (
             "fix(#423): find_nearest(allowed_rids=[]) returns nothing (#425)",
             425,
-            "fix(#423): find_nearest(allowed_rids=[]) returns nothing",
+            "find_nearest(allowed_rids=[]) returns nothing",
         ),
+        (
+            "fix(#412): the native bytes cache keeps no write parameters (#413)",
+            413,
+            "The native bytes cache keeps no write parameters",
+        ),
+        (
+            "docs(#431): many small graph batches pay a fixed cost (#432)",
+            432,
+            "Many small graph batches pay a fixed cost",
+        ),
+        (
+            "JVM: to_json_list() returns a float for every DECIMAL (#452) (#456)",
+            456,
+            "JVM: to_json_list() returns a float for every DECIMAL",
+        ),
+        ("fix(#5): (#6)", 6, "fix(#5):"),
         ("(refs #9) (#9)", 9, "(refs #9)"),
     ],
 )

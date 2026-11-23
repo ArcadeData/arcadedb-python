@@ -126,23 +126,32 @@ def section_of(labels):
 
 
 # the trailing notes of a title that point at issues, for the people who work on the project and not for a reader of a release:
-# (refs #388, #315), (closes #371), (fixes #5), (rank 2 of #388)
+# (refs #388, #315), (closes #371), (fixes #5), (rank 2 of #388), and a bare (#452) that stands next to the number of the pull request
 ISSUE_NOTE = re.compile(
-    r"\s*\((?:refs?|closes?|fix(?:es)?|rank \d+ of)\s+#\d+(?:\s*,\s*#\d+)*\)\s*$",
+    r"\s*\((?:(?:refs?|closes?|fix(?:es)?|rank \d+ of)\s+)?#\d+(?:\s*,\s*#\d+)*\)\s*$",
     re.IGNORECASE,
+)
+# a commit-style prefix that carries an issue number: `fix(#412): the native bytes cache ...`, `docs(#431): many small graph batches ...`
+KIND_PREFIX = re.compile(
+    r"^(?:fix|feat|docs?|perf|chore|ci|tests?|refactor)\(#\d+\):\s*", re.IGNORECASE
 )
 # a pull request that only merges a release line back into main (`Merge the 26.11.1.post3 release line into main`)
 MERGE_LINE = re.compile(r"^Merge the \S+ release line into main\b", re.IGNORECASE)
 
 
 def clean_title(title, number):
-    """The title without a trailing (#N) of the pull request itself, which the line adds, and without trailing notes that point at issues."""
+    """The title without a trailing (#N) of the pull request itself, which the line adds, without trailing notes that point at issues and without a `fix(#N):` prefix."""
     text = re.sub(rf"\s*\(#{number}\)\s*$", "", title.strip())
     while True:
         shorter = ISSUE_NOTE.sub("", text)
         if shorter == text or not shorter:
-            return text
+            break
         text = shorter
+    bare = KIND_PREFIX.sub("", text)
+    if bare and bare != text:
+        # a lower-case word becomes a sentence start; an identifier such as find_nearest(...) stays as written
+        text = re.sub(r"^[a-z]+\b(?![_(.\-])", lambda m: m.group(0).capitalize(), bare)
+    return text
 
 
 def safe_title(title):
