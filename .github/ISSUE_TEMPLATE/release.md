@@ -36,7 +36,7 @@ Every step says who does it: script (run the command, read the result), CI (a wo
   git fetch origin main --no-tags && git tag <VERSION> origin/main && git push origin <VERSION>
   ```
 
-- [ ] 5. CI: both release workflows finish and publish, then `release-notes.yml` creates the GitHub Release and, for a final release, closes the milestone. Note the two run ids (the native build takes the longest). To retry a failed upload, re-run only the publish job, never the whole workflow.
+- [ ] 5. CI: both release workflows finish and publish, then `release-notes.yml` creates the GitHub Release and, for a final release, closes the milestone. Note the two run ids (the native build takes the longest). To retry a failed upload, re-run only the publish job, never the whole workflow. For the native package, the `pypi` deployment waits for your approval: before you approve it, run the speed smoke on the wheel of the artifact `native-release-dist` (docs page "Speed smoke of the native wheel", issue #404) and write the library sha256 and the ratio into the release notes. A wheel that fails the smoke is a slow build of the same commit: reject the deployment and re-run all jobs for a new build, up to four times.
 
   ```bash
   gh run list -R ArcadeData/arcadedb-python --branch <VERSION> --limit 6
