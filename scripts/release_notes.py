@@ -125,9 +125,24 @@ def section_of(labels):
     return OTHER
 
 
+# the trailing notes of a title that point at issues, for the people who work on the project and not for a reader of a release:
+# (refs #388, #315), (closes #371), (fixes #5), (rank 2 of #388)
+ISSUE_NOTE = re.compile(
+    r"\s*\((?:refs?|closes?|fix(?:es)?|rank \d+ of)\s+#\d+(?:\s*,\s*#\d+)*\)\s*$",
+    re.IGNORECASE,
+)
+# a pull request that only merges a release line back into main (`Merge the 26.11.1.post3 release line into main`)
+MERGE_LINE = re.compile(r"^Merge the \S+ release line into main\b", re.IGNORECASE)
+
+
 def clean_title(title, number):
-    """The title without a trailing (#N) of the pull request itself, which the line adds."""
-    return re.sub(rf"\s*\(#{number}\)\s*$", "", title.strip())
+    """The title without a trailing (#N) of the pull request itself, which the line adds, and without trailing notes that point at issues."""
+    text = re.sub(rf"\s*\(#{number}\)\s*$", "", title.strip())
+    while True:
+        shorter = ISSUE_NOTE.sub("", text)
+        if shorter == text or not shorter:
+            return text
+        text = shorter
 
 
 def safe_title(title):
@@ -247,6 +262,8 @@ def build_notes(repo, tag):
                 continue
             listed.append(pr)
     listed.sort(key=lambda p: p["number"])
+    # a pull request that only merges a release line back into main is bookkeeping: it is not listed, and a release that has nothing else says so
+    listed = [pr for pr in listed if not MERGE_LINE.match(pr["title"].strip())]
 
     groups = {title: [] for title, _ in SECTIONS}
     groups[OTHER] = []
