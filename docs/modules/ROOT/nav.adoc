@@ -21,3 +21,4 @@
 * Development
 ** xref:development/ci.adoc[Continuous integration]
 ** xref:development/release.adoc[Release]
+** xref:development/release-native-smoke.adoc[Speed smoke of the native wheel]

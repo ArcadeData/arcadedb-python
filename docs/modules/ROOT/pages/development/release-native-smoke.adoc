@@ -1,0 +1,181 @@
+= Speed smoke of the native wheel
+:description: The release step that measures the native wheel before it is published: the single-record UPDATE against the previous release, on a host of the class that measures the published numbers.
+
+Two native wheels built from one commit can differ in speed by about a third on the single-record `UPDATE` (https://github.com/ArcadeData/arcadedb-python/issues/404[#404]). A GraalVM native-image build is not reproducible, so the speed of one hot path is a draw from a spread. The fix is in the release, not in the sources: measure the wheel that would be published, and publish it only when it passes. `scripts/native_update_smoke.py` is that measurement. This page is the runbook.
+
+== What it measures
+
+On the host where you run it, in one session, the tool installs each wheel into its own throw-away environment (`uv run --no-project --with <wheel>`) and starts one fresh process per wheel per round. A process runs the state of the paper cell on synthetic rows: the async executor, the parallel columnar load of `LineItem` (300,000 rows), the `Part` load (200,000 rows), the indexes, the warm-up, and then the single-record phases, each operation in its own `begin` and `commit` pair. The figure that decides is the median latency per operation of
+
+[source,sql]
+----
+UPDATE Crud SET qty = 2 WHERE ckey=:c
+----
+
+with a parameter, through `command()`. The tool records the other figures too (new-order, payment, insert, read, delete) as information.
+
+* The wheels run in an interleaved order. Round `2j` and round `2j+1` run them in mirrored order (ABBA), and the order rotates every two rounds, so no wheel always runs first.
+* The ratio of a candidate is the median over the rounds of the per-round ratio against the baseline, the previously published wheel. Below 1 is faster. The interval is a 95% percentile bootstrap of that median.
+* The control is the baseline wheel against itself, in its own processes, in the same session. Its interval must lie inside 0.97 to 1.03. If it does not, the session is not readable: the host was not quiet, and no verdict counts.
+* A candidate passes when the upper end of its interval is below `--max-ratio` (default 1.10). The spread study of #404 found slow builds at 1.33 to 1.35 and fast ones at 0.95 to 0.99 on the host class that measures the published numbers.
+* The tool reads `Cpus_allowed_list` from `/proc/self/status`, records it, and refuses to run with more than 4 allowed cores unless `--quick`. It does not pin anything itself: the caller pins it, and every process of the session inherits the set and checks it.
+* Each process hashes the library it loaded and compares it with the `libarcadedb.so` member of its wheel. A mismatch stops the session.
+
+== When to run it
+
+Run it for every final or `postN` release of the native package (a `devN` release does not need it), after `release-native.yml` has built and tested the wheels, and before anyone approves the publish job. The GitHub environment `pypi` has a required reviewer (the owner), so `Publish to PyPI` waits after `Verify what may be published` has finished. The artifact `native-release-dist` of that run holds the wheels that the publish job will upload, so the wheel you measure is the wheel that goes to PyPI.
+
+. Push the tag as in xref:development/release.adoc#_release_day[Release day]. Wait until `Verify what may be published` has finished and `Publish to PyPI` waits for review.
+. Run the smoke on the Linux x86-64 wheel of that run (this page).
+. When a candidate passes, approve the deployment. Record the result (<<_release_notes,below>>).
+. When none passes, follow <<_when_none_passes,When no candidate passes>>.
+
+The smoke covers the `manylinux_2_28_x86_64` wheel only. The other platforms are not measured.
+
+== Get the files
+
+The candidate is in the artifact of the release run. The previous release is on PyPI. Use a folder on a disk, not on a tmpfs: the wheels are about 66 MB each.
+
+[source,bash]
+----
+# the candidate: the Linux x86-64 wheel of the release run (run ids: gh run list -R ArcadeData/arcadedb-python --branch <VERSION>)
+gh run download <run-id> -R ArcadeData/arcadedb-python -n native-release-dist -D smoke/cand1
+
+# the baseline: the previous release of `arcadedb` (not `arcadedb-jvm`), with the sha256 that PyPI lists
+mkdir -p smoke
+curl -fsS https://pypi.org/pypi/arcadedb/<PREVIOUS>/json | uv run --no-project python -I -c '
+import json, sys
+f = next(f for f in json.load(sys.stdin)["urls"] if f["filename"].endswith("manylinux_2_28_x86_64.whl"))
+print(f["url"], f["digests"]["sha256"], f["filename"])' > smoke/base.txt
+read -r url sha name < smoke/base.txt
+curl -fsSL --create-dirs --output-dir smoke/base -o "$name" "$url"
+echo "$sha  smoke/base/$name" | sha256sum -c -
+----
+
+== Run it
+
+Run it with the cores of one compare lane: the cores that one lane of the host uses for a timed study, at most four, and no other work on them. Pin the command; the tool and all its processes inherit the set. Name the baseline with `--baseline` and the candidates as arguments.
+
+[source,bash]
+----
+cores=<the cores of one compare lane, for example 6,7>
+
+# a try first: small scale, few rounds, any number of cores. It checks the tool and the environments. It is never a result.
+taskset -c "$cores" uv run --no-project python -I scripts/native_update_smoke.py --quick \
+  --baseline smoke/base/<baseline wheel> --out smoke/quick.json smoke/cand1/<candidate wheel>
+
+# the smoke
+taskset -c "$cores" uv run --no-project python -I scripts/native_update_smoke.py \
+  --baseline smoke/base/<baseline wheel> --out smoke/<VERSION>-attempt1.json \
+  --work-dir <a folder on a disk> smoke/cand1/<candidate wheel>
+----
+
+Several candidates can go into one session (`smoke/cand1/... smoke/cand2/...`), so they are measured against the same baseline in the same interleaved rounds. The tool refuses two wheels that hold the same library (same sha256). Useful options:
+
+[cols="2,4"]
+|===
+| Option | Meaning
+
+| `--rounds N`
+| Measured rounds, even, at least 8 (default 12). The warm-up rounds (`--warmup-rounds`, default 1) run first and are never used.
+
+| `--max-ratio R`
+| The pass threshold on the upper end of the interval (default 1.10).
+
+| `--isolate-args "..."`
+| `ARCADEDB_NATIVE_ISOLATE_ARGS` of every process. The default, `-Xmx8g -Darcadedb.txWalFlush=0`, is the heap of the cell at scale factor 1 and its relaxed WAL flush. A different setting changes the cost of a commit.
+
+| `--python X`, `--numpy SPEC`, `--offline`
+| The interpreter and the numpy requirement of the environments, and `--offline` for uv. The tool records the versions it got.
+
+| `--out FILE`
+| The JSON report (every process, the schedule, every ratio and interval, the host, the allowed cores, the sha256 of each wheel and library). The default is `native-update-smoke-<UTC time>.json`.
+
+| `--hash-only WHEEL ...`
+| Print the library sha256 of each wheel and stop. It is how you check a published wheel afterwards.
+|===
+
+== Read the result
+
+The tool prints one line per candidate and the control:
+
+----
+control (baseline against itself): 1.001 [0.996, 1.007] readable
+
+candidate    ratio      95% interval  verdict  engine         library sha256
+cand1        0.985    [0.977, 0.991]     PASS  26.12.1        <64 hex digits>
+----
+
+[cols="1,4"]
+|===
+| Exit status | Meaning
+
+| 0
+| At least one candidate passed. Publish the first one that passed.
+
+| 1
+| No candidate passed. See <<_when_none_passes,When no candidate passes>>.
+
+| 2
+| The run was refused or a process failed: no baseline or candidate, an odd or small `--rounds`, more than 4 allowed cores without `--quick`, a wheel that does not load, a library that is not the wheel's, a process that timed out. The message says which. Nothing was measured that you can use.
+
+| 3
+| The control is not inside 0.97 to 1.03. The session is not readable, whatever the candidates read. Run it again on a quiet host, on the cores of the lane.
+|===
+
+A `--quick` run prints a banner and records `"quick": true` in the JSON. Never record it as the smoke of a release.
+
+[[_when_none_passes]]
+== When no candidate passes
+
+A build that fails is a bad draw, not a bug to chase: the same commit, built again, reads differently. The release builds the wheel again until one passes, up to K times in total. In practice K is up to 4.
+
+. Reject the deployment of `Publish to PyPI` on the run page (nothing is uploaded), then re-run all jobs of the run. The workflow builds all wheels again. Nothing of this version is on PyPI, so `Tag must be the next version` passes again.
+. When `Verify what may be published` has finished, download `native-release-dist` of the new attempt into a new folder (`smoke/cand2`) and run the smoke again. Keep the JSON of every attempt.
+. Stop at the first pass and approve the deployment.
+. When K builds have all failed, stop. The tool does not decide what happens next: that is the owner's call, with the JSON of every attempt in front of them.
+
+Each attempt is a full release run of all four platforms on Python 3.11 to 3.14, on the runner limit that the organisation shares with upstream ArcadeDB. Do not start one without a reason. A control that reads outside 0.97 to 1.03 (exit status 3) is not a failed build: run the same wheels again.
+
+[[_release_notes]]
+== What goes into the release notes
+
+Record, for the wheel that is published:
+
+* The sha256 of its `libarcadedb.so` (the `library sha256` column, or `--hash-only`). The MMDBBench rows of the release name this hash too.
+* The ratio and its interval, the control, the baseline version, the number of rounds, which attempt of K it was, and the host class.
+
+`release-notes.yml` creates the GitHub Release from `scripts/release_notes.py`, and it rewrites the notes whenever it runs again. Add the lines to the finished release, and again after a re-run of that workflow:
+
+[source,bash]
+----
+gh release view <VERSION> -R ArcadeData/arcadedb-python --json body -q .body > notes.md
+cat >> notes.md <<'EOF'
+
+## Native wheel speed smoke
+
+- Library sha256 (`libarcadedb.so`, linux x86-64): `<sha256>`
+- Single-record `UPDATE` through `command()` against `<PREVIOUS>`: `<ratio>` `[<lo>, <hi>]` (95% interval of the median of `<rounds>` per-round ratios, below 1 is faster); control `<ratio>` `[<lo>, <hi>]`
+- Attempt `<n>` of at most 4, host class `<class>`, `scripts/native_update_smoke.py`, #404
+EOF
+gh release edit <VERSION> -R ArcadeData/arcadedb-python --notes-file notes.md
+----
+
+After the publish job has run, check that the wheel on PyPI is the one you measured. Download it as in "Get the files" and compare the library hash with the recorded one:
+
+[source,bash]
+----
+uv run --no-project python -I scripts/native_update_smoke.py --hash-only <downloaded PyPI wheel>
+----
+
+== What it leaves out of the cell
+
+The smoke is a release guard, not a replacement for the paper cell. It leaves out:
+
+* Real TPC-H data. The rows are synthetic, of the same columns and types: `LineItem` has a tenth of the rows of scale factor 1 and `Part` has the scale-1 count. The keys come from a seeded generator of the script, not from the streams of the cell.
+* The harness around the cell: its container, its memory sampler, its other phases and queries.
+* The host class. The smoke says nothing about a host of another class. The spread study of #404 measured a build as slow on P cores and not slow on E cores, so a pass is a pass on the class of host where you ran it.
+* Other figures. Only the `UPDATE` decides. The other figures are in the JSON as information.
+* Other wheels. Only the Linux x86-64 wheel is measured.
+
+The tool is `scripts/native_update_smoke.py`. Its tests are in `tests/test_native_update_smoke.py`: they cover the arithmetic, the schedule, the cores, the verdict and the exit status, and the hash of the library of a wheel, and they need no JVM, no native library and no real wheel.
