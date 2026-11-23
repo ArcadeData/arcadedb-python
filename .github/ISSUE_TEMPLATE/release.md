@@ -15,7 +15,7 @@ Every step says who does it: script (run the command, read the result), CI (a wo
 
 ## Before the tag
 
-- [ ] 1. script: upstream `<VERSION>` is out on both channels (GitHub release, Maven Central, Docker Hub image), the version rule holds for both packages, the CI of `main` is green, and the release workflows derive the right version and engine. Zero FAILs means ready. A FAIL on Maven Central or Docker Hub can mean the other channel is still catching up: run it again later.
+- [ ] 1. script: upstream `<VERSION>` is out on both channels (GitHub release, Maven Central, Docker Hub image), the version rule holds for both packages, the CI of `main` is green, and the release workflows derive the right version and engine. Zero FAILs means ready. A FAIL on Maven Central or Docker Hub can mean the other channel is still catching up: run it again later. A FAIL on the line `(e)` for a job that crashed or missed a vector can be a known intermittent failure (#352, the Windows JVM crash in the examples; #409, the vector read-your-writes race): read the job log, re-run only the failed jobs of that run on `main`, and run the preflight again. Never tag on a red `(e)` that you have not read.
 
   ```bash
   uv run --no-project python -I scripts/release_preflight.py <VERSION>
@@ -36,7 +36,7 @@ Every step says who does it: script (run the command, read the result), CI (a wo
   git fetch origin main --no-tags && git tag <VERSION> origin/main && git push origin <VERSION>
   ```
 
-- [ ] 5. CI: both release workflows finish and publish, then `release-notes.yml` creates the GitHub Release and, for a final release, closes the milestone. Note the two run ids (the native build takes the longest). To retry a failed upload, re-run only the publish job, never the whole workflow. For the native package, the `pypi` deployment waits for your approval: before you approve it, run the speed smoke on the wheel of the artifact `native-release-dist` (docs page "Speed smoke of the native wheel", issue #404) and write the library sha256 and the ratio into the release notes. A wheel that fails the smoke is a slow build of the same commit: reject the deployment and re-run all jobs for a new build, up to four times.
+- [ ] 5. CI: both release workflows finish and publish, then `release-notes.yml` creates the GitHub Release and, for a final release, closes the milestone. Note the two run ids (the native build takes the longest). To retry a failed upload, re-run only the publish job, never the whole workflow. For the native package of a final or `postN` release (a `devN` release skips the smoke), the `pypi` deployment waits for your approval: before you approve it, run the speed smoke on the wheel of the artifact `native-release-dist` (docs page "Speed smoke of the native wheel", issue #404) and keep the library sha256 and the ratio. A wheel that fails the smoke is a slow build of the same commit: reject the deployment and re-run all jobs for a new build, up to four times. Keep the JSON of every attempt. The notes lines wait for step 10, because the GitHub Release does not exist before both packages are published.
 
   ```bash
   gh run list -R ArcadeData/arcadedb-python --branch <VERSION> --limit 6
@@ -50,6 +50,12 @@ Every step says who does it: script (run the command, read the result), CI (a wo
   ```bash
   scripts/after_tag_verify.sh <VERSION> <PREVIOUS> <jvm-run-id>
   PACKAGE=native scripts/after_tag_verify.sh <VERSION> <PREVIOUS> <native-run-id>
+  ```
+
+  Native only: the wheel on PyPI must be the wheel that passed the speed smoke. Download the `manylinux_2_28_x86_64` wheel from PyPI as in "Get the files" of the speed smoke page and compare its library hash with the one of step 5. A different hash is a different build, and the smoke says nothing about it.
+
+  ```bash
+  uv run --no-project python -I scripts/native_update_smoke.py --hash-only <wheel downloaded from PyPI>
   ```
 
 - [ ] 7. script, then CI: the dev-engine bump PR. Open it from a worktree on a branch off `origin/main`. Pick `<NEXT_DEV>` from the version of upstream `main`: the command prints the next base. If it prints `<VERSION>`, upstream has not moved on yet: wait, because a dev version of a released base is refused.
@@ -71,4 +77,4 @@ Every step says who does it: script (run the command, read the result), CI (a wo
   ```
 
 - [ ] 9. CI, then owner: merge the bump PR when every check is green, and delete the branch and the worktree. Then remove the tests and skip-list lines that waited for the new engine: `git grep -n -i "native build links\|native image links"`.
-- [ ] 10. owner: check the GitHub Release (notes, pre-release flag) and, after a final release, that the milestone is closed and what was still open in it moved to the next milestone (the open one due next, or one the workflow created named after the next upstream engine version). If the run failed with a message about the next milestone, create it with a due date and re-run `GitHub Release` (Actions, `workflow_dispatch`, the tag). Close this issue with the two run ids and the two PyPI links.
+- [ ] 10. owner: check the GitHub Release (notes, pre-release flag), add the block "Native wheel speed smoke" to its notes (docs page "Speed smoke of the native wheel", section "What goes into the release notes"; do it again after any re-run of `release-notes.yml`, which rewrites the notes) and, after a final release, that the milestone is closed and what was still open in it moved to the next milestone (the open one due next, or one the workflow created named after the next upstream engine version). If the run failed with a message about the next milestone, create it with a due date and re-run `GitHub Release` (Actions, `workflow_dispatch`, the tag). Close this issue with the two run ids and the two PyPI links.
