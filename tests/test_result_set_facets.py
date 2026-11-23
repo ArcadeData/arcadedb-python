@@ -405,10 +405,18 @@ class TestResultSetFacets:
         assert rs.facets == facets
         rows_first = test_db.query("sql", TERMS_Q)
         rows_first.to_list()
-        # meta is how far the projection lagged, which can differ between two runs
-        assert {k: v for k, v in facets.items() if k != "meta"} == {
-            k: v for k, v in rows_first.facets.items() if k != "meta"
-        }
+
+        # meta is how far the projection lagged, which can differ between two runs, and so can the source of a facet: `index` once the
+        # projection has caught up, `scan` before (both are correct answers, see "source" in the facets guide), so the two runs are
+        # compared on what they count (#461)
+        def counted(result):
+            return {
+                k: {name: value for name, value in facet.items() if name != "source"}
+                for k, facet in result.items()
+                if k != "meta"
+            }
+
+        assert counted(facets) == counted(rows_first.facets)
 
     def test_facets_of_a_lazy_command_cursor(self, test_db):
         _docs(test_db)
