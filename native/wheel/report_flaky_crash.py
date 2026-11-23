@@ -14,6 +14,9 @@ died in shutdown: recorded, never retried, the leg is not failed). This script r
 The comment is a log, not a gate: when the token cannot write issues, or gh fails for any other reason, the script prints a `::warning::`
 line and still exits 0. It never fails the run. The text carries no em dash.
 
+The same meta files list the tests that passed only after the rerun of the known engine race (`race_events`, issue 409). Those are a count, not a
+crash: the summary gets one table for them, nothing is posted on any issue, and a run with such tests and no crash still ends green.
+
   python native/wheel/report_flaky_crash.py --artifacts <dir with the downloaded artifacts> [--summary <file>] [--dry-run]
 """
 
@@ -54,6 +57,49 @@ def load_events(root: str) -> list[dict]:
                 }
             )
     return events
+
+
+def load_race_events(root: str) -> list[dict]:
+    """Every test of every leg under `root` that passed only after the rerun of the known engine race, each with its leg's identity."""
+    races = []
+    for path in sorted(glob.glob(os.path.join(root, "**", META), recursive=True)):
+        try:
+            with open(path, encoding="utf-8") as fh:
+                meta = json.load(fh)
+        except (OSError, ValueError):
+            continue  # load_events has already printed the warning for this file
+        artifact = os.path.basename(os.path.dirname(path))
+        for ev in meta.get("race_events", []):
+            races.append(
+                {
+                    **ev,
+                    "leg": meta.get("key") or artifact,
+                    "python": meta.get("python", ""),
+                    "wheel": meta.get("wheel_version", ""),
+                }
+            )
+    return races
+
+
+def race_md(races: list[dict]) -> str:
+    """The job summary block for the known engine race (issue 409); empty when no test needed a rerun."""
+    if not races:
+        return ""
+    out = [
+        "### Known engine race reruns",
+        "",
+        f"**FLAKY-RACE: {len(races)} test(s) passed only after a rerun of the known engine race of ArcadeData/arcadedb-python#409.** "
+        "The rerun is in tests/conftest.py (at most two reruns, only for the three messages of the race); it is a count, not a failure. "
+        "Each rerun is also a UserWarning in the log of its test file.",
+        "",
+        "| leg | Python | wheel | file | test | reruns |",
+        "|---|---|---|---|---|---|",
+    ]
+    for r in races:
+        out.append(
+            f"| {r['leg']} | {r['python']} | {r['wheel']} | `{r['file']}` | `{r['test']}` | {r['reruns']} |"
+        )
+    return "\n".join(out) + "\n"
 
 
 def _table(events: list[dict]) -> list[str]:
@@ -179,8 +225,19 @@ def post_comment(body: str, run=subprocess.run) -> tuple[bool, str]:
     return True, ""
 
 
-def report(events, env, summary_path="", dry_run=False, run=subprocess.run) -> int:
-    """Write the summary, post the comment when allowed. Returns 0: a log is never a gate."""
+def report(
+    events, env, summary_path="", dry_run=False, run=subprocess.run, races=()
+) -> int:
+    """Write the summary, post the comment when allowed. Returns 0: a log is never a gate.
+
+    `races` (the tests that passed after a rerun of the known engine race) only add a block to the summary; they never post anything.
+    """
+    if races:
+        race_text = race_md(list(races))
+        print(race_text, flush=True)
+        if summary_path:
+            with open(summary_path, "a", encoding="utf-8") as fh:
+                fh.write(race_text)
     if not events:
         print("no crash event in this run", flush=True)
         return 0
@@ -232,7 +289,13 @@ def main(argv=None) -> int:
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args(argv)
     try:
-        return report(load_events(a.artifacts), os.environ, a.summary, a.dry_run)
+        return report(
+            load_events(a.artifacts),
+            os.environ,
+            a.summary,
+            a.dry_run,
+            races=load_race_events(a.artifacts),
+        )
     except Exception as err:  # noqa: BLE001 - a log is never a gate
         print(
             f"::warning::the crash report failed: {type(err).__name__}: {err}",
