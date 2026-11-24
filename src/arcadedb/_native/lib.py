@@ -5,10 +5,16 @@ import json
 import os
 import sys
 import threading
+from array import array
 from pathlib import Path
 
 from .. import _logdir
 from ..exceptions import ArcadeDBError
+
+try:  # numpy is optional (the extra arcadedb[numpy]): without it the float32 tail is read with the standard library
+    import numpy as _np
+except ImportError:  # pragma: no cover
+    _np = None
 
 _LIB_NAMES = {
     "linux": "libarcadedb.so",
@@ -397,11 +403,14 @@ def _take(lib, th, ptr, tail: bool):
                 i = peek.rfind(_TAIL_KEY)
                 if i >= 0:
                     n = int(peek[i + 7 : -1])
-                    import numpy as np
-
                     off = (end + 1 + 3) & ~3
-                    floats = np.frombuffer(
-                        ctypes.string_at(ptr + off, 4 * n), dtype=np.float32
+                    raw = ctypes.string_at(ptr + off, 4 * n)
+                    # a float32 numpy array; where NumPy is not installed an ``array.array("f")`` of the same bytes (float32 on every platform
+                    # we build for): the decoder asks of it only slices and tolist(), and both give the same Python floats
+                    floats = (
+                        _np.frombuffer(raw, dtype=_np.float32)
+                        if _np is not None
+                        else array("f", raw)
                     )
                     # the text ends at the marker, closed by the "}" that the JSON object needs: written over the marker's comma
                     # in the reply's own memory (it is freed below), so the decode reads the JSON as it stands
@@ -421,7 +430,8 @@ def call(name: str, *args) -> dict:
 
 def call_bin(name: str, *args):
     """Like :func:`call` for a reply that may carry a float32 tail (``arcadedb_n_exec*`` with flag 4): returns ``(text, floats)``,
-    floats a float32 numpy array or None. The JSON ends with ``,"bin":N}`` and the N floats follow its NUL, 4-byte aligned.
+    floats a float32 numpy array (an ``array.array`` of float32 where NumPy is not installed) or None. The JSON ends with ``,"bin":N}`` and the N
+    floats follow its NUL, 4-byte aligned.
     """
     lib = _lib or _load()
     th = _thread_handle()
