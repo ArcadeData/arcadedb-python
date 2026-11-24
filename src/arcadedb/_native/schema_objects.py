@@ -3,6 +3,7 @@ backend: types and indexes with the engine's camelCase accessors (``getName``, `
 vector index wrapper over ``vectorNeighbors``. Read-only views: DDL stays SQL statements.
 """
 
+import functools
 import json
 import re
 
@@ -23,11 +24,14 @@ _HIT_WORDS = 3
 _RID_PAIRS = re.compile(r"#\d{1,9}:\d{1,18}(?:;#\d{1,9}:\d{1,18})*")
 _DIGITS = re.compile(r"\d+")
 _NUMBERS = frozenset((float, int))
-_FLOAT_DTYPES = (
-    (_np.dtype(_np.float16), _np.dtype(_np.float32), _np.dtype(_np.float64))
-    if _np is not None
-    else ()
-)
+
+
+@functools.cache
+def _float_dtypes():
+    """The float dtypes a query vector may have; only called with a numpy array in hand, so numpy is imported by then."""
+    return (_np.dtype(_np.float16), _np.dtype(_np.float32), _np.dtype(_np.float64))
+
+
 # an int up to this is a double, so float32 rounds it as Java's floatValue() of the parsed JSON number does
 _EXACT_INT = 1 << 53
 
@@ -203,7 +207,7 @@ def _vindex_query(query_vector):
     if _np is None:
         return None
     if type(query_vector) is _np.ndarray:
-        if query_vector.ndim != 1 or query_vector.dtype not in _FLOAT_DTYPES:
+        if query_vector.ndim != 1 or query_vector.dtype not in _float_dtypes():
             return None
         source = query_vector
     elif type(query_vector) in (list, tuple):

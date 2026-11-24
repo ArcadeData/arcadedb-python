@@ -21,6 +21,7 @@ __backend__ = "native" if _native_backend.enabled() else "jvm"
 # silently. Refuse to import when the other one is installed too, before anything else runs.
 _check_distributions(_DISTRIBUTION_BACKEND)
 
+
 # The installed distribution's version is the single source of truth: the
 # wheel is versioned from the release tag, while the generated _version.py
 # is derived from the engine jar's version (scripts/write_version.py), so the
@@ -28,15 +29,33 @@ _check_distributions(_DISTRIBUTION_BACKEND)
 # (a 26.8.1.dev20 wheel carried __version__ == "26.8.1.dev0"). Fall back to
 # the generated file, then to a placeholder, for source checkouts that were
 # never installed.
-try:
-    from importlib.metadata import version as _dist_version
+# importlib.metadata costs about 30 ms to import, so the version is read on the first access of arcadedb.__version__ (#477).
+# The bare annotation (no value, so nothing is created at import) tells a type checker the name exists and is a str; the module
+# __getattr__ below fills it in.
+__version__: str
 
-    __version__ = _dist_version(_DISTRIBUTIONS[_DISTRIBUTION_BACKEND])
-except Exception:  # not installed: fall back to the build-time file
+
+def _read_version() -> str:
     try:
-        from ._version import __version__
-    except ModuleNotFoundError:
-        __version__ = "0.0.0"
+        from importlib.metadata import version as _dist_version
+
+        return _dist_version(_DISTRIBUTIONS[_DISTRIBUTION_BACKEND])
+    except Exception:  # not installed: fall back to the build-time file
+        try:
+            from ._version import __version__ as built
+
+            return built
+        except ModuleNotFoundError:
+            return "0.0.0"
+
+
+def __getattr__(name: str) -> str:
+    if name == "__version__":
+        value = _read_version()
+        globals()["__version__"] = value
+        return value
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 # Import async execution
 from .async_executor import AsyncExecutor  # noqa: E402

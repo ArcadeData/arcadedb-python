@@ -17,10 +17,10 @@ from typing import Any, List, NamedTuple
 
 import jpype
 
-try:
-    import numpy as _np
-except ImportError:  # numpy is optional
-    _np = None
+from ._lazy_numpy import lazy_numpy  # noqa: E402
+
+# None without numpy, else a stand-in that imports it on first use: `import arcadedb` does not pay for numpy (#477)
+_np = lazy_numpy()
 
 
 class _JavaTimeTypes(NamedTuple):

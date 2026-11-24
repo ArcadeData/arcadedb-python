@@ -9,15 +9,14 @@ from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Tuple
 import jpype
 import jpype.types as jtypes
 
+from ._lazy_numpy import lazy_numpy  # noqa: E402
 from .exceptions import ArcadeDBError
 
 if TYPE_CHECKING:
     from .core import Database
 
-try:  # optional; hoisted to module scope to keep it out of per-call hot paths
-    import numpy as _np
-except ImportError:  # pragma: no cover - numpy is an optional dependency
-    _np = None
+# None without numpy, else a stand-in that imports it on first use: `import arcadedb` does not pay for numpy (#477)
+_np = lazy_numpy()
 
 
 def _quote_identifier(identifier: str) -> str:

@@ -8,10 +8,10 @@ from collections.abc import Mapping
 from datetime import date, datetime, timezone
 from decimal import Decimal
 
-try:  # numpy is optional
-    import numpy as _np
-except ImportError:  # pragma: no cover
-    _np = None
+from .._lazy_numpy import lazy_numpy  # noqa: E402
+
+# None without numpy, else a stand-in that imports it on first use: `import arcadedb` does not pay for numpy (#477)
+_np = lazy_numpy()
 
 TAG = "\u0001"
 _TAG_ESCAPED = "\\u0001"  # TAG as it appears in reply text: NativeCodec.quote writes it as a \u escape
@@ -337,7 +337,6 @@ def encode_vertex_args(type_name, rows, names, matrices):
 
 
 _INT64_MAX = 2**63 - 1
-_NS_DATETIME = None if _np is None else _np.dtype("datetime64[ns]")
 
 
 def sample_array(values, timestamps=False):
@@ -367,7 +366,7 @@ def sample_array(values, timestamps=False):
         if timestamps or dtype.itemsize > 8:
             return None
         return _np.ascontiguousarray(values, dtype=_np.float64)
-    if kind == "M" and timestamps and dtype == _NS_DATETIME:
+    if kind == "M" and timestamps and dtype == _np.dtype("datetime64[ns]"):
         counts = _np.ascontiguousarray(values.view(_np.int64))
         if (
             counts == _np.iinfo(_np.int64).min

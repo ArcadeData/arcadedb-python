@@ -9,12 +9,11 @@ from array import array
 from pathlib import Path
 
 from .. import _logdir
+from .._lazy_numpy import lazy_numpy  # noqa: E402
 from ..exceptions import ArcadeDBError
 
-try:  # numpy is optional (the extra arcadedb[numpy]): without it the float32 tail is read with the standard library
-    import numpy as _np
-except ImportError:  # pragma: no cover
-    _np = None
+# None without numpy, else a stand-in that imports it on first use: `import arcadedb` does not pay for numpy (#477)
+_np = lazy_numpy()
 
 _LIB_NAMES = {
     "linux": "libarcadedb.so",
