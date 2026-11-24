@@ -99,7 +99,7 @@ People over 25:
 Total people: 3
 ----
 
-`create_database` raises if the path already holds a database, so run the script in an empty directory or delete `./quickstart` before you run it again.
+`create_database` raises if the path already holds a database, so run the script in an empty directory or delete `./quickstart` before you run it again. A script that runs more than once can call `open_or_create_database(path)` instead: it opens the database when it exists and creates it when it does not (see xref:how-to/databases-and-queries.adoc#open-or-create[Open or create]).
 
 The steps in the script are:
 

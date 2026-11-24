@@ -71,7 +71,7 @@ with arcadedb.create_database("./mydb") as db:
         print(f"Name: {record.get('name')}")
 ```
 
-This prints `Name: Alice` (the engine also logs to standard error). `create_database` raises if the path already holds a database, so run it in an empty directory. Everything else goes through the same two calls, `db.command(...)` and `db.query(...)`, in SQL or openCypher.
+This prints `Name: Alice` (the engine also logs to standard error). `create_database` raises if the path already holds a database, so run it in an empty directory, or call `open_or_create_database` to open the database when it exists and create it when it does not. Everything else goes through the same two calls, `db.command(...)` and `db.query(...)`, in SQL or openCypher.
 
 ## What is included
 

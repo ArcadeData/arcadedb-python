@@ -51,6 +51,7 @@ from .core import (  # noqa: E402
     create_database,
     database_exists,
     open_database,
+    open_or_create_database,
 )
 
 # Import exceptions
@@ -157,6 +158,7 @@ __all__ = [
     "jar_fingerprint",
     "create_database",
     "open_database",
+    "open_or_create_database",
     "database_exists",
     # Result classes
     "ResultSet",
