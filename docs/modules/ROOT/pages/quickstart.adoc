@@ -132,8 +132,10 @@ with arcadedb.open_database("./quickstart") as db:
 [source,text]
 ----
 Found 3 records
-ArcadeDBError: Command failed: com.arcadedb.exception.TransactionException: Transaction not begun
+TransactionError: [transaction_not_begun] No transaction is open: wrap the write in `with db.transaction():`, or call `db.set_auto_transaction(True)` so that each statement commits on its own. Command failed: com.arcadedb.exception.TransactionException: Transaction not begun
 ----
+
+The error is a `TransactionError`, a subclass of `ArcadeDBError`. It carries a code (`e.code`) and a hint (`e.hint`) that a program can read, and its text ends with the engine's own message. xref:how-to/errors.adoc[Errors: codes, hints and classes] lists them all.
 
 == Server mode
 

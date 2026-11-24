@@ -1,0 +1,192 @@
+= Errors: codes, hints and classes
+:description: Every failure is an ArcadeDBError with a code, a hint and the Java exception class, a subclass for the common causes, and the table of all of them, so that a program or a model can repair its own statement.
+
+// Sources: src/arcadedb/exceptions.py (the table _RULES decides every row below), tests/test_error_codes_table.py (a literal for each row) and tests/test_error_codes_parity.py (the live failures, on both packages).
+
+Every failed call raises `ArcadeDBError`. The error carries what a program needs to repair the call, so it does not have to search the message text:
+
+* `e.code` is a short, stable name of the cause, for example `duplicate_key`. A failure that the table below does not know has the code `unknown`.
+* `e.hint` is one sentence that tells what to do next. It is `None` for `unknown`.
+* `e.cause` is the name of the Java exception class that decided the code, for example `com.arcadedb.exception.DuplicatedKeyException`. It is `None` when no Java exception is involved.
+* `e.to_dict()` returns `type` (the class name), `code`, `hint`, `cause` and `message` (the text without the code and the hint) as plain data, for a log or for the next prompt of a model.
+
+The common causes have a subclass of `ArcadeDBError`, so `except DuplicateKeyError` works and every `except ArcadeDBError` in existing code still catches everything. The engine does not give an error code of its own, so the code names are the ones of the bindings. They are the same in both packages: the same failure gives the same class and code in `arcadedb` (native) and in `arcadedb-jvm`.
+
+== Repair a call from its error
+
+The blocks on this page run one after the other against one empty database, and a test in the repository runs them that way (`tests/test_docs_errors_page.py`). Every block assumes that `db` is an open database.
+
+[source,python]
+----
+from arcadedb import ArcadeDBError, DuplicateKeyError
+
+db.command("sql", "CREATE DOCUMENT TYPE Memory")
+db.command("sql", "CREATE PROPERTY Memory.key STRING")
+db.command("sql", "CREATE INDEX ON Memory (key) UNIQUE")
+with db.transaction():
+    db.command("sql", "INSERT INTO Memory SET key = 'a'")
+
+try:
+    with db.transaction():
+        db.command("sql", "INSERT INTO Memory SET key = 'a'")
+except DuplicateKeyError as e:
+    print(e.code)
+    print(e.hint)
+----
+
+[source,text]
+----
+duplicate_key
+A unique index already holds this key: use another value, or update the record that has it (the message names the index and the record).
+----
+
+`str(e)` of a classified error is `[code] hint` followed by the text that the error had before, so the Java class and its message stay at the end and code that searches the text still finds them. An error with the code `unknown` prints exactly the older text.
+
+[source,python]
+----
+try:
+    db.query("sql", "SELECT FROM Nope")
+except ArcadeDBError as e:
+    print(type(e).__name__, e.code, e.cause)
+    print(e)
+----
+
+[source,text]
+----
+SchemaError type_not_found com.arcadedb.exception.SchemaException
+[type_not_found] No type has this name: check the spelling against `SELECT name FROM schema:types`, or create the type first with `CREATE DOCUMENT TYPE`, `CREATE VERTEX TYPE` or `CREATE EDGE TYPE`. Query failed: com.arcadedb.exception.SchemaException: Type with name 'Nope' was not found
+----
+
+A program that runs statements for a model returns the error as data, and the model reads the code and the hint:
+
+[source,python]
+----
+def run(statement):
+    try:
+        return {"ok": True, "rows": db.command("sql", statement).to_list()}
+    except ArcadeDBError as e:
+        return {"ok": False, "error": e.to_dict()}
+
+
+reply = run("SELEC FROM Memory")
+print(reply["ok"], reply["error"]["type"], reply["error"]["code"])
+print(sorted(reply["error"]))
+----
+
+[source,text]
+----
+False QuerySyntaxError syntax_error
+['cause', 'code', 'hint', 'message', 'type']
+----
+
+A code that the table does not know is not an empty answer: `e.code` is `unknown`, `e.cause` names the innermost Java exception when there is one, and the message is the engine's text.
+
+== The codes
+
+One row for each code. A row with more than one engine exception matches any of them. The engine exception is matched by its Java class name. A failure that the Python layer raises itself, or that one package words differently, is matched by its text, after the rows that match a class. The first row that matches decides.
+
+[cols="2,2,3,5"]
+|===
+| Code | Class | Engine exception | Hint
+
+| `duplicate_key`
+| `DuplicateKeyError`
+| `DuplicatedKeyException`
+| A unique index already holds this key: use another value, or update the record that has it (the message names the index and the record).
+
+| `record_not_found`
+| `RecordNotFoundError`
+| `RecordNotFoundException`, `VertexNotFoundException`
+| No record has this RID: check the RID, or look the record up by a property with a query (it may have been deleted, or it was never committed).
+
+| `transaction_not_begun`
+| `TransactionError`
+| `TransactionException`
+| No transaction is open: wrap the write in `with db.transaction():`, or call `db.set_auto_transaction(True)` so that each statement commits on its own.
+
+| `database_locked`
+| `DatabaseLockedError`
+| `LockException`
+| Another process has this database open: close it there first, because only one process can open a database at a time.
+
+| `database_exists`
+| `DatabaseExistsError`
+| `DatabaseOperationException`
+| A database already exists at this path: open it with `open_database(path)`, or choose another path.
+
+| `database_not_found`
+| `DatabaseNotFoundError`
+| `DatabaseNotFoundException`
+| No database exists at this path: check the path, or create one with `create_database(path)`.
+
+| `database_closed`
+| `DatabaseClosedError`
+| `DatabaseIsClosedException`
+| The database was closed: open it again with `open_database(path)`, and read what you need from a result before you close the database.
+
+| `database_read_only`
+| `ArcadeDBError`
+| `DatabaseIsReadOnlyException`
+| The database was opened with `read_only=True`: open it again without that argument to write.
+
+| `syntax_error`
+| `QuerySyntaxError`
+| `CommandSQLParsingException`, `CommandParsingException`
+| The statement does not parse: fix the token that the message points at (line and column), and check the keywords against the ArcadeDB SQL or openCypher syntax.
+
+| `timeout`
+| `QueryTimeoutError`
+| `TimeoutException`, `PartialResultTimeoutException`
+| The statement ran past its TIMEOUT clause: add a filter, a LIMIT or an index so that it finishes sooner, or raise the timeout.
+
+| `conflict`
+| `ConflictError`
+| `ConcurrentModificationException`, `LockTimeoutException`, `NeedRetryException`
+| Another transaction changed the same data first: run the whole transaction again, for example with `db.run_in_transaction(fn)`, which retries it.
+
+| `type_not_found`
+| `SchemaError`
+| `SchemaException`
+| No type has this name: check the spelling against `SELECT name FROM schema:types`, or create the type first with `CREATE DOCUMENT TYPE`, `CREATE VERTEX TYPE` or `CREATE EDGE TYPE`.
+
+| `already_exists`
+| `SchemaError`
+| `AlreadyExistsException`, `TypeAlreadyExistsException`
+| A type, property or index with this name already exists: choose another name, or add `IF NOT EXISTS` to the CREATE statement of a type or an index.
+
+| `schema`
+| `SchemaError`
+| `SchemaException`
+| The schema does not allow this change: read the message, and compare it with the current schema (`SELECT FROM schema:types`).
+
+| `type_mismatch`
+| `ValidationError`
+| `IllegalArgumentException`, `TypeMismatchException`
+| A value does not fit the type of its property: send a value of the declared type (the message names the property and the type).
+
+| `validation`
+| `ValidationError`
+| `ValidationException`
+| A property constraint (mandatory, not null, min, max, regexp or read-only) refused the record: change the value that the message names, or change the constraint in the schema.
+
+| `query_not_idempotent`
+| `ArcadeDBError`
+| `QueryNotIdempotentException`
+| `db.query` runs reads only: send a statement that changes data with `db.command`.
+
+| `missing_parameter`
+| `ArcadeDBError`
+| `CommandParameterMissingException`
+| The statement has a parameter that was not passed: give a value for each `?` in order, or pass a dict that holds every `:name`.
+
+|===
+
+The causes without a subclass (`database_read_only`, `query_not_idempotent`, `missing_parameter`) raise `ArcadeDBError` itself, with the code set. Branch on `e.code` for them.
+
+== Which error to retry
+
+`ConflictError` is the one that a retry can fix: another transaction changed the same data first. Run the whole transaction again, or let `db.run_in_transaction(fn)` do it, as described on xref:how-to/transactions.adoc[Transactions] and xref:how-to/concurrency.adoc[Concurrency, processes and crashes]. A `DuplicateKeyError` is not a conflict: the same statement fails again until the value changes.
+
+== What differs between the packages
+
+Nothing in `code`, `hint` and the class. The native package also keeps `e.java_chain` (the chain of Java exceptions as `(class, message)` pairs) and `e.native` (the reply of the library), which the JVM package does not have; `e.cause` is the same name on both. Where the two engines word a failure differently, the table has a row for each wording, and a test runs every row against both packages.

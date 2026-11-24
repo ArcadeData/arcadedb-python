@@ -112,9 +112,10 @@ def _register(fn: Callable) -> int:
 
 def _error_from(message: dict) -> ArcadeDBError:
     reply = message.get("err") or {}
-    exc = ArcadeDBError(f"{reply.get('cls')}: {reply.get('error')}")
+    chain = reply.get("chain") or []
+    exc = ArcadeDBError._classified(f"{reply.get('cls')}: {reply.get('error')}", chain)
     exc.native = reply
-    exc.java_chain = reply.get("chain") or []
+    exc.java_chain = chain
     return exc
 
 

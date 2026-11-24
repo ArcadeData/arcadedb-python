@@ -5,6 +5,7 @@
 * How-to
 ** xref:how-to/databases-and-queries.adoc[Databases and queries]
 ** xref:how-to/transactions.adoc[Transactions]
+** xref:how-to/errors.adoc[Errors: codes, hints and classes]
 ** xref:how-to/values-and-records.adoc[Values and records]
 ** xref:how-to/concurrency.adoc[Concurrency, processes and crashes]
 ** xref:how-to/asyncio.adoc[asyncio: AsyncDatabase]
