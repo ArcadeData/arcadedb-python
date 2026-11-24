@@ -234,7 +234,8 @@ def test_a_select_of_a_float_array_needs_no_numpy(temp_db, monkeypatch):
     ]  # 8 or more floats travel in the float32 tail; these are exact in float32
     temp_db.command("sql", "CREATE DOCUMENT TYPE FloatDoc")
     temp_db.command("sql", "CREATE PROPERTY FloatDoc.v ARRAY_OF_FLOATS")
-    temp_db.command("sql", f"INSERT INTO FloatDoc SET v = {values!r}")
+    with temp_db.transaction():
+        temp_db.command("sql", f"INSERT INTO FloatDoc SET v = {values!r}")
     _without_numpy(monkeypatch)
     assert temp_db.query("sql", "SELECT FROM FloatDoc").to_list()[0]["v"] == values
     assert temp_db.query("sql", "SELECT FROM FloatDoc").to_json_list()[0]["v"] == values
