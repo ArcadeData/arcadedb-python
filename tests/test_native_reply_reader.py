@@ -13,6 +13,7 @@ native backend only: it needs the native library.
 
 import ctypes
 import json
+import sys
 
 import numpy as np
 import pytest
@@ -193,3 +194,47 @@ def test_the_public_readers_free_each_reply_once(temp_db, frees):
     assert len(frees) == 1
     lib.call("arcadedb_n_diag")
     assert len(frees) == 2
+
+
+def _without_numpy(monkeypatch):
+    """The reader as it runs where the optional NumPy extra (``arcadedb[numpy]``) is not installed (#444)."""
+    monkeypatch.setitem(
+        sys.modules, "numpy", None
+    )  # an import of it raises ImportError
+    monkeypatch.setattr(lib, "_np", None, raising=False)  # and the module's own handle
+
+
+@pytest.mark.parametrize(
+    "raw, values",
+    [
+        (
+            b'{"ok":true,"rows":[{"v":["B",0,4]}],"drained":true}',
+            [1.5, -2.5, 3.25, 4.0],
+        ),
+        (b'{"ok":true}', []),
+    ],
+    ids=["four floats", "no floats"],
+)
+def test_a_tail_is_read_without_numpy(temp_db, frees, monkeypatch, raw, values):
+    th = lib._thread_handle()
+    ptr, _ = _reply(raw, values)
+    _without_numpy(monkeypatch)
+    text, floats = lib._take(lib._lib, th, ptr, True)
+    assert json.loads(text) == json.loads(
+        raw
+    )  # the text is a whole JSON value without the marker
+    assert floats.tolist() == values
+    assert floats[1:3].tolist() == values[1:3]  # what the decoder asks of it
+    assert frees == [ptr]
+
+
+def test_a_select_of_a_float_array_needs_no_numpy(temp_db, monkeypatch):
+    values = [
+        i / 4 for i in range(16)
+    ]  # 8 or more floats travel in the float32 tail; these are exact in float32
+    temp_db.command("sql", "CREATE DOCUMENT TYPE FloatDoc")
+    temp_db.command("sql", "CREATE PROPERTY FloatDoc.v ARRAY_OF_FLOATS")
+    temp_db.command("sql", f"INSERT INTO FloatDoc SET v = {values!r}")
+    _without_numpy(monkeypatch)
+    assert temp_db.query("sql", "SELECT FROM FloatDoc").to_list()[0]["v"] == values
+    assert temp_db.query("sql", "SELECT FROM FloatDoc").to_json_list()[0]["v"] == values
