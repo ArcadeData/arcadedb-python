@@ -12,12 +12,15 @@ Example:
 """
 
 from enum import Enum
-from typing import Any, List, Optional, Union
+from typing import TYPE_CHECKING, Any, List, Optional, Union
 
 import jpype
 
 from ._logging import get_logger, log_swallowed_exception
 from .exceptions import ArcadeDBError
+
+if TYPE_CHECKING:
+    from .core import Database
 
 _LOGGER = get_logger(__name__)
 
@@ -68,7 +71,7 @@ class Schema:
         _db: Reference to the parent Database instance
     """
 
-    def __init__(self, java_schema, database):
+    def __init__(self, java_schema: Any, database: "Database"):
         """Initialize Schema wrapper.
 
         Args:
@@ -225,7 +228,7 @@ class Schema:
         else:
             return self._java_schema.getOrCreateEdgeType(name, buckets)
 
-    def drop_type(self, name: str):
+    def drop_type(self, name: str) -> None:
         """Drop a type and all its data.
 
         Args:
@@ -424,7 +427,7 @@ class Schema:
                 f"Failed to get/create property '{property_name}' on type '{type_name}': {e}"
             ) from e
 
-    def drop_property(self, type_name: str, property_name: str):
+    def drop_property(self, type_name: str, property_name: str) -> None:
         """Drop a property from a type.
 
         Args:
@@ -586,7 +589,7 @@ class Schema:
                 f"Failed to get/create index on '{type_name}[{','.join(property_names)}]': {e}"
             ) from e
 
-    def drop_index(self, index_name: str, force: bool = False):
+    def drop_index(self, index_name: str, force: bool = False) -> None:
         """Drop an index.
 
         Args:

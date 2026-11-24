@@ -313,7 +313,7 @@ def start_jvm(
     common_pool_parallelism: Optional[int] = None,
     interrupt: Optional[bool] = None,
     aot: Optional[bool] = None,
-):
+) -> None:
     """
     Start the JVM with ArcadeDB JARs if not already started.
 
@@ -932,7 +932,7 @@ def _build_jvm_args(
     return merged_args
 
 
-def shutdown_jvm():
+def shutdown_jvm() -> None:
     """Shutdown JVM if it was started by this module.
 
     JPype can raise RuntimeError when the JVM is already mid-shutdown or

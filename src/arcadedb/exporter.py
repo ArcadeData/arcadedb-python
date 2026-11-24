@@ -15,11 +15,12 @@ from .exceptions import ArcadeDBError
 from .jvm import start_jvm
 
 if TYPE_CHECKING:
+    from .core import Database
     from .results import ResultSet
 
 
 def export_database(
-    db,
+    db: "Database",
     file_path: str,
     export_format: str = "jsonl",
     overwrite: bool = False,
@@ -200,7 +201,7 @@ def export_to_csv(
     results: Union[ResultSet, List[Dict[str, Any]]],
     file_path: str,
     fieldnames: Optional[List[str]] = None,
-):
+) -> None:
     """
     Export query results to CSV file.
 

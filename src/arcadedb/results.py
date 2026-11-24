@@ -7,7 +7,18 @@ ResultSet and Result classes for wrapping query results.
 import json
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
+from types import TracebackType
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Dict,
+    Iterator,
+    List,
+    Optional,
+    Sequence,
+    Tuple,
+    Type,
+)
 
 import jpype as _jpype
 from jpype import JException
@@ -29,6 +40,9 @@ from .callbacks import raise_pending_interrupt
 from .exceptions import ArcadeDBError
 from .graph import Document, Edge, Vertex
 from .type_conversion import convert_java_to_python
+
+if TYPE_CHECKING:
+    from .core import Database
 
 _logger = get_logger(__name__)
 _BRIDGE_CLASSES: dict = {}
@@ -313,12 +327,12 @@ class ResultSet:
     ArcadeDBError, with the Java exception as its cause.
     """
 
-    def __init__(self, java_result_set, database=None):
+    def __init__(self, java_result_set: Any, database: Optional["Database"] = None):
         self._java_result_set = java_result_set
         self._database = database  # strong reference, see the class docstring
         self._closed = False
         self._exhausted = False
-        self._facets = None
+        self._facets: Optional[Dict[str, Any]] = None
         self._facets_read = False
 
     def __iter__(self) -> Iterator["Result"]:
@@ -614,7 +628,12 @@ class ResultSet:
     def __enter__(self) -> "ResultSet":
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+    def __exit__(
+        self,
+        exc_type: Optional[Type[BaseException]],
+        exc_val: Optional[BaseException],
+        exc_tb: Optional[TracebackType],
+    ) -> None:
         self.close()
 
     def to_json_list(self, batch_size: int = 10_000) -> List[Dict[str, Any]]:
@@ -730,7 +749,7 @@ class ResultSet:
                 return
             yield batch
 
-    def to_dataframe(self, convert_types: bool = True):
+    def to_dataframe(self, convert_types: bool = True) -> Any:
         """
         Convert results to pandas DataFrame.
 
@@ -785,7 +804,7 @@ class ResultSet:
 
     def to_polars(
         self, batch_size: int = 25_000, columns: Optional[Sequence[str]] = None
-    ):
+    ) -> Any:
         """
         Bulk-materialize all rows as a ``polars.DataFrame``, through Arrow.
 
@@ -829,7 +848,7 @@ class ResultSet:
 
     def to_columns(
         self, batch_size: int = 25_000, columns: Optional[Sequence[str]] = None
-    ):
+    ) -> Dict[str, Any]:
         """
         Bulk-materialize all rows as columns: dict of column name -> numpy
         array (int64/float64/bool/datetime64[ms]) or Python list (strings and
@@ -925,7 +944,7 @@ class ResultSet:
 
     def to_arrow(
         self, batch_size: int = 25_000, columns: Optional[Sequence[str]] = None
-    ):
+    ) -> Any:
         """
         Bulk-materialize all rows as a ``pyarrow.Table``.
 
@@ -1141,7 +1160,7 @@ class Result:
     and stays readable.
     """
 
-    def __init__(self, java_result, database=None):
+    def __init__(self, java_result: Any, database: Optional["Database"] = None):
         self._java_result = java_result
         self._database = database  # strong reference, see the class docstring
         self._property_names_cache: Optional[Tuple[str, ...]] = None

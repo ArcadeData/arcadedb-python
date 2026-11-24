@@ -81,6 +81,7 @@ This prints `Name: Alice` (the engine also logs to standard error). `create_data
 - Columnar results with `to_columns()`, `to_arrow()` and `to_dataframe()`.
 - Faceted queries: the `FACETS` clause of a `SELECT` with a `COLUMNAR` index, and the counts as a dict in `ResultSet.facets` (needs engine 26.12.1 or later).
 - An optional in-process HTTP server (`create_server()`), off until you call it, for other processes that need the same data.
+- Type hints on every public class and function, and a `py.typed` marker in both packages, so editors and type checkers read them (PEP 561).
 
 <!-- REMOVE WHEN: the old arcadedb-embedded* shims are retired and two releases have shipped with the two-package layout allow-old-name -->
 

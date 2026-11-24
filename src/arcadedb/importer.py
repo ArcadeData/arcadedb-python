@@ -219,7 +219,7 @@ def _to_java_settings_map(settings: Mapping[str, Any]):
 
 
 def import_documents(
-    java_database,
+    java_database: Any,
     source: str | PathLike[str],
     *,
     document_type: str,

@@ -970,7 +970,7 @@ class NativeDatabase:
         return self._tx_state(2, "Failed to rollback transaction")
 
     def transaction(self) -> TransactionContext:
-        return TransactionContext(self)
+        return TransactionContext(self)  # type: ignore[arg-type]  # the native database has the Database surface
 
     def is_transaction_active(self) -> bool:
         return bool(self._tx_state(3, "Failed to check transaction status") & 1)
@@ -1592,7 +1592,13 @@ class NativeDatabase:
         from ..exporter import export_database
 
         return export_database(
-            self, file_path, format, overwrite, include_types, exclude_types, verbose
+            self,  # type: ignore[arg-type]
+            file_path,
+            format,
+            overwrite,
+            include_types,
+            exclude_types,
+            verbose,
         )
 
     def export_to_csv(
@@ -1663,7 +1669,7 @@ class NativeDatabase:
         self._check_not_closed()
         table = to_arrow_table(df, what="insert_dataframe()")
         return insert_table(
-            self,
+            self,  # type: ignore[arg-type]
             type_name,
             table,
             batch_size=batch_size,
@@ -1682,7 +1688,7 @@ class NativeDatabase:
         self._check_not_closed()
         arrow_table = to_arrow_table(table, what="insert_arrow()")
         return insert_table(
-            self,
+            self,  # type: ignore[arg-type]
             type_name,
             arrow_table,
             batch_size=batch_size,

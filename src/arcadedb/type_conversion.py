@@ -13,7 +13,7 @@ import re
 import sys
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
-from typing import Any, NamedTuple
+from typing import Any, List, NamedTuple
 
 import jpype
 
@@ -1074,7 +1074,7 @@ def json_bulk_dumps_tagged(rows: Any) -> str:
     return _dumps_once(rows, True)
 
 
-def bulk_row_ok(row: Any, skip=()) -> bool:
+def bulk_row_ok(row: Any, skip: Any = ()) -> bool:
     """Whether one insert_many row can go through json_bulk_dumps_tagged; `skip` names properties that cross some other way (float vectors)."""
     if skip:
         row = {k: v for k, v in row.items() if k not in skip}
@@ -1210,7 +1210,7 @@ def _classify_rows(rows: Any, declared: Any, screen_scalars: bool):
     return tagged, vetted and not tagged
 
 
-def classify_vertex_rows(rows: Any, declared: Any, screen_scalars: bool = False):
+def classify_vertex_rows(rows: Any, declared: Any, screen_scalars: bool = False) -> Any:
     """What GraphBatch.create_vertices must know about its rows before it writes any chunk, decided by types.
 
     `screen_scalars` is for an input of several chunks, which are sent one after the other: a value the text would change in a late
@@ -1231,7 +1231,7 @@ def classify_vertex_rows(rows: Any, declared: Any, screen_scalars: bool = False)
     return None if verdict is None else verdict[0]
 
 
-def screen_vertex_rows(rows: Any, declared: Any):
+def screen_vertex_rows(rows: Any, declared: Any) -> Any:
     """classify_vertex_rows with the whole-input screen, for any number of chunks: None, or ``(tagged, vetted)``.
 
     `vetted` says that every value of every row is an exact scalar the JSON text carries unchanged (a column holding any other type,
@@ -1282,7 +1282,7 @@ def _float_vectors_class():
     return _FLOAT_VECTORS or None
 
 
-def declared_float_vectors(java_db, type_name):
+def declared_float_vectors(java_db: Any, type_name: str) -> List[str]:
     """The names of the ARRAY_OF_FLOATS properties of `type_name` (inherited ones too), [] when there are none or no numpy."""
     vectors = _float_vectors_class() if _np is not None else None
     if vectors is None:
@@ -1329,7 +1329,7 @@ def _is_float_array_kind(kind):
     )
 
 
-def is_vector_candidate(value):
+def is_vector_candidate(value: Any) -> bool:
     """A value split_float_vectors may take out of the JSON: a list, a numpy array, or a Java float[] or double[]."""
     return _is_vector_kind(type(value))
 
@@ -1358,7 +1358,7 @@ def _without_keys(rows, gone):
     return [{k: v for k, v in row.items() if k not in gone} for row in rows]
 
 
-def take_vector_columns(rows, declared, undeclared=False):
+def take_vector_columns(rows: Any, declared: Any, undeclared: bool = False) -> Any:
     """The float vector columns of `rows` as float32 matrices, and the rows without them (the one split of both wheels).
 
     A declared (ARRAY_OF_FLOATS) property qualifies when its value in EVERY row is a list, a numpy array or a Java float[] or double[] of
@@ -1410,7 +1410,7 @@ def take_vector_columns(rows, declared, undeclared=False):
     return taken, matrices, _without_keys(rows, taken)
 
 
-def vector_width(rows, declared):
+def vector_width(rows: Any, declared: Any) -> int:
     """How many floats the vector columns of the first row hold (0 when it holds none): a list, array, Java ``float[]`` or ``double[]``
     in a declared property, or a float32 array or Java ``float[]`` in any property. GraphBatch.create_vertices sizes its crossings by it.
     """
@@ -1429,7 +1429,13 @@ def vector_width(rows, declared):
     return width
 
 
-def split_float_vectors(java_db, type_name, rows, declared=None, undeclared=False):
+def split_float_vectors(
+    java_db: Any,
+    type_name: str,
+    rows: Any,
+    declared: Any = None,
+    undeclared: bool = False,
+) -> Any:
     """Take the float vectors of `rows` out of the JSON text of a bulk load (the JVM wheel).
 
     A list of floats costs Python about 450 ns a number to write as text and the

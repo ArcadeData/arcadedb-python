@@ -6,7 +6,8 @@ ArcadeDB server for HTTP API and Studio web interface.
 
 import functools
 import os
-from typing import Any, Dict, Optional
+from types import TracebackType
+from typing import Any, Dict, Optional, Type
 
 import jpype
 
@@ -134,7 +135,7 @@ class ArcadeDBServer:
         self._config = config or {}
         self._root_path = root_path
         self._root_password = root_password
-        self._java_server = None
+        self._java_server: Any = None
         self._started = False
 
         # Create configuration
@@ -183,7 +184,7 @@ class ArcadeDBServer:
         # Create server instance
         self._java_server = JavaArcadeDBServer(context_config)
 
-    def start(self):
+    def start(self) -> None:
         """Start the ArcadeDB server."""
         if self._started:
             raise ArcadeDBError("Server is already started")
@@ -211,7 +212,7 @@ class ArcadeDBServer:
                 raise
             raise ArcadeDBError(f"Failed to start server: {e}") from e
 
-    def stop(self):
+    def stop(self) -> None:
         """Stop the ArcadeDB server."""
         if not self._started:
             return
@@ -293,12 +294,17 @@ class ArcadeDBServer:
         port = self.get_http_port()
         return f"http://{host}:{port}/"
 
-    def __enter__(self):
+    def __enter__(self) -> "ArcadeDBServer":
         """Context manager entry - starts the server."""
         self.start()
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(
+        self,
+        exc_type: Optional[Type[BaseException]],
+        exc_val: Optional[BaseException],
+        exc_tb: Optional[TracebackType],
+    ) -> None:
         """Context manager exit - stops the server."""
         self.stop()
 

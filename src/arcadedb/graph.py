@@ -4,13 +4,16 @@ ArcadeDB Python Bindings - Graph API Wrappers
 Wrappers for Document, Vertex, and Edge objects.
 """
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 import jpype
 
 from .callbacks import raise_pending_interrupt
 from .exceptions import ArcadeDBError
 from .type_conversion import convert_java_to_python, convert_python_to_java
+
+if TYPE_CHECKING:
+    from .core import Database
 
 _GRAPH_CLASSES = None
 
@@ -61,7 +64,7 @@ class Document:
     raises ArcadeDBError instead of returning empty values.
     """
 
-    def __init__(self, java_document, database=None):
+    def __init__(self, java_document: Any, database: Optional["Database"] = None):
         self._java_document = java_document
         self._database = database  # strong reference, see the class docstring
         self._property_names_cache: Optional[Tuple[str, ...]] = None
@@ -90,7 +93,9 @@ class Document:
         return self._property_names_cache
 
     @staticmethod
-    def wrap(java_record, database=None):
+    def wrap(
+        java_record: Any, database: Optional["Database"] = None
+    ) -> Optional["Document"]:
         """
         Wrap a Java Record object in the appropriate Python wrapper.
 
@@ -160,7 +165,7 @@ class Document:
             raise error from e
         return self
 
-    def delete(self):
+    def delete(self) -> None:
         """Delete the record. Like every write, it needs an active transaction.
 
         A query row is a ``Result``, not a record: reach the record with
@@ -192,7 +197,7 @@ class Document:
         """Get all property names."""
         return list(self._property_names_tuple())
 
-    def get_identity(self):
+    def get_identity(self) -> Any:
         """Get record identity (RID)."""
         return self._java_document.getIdentity()
 
@@ -225,7 +230,7 @@ class Document:
         # version read 1.6 times slower per call (ArcadeData/arcadedb-python#395, figure ``j_rid_docobj_100k``).
         return str(self._java_document.getIdentity())
 
-    def get_java_document(self):
+    def get_java_document(self) -> Any:
         """Expose the wrapped Java document for internal integrations."""
         return self._java_document
 
@@ -249,7 +254,7 @@ class Vertex(Document):
         self._check_open()
         return Vertex(self._java_document.modify(), self._database)
 
-    def new_edge(self, label: str, target: "Vertex", **kwargs) -> "Edge":
+    def new_edge(self, label: str, target: "Vertex", **kwargs: Any) -> "Edge":
         """
         Create an edge to another vertex.
 
