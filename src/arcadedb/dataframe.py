@@ -20,11 +20,14 @@ value the image decodes.
 """
 
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 import jpype
 
 from .exceptions import ArcadeDBError
+
+if TYPE_CHECKING:
+    from .core import Database
 
 _PYARROW_HINT = (
     "pyarrow is required for {what}. Install with: uv add pyarrow "
@@ -114,7 +117,7 @@ def _kind(pa, arrow_type) -> Optional[str]:
     return None
 
 
-def to_arrow_table(data, *, what: str):
+def to_arrow_table(data: Any, *, what: str) -> Any:
     """Normalize a pandas or Polars DataFrame, or anything Arrow can read, to a ``pyarrow.Table``."""
     pa = _import_pyarrow(what)
     module = type(data).__module__.split(".")[0]
@@ -464,9 +467,9 @@ def _check_uint64_range(pa, table) -> None:
 
 
 def insert_table(
-    db,
+    db: "Database",
     type_name: str,
-    table,
+    table: Any,
     *,
     batch_size: int,
     parallel: bool,

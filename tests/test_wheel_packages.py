@@ -69,3 +69,14 @@ def test_backend_selection_imports_without_native_library(tmp_path):
     subprocess.run(  # nosec B603 - fixed argv, no shell, test-owned code string
         [sys.executable, "-c", code], check=True, cwd=tmp_path, env=env
     )
+
+
+def test_build_ships_py_typed(tmp_path):
+    """The JVM wheel carries the PEP 561 marker (#476): it is a package-data entry, nothing picks it up by itself."""
+    root = _built_root(tmp_path)
+    if root is None:
+        import arcadedb
+
+        assert (Path(arcadedb.__file__).parent / "py.typed").exists()
+        return
+    assert (root / "arcadedb" / "py.typed").exists()

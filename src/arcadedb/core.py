@@ -11,9 +11,12 @@ from collections.abc import Mapping
 from datetime import date, datetime
 from decimal import Decimal
 from os import PathLike
-from typing import TYPE_CHECKING, Any, Callable, List, Optional
+from types import TracebackType
+from typing import TYPE_CHECKING, Any, Callable, List, Optional, Type, TypeVar
 
 if TYPE_CHECKING:
+    from .async_executor import AsyncExecutor
+    from .schema import Schema
     from .vector import VectorIndex
 
 import jpype
@@ -48,6 +51,8 @@ from .type_conversion import (
 from .vector import to_java_float_array
 
 _LOGGER = get_logger(__name__)
+
+_T = TypeVar("_T")
 
 _COMMIT_WITNESS_WARNED = False
 
@@ -504,19 +509,24 @@ def _wrap_java_record(java_record, database=None):
 class Database:
     """ArcadeDB Database wrapper."""
 
-    def __init__(self, java_database):
+    def __init__(self, java_database: Any):
         self._java_db = java_database
         self._closed = False
-        self._async_executors = []
+        self._async_executors: List[Any] = []
         self._functions = FunctionRegistration(self)
 
-    def __enter__(self):
+    def __enter__(self) -> "Database":
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(
+        self,
+        exc_type: Optional[Type[BaseException]],
+        exc_val: Optional[BaseException],
+        exc_tb: Optional[TracebackType],
+    ) -> None:
         self.close()
 
-    def get_java_database(self):
+    def get_java_database(self) -> Any:
         """Expose the wrapped Java database for internal integrations."""
         return self._java_db
 
@@ -616,7 +626,7 @@ class Database:
             return jpype.JObject(params, java_map)
         return _object_array(Database._convert_args(args))
 
-    def query(self, language: str, command: str, *args) -> ResultSet:
+    def query(self, language: str, command: str, *args: Any) -> ResultSet:
         """Execute a query and return results.
 
         Parameters bind positionally (``?``) from the extra arguments, or by
@@ -646,7 +656,7 @@ class Database:
             raise_pending_interrupt(error, e)
             raise error from e
 
-    def command(self, language: str, command: str, *args) -> Optional[ResultSet]:
+    def command(self, language: str, command: str, *args: Any) -> Optional[ResultSet]:
         """Execute a command (non-idempotent operation).
 
         Parameters bind as in :meth:`query`.
@@ -676,7 +686,9 @@ class Database:
             raise_pending_interrupt(error, e)
             raise error from e
 
-    def run_in_transaction(self, fn, retries: int = 12, backoff_s: float = 0.005):
+    def run_in_transaction(
+        self, fn: Callable[[], _T], retries: int = 12, backoff_s: float = 0.005
+    ) -> _T:
         """
         Execute a callable inside a transaction with automatic retry on
         concurrent-modification conflicts.
@@ -765,6 +777,8 @@ class Database:
                 if self._partially_committed(tx_at_start, commits_at_start):
                     raise
                 _time.sleep(max(backoff_s * (attempt + 1), retry_after_ms / 1000.0))
+        # the last attempt raises, so only retries < 0 (no attempt at all) gets here, and it returned None before the hints too
+        return None  # type: ignore[return-value]
 
     def _transaction_stack_mark(self):
         """Whether a transaction is active, and the nesting depth, before a begin().
@@ -842,7 +856,7 @@ class Database:
             _warn_no_commit_witness("count")
             return False
 
-    def begin(self):
+    def begin(self) -> None:
         """Begin a transaction."""
         self._check_not_closed()
         try:
@@ -850,7 +864,7 @@ class Database:
         except Exception as e:
             raise ArcadeDBError(f"Failed to begin transaction: {e}") from e
 
-    def commit(self):
+    def commit(self) -> None:
         """Commit the current transaction."""
         self._check_not_closed()
         try:
@@ -858,7 +872,7 @@ class Database:
         except Exception as e:
             raise ArcadeDBError(f"Failed to commit transaction: {e}") from e
 
-    def rollback(self):
+    def rollback(self) -> None:
         """Rollback the current transaction."""
         self._check_not_closed()
         try:
@@ -911,7 +925,7 @@ class Database:
     def insert_many(
         self,
         type_name: str,
-        rows,
+        rows: Any,
         commit_every: int = 10_000,
         parallel: bool = False,
     ) -> int:
@@ -1306,7 +1320,7 @@ class Database:
     def insert_columns(
         self,
         type_name: str,
-        columns,
+        columns: Any,
         commit_every: int = 10_000,
         parallel: bool = False,
     ) -> int:
@@ -1456,7 +1470,7 @@ class Database:
     def insert_dataframe(
         self,
         type_name: str,
-        df,
+        df: Any,
         *,
         batch_size: int = 10_000,
         parallel: bool = False,
@@ -1536,7 +1550,7 @@ class Database:
     def insert_arrow(
         self,
         type_name: str,
-        table,
+        table: Any,
         *,
         batch_size: int = 10_000,
         parallel: bool = False,
@@ -1624,7 +1638,7 @@ class Database:
             what="insert_arrow()",
         )
 
-    def close(self):
+    def close(self) -> None:
         """Close the database."""
         if not self._closed and self._java_db is not None:
             async_close_error = None
@@ -1685,7 +1699,9 @@ class Database:
         except Exception as e:
             raise ArcadeDBError(f"Failed to get database path: {e}") from e
 
-    def lookup_by_key(self, type_name: str, keys: List[str], values: List[Any]):
+    def lookup_by_key(
+        self, type_name: str, keys: List[str], values: List[Any]
+    ) -> Optional["Document"]:
         """
         Lookup records by indexed key (index-based: O(1) for a hash index, O(log n)
         for an LSM_TREE index).
@@ -1780,7 +1796,7 @@ class Database:
         java_record = self._java_db.lookupByRID(java_rid, True)
         return _wrap_java_record(java_record, self)
 
-    def to_java_rid(self, value):
+    def to_java_rid(self, value: Any) -> Any:
         self._check_not_closed()
 
         value = getattr(value, "_java_record", value)
@@ -2077,7 +2093,7 @@ class Database:
                 return 0
             raise ArcadeDBError(f"Failed to count type '{type_name}': {e}") from e
 
-    def drop(self):
+    def drop(self) -> None:
         """
         Drop the entire database.
 
@@ -2112,7 +2128,7 @@ class Database:
         except Exception as e:
             raise ArcadeDBError(f"Failed to check transaction status: {e}") from e
 
-    def set_wal_flush(self, mode: str):
+    def set_wal_flush(self, mode: str) -> None:
         """
         Configure the Write-Ahead Log (WAL) flush at commit for this database.
 
@@ -2159,7 +2175,7 @@ class Database:
         except Exception as e:
             raise ArcadeDBError(f"Failed to set WAL flush mode: {e}") from e
 
-    def set_read_your_writes(self, enabled: bool):
+    def set_read_your_writes(self, enabled: bool) -> None:
         """
         Enable or disable read-your-writes consistency.
 
@@ -2187,7 +2203,7 @@ class Database:
         except Exception as e:
             raise ArcadeDBError(f"Failed to get read-your-writes: {e}") from e
 
-    def set_auto_transaction(self, enabled: bool):
+    def set_auto_transaction(self, enabled: bool) -> None:
         """
         Enable or disable automatic transaction management.
 
@@ -2335,7 +2351,7 @@ class Database:
         self._check_not_closed()
         return register_event(self, event, fn, type_name)
 
-    def async_executor(self):
+    def async_executor(self) -> "AsyncExecutor":
         """
         Get async executor for parallel operations.
 
@@ -2580,7 +2596,7 @@ class Database:
         )
 
     @property
-    def schema(self):
+    def schema(self) -> "Schema":
         """
         Get the schema manipulation API for this database.
 
@@ -2664,7 +2680,7 @@ class Database:
         file_path: str,
         language: str = "sql",
         fieldnames: Optional[List[str]] = None,
-    ):
+    ) -> None:
         """
         Export query results to CSV file.
 

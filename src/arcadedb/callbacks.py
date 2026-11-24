@@ -12,13 +12,17 @@ import re
 import threading
 import traceback
 import weakref
-from typing import Callable, Optional, Tuple
+from types import TracebackType
+from typing import TYPE_CHECKING, Any, Callable, Optional, Tuple, Type
 
 import jpype
 
 from ._logging import get_logger
 from .exceptions import ArcadeDBError
 from .type_conversion import convert_java_to_python, convert_python_to_java
+
+if TYPE_CHECKING:
+    from .core import Database
 
 _LOGGER = get_logger(__name__)
 
@@ -285,7 +289,7 @@ class FunctionRegistration:
     it registered to remove them when it is closed.
     """
 
-    def __init__(self, database):
+    def __init__(self, database: "Database"):
         # Weak: the Database holds this registry, and a strong reference back would make a
         # cycle that keeps the Database (and its engine instance) alive until a gc pass
         # instead of releasing it with its last result (tests/test_results_after_close.py).
@@ -356,7 +360,12 @@ class EventHandle:
     """
 
     def __init__(
-        self, events, event: str, type_name: Optional[str], java_handle, proxy
+        self,
+        events: Any,
+        event: str,
+        type_name: Optional[str],
+        java_handle: Any,
+        proxy: Any,
     ):
         self._events = events
         self._java_handle = java_handle
@@ -382,10 +391,15 @@ class EventHandle:
         except Exception as e:
             raise ArcadeDBError(f"Failed to remove '{self.event}' callback: {e}") from e
 
-    def __enter__(self):
+    def __enter__(self) -> "EventHandle":
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(
+        self,
+        exc_type: Optional[Type[BaseException]],
+        exc_val: Optional[BaseException],
+        exc_tb: Optional[TracebackType],
+    ) -> None:
         self.remove()
 
     def __repr__(self) -> str:
@@ -394,7 +408,9 @@ class EventHandle:
         return f"<EventHandle {self.event}{scope} ({state})>"
 
 
-def register_event(database, event: str, fn: Callable, type_name: Optional[str]):
+def register_event(
+    database: "Database", event: str, fn: Callable, type_name: Optional[str]
+) -> "EventHandle":
     """Register ``fn`` for ``event`` on the database, or on one type, and return its handle."""
     check_event(event, fn)
     java_db = database.get_java_database()

@@ -148,6 +148,7 @@ include-package-data = true
 
 [tool.setuptools.package-data]
 arcadedb = [
+    "py.typed",  # PEP 561: the package carries type hints (issue 476)
     "jars/*.jar",
     "jre/**/*",
 ]

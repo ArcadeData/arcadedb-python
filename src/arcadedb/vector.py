@@ -4,10 +4,15 @@ ArcadeDB Python Bindings - Vector Search
 Vector index and array conversion utilities for similarity search.
 """
 
+from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Tuple
+
 import jpype
 import jpype.types as jtypes
 
 from .exceptions import ArcadeDBError
+
+if TYPE_CHECKING:
+    from .core import Database
 
 try:  # optional; hoisted to module scope to keep it out of per-call hot paths
     import numpy as _np
@@ -33,7 +38,7 @@ def _native_enabled():
     return _native.enabled()
 
 
-def to_java_float_array(vector):
+def to_java_float_array(vector: Any) -> Any:
     """
     Convert a Python array-like object to a Java float array.
 
@@ -76,7 +81,7 @@ def to_java_float_array(vector):
     return float_array(vector)
 
 
-def to_java_int_array(vector):
+def to_java_int_array(vector: Any) -> Any:
     """
     Convert a Python array-like object to a Java int array.
 
@@ -134,7 +139,7 @@ def to_java_int_array(vector):
     return jtypes.JArray(jtypes.JInt)(vector)
 
 
-def to_java_byte_array(vector):
+def to_java_byte_array(vector: Any) -> Any:
     """
     Convert a Python byte-like or integer array-like object to a Java byte array.
 
@@ -201,7 +206,7 @@ def to_java_byte_array(vector):
     return jtypes.JArray(jtypes.JByte)(normalized)
 
 
-def to_python_array(java_vector, use_numpy=True):
+def to_python_array(java_vector: Any, use_numpy: bool = True) -> Any:
     """
     Convert a Java array or ArrayList to a Python array.
 
@@ -280,7 +285,7 @@ class VectorIndex:
         - **BINARY**: 1-bit quantization (for high-dimensional binary vectors).
     """
 
-    def __init__(self, java_index, database):
+    def __init__(self, java_index: Any, database: "Database"):
         """
         Initialize VectorIndex wrapper.
 
@@ -593,13 +598,13 @@ class VectorIndex:
 
     def find_nearest(
         self,
-        query_vector,
-        k=10,
-        ef_search=None,
-        allowed_rids=None,
+        query_vector: Any,
+        k: int = 10,
+        ef_search: Optional[int] = None,
+        allowed_rids: Optional[Iterable[Any]] = None,
         *,
-        include_vector=True,
-    ):
+        include_vector: bool = True,
+    ) -> List[Tuple[Any, float]]:
         """
         Find k nearest neighbors to the query vector.
 
@@ -664,7 +669,7 @@ class VectorIndex:
         except Exception as e:
             raise ArcadeDBError(f"Vector search failed: {e}") from e
 
-    def get_size(self):
+    def get_size(self) -> int:
         """
         Get the current number of items in the index.
 
@@ -678,7 +683,7 @@ class VectorIndex:
         except Exception as e:
             raise ArcadeDBError(f"Failed to get index size: {e}") from e
 
-    def get_metadata(self):
+    def get_metadata(self) -> Dict[str, Any]:
         """
         Get stable metadata for the vector index.
 
@@ -726,7 +731,7 @@ class VectorIndex:
         except Exception as e:
             raise ArcadeDBError(f"Failed to read vector index metadata: {e}") from e
 
-    def get_stats(self):
+    def get_stats(self) -> Dict[str, Any]:
         """
         Get live runtime counters for the vector index.
 
@@ -756,7 +761,7 @@ class VectorIndex:
         except Exception as e:
             raise ArcadeDBError(f"Failed to read vector index stats: {e}") from e
 
-        stats = {}
+        stats: Dict[str, Any] = {}
         for java_key in raw.keySet():
             key = str(java_key)
             value = raw.get(java_key)
@@ -779,11 +784,11 @@ class VectorIndex:
 
     def find_nearest_by_key(
         self,
-        key,
-        k=10,
-        ef_search=None,
-        allowed_rids=None,
-    ):
+        key: Any,
+        k: int = 10,
+        ef_search: Optional[int] = None,
+        allowed_rids: Optional[Iterable[Any]] = None,
+    ) -> List[Tuple[Any, float]]:
         """
         Find nearest neighbors using the indexed vector from an existing record.
 
@@ -802,10 +807,10 @@ class VectorIndex:
 
     def find_nearest_approximate(
         self,
-        query_vector,
-        k=10,
-        allowed_rids=None,
-    ):
+        query_vector: Any,
+        k: int = 10,
+        allowed_rids: Optional[Iterable[Any]] = None,
+    ) -> List[Tuple[Any, float]]:
         """
         Find k nearest neighbors using Product Quantization (PQ) approximate search.
 
@@ -842,7 +847,7 @@ class VectorIndex:
         except Exception as e:
             raise ArcadeDBError(f"Approximate search failed: {e}") from e
 
-    def get_quantization(self):
+    def get_quantization(self) -> str:
         """
         Get the quantization type of the index.
 
@@ -862,7 +867,7 @@ class VectorIndex:
         except Exception:
             return "NONE"
 
-    def warm_up(self):
+    def warm_up(self) -> None:
         """
         Load the vector graph now instead of on the first search.
 
@@ -897,7 +902,7 @@ class VectorIndex:
         except Exception as e:
             raise ArcadeDBError(f"Failed to warm up vector index: {e}") from e
 
-    def build_graph_now(self):
+    def build_graph_now(self) -> None:
         """
         Trigger an immediate rebuild of the underlying vector graph.
 

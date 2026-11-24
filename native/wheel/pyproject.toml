@@ -45,4 +45,4 @@ Repository = "https://github.com/ArcadeData/arcadedb-python"
 where = ["src"]
 
 [tool.setuptools.package-data]
-arcadedb = ["_native/*.so", "_native/*.dylib", "_native/*.dll"]
+arcadedb = ["py.typed", "_native/*.so", "_native/*.dylib", "_native/*.dll"]

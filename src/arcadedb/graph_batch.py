@@ -6,7 +6,8 @@ Pythonic wrapper for ArcadeDB's high-throughput graph ingest API.
 
 import itertools
 import operator
-from typing import Any, Iterable, Optional
+from types import TracebackType
+from typing import Any, Iterable, Optional, Type
 
 import jpype
 
@@ -218,8 +219,8 @@ class GraphBatch:
 
     def __init__(
         self,
-        java_database,
-        java_graph_batch,
+        java_database: Any,
+        java_graph_batch: Any,
     ):
         self._java_db = java_database
         self._java_graph_batch = java_graph_batch
@@ -228,7 +229,7 @@ class GraphBatch:
     @classmethod
     def create(
         cls,
-        java_database,
+        java_database: Any,
         *,
         batch_size: Optional[int] = None,
         expected_edge_count: Optional[int] = None,
@@ -294,7 +295,12 @@ class GraphBatch:
     def __enter__(self) -> "GraphBatch":
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(
+        self,
+        exc_type: Optional[Type[BaseException]],
+        exc_val: Optional[BaseException],
+        exc_tb: Optional[TracebackType],
+    ) -> None:
         self.close()
 
     def new_vertex(self, type_name: str) -> Vertex:
@@ -307,7 +313,7 @@ class GraphBatch:
                 f"Failed to create new batch vertex of type '{type_name}': {e}"
             ) from e
 
-    def create_vertex(self, type_name: str, **properties) -> Vertex:
+    def create_vertex(self, type_name: str, **properties: Any) -> Vertex:
         """Create and save a single vertex, optionally with properties."""
         self._check_not_closed()
         started_transaction = False
@@ -550,10 +556,10 @@ class GraphBatch:
 
     def new_edge(
         self,
-        source_vertex_or_rid,
+        source_vertex_or_rid: Any,
         edge_type: str,
-        destination_vertex_or_rid,
-        **properties,
+        destination_vertex_or_rid: Any,
+        **properties: Any,
     ) -> "GraphBatch":
         """Buffer an edge for creation during flush or close."""
         self._check_not_closed()
@@ -583,10 +589,10 @@ class GraphBatch:
 
     def new_edges(
         self,
-        source_rids,
+        source_rids: Any,
         edge_type: str,
-        destination_rids,
-        properties=None,
+        destination_rids: Any,
+        properties: Optional[Any] = None,
     ) -> "GraphBatch":
         """
         Buffer many edges with one JPype crossing per call.
@@ -777,7 +783,7 @@ class GraphBatch:
         except Exception as e:
             raise ArcadeDBError(f"Failed to flush GraphBatch: {e}") from e
 
-    def close(self):
+    def close(self) -> None:
         """Flush remaining work and finalize deferred incoming edges.
 
         Leaving a ``with`` block calls this. Call it outside your own

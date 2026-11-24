@@ -27,7 +27,11 @@ import asyncio
 import contextvars
 import functools
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Callable, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, List, Optional, Tuple
+
+if TYPE_CHECKING:
+    from .core import Database
+    from .vector import VectorIndex
 
 __all__ = ["AsyncDatabase"]
 
@@ -45,7 +49,7 @@ class AsyncDatabase:
     Use it as ``async with AsyncDatabase(db) as adb:`` or call ``await adb.close()`` yourself.
     """
 
-    def __init__(self, db, max_workers: int = _DEFAULT_MAX_WORKERS):
+    def __init__(self, db: "Database", max_workers: int = _DEFAULT_MAX_WORKERS):
         if (
             isinstance(max_workers, bool)
             or not isinstance(max_workers, int)
@@ -60,7 +64,7 @@ class AsyncDatabase:
         self._closed = False
 
     @property
-    def database(self):
+    def database(self) -> "Database":
         """The wrapped ``Database``."""
         return self._db
 
@@ -133,14 +137,14 @@ class AsyncDatabase:
 
     async def find_nearest(
         self,
-        index,
-        query_vector,
+        index: "VectorIndex",
+        query_vector: Any,
         k: int = 10,
         ef_search: Optional[int] = None,
-        allowed_rids=None,
+        allowed_rids: Optional[Iterable[Any]] = None,
         *,
         include_vector: bool = True,
-    ):
+    ) -> List[Tuple[Any, float]]:
         """``index.find_nearest(...)`` on a worker: a list of ``(record, distance)``, nearest first.
 
         ``index`` is the ``VectorIndex`` that ``db.create_vector_index(...)`` or ``db.schema.get_vector_index(...)`` returns. A search

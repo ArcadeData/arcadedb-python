@@ -4,15 +4,21 @@ ArcadeDB Python Bindings - Transaction Management
 Transaction context manager and related utilities.
 """
 
+from types import TracebackType
+from typing import TYPE_CHECKING, Optional, Type
+
+if TYPE_CHECKING:
+    from .core import Database
+
 
 class TransactionContext:
     """Context manager for ArcadeDB transactions."""
 
-    def __init__(self, database):
+    def __init__(self, database: "Database"):
         self.database = database
         self.started = False
 
-    def __enter__(self):
+    def __enter__(self) -> "TransactionContext":
         # The levels the caller already holds are not ours to roll back: begin() inside a caller's transaction pushes a
         # nested level, so ownership is decided by the stack before the call, not by whether begin() returned (#9970)
         mark = self.database._transaction_stack_mark()
@@ -30,7 +36,12 @@ class TransactionContext:
                 pass
             raise
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(
+        self,
+        exc_type: Optional[Type[BaseException]],
+        exc_val: Optional[BaseException],
+        exc_tb: Optional[TracebackType],
+    ) -> None:
         if self.started:
             if exc_type is None:
                 self.database.commit()

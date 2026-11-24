@@ -38,7 +38,8 @@ Example:
 
 import threading
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any, Callable, Optional, Sequence, Union
+from types import TracebackType
+from typing import TYPE_CHECKING, Any, Callable, Optional, Sequence, Type, Union
 
 import jpype
 
@@ -264,7 +265,7 @@ class AsyncExecutor:
         >>> async_exec.wait_completion()
     """
 
-    def __init__(self, java_async_executor, owner: Optional["Database"] = None):
+    def __init__(self, java_async_executor: Any, owner: Optional["Database"] = None):
         """
         Initialize AsyncExecutor wrapper.
 
@@ -275,10 +276,15 @@ class AsyncExecutor:
         self._owner = owner
         self._closed = False
 
-    def __enter__(self):
+    def __enter__(self) -> "AsyncExecutor":
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(
+        self,
+        exc_type: Optional[Type[BaseException]],
+        exc_val: Optional[BaseException],
+        exc_tb: Optional[TracebackType],
+    ) -> None:
         self.close()
 
     def is_closed(self) -> bool:
@@ -433,7 +439,7 @@ class AsyncExecutor:
             log_swallowed_exception(_LOGGER, "while polling isProcessing()")
             return False
 
-    def kill(self):
+    def kill(self) -> None:
         self._java_async.kill()
 
     def set_back_pressure(self, percentage: int) -> "AsyncExecutor":
@@ -467,10 +473,10 @@ class AsyncExecutor:
 
     def create_record(
         self,
-        document,
+        document: Any,
         callback: Optional[Callable] = None,
         error_callback: Optional[Callable[[Exception], None]] = None,
-    ):
+    ) -> None:
         """Queue a document for asynchronous creation.
 
         The engine's parallel bucket writers persist it off the calling
@@ -508,13 +514,13 @@ class AsyncExecutor:
 
     def new_edge(
         self,
-        source_vertex,
+        source_vertex: Any,
         edge_type: str,
-        destination_vertex_or_rid,
+        destination_vertex_or_rid: Any,
         light: bool = False,
         callback: Optional[Callable[[Any, bool, bool], None]] = None,
-        **properties,
-    ):
+        **properties: Any,
+    ) -> None:
         source_vertex = self._unwrap_record(source_vertex)
         destination_rid = self._to_java_rid(destination_vertex_or_rid)
         java_callback = self._create_new_edge_callback(callback) if callback else None
@@ -541,8 +547,8 @@ class AsyncExecutor:
         bidirectional: bool,
         light: bool,
         callback: Optional[Callable[[Any, bool, bool], None]] = None,
-        **properties,
-    ):
+        **properties: Any,
+    ) -> None:
         java_callback = self._create_new_edge_callback(callback) if callback else None
         props = self._to_java_varargs(properties)
 
@@ -611,7 +617,7 @@ class AsyncExecutor:
         timestamps: Sequence[int],
         *column_values: Sequence[Any],
         primitive: bool = False,
-    ):
+    ) -> Any:
         """Columnar bulk append into a native TIMESERIES type.
 
         Columns are positional and must follow the type's declaration order:
@@ -781,8 +787,8 @@ class AsyncExecutor:
         callback: Callable[[Any], None],
         args: Optional[Sequence[Any]] = None,
         error_callback: Optional[Callable[[Exception], None]] = None,
-        **params,
-    ):
+        **params: Any,
+    ) -> None:
         """
         Execute async query with callback for each result.
 
@@ -830,8 +836,8 @@ class AsyncExecutor:
         callback: Optional[Callable[[Any], None]] = None,
         args: Optional[Sequence[Any]] = None,
         error_callback: Optional[Callable[[Exception], None]] = None,
-        **params,
-    ):
+        **params: Any,
+    ) -> None:
         """
         Execute async command with optional callback.
 
@@ -900,7 +906,7 @@ class AsyncExecutor:
         callback: Callable[[Any], bool],
         polymorphic: bool = True,
         error_callback: Optional[Callable[[Any, Exception], bool]] = None,
-    ):
+    ) -> None:
         java_doc_callback = self._create_document_callback(callback)
         if error_callback is None:
             self._java_async.scanType(type_name, polymorphic, java_doc_callback)
@@ -920,7 +926,7 @@ class AsyncExecutor:
         ok_callback: Optional[Callable[[], None]] = None,
         error_callback: Optional[Callable[[Exception], None]] = None,
         slot: Optional[int] = None,
-    ):
+    ) -> None:
         java_tx = self._create_transaction_scope(tx_block)
 
         if (
@@ -953,7 +959,7 @@ class AsyncExecutor:
 
     # Control flow
 
-    def wait_completion(self, timeout_ms: Optional[int] = None):
+    def wait_completion(self, timeout_ms: Optional[int] = None) -> None:
         """
         Wait for all async operations to complete.
 
@@ -1025,7 +1031,7 @@ class AsyncExecutor:
         """
         return self.is_processing()
 
-    def close(self):
+    def close(self) -> None:
         """
         Close the async executor and shutdown worker threads.
 
