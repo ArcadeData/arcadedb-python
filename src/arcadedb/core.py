@@ -19,6 +19,7 @@ if TYPE_CHECKING:
 import jpype
 
 from ._logging import get_logger
+from ._open_or_create import open_or_create as _open_or_create
 from ._params import refuse_surplus_positionals
 from .callbacks import (
     EventHandle,
@@ -2808,6 +2809,13 @@ class DatabaseFactory:
         except Exception as e:
             raise ArcadeDBError(f"Failed to check if database exists: {e}") from e
 
+    def open_or_create(self, read_only: bool = False) -> Database:
+        """Open the database when it exists and create it when it does not.
+
+        See :func:`open_or_create_database` for the rules.
+        """
+        return _open_or_create(self, read_only=read_only)
+
 
 # Convenience functions
 def create_database(
@@ -2854,6 +2862,58 @@ def open_database(
         jvm_kwargs=jvm_kwargs,
     )
     return factory.open(read_only=read_only)
+
+
+def open_or_create_database(
+    path: str,
+    jvm_kwargs: Optional[dict] = None,
+    read_only: bool = False,
+) -> Database:
+    """Open the database at the given path, or create it when there is none, and return it.
+
+    One call that works on the first run and on every later run, so a script
+    that keeps its data in one database can start with it and be run again.
+    It is ``open_database(path)`` when ``database_exists(path)`` and
+    ``create_database(path)`` when not; ``create_database`` and
+    ``open_database`` are unchanged.
+
+    Args:
+        path: Database path
+        jvm_kwargs: Optional JVM args passed to start_jvm() (ignored with a
+            warning by the native package, which has no JVM)
+        read_only: Open the database read-only. It never creates: a path that
+            holds no database raises ``ArcadeDBError``, as ``open_database``
+            does.
+
+    Raises:
+        ArcadeDBError: when the database cannot be opened or created. Three
+            cases:
+
+            * The path exists and is not a database. A directory without a
+              database (an empty one, or one that holds other files) gets a
+              new database inside it and its other files stay untouched, as
+              with ``create_database``. A path that is a file raises
+              ``ArcadeDBError`` ("Not a directory") and nothing is changed.
+            * Another process holds the database open. The engine allows one
+              process per database, so the call raises ``ArcadeDBError`` with
+              the engine's "locked by another process" message and does not
+              wait. The same process cannot open a path twice either: close
+              the first handle, or share it between threads.
+            * Two processes call it on the same new path at once. One creates
+              the database. The other one's create fails, it finds the
+              database and opens it, so it never raises "already exists"; it
+              raises the "locked" error of the case above for as long as the
+              first process keeps the database open.
+
+    Example:
+        >>> with arcadedb.open_or_create_database("./memory") as db:
+        ...     db.command("sql", "CREATE DOCUMENT TYPE Note IF NOT EXISTS")
+    """
+    factory = DatabaseFactory(
+        path,
+        jvm_kwargs=jvm_kwargs,
+    )
+    return factory.open_or_create(read_only=read_only)
 
 
 def database_exists(path: str) -> bool:

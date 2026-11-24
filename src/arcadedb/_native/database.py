@@ -10,6 +10,7 @@ from datetime import date, datetime
 from typing import Any, Dict, Iterator, List, Optional
 
 from .. import _columnar
+from .._open_or_create import open_or_create
 from .._params import refuse_surplus_positionals
 from ..exceptions import ArcadeDBError
 from ..transactions import TransactionContext
@@ -1980,3 +1981,7 @@ class NativeDatabaseFactory:
             lib.b(self._path),
             3,
         )["exists"]
+
+    def open_or_create(self, read_only: bool = False) -> NativeDatabase:
+        """Open the database when it exists and create it when it does not (``arcadedb.open_or_create_database``)."""
+        return open_or_create(self, read_only=read_only)

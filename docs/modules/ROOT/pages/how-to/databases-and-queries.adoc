@@ -37,13 +37,8 @@ with arcadedb.open_database("./mydb") as db:
     for user in db.query("sql", "SELECT FROM User"):
         print(user.get("name"))
 
-# Open an existing database or create it
-path = "./myapp"
-if arcadedb.database_exists(path):
-    db = arcadedb.open_database(path)
-else:
-    db = arcadedb.create_database(path)
-with db:
+# Open an existing database or create it, in one call
+with arcadedb.open_or_create_database("./myapp") as db:
     print("Transaction active:", db.is_transaction_active())
     with db.transaction():
         print("Transaction active:", db.is_transaction_active())
@@ -72,9 +67,33 @@ Notes on the script:
 
 * `create_database(path)` creates the directory and opens the database for reading and writing. It raises `ArcadeDBError` if the path already holds a database, as the third output line shows.
 * `open_database(path)` opens an existing database. `database_exists(path)` tells the two cases apart.
+* `open_or_create_database(path)` opens the database when it exists and creates it when it does not, so a script that keeps its data in one database runs the same way the first time and every time after. See <<open-or-create>>.
 * `with` closes the database when the block ends, also when an exception leaves it. On close, active transactions roll back. You can call `db.close()` yourself, inside `try`/`finally`, but the context manager is the recommended way.
 * `db.drop()` deletes all files of the database. It cannot be undone.
 * `db.is_transaction_active()` is `True` only inside `with db.transaction():` (or between `begin()` and `commit()` or `rollback()`). The other ways to end a transaction, and what an error does to it, are on xref:how-to/transactions.adoc[Transactions].
+
+[#open-or-create]
+=== Open or create
+
+`open_or_create_database(path)` is `open_database(path)` when `database_exists(path)` is true and `create_database(path)` when it is not. It takes the same `jvm_kwargs` and `read_only` arguments, returns the open database, and works in both packages. `DatabaseFactory(path).open_or_create()` is the same call on a factory. `create_database` and `open_database` are unchanged: the first still raises on a path that holds a database and the second on a path that holds none.
+
+[source,python,subs="attributes+"]
+----
+{import-stmt}
+
+with arcadedb.open_or_create_database("./memory") as db:
+    db.command("sql", "CREATE DOCUMENT TYPE Note IF NOT EXISTS")
+    with db.transaction():
+        db.command("sql", "INSERT INTO Note SET text = ?", "remember this")
+    print(db.query("sql", "SELECT count(*) AS n FROM Note").first().get("n"))
+----
+
+Run it twice: the first run creates the database and prints `1`, the second opens it and prints `2`. What it does in the cases that are not the plain first or later run:
+
+* `read_only=True` never creates. A path that holds no database raises `ArcadeDBError`, with the same message as `open_database`, and nothing is written.
+* The path is a directory that holds no database (empty, or with other files in it): a database is created inside it and the other files stay untouched, as with `create_database`. The path is a file: it raises `ArcadeDBError` ("Not a directory") and changes nothing.
+* Another process holds the database open: it raises `ArcadeDBError` with the engine's "locked by another process" message and does not wait. See <<locking,Locking>>. The same process cannot hold one path twice either (the engine says "already in use"): keep the first handle and share it between threads.
+* Two processes call it on the same new path at the same moment: one creates the database. The other finds that the database exists now and opens it, so it never fails with "already exists" or "does not exist". It raises the "locked by another process" error while the first process keeps the database open, and works once that one closes it.
 
 === Read-only open
 
@@ -82,6 +101,7 @@ Notes on the script:
 
 Use it when a process only reads a finished database, so that a stray write fails instead of changing the data. It is a safety setting, not a speed setting: no measurement here shows reads getting faster.
 
+[#locking]
 === Locking
 
 The open database holds an operating-system lock on `database.lck` in its directory. A second process cannot open the same directory while the first holds it; open it in one process and share the handle between that process's threads.
