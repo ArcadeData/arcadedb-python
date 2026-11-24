@@ -233,6 +233,48 @@ def test_a_thread_without_a_transaction_commits_alone_while_another_has_one_open
     ]  # the worker's row is its own commit; mine was rolled back
 
 
+def test_two_writers_with_a_bare_save_the_stale_one_is_refused_with_the_default_on(db):
+    """The stale-record check of ``save()`` does not need a transaction: with auto-transaction on, writer B's bare ``save()``
+    commits on its own, and writer A, who read the record before that, is refused and writes nothing (both builds).
+    """
+    rid = db.new_document("T").set("k", 5000).set("v", 1).save().get_rid()
+
+    def stored():
+        return db.query("sql", "SELECT v FROM T WHERE k = 5000").first().get("v")
+
+    stale = db.lookup_by_rid(rid).modify()  # writer A reads the record
+    outcome = []
+
+    def writer_b():
+        try:
+            other = db.lookup_by_rid(
+                rid
+            ).modify()  # writer B reads, changes and saves, with no transaction of its own
+            other.set("v", 2).save()
+            outcome.append(db.is_transaction_active())
+        except Exception as error:  # noqa: BLE001
+            outcome.append(repr(error))
+
+    thread = threading.Thread(target=writer_b)
+    thread.start()
+    thread.join()
+    assert outcome == [
+        False
+    ]  # B's save committed by itself and left no transaction open
+    assert stored() == 2
+
+    with pytest.raises(ArcadeDBError, match="ConcurrentModificationException"):
+        stale.set(
+            "v", 3
+        ).save()  # A's bare save writes over a change it never read: refused
+    assert db.is_transaction_active() is False
+    assert stored() == 2  # nothing of the refused save is stored
+
+    fresh = db.lookup_by_rid(rid).modify()  # a fresh read saves, bare
+    fresh.set("v", 3).save()
+    assert stored() == 3
+
+
 def test_run_in_transaction_still_runs_the_function_in_one_transaction(db):
     def work():
         _insert(db, 1)
