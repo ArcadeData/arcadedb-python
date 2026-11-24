@@ -51,7 +51,8 @@ def _error(prefix: str, reply: dict) -> ArcadeDBError:
     """The ArcadeDBError for a failed reply, worded like the JPype path (``prefix: java.class: message``)."""
     chain = reply.get("chain") or []
     head = f"{reply.get('cls')}: {reply.get('error')}"
-    exc = ArcadeDBError(f"{prefix}: {head}" if prefix else head)
+    # classified from the chain of the reply: the class and the code are the ones the JVM build gives for the same failure
+    exc = ArcadeDBError._classified(f"{prefix}: {head}" if prefix else head, chain)
     exc.native = reply
     exc.java_chain = chain
     return interrupts.convert(
@@ -60,11 +61,13 @@ def _error(prefix: str, reply: dict) -> ArcadeDBError:
 
 
 def _read_error(reply: dict) -> ArcadeDBError:
-    exc = ArcadeDBError(
-        f"Reading the result set failed: {reply.get('cls')}: {reply.get('error')}"
+    chain = reply.get("chain") or []
+    exc = ArcadeDBError._classified(
+        f"Reading the result set failed: {reply.get('cls')}: {reply.get('error')}",
+        chain,
     )
     exc.native = reply
-    exc.java_chain = reply.get("chain") or []
+    exc.java_chain = chain
     return interrupts.convert(exc)
 
 

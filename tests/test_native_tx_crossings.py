@@ -428,9 +428,10 @@ def test_a_commit_without_begin_raises_the_engines_error_unchanged(db):
     native = caught.value.native
     assert native["ok"] is False
     assert native["cls"] and "Transaction not begun" in native["error"]
-    assert (
-        str(caught.value)
-        == f"Failed to commit transaction: {native['cls']}: {native['error']}"
+    # the engine's text is the tail of the message; the code and the hint come before it (#475)
+    assert caught.value.code == "transaction_not_begun"
+    assert str(caught.value).endswith(
+        f"Failed to commit transaction: {native['cls']}: {native['error']}"
     )
     assert caught.value.java_chain == native["chain"]
     assert caught.value.java_chain[0] == [native["cls"], native["error"]]

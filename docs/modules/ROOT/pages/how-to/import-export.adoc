@@ -147,7 +147,7 @@ PROBE_ONLY 3
 [[failed-import]]
 == When a row fails
 
-The importer loads the rows of one file of documents in one transaction that it owns, and commits it after the last row. By default (`on_row_error="abort"`) the first row that fails stops the import with an `ArcadeDBError` that starts with "Document import failed", and the transaction is rolled back. No row of that file is left, however many rows were read before the bad one.
+The importer loads the rows of one file of documents in one transaction that it owns, and commits it after the last row. By default (`on_row_error="abort"`) the first row that fails stops the import with an `ArcadeDBError` whose message holds "Document import failed" (a `DuplicateKeyError` when the row breaks a unique index, as below), and the transaction is rolled back. No row of that file is left, however many rows were read before the bad one.
 
 A duplicate key shows the rule. The next blocks load a file whose second row repeats the unique key of the first:
 
@@ -170,7 +170,7 @@ def skus():
 try:
     db.import_documents(products, document_type="Product")
 except ArcadeDBError as error:
-    print("failed:", str(error).startswith("Document import failed"))
+    print("failed:", "Document import failed" in str(error))
 print(skus(), db.is_transaction_active())
 ----
 

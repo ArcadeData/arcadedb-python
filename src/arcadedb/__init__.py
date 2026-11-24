@@ -54,7 +54,21 @@ from .core import (  # noqa: E402
 )
 
 # Import exceptions
-from .exceptions import ArcadeDBError  # noqa: E402
+from .exceptions import (  # noqa: E402
+    ArcadeDBError,
+    ConflictError,
+    DatabaseClosedError,
+    DatabaseExistsError,
+    DatabaseLockedError,
+    DatabaseNotFoundError,
+    DuplicateKeyError,
+    QuerySyntaxError,
+    QueryTimeoutError,
+    RecordNotFoundError,
+    SchemaError,
+    TransactionError,
+    ValidationError,
+)
 
 # Import exporter classes
 from .exporter import export_database, export_to_csv  # noqa: E402
@@ -119,6 +133,18 @@ __all__ = [
     "ENGINE_IMAGE_DIGEST",
     # Exceptions
     "ArcadeDBError",
+    "ConflictError",
+    "DatabaseClosedError",
+    "DatabaseExistsError",
+    "DatabaseLockedError",
+    "DatabaseNotFoundError",
+    "DuplicateKeyError",
+    "QuerySyntaxError",
+    "QueryTimeoutError",
+    "RecordNotFoundError",
+    "SchemaError",
+    "TransactionError",
+    "ValidationError",
     # Core classes
     "Database",
     "DatabaseFactory",
