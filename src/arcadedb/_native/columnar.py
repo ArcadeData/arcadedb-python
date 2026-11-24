@@ -25,14 +25,13 @@ them.
 from datetime import date, datetime, timezone
 from decimal import Decimal
 
+from .._lazy_numpy import lazy_numpy  # noqa: E402
 from .schema_objects import (  # the schema-entry reader shared with NativeType (#195)
     _name_type,
 )
 
-try:
-    import numpy as _np
-except ImportError:  # pragma: no cover
-    _np = None
+# None without numpy, else a stand-in that imports it on first use: `import arcadedb` does not pay for numpy (#477)
+_np = lazy_numpy()
 
 _INT64_MAX = 2**63 - 1
 _INT32_MAX = 2**31 - 1

@@ -78,10 +78,10 @@ def _warn_no_commit_witness(what):
         _LOGGER.debug("Cannot read the transaction commit %s", what, exc_info=True)
 
 
-try:  # optional; hoisted to module scope to keep it out of per-call hot paths
-    import numpy as _np
-except ImportError:  # pragma: no cover - numpy is an optional dependency
-    _np = None
+from ._lazy_numpy import lazy_numpy  # noqa: E402
+
+# None without numpy, else a stand-in that imports it on first use: `import arcadedb` does not pay for numpy (#477)
+_np = lazy_numpy()
 
 # Java class handles resolved once per process (jpype.JClass lookups are not
 # free and used to run per record in wrapper dispatch).

@@ -13,8 +13,9 @@ names both packages and says how to fix it, instead of letting the mix run.
 
 from __future__ import annotations
 
-from importlib import metadata
-from typing import Callable
+import os
+import sys
+from typing import Callable, Optional
 
 # backend -> the distribution that carries it
 DISTRIBUTIONS = {"native": "arcadedb", "jvm": "arcadedb-jvm"}
@@ -33,20 +34,77 @@ def other_backend(backend: str) -> str:
     return "jvm" if backend == "native" else "native"
 
 
+def _package_not_found():
+    """``importlib.metadata.PackageNotFoundError``; the module costs about 30 ms to import, so it is imported only when it is needed."""
+    from importlib import metadata
+
+    return metadata.PackageNotFoundError
+
+
+def _dist_info_present(name: str) -> Optional[bool]:
+    """Whether a ``<name>-<version>.dist-info`` (or ``.egg-info``) directory is on ``sys.path``; None when this cannot say.
+
+    This is what ``importlib.metadata.version`` finds for an ordinary install, without importing it. A ``sys.path`` entry that is
+    not a directory (a zip, an egg file) is the case it does not read, so it returns None and the caller asks ``importlib.metadata``.
+    """
+    stem = name.replace("-", "_").lower()
+    prefix = stem + "-"
+    for entry in sys.path:
+        try:
+            names = os.listdir(entry or ".")
+        except NotADirectoryError:
+            return None
+        except (
+            OSError
+        ):  # a missing or unreadable directory: importlib.metadata skips it too
+            continue
+        for item in names:
+            low = item.lower()
+            if low in (stem + ".egg-info", stem + ".dist-info"):
+                return True
+            if (
+                low.startswith(prefix)
+                and low[len(prefix) : len(prefix) + 1].isdigit()
+                and low.endswith((".dist-info", ".egg-info"))
+            ):
+                return True
+    return False
+
+
+def _lookup_by_metadata(name: str) -> str:
+    from importlib import metadata
+
+    return metadata.version(name)
+
+
 def installed(
     backends: tuple[str, ...] = ("native", "jvm"),
-    lookup: Callable[[str], str] = metadata.version,
+    lookup: Optional[Callable[[str], str]] = None,
 ) -> list[str]:
     """The distribution names of `backends` that are installed, in the order given.
 
-    `lookup` raises `importlib.metadata.PackageNotFoundError` for a name that is not installed.
+    `lookup` raises `importlib.metadata.PackageNotFoundError` for a name that is not installed. Without one, the distribution
+    directories on `sys.path` are read directly, which does not import `importlib.metadata`.
     """
     found = []
     for backend in backends:
         name = DISTRIBUTIONS[backend]
+        if lookup is None:
+            present = _dist_info_present(name)
+            if (
+                present is None
+            ):  # a zip or an egg on sys.path: let importlib.metadata read it
+                try:
+                    _lookup_by_metadata(name)
+                except _package_not_found():
+                    continue
+                present = True
+            if present:
+                found.append(name)
+            continue
         try:
             lookup(name)
-        except metadata.PackageNotFoundError:
+        except _package_not_found():
             continue
         found.append(name)
     return found
@@ -67,7 +125,7 @@ def message(backend: str) -> str:
     )
 
 
-def check(backend: str, lookup: Callable[[str], str] = metadata.version) -> None:
+def check(backend: str, lookup: Optional[Callable[[str], str]] = None) -> None:
     """Raise DistributionConflictError when the distribution of the other backend is installed too.
 
     Never raises for anything else: an import must not fail because the metadata could not be read.
