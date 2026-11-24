@@ -329,8 +329,9 @@ class _Mixin:
         A saved record is written back only if the stored record still has the values this object was read with. Otherwise it raises
         ArcadeDBError ("ConcurrentModificationException" in the message, retryable by ``run_in_transaction``) and writes nothing: read the
         record again and repeat the change. The check compares values (the engine keeps no version), so a change that was changed back is
-        not seen. Saving an existing record needs an active transaction, like every write; outside one it raises ArcadeDBError
-        ("Transaction not begun"). Creating a new record is not checked.
+        not seen. Outside a transaction a save commits on its own (auto-transaction is on by default); with ``set_auto_transaction(False)`` it
+        needs an active transaction, like every write, and outside one it raises ArcadeDBError ("Transaction not begun"). Creating a
+        new record is not checked.
         """
         self._fill()
         db = self._db
@@ -357,9 +358,10 @@ class _Mixin:
         when every changed value is one the engine stores exactly as sent (``_stored_as_sent``) the statement returns no row and the values
         sent are the new copy; otherwise the statement returns the stored row (RETURN AFTER) and that row is.
 
-        Like every write (and like the JVM build), it needs an active transaction while auto-transaction is off, the engine default:
-        outside one it raises ArcadeDBError ("Transaction not begun") before it reads or writes anything. This method opens no
-        transaction of its own. With auto-transaction on the check cannot refuse, so the state is not asked for (one crossing less).
+        Like every write (and like the JVM build), it needs an active transaction while auto-transaction is off, the strict mode
+        (``set_auto_transaction(False)``): outside one it raises ArcadeDBError ("Transaction not begun") before it reads or writes
+        anything. This method opens no transaction of its own. With auto-transaction on, the default, the check cannot refuse, so the
+        state is not asked for (one crossing less).
         The engine's own refusal cannot stand in for the check with it off: the engine runs the before-update callbacks and the
         validation before it looks for a transaction, and an UPDATE of a record that is gone raises nothing.
         """

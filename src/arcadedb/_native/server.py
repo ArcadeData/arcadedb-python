@@ -72,7 +72,7 @@ class NativeServer:
     def get_database(self, name: str) -> NativeDatabase:
         if not self._started:
             raise ArcadeDBError("Server is not started")
-        return NativeDatabase(
+        return NativeDatabase._opened(
             _call(
                 f"Failed to get database '{name}'",
                 "arcadedb_n_server_db",
@@ -86,7 +86,7 @@ class NativeServer:
     def create_database(self, name: str) -> NativeDatabase:
         if not self._started:
             raise ArcadeDBError("Server is not started")
-        return NativeDatabase(
+        return NativeDatabase._opened(
             _call(
                 f"Failed to create database '{name}'",
                 "arcadedb_n_server_db",

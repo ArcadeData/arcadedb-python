@@ -1,7 +1,7 @@
 = Transactions
-:description: Commit and roll back with the context manager or with begin, commit and rollback, what an exception, a failed statement and a second begin do, what other threads see before a commit, auto-transaction, what a transaction costs on the native build, run_in_transaction, and the GraphBatch rule.
+:description: What a write outside a transaction does (it commits on its own), the context manager, begin, commit and rollback, what an exception, a failed statement and a second begin do, what other threads see before a commit, strict mode, what a commit costs, run_in_transaction, and the GraphBatch rule.
 
-// Sources: src/arcadedb/core.py (begin, commit, rollback, transaction, run_in_transaction, set_auto_transaction), transactions.py and graph_batch.py. Every statement below is pinned by tests/test_transactions_behavior.py.
+// Sources: src/arcadedb/core.py (begin, commit, rollback, transaction, run_in_transaction, set_auto_transaction), transactions.py and graph_batch.py. Every statement below is pinned by tests/test_transactions_behavior.py and tests/test_auto_transaction_default.py.
 
 This page covers what the Python bindings add to transactions: the context manager, the explicit calls, and what each does when something goes wrong. A transaction is a transaction of the engine, so what it guarantees (atomicity, isolation levels, when two writers conflict) belongs to the main manual: {arcadedb-docs-url}/concepts/transactions[Transactions].
 
@@ -49,7 +49,7 @@ raised stop
 ['alice'] False
 ----
 
-`db.is_transaction_active()` is `True` inside the block and `False` after it. A write outside a transaction does not run; see <<outside>>.
+`db.is_transaction_active()` is `True` inside the block and `False` after it. A write outside a transaction commits on its own; see <<outside>>.
 
 == begin, commit and rollback
 
@@ -79,14 +79,40 @@ True
 [[outside]]
 == Outside a transaction
 
-A write outside a transaction raises `ArcadeDBError` with "Transaction not begun" in the message, and writes nothing. So does `commit()` when no transaction is active. `rollback()` with nothing to roll back does nothing and raises nothing.
+A statement outside a transaction runs in a transaction of its own and commits when the statement ends, as in DuckDB, LadybugDB and asyncpg. This is auto-transaction, and it is on by default. `db.is_transaction_active()` is `False` before and after the statement, and every thread sees the rows at once.
+
+[source,python]
+----
+db.command("sql", "INSERT INTO Account SET name = 'carol'")
+print(names(), db.is_transaction_active(), db.is_auto_transaction())
+----
+
+[source,text]
+----
+['alice', 'bob', 'carol'] False True
+----
+
+A statement that fails leaves nothing behind. This one writes `dora` once, and then the unique index refuses the second `dora`. The first `dora` is gone with it.
 
 [source,python]
 ----
 try:
-    db.command("sql", "INSERT INTO Account SET name = 'carol'")
+    db.command("sql", "INSERT INTO Account (name) VALUES ('dora'), ('dora')")
 except ArcadeDBError as error:
-    print("write:", "Transaction not begun" in str(error))
+    print("refused:", "DuplicatedKeyException" in str(error))
+print(names())
+----
+
+[source,text]
+----
+refused: True
+['alice', 'bob', 'carol']
+----
+
+A transaction that you open is yours: nothing in it commits until you commit, also with auto-transaction on. `commit()` with no transaction active raises `ArcadeDBError` with "Transaction not begun" in the message, in both modes. `rollback()` with nothing to roll back does nothing and raises nothing.
+
+[source,python]
+----
 try:
     db.commit()
 except ArcadeDBError as error:
@@ -97,37 +123,115 @@ print("rollback: no error")
 
 [source,text]
 ----
-write: True
 commit: True
 rollback: no error
 ----
 
 The same holds for the context manager. If the block calls `db.commit()` itself, no transaction is left when the block ends, and the commit at the end raises `ArcadeDBError` ("Transaction not begun"). The rows of the first commit stay. Leave the commit to the `with` statement.
 
+Four things follow from the fact that every statement commits alone:
+
+* Statements that must succeed or fail together are one unit only inside a transaction. Without one, each statement commits on its own, and a failure in the third leaves the first two committed.
+* A script that you send with `db.command("sqlscript", ...)` commits each of its statements alone, unless the script has its own `BEGIN` and `COMMIT`. With them it commits or rolls back as one.
+* A transaction belongs to the thread that began it. A thread without one commits its writes alone, also while another thread has a transaction open, and a rollback in the other thread does not take them back.
+* `insert_many` and `graph_batch` open and commit their own transactions, as before, and the setting changes nothing for them. What the other bulk loads do inside a transaction of yours is on xref:how-to/bulk-loads.adoc[Bulk loads and commit size].
+
 Schema statements such as `CREATE TYPE` apply at once and need no transaction, as on xref:quickstart.adoc[Quickstart].
 
-== Auto-transaction
+[[strict-mode]]
+[[auto-transaction]]
+== Strict mode
 
-`db.set_auto_transaction(True)` makes each statement outside a transaction run in a transaction of its own, which commits when the statement ends. It is off by default and is not stored: a reopened database starts with it off. Prefer an explicit transaction when several statements belong together, because with auto-transaction each one commits alone.
+`db.set_auto_transaction(False)` is the strict mode: a write outside a transaction raises `ArcadeDBError` with "Transaction not begun" in the message, and writes nothing. Use it when you want the engine to refuse every write that is not in a transaction of yours. `db.is_auto_transaction()` tells which mode a database is in. The setting is not stored: a database that you open starts with auto-transaction on, whatever an earlier run set.
 
 [source,python]
 ----
-db.set_auto_transaction(True)
-db.command("sql", "INSERT INTO Account SET name = 'carol'")
-print("carol" in names(), db.is_transaction_active())
 db.set_auto_transaction(False)
+try:
+    db.command("sql", "INSERT INTO Account SET name = 'zed'")
+except ArcadeDBError as error:
+    print("write:", "Transaction not begun" in str(error))
+print(names(), db.is_auto_transaction())
+db.set_auto_transaction(True)
+print(db.is_auto_transaction())
 ----
 
 [source,text]
 ----
-True False
+write: True
+['alice', 'bob', 'carol'] False
+True
+----
+
+[[commit-cost]]
+== What a commit costs
+
+Every commit is work: the engine writes the changes to its write-ahead log (WAL), and with a WAL flush level of `yes_nometadata` or `yes_full` it waits for the disk (see xref:how-to/durability.adoc[Durability settings]). A loop of single writes pays that price once for every row, with auto-transaction on and also when you wrote `with db.transaction():` around each statement. One transaction around the loop pays it once. This is the one place where the default can be slow.
+
+The table is a set of measurements on one laptop: Python 3.12, the Linux x86-64 wheels built from `main` on 24 November 2026, a fresh database in a directory on disk for each run, one `INSERT` with three parameters for each row, 5 repeats, and the median of the repeats. The laptop was hot and had other work running, so read the figures as an order of magnitude and run your own. The bare writes and the `with db.transaction():` around each row ran at the same rate in every row of the table (within 10 percent), so the cost is the commit, not the setting.
+
+[cols="3,2,2,2,1"]
+|===
+| WAL flush and rows | Package | One transaction, rows per second | Bare writes, rows per second | Ratio
+
+| default (`set_wal_flush("no")`), 10,000 rows
+| `arcadedb-jvm`
+| 122,000
+| 46,000
+| 2.7
+
+| default (`set_wal_flush("no")`), 10,000 rows
+| `arcadedb`
+| 105,000
+| 23,200
+| 4.5
+
+| `set_wal_flush("yes_nometadata")`, 2,000 rows
+| `arcadedb-jvm`
+| 110,000
+| 194
+| 566
+
+| `set_wal_flush("yes_nometadata")`, 2,000 rows
+| `arcadedb`
+| 60,700
+| 183
+| 331
+
+| `set_wal_flush("yes_full")`, 500 rows
+| `arcadedb-jvm`
+| 45,500
+| 174
+| 262
+
+| `set_wal_flush("yes_full")`, 500 rows
+| `arcadedb`
+| 39,600
+| 190
+| 209
+|===
+
+With the default WAL level, a bare write is 3 to 5 times slower than a row in one transaction. With a flush level that waits for the disk, one commit took about 5 milliseconds on this laptop, so a loop of bare writes ran at 170 to 190 rows per second against tens of thousands of rows per second in one transaction. Put a loop of writes in one transaction, or use `insert_many` for documents and `graph_batch` for vertices and edges (see xref:how-to/bulk-loads.adoc[Bulk loads and commit size]):
+
+[source,python]
+----
+db.command("sql", "CREATE DOCUMENT TYPE Note")
+with db.transaction():
+    for number in range(3):
+        db.command("sql", "INSERT INTO Note SET number = ?", number)
+print(db.query("sql", "SELECT count(*) AS total FROM Note").first().get("total"))
+----
+
+[source,text]
+----
+3
 ----
 
 == What a transaction costs on the native build
 
 On the `arcadedb` (native) package, `begin()`, `commit()`, `rollback()`, the block `with db.transaction():` and `db.is_transaction_active()` each make a call into the library, and the library answers with the state of the transaction. From 26.11.1.post3 it answers with that state as one number. Before, it answered with a JSON text that the bindings copied, freed and decoded. What a transaction does, and what an error does to it, are the same as before. The `arcadedb-jvm` package does not change.
 
-The table is one laptop study of the `arcadedb` (native) package: the time for each operation of the 26.11.1.post3 wheel against the 26.11.1.post2 wheel, with 20,000 operations in each run. The ratio is the median of the pair ratios (below 1 means less time) with its 95% interval. Auto-transaction was off, the default, in all three rows. The setup was Python 3.12, one fresh process for each run, the two builds alternated in both orders (ABBA), the first round dropped, 20 clean pairs for each figure, and an A/A control (the post2 wheel twice) whose median ratio was between 0.97 and 1.03 in every row. The figures come from one Linux x86_64 laptop with two cores for the process. The post3 wheels were the ones that CI built from the tagged commit. The wheels on PyPI were checked for the same engine as 26.11.1 and were not timed again.
+The table is one laptop study of the `arcadedb` (native) package: the time for each operation of the 26.11.1.post3 wheel against the 26.11.1.post2 wheel, with 20,000 operations in each run. The ratio is the median of the pair ratios (below 1 means less time) with its 95% interval. Auto-transaction was off in all three rows, which was the default then. The setup was Python 3.12, one fresh process for each run, the two builds alternated in both orders (ABBA), the first round dropped, 20 clean pairs for each figure, and an A/A control (the post2 wheel twice) whose median ratio was between 0.97 and 1.03 in every row. The figures come from one Linux x86_64 laptop with two cores for the process. The post3 wheels were the ones that CI built from the tagged commit. The wheels on PyPI were checked for the same engine as 26.11.1 and were not timed again.
 
 [cols="5,3,1"]
 |===
@@ -146,7 +250,7 @@ The table is one laptop study of the `arcadedb` (native) package: the time for e
 | 20
 |===
 
-In the third row each `save()` asks once for the transaction state, because auto-transaction was off. The study did not time `save()` with auto-transaction on, where it no longer asks (see xref:how-to/databases-and-queries.adoc#record-ids-in-rows[Record ids in rows]), so this page gives no speed for that case. The study claims no gain in memory.
+In the third row each `save()` asks once for the transaction state, because auto-transaction was off. With auto-transaction on, which is the default from 26.12.1, it no longer asks (see xref:how-to/databases-and-queries.adoc#record-ids-in-rows[Record ids in rows]). The study did not time that case, so this page gives no speed for it. The study claims no gain in memory.
 
 == What a transaction sees
 

@@ -482,6 +482,9 @@ def test_graph_batch_create_vertices_failure_rolls_back(temp_db_path, bulk):
     any transaction was accepted and silently lost at close (#121)."""
     with arcadedb.create_database(temp_db_path) as db:
         _unique_person_db(db)
+        db.set_auto_transaction(
+            False
+        )  # a write outside a transaction raises: the proof that none was left open
         # a NaN is not JSON-safe, so it routes to the property-matrix path (a datetime
         # crosses inside the JSON as a tagged value since the graph batches carry it)
         extra = {} if bulk else {"seen": float("nan")}
@@ -498,6 +501,12 @@ def test_graph_batch_create_vertices_failure_rolls_back(temp_db_path, bulk):
         with pytest.raises(Exception):  # noqa: B017 - the engine's own refusal
             db.command("sql", "INSERT INTO Note SET text = 'outside a transaction'")
         assert db.count_type("Person") == 1
+
+        # with auto-transaction on (the default) the same write commits on its own
+        db.set_auto_transaction(True)
+        db.command("sql", "INSERT INTO Note SET text = 'outside a transaction'")
+        assert db.is_transaction_active() is False
+        assert db.count_type("Note") == 1
 
 
 def test_graph_batch_create_vertices_keeps_the_callers_transaction(temp_db_path):
