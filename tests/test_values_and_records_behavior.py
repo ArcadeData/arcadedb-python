@@ -326,8 +326,9 @@ def test_new_document_set_and_save_chain_and_return_the_same_object(temp_db):
     }
 
 
-def test_save_is_a_write_and_needs_a_transaction(temp_db):
+def test_save_is_a_write_and_in_strict_mode_needs_a_transaction(temp_db):
     temp_db.command("sql", "CREATE DOCUMENT TYPE Task")
+    temp_db.set_auto_transaction(False)
     task = temp_db.new_document("Task").set("title", "x")
     with pytest.raises(ArcadeDBError, match="Transaction not begun"):
         task.save()

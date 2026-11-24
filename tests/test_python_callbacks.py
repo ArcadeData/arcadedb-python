@@ -626,9 +626,19 @@ def test_save_and_delete_raise_arcadedb_error_when_a_callback_fails(db):
     veto.remove()
     assert _names(db) == ["y"]
 
-    # without a transaction the engine refuses, as an ArcadeDBError
+    # a bare save commits on its own, so the callback of the bare write fails it and nothing is written
+    handle = db.on("before_create", explode, "Person")
+    with pytest.raises(arcadedb.ArcadeDBError, match="before_create.*no today"):
+        db.new_document("Person").set("name", "w").save()
+    handle.remove()
+    assert _names(db) == ["y"]
+    assert db.is_transaction_active() is False
+
+    # in strict mode, without a transaction the engine refuses, as an ArcadeDBError
+    db.set_auto_transaction(False)
     with pytest.raises(arcadedb.ArcadeDBError):
         db.new_document("Person").set("name", "w").save()
+    db.set_auto_transaction(True)
 
 
 def test_event_registration_errors(db):

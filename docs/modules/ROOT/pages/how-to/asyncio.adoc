@@ -47,7 +47,7 @@ asyncio.run(main())
 ['hello']
 ----
 
-Parameters bind as in `db.query`: positional `?` from the extra arguments, or by name from one `dict`. `command` returns a list of `dict` as well, or `None` when the engine returns no result set. An `INSERT`, `UPDATE` or `DELETE` through `command` needs a transaction, so send it through `run_in_transaction`, or switch on `db.set_auto_transaction(True)`, which commits each statement on its own (see xref:how-to/transactions.adoc#auto-transaction[Transactions]). Do not send `BEGIN` or `COMMIT` through `command`: the next call can run on another worker, where that transaction is not open.
+Parameters bind as in `db.query`: positional `?` from the extra arguments, or by name from one `dict`. `command` returns a list of `dict` as well, or `None` when the engine returns no result set. An `INSERT`, `UPDATE` or `DELETE` through `command` commits on its own, as auto-transaction is on by default. A transaction cannot span awaits, so statements that belong together go through `run_in_transaction` (see xref:how-to/transactions.adoc#outside[Transactions]). Do not send `BEGIN` or `COMMIT` through `command`: the next call can run on another worker, where that transaction is not open.
 
 == Many tasks at once
 

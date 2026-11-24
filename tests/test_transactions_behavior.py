@@ -79,7 +79,19 @@ def test_begin_then_rollback_or_commit(db):
     assert _names(db) == ["alice"]
 
 
-def test_a_write_commit_or_rollback_outside_a_transaction(db):
+def test_a_commit_outside_a_transaction_raises_and_a_rollback_does_not(db):
+    # the same with auto-transaction on (the default) and off
+    for auto in (True, False):
+        db.set_auto_transaction(auto)
+        with pytest.raises(ArcadeDBError, match="Transaction not begun"):
+            db.commit()
+        db.rollback()
+        assert db.is_transaction_active() is False
+    db.set_auto_transaction(True)
+
+
+def test_in_strict_mode_a_write_outside_a_transaction_raises_and_writes_nothing(db):
+    db.set_auto_transaction(False)
     with pytest.raises(ArcadeDBError, match="Transaction not begun"):
         _insert(db, "alice")
     assert _names(db) == []
@@ -163,16 +175,20 @@ def test_an_exception_in_a_nested_block_rolls_back_only_that_block(db):
     assert _names(db) == ["outer"]
 
 
-def test_set_auto_transaction_commits_each_bare_write_alone(db):
-    db.set_auto_transaction(True)
+def test_auto_transaction_is_on_by_default_and_commits_each_bare_write_alone(db):
+    assert db.is_auto_transaction() is True
+    _insert(db, "alice")
+    assert db.is_transaction_active() is False
+    assert _names(db) == ["alice"]
+    db.set_auto_transaction(False)
     try:
-        _insert(db, "alice")
-        assert db.is_transaction_active() is False
-        assert _names(db) == ["alice"]
+        assert db.is_auto_transaction() is False
+        with pytest.raises(ArcadeDBError, match="Transaction not begun"):
+            _insert(db, "bob")
     finally:
-        db.set_auto_transaction(False)
-    with pytest.raises(ArcadeDBError, match="Transaction not begun"):
-        _insert(db, "bob")
+        db.set_auto_transaction(True)
+    assert db.is_auto_transaction() is True
+    assert _names(db) == ["alice"]
 
 
 def test_run_in_transaction_returns_the_value_and_has_these_defaults(db):

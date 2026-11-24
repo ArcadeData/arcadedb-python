@@ -250,7 +250,7 @@ class ArcadeDBServer:
 
         try:
             java_db = self._java_server.getDatabase(name)
-            return Database(java_db)
+            return Database._opened(java_db)
         except Exception as e:
             raise ArcadeDBError(f"Failed to get database '{name}': {e}") from e
 
@@ -274,7 +274,7 @@ class ArcadeDBServer:
             # Use server's getDatabase with createIfNotExists=True
             # This properly registers the database with the server
             java_db = self._java_server.getDatabase(name, True, True)
-            return Database(java_db)
+            return Database._opened(java_db)
         except Exception as e:
             raise ArcadeDBError(f"Failed to create database '{name}': {e}") from e
 

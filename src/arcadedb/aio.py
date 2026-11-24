@@ -116,8 +116,8 @@ class AsyncDatabase:
         """``db.command(language, command, *args)``, with the rows read on the worker: a list of ``dict``, or ``None`` when the
         engine returns no result set.
 
-        An ``INSERT``, ``UPDATE`` or ``DELETE`` needs a transaction, and a transaction cannot span awaits: put writes in
-        :meth:`run_in_transaction`, or switch on ``db.set_auto_transaction(True)``. Do not send ``BEGIN`` or ``COMMIT`` through this
+        An ``INSERT``, ``UPDATE`` or ``DELETE`` commits on its own (auto-transaction is on by default), and a transaction cannot span
+        awaits: put statements that belong together in :meth:`run_in_transaction`. Do not send ``BEGIN`` or ``COMMIT`` through this
         method: the next call may run on another worker.
         """
         return await self.run(self._command, language, command, *args)

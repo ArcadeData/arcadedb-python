@@ -174,7 +174,8 @@ def _saved(db, **values):
     return str(doc.get_identity())
 
 
-def test_updating_a_saved_record_is_three_crossings(db, crossings):
+def test_updating_a_saved_record_in_strict_mode_is_three_crossings(db, crossings):
+    db.set_auto_transaction(False)
     rid = _saved(db, a=1, name="x")
     with db.transaction():
         record = db.lookup_by_rid(rid).modify()
@@ -186,7 +187,10 @@ def test_updating_a_saved_record_is_three_crossings(db, crossings):
     assert db.lookup_by_rid(rid).get("a") == 2
 
 
-def test_an_update_that_reads_its_row_back_is_three_crossings(db, crossings):
+def test_an_update_that_reads_its_row_back_in_strict_mode_is_three_crossings(
+    db, crossings
+):
+    db.set_auto_transaction(False)
     rid = _saved(db, a=1)
     with db.transaction():
         record = db.lookup_by_rid(rid).modify()
@@ -315,7 +319,10 @@ def test_a_stale_record_is_still_refused_before_anything_is_written(db):
     assert (stored.get("a"), stored.get("b")) == (1, 9)  # nothing of mine was written
 
 
-def test_an_update_outside_a_transaction_still_raises_before_reading(db, crossings):
+def test_an_update_outside_a_transaction_in_strict_mode_raises_before_reading(
+    db, crossings
+):
+    db.set_auto_transaction(False)
     rid = _saved(db, a=1)
     record = db.lookup_by_rid(rid).modify()
     record.set("a", 2)
@@ -352,6 +359,7 @@ def test_a_before_create_veto_on_a_new_record_writes_nothing_and_raises_nothing(
 def test_a_before_update_veto_writes_nothing_and_the_next_save_is_no_conflict(
     db, crossings
 ):
+    db.set_auto_transaction(False)  # the crossings below are those of the strict mode
     rid = _saved(db, name="a")
     veto = db.on("before_update", lambda r: r.get("name") != "frozen", "D")
     vetoes = extras.veto_count()
@@ -371,6 +379,7 @@ def test_a_before_update_veto_writes_nothing_and_the_next_save_is_no_conflict(
 
 
 def test_a_before_update_veto_on_an_update_that_reads_its_row_back(db, crossings):
+    db.set_auto_transaction(False)  # the crossings below are those of the strict mode
     rid = _saved(db, name="a")
     veto = db.on("before_update", lambda r: r.get("extra") != "x", "D")
     vetoes = extras.veto_count()

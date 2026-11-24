@@ -760,10 +760,28 @@ class NativeDatabase:
         self._vector_meta: dict = {}
         self._vector_dimensions: dict = {}
         self._vector_id_properties: dict = {}
-        self._auto_transaction = False  # the engine default; set_auto_transaction() is the only way it changes
+        self._auto_transaction = False  # the engine's own default; _opened() and set_auto_transaction() are the only ways it changes
         # statements run through command() on this handle: what columnar.Declared keeps the declared property types against (a schema
         # change made on this handle is one of them); a query, a transaction call or a bulk crossing does not move it
         self._command_count = 0
+
+    @classmethod
+    def _opened(cls, handle: int, owned_by_server: bool = False):
+        """The handle of a database that was just created or opened, with the default of this package: auto-transaction on.
+
+        The engine's own default is off. Every database that the bindings hand out goes through here, so a write outside a
+        transaction commits on its own, as on the JVM build. ``set_auto_transaction(False)`` brings the strict mode back.
+        """
+        db = cls(handle, owned_by_server)
+        try:
+            db.set_auto_transaction(True)
+        except BaseException:
+            try:
+                db.close()
+            except Exception:  # nosec B110 - the first error is the one to raise
+                pass
+            raise
+        return db
 
     # -- lifecycle
 
@@ -1723,11 +1741,20 @@ class NativeDatabase:
         return bool(db_set(self, "read_your_writes")["v"])
 
     def set_auto_transaction(self, enabled: bool):
+        """On by default: each statement outside a transaction runs in a transaction of its own and commits when it ends.
+        ``set_auto_transaction(False)`` is the strict mode: a write outside a transaction raises ``ArcadeDBError``
+        ("Transaction not begun"). The setting is not persisted: a database that you open starts with it on again.
+        """
         self._check_not_closed()
         from .extras import db_set
 
         db_set(self, "auto_transaction", "true" if enabled else "false")
         self._auto_transaction = bool(enabled)
+
+    def is_auto_transaction(self) -> bool:
+        """Return whether auto-transaction is on (the default): a write outside a transaction commits on its own."""
+        self._check_not_closed()
+        return self._auto_transaction
 
 
 def _column_values(name, values):
@@ -1969,7 +1996,7 @@ class NativeDatabaseFactory:
         self._path = os.fspath(path)
 
     def create(self) -> NativeDatabase:
-        return NativeDatabase(
+        return NativeDatabase._opened(
             _call("Failed to create database", "arcadedb_n_open", lib.b(self._path), 0)[
                 "h"
             ]
@@ -1977,7 +2004,7 @@ class NativeDatabaseFactory:
 
     def open(self, read_only: bool = False) -> NativeDatabase:
         mode = 2 if read_only else 1
-        return NativeDatabase(
+        return NativeDatabase._opened(
             _call(
                 "Failed to open database", "arcadedb_n_open", lib.b(self._path), mode
             )["h"]

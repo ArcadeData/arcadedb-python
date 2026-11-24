@@ -516,6 +516,18 @@ class Database:
         self._async_executors: List[Any] = []
         self._functions = FunctionRegistration(self)
 
+    @classmethod
+    def _opened(cls, java_database: Any) -> "Database":
+        """The handle of a database that was just created or opened, with the default of this package: auto-transaction on.
+
+        The engine's own default is off. Every database that the bindings hand out (``create_database``, ``open_database``,
+        ``DatabaseFactory`` and the database of an embedded server) goes through here, so a write outside a transaction commits
+        on its own, as in DuckDB or asyncpg. ``set_auto_transaction(False)`` brings the strict mode back.
+        """
+        db = cls(java_database)
+        java_database.setAutoTransaction(True)
+        return db
+
     def __enter__(self) -> "Database":
         return self
 
@@ -2208,25 +2220,35 @@ class Database:
         """
         Enable or disable automatic transaction management.
 
-        Off by default: a write outside a transaction raises ``ArcadeDBError``
-        ("Transaction not begun"), so wrap writes in ``with db.transaction():``
-        or call begin() yourself. When enabled, each statement outside a
-        transaction runs in its own committed transaction. The setting is not
-        persisted: a reopened database starts with it off again.
+        On by default: each statement outside a transaction runs in a
+        transaction of its own and commits when the statement ends. A
+        transaction that you open with ``begin()`` or ``with db.transaction():``
+        is never committed for you. ``set_auto_transaction(False)`` is the
+        strict mode: a write outside a transaction raises ``ArcadeDBError``
+        ("Transaction not begun"), so every write has to sit in a transaction
+        of yours. The setting is not persisted: a database that you open
+        starts with it on again.
 
         Args:
             enabled: True to enable auto-transaction, False to disable
 
         Example:
-            >>> db.set_auto_transaction(True)   # each bare write commits alone
-            >>> db.command("sql", "INSERT INTO T SET a = 1")
-            >>> db.set_auto_transaction(False)  # back to the default
+            >>> db.command("sql", "INSERT INTO T SET a = 1")  # commits alone
+            >>> db.set_auto_transaction(False)  # strict mode: writes need a transaction
         """
         self._check_not_closed()
         try:
             self._java_db.setAutoTransaction(enabled)
         except Exception as e:
             raise ArcadeDBError(f"Failed to set auto-transaction: {e}") from e
+
+    def is_auto_transaction(self) -> bool:
+        """Return whether auto-transaction is on (the default): a write outside a transaction commits on its own."""
+        self._check_not_closed()
+        try:
+            return bool(self._java_db.isAutoTransaction())
+        except Exception as e:
+            raise ArcadeDBError(f"Failed to get auto-transaction: {e}") from e
 
     def register_function(
         self,
@@ -2792,7 +2814,7 @@ class DatabaseFactory:
         """Create a new database."""
         try:
             java_db = self._java_factory.create()
-            return Database(java_db)
+            return Database._opened(java_db)
         except Exception as e:
             raise ArcadeDBError(f"Failed to create database: {e}") from e
 
@@ -2814,7 +2836,7 @@ class DatabaseFactory:
                 java_db = self._java_factory.open(mode)
             else:
                 java_db = self._java_factory.open()
-            return Database(java_db)
+            return Database._opened(java_db)
         except Exception as e:
             raise ArcadeDBError(f"Failed to open database: {e}") from e
 

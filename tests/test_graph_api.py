@@ -608,9 +608,12 @@ def test_save_refuses_a_stale_record_from_a_query_result(temp_db_path):
         assert _stored_ab(db) == (10, 2)
 
 
-def test_save_of_an_existing_record_outside_a_transaction_is_refused(temp_db_path):
-    """Both builds: save() is a write, so it needs an active transaction (auto-transaction is off by default) and opens none of its own."""
+def test_save_of_an_existing_record_outside_a_transaction_is_refused_in_strict_mode(
+    temp_db_path,
+):
+    """Both builds: in strict mode (auto-transaction off) save() is a write that needs an active transaction, and it opens none of its own."""
     with arcadedb.create_database(temp_db_path) as db:
+        db.set_auto_transaction(False)
         rid = _create_doc_ab(db)
 
         mutable = db.lookup_by_rid(rid).modify()

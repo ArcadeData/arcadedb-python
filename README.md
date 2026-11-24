@@ -63,15 +63,14 @@ with arcadedb.create_database("./mydb") as db:
     db.command("sql", "CREATE PROPERTY Person.name STRING")
     db.command("sql", "CREATE PROPERTY Person.age INTEGER")
 
-    # Writes need a transaction
-    with db.transaction():
-        db.command("sql", "INSERT INTO Person SET name = ?, age = ?", "Alice", 30)
+    # A statement outside a transaction commits by itself
+    db.command("sql", "INSERT INTO Person SET name = ?, age = ?", "Alice", 30)
 
     for record in db.query("sql", "SELECT FROM Person WHERE age > 25"):
         print(f"Name: {record.get('name')}")
 ```
 
-This prints `Name: Alice` (the engine also logs to standard error). `create_database` raises if the path already holds a database, so run it in an empty directory, or call `open_or_create_database` to open the database when it exists and create it when it does not. Everything else goes through the same two calls, `db.command(...)` and `db.query(...)`, in SQL or openCypher.
+This prints `Name: Alice` (the engine also logs to standard error). `create_database` raises if the path already holds a database, so run it in an empty directory, or call `open_or_create_database` to open the database when it exists and create it when it does not. Everything else goes through the same two calls, `db.command(...)` and `db.query(...)`, in SQL or openCypher. Statements that belong together go in `with db.transaction():`, which commits them as one and is much faster for many rows ([Transactions](https://docs.arcadedb.com/arcadedb-python/how-to/transactions.html)).
 
 ## What is included
 

@@ -239,7 +239,7 @@ A record object is a `Document`, a `Vertex` or an `Edge`. A vertex and an edge a
 
 A record has the same readers as a row (`get`, `has_property`, `get_property_names`, `to_dict`), and `to_dict()` holds the properties only. A record also has `get_type_name()`, and `get_rid()` gives its record id.
 
-Creating a record takes three steps: make the object, set its properties, save it. `set()` and `save()` return the record, so they chain. `save()` is a write, so it needs a transaction, as every write does (see xref:how-to/transactions.adoc[Transactions]). The record has its record id after `save()`. `record.delete()` removes a record, also inside a transaction.
+Creating a record takes three steps: make the object, set its properties, save it. `set()` and `save()` return the record, so they chain. `save()` is a write: outside a transaction it commits on its own, as every write does, and inside one it joins the transaction (see xref:how-to/transactions.adoc[Transactions]). The record has its record id after `save()`. `record.delete()` removes a record, in a transaction or alone.
 
 [source,python]
 ----

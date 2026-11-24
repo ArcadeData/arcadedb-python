@@ -1,5 +1,5 @@
 = Quickstart
-:description: Create a database, insert records in a transaction and query them with SQL, in about five minutes.
+:description: Create a database, insert records and query them with SQL, in about five minutes.
 
 // Source: bindings docs getting-started/quickstart.md.
 
@@ -32,7 +32,7 @@ The database runs in your Python process. You use SQL for the schema and for CRU
 Two rules cover most first mistakes:
 
 * Use a `with` block. It closes the database when the block ends, also when an exception leaves it.
-* *Writes need a transaction.* `INSERT`, `UPDATE` and `DELETE` go inside `with db.transaction():`. Schema statements apply immediately. Reads need no transaction. What a transaction does on an error, and how to roll back by hand, is on xref:how-to/transactions.adoc[Transactions].
+* *Each write commits by itself.* An `INSERT`, `UPDATE` or `DELETE` outside a transaction runs in a transaction of its own and is committed when the statement ends, as in DuckDB or asyncpg. Statements that must succeed or fail together go inside `with db.transaction():`, and so do many writes in a loop, which run much faster in one transaction. What a transaction does on an error, how to roll back by hand and what a single commit costs are on xref:how-to/transactions.adoc[Transactions].
 
 == A complete example
 
@@ -51,20 +51,19 @@ def main():
         db.command("sql", "CREATE PROPERTY Person.email STRING")
         db.command("sql", "CREATE INDEX ON Person (name) NOTUNIQUE")
 
-        # Insert data (in a transaction)
-        with db.transaction():
-            for name, age, email in [
-                ("Alice", 30, "alice@example.com"),
-                ("Bob", 25, "bob@example.com"),
-                ("Charlie", 35, "charlie@example.com"),
-            ]:
-                db.command(
-                    "sql",
-                    "INSERT INTO Person SET name = ?, age = ?, email = ?",
-                    name,
-                    age,
-                    email,
-                )
+        # Insert data (each statement commits by itself)
+        for name, age, email in [
+            ("Alice", 30, "alice@example.com"),
+            ("Bob", 25, "bob@example.com"),
+            ("Charlie", 35, "charlie@example.com"),
+        ]:
+            db.command(
+                "sql",
+                "INSERT INTO Person SET name = ?, age = ?, email = ?",
+                name,
+                age,
+                email,
+            )
         print("Inserted 3 records")
 
         # Query all (no transaction needed for reads)
@@ -105,12 +104,12 @@ The steps in the script are:
 
 . `create_database("./quickstart")` creates the directory and opens a database in it.
 . Four `CREATE` statements define a document type `Person`, three properties and an index on `name`.
-. A transaction inserts three records. The `?` marks are positional parameters bound to the values after the statement.
+. Three `INSERT` statements add records, and each one commits by itself. The `?` marks are positional parameters bound to the values after the statement.
 . `db.query` reads them back, with and without a filter, and `count(*)` counts them.
 
 == Reopen the database
 
-Open an existing database with `open_database`. The second part of the script shows what happens when a write runs outside a transaction:
+Open an existing database with `open_database`. The second part of the script writes outside a transaction, and then turns auto-transaction off to show the strict mode, where such a write raises:
 
 [source,python,subs="attributes+"]
 ----
@@ -121,10 +120,23 @@ with arcadedb.open_database("./quickstart") as db:
     result = db.query("sql", "SELECT FROM Person")
     print(f"Found {len(list(result))} records")
 
-# A write outside a transaction raises
+# A write outside a transaction commits by itself
 with arcadedb.open_database("./quickstart") as db:
+    db.command("sql", "INSERT INTO Person SET name = 'Dora'")
+    total = db.query("sql", "SELECT count(*) as total FROM Person").first().get("total")
+    print("Total people:", total)
+
+# Several writes as one unit: all commit, or none does
+with arcadedb.open_database("./quickstart") as db:
+    with db.transaction():
+        db.command("sql", "INSERT INTO Person SET name = 'Eve'")
+        db.command("sql", "INSERT INTO Person SET name = 'Frank'")
+
+# Strict mode: a write outside a transaction raises
+with arcadedb.open_database("./quickstart") as db:
+    db.set_auto_transaction(False)
     try:
-        db.command("sql", "INSERT INTO Person SET name = 'Dora'")
+        db.command("sql", "INSERT INTO Person SET name = 'Grace'")
     except Exception as e:
         print(type(e).__name__, e, sep=": ")
 ----
@@ -132,10 +144,13 @@ with arcadedb.open_database("./quickstart") as db:
 [source,text]
 ----
 Found 3 records
+Total people: 4
 TransactionError: [transaction_not_begun] No transaction is open: wrap the write in `with db.transaction():`, or call `db.set_auto_transaction(True)` so that each statement commits on its own. Command failed: com.arcadedb.exception.TransactionException: Transaction not begun
 ----
 
 The error is a `TransactionError`, a subclass of `ArcadeDBError`. It carries a code (`e.code`) and a hint (`e.hint`) that a program can read, and its text ends with the engine's own message. xref:how-to/errors.adoc[Errors: codes, hints and classes] lists them all.
+
+The strict mode is for code that wants the engine to refuse any write that is not in a transaction of its own. `db.set_auto_transaction(False)` turns it on for one open database. It is not stored, so a database that you open again starts with auto-transaction on.
 
 == Server mode
 
