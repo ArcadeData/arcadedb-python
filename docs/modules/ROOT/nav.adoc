@@ -1,5 +1,6 @@
 * xref:index.adoc[ArcadeDB Python]
 * xref:installation.adoc[Installation]
+* xref:upgrading.adoc[Upgrading to 26.12.1]
 * xref:which-package.adoc[Which package?]
 * xref:quickstart.adoc[Quickstart]
 * How-to

@@ -1,0 +1,47 @@
+= Upgrading to 26.12.1
+:description: What behaves differently in 26.12.1 for a program written against 26.11.1 or one of its post releases, and what is new in the two Python packages.
+
+// Sources: the pull requests ArcadeData/arcadedb-python #479 to #483. Pinned by tests/test_auto_transaction_default.py, tests/test_error_codes_table.py, tests/test_error_codes_parity.py and tests/test_lazy_import.py.
+
+Read this page before you move a program from 26.11.1, or from one of its post releases, to 26.12.1. It covers both packages, `{native-pkg-name}` and `{jvm-pkg-name}`. The changes of the engine itself are listed with the https://github.com/ArcadeData/arcadedb/releases[releases of ArcadeDB].
+
+[[changed-behaviour]]
+== Changed behaviour
+
+=== A write outside a transaction commits on its own
+
+Before, such a write raised `ArcadeDBError` with "Transaction not begun" in the message. Now the statement runs in a transaction of its own and commits when it ends. This holds for every database that the packages hand out, the databases of an embedded server included.
+
+* Code that uses `with db.transaction():`, or `db.begin()` with `db.commit()`, behaves as before.
+* Code that relied on the error, for example to catch a write that is not in a transaction, must call `db.set_auto_transaction(False)`. The setting is not stored, so call it after every open. See xref:how-to/transactions.adoc#strict-mode[Strict mode].
+* A loop of single writes pays one commit for each of them. Put many writes in one transaction: see xref:how-to/transactions.adoc#commit-cost[What a commit costs].
+
+=== The text of an error starts with its code and a hint
+
+`str(e)` of a failure that the packages recognize is `[code] hint`, followed by the text that the error had before.
+
+* Code that compares the whole text, or its beginning with `startswith`, no longer matches. Test `e.code` or the class of the error, or search the text with `in`. `e.to_dict()["message"]` is the text without the code and the hint.
+* A common cause raises a subclass of `ArcadeDBError`, such as `DuplicateKeyError`. `except ArcadeDBError` still catches it, but `type(e) is ArcadeDBError` is false.
+* A failure with the code `unknown` keeps its class and its text.
+
+See xref:how-to/errors.adoc[Errors: codes, hints and classes].
+
+=== NumPy is imported when it is first needed
+
+`import arcadedb` no longer imports NumPy itself (`{jvm-pkg-name}` can still import it at that point through JPype). A NumPy that is installed but cannot be imported now raises at the first call that needs it. Before, the packages acted as if NumPy were not installed.
+
+=== Engine 26.12.1
+
+The engine that the 26.12.1 packages carry changes some behaviour that the other pages describe:
+
+* A vector index that `CREATE INDEX ... LSM_VECTOR` makes without `addHierarchy` has the HNSW hierarchy layers; on 26.11.1 and earlier it was a flat graph. `create_vector_index` already asked for the layers. See xref:how-to/vectors.adoc[Vectors].
+* `EXPORT DATABASE` refuses a setting that it does not know and some values that it accepted before: see xref:how-to/import-export.adoc[Importing and exporting data].
+
+Keep a backup of the database directory before you upgrade. With the engine change https://github.com/ArcadeData/arcadedb/pull/12239[ArcadeData/arcadedb#12239], a read-write open labels the database, and 26.11.1 then refuses to open it. The way to prevent the label is on xref:installation.adoc#older-wheel[Open a database with an older wheel].
+
+== New
+
+* `open_or_create_database(path)` opens the database when it exists and creates it when it does not: see xref:how-to/databases-and-queries.adoc#open-or-create[Open or create].
+* Every error has `code`, `hint`, `cause` and `to_dict()`: see xref:how-to/errors.adoc[Errors: codes, hints and classes].
+* Both packages ship type hints on every public class and function, and a `py.typed` marker (PEP 561). A type checker now reads them, so it can report problems in your code that it did not report before.
+* The `FACETS` clause and the `COLUMNAR` index, which need engine 26.12.1: see xref:how-to/facets.adoc[Faceted queries].
