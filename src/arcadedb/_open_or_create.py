@@ -15,7 +15,7 @@ from .exceptions import ArcadeDBError
 # One lock for the process, so two threads that open or create the same path do not both see "missing" and both create.
 _LOCK = threading.Lock()
 
-# After a create that failed, how long to wait for another process to finish creating the same database, and how often to look.
+# After the second create failed, how long to wait for another process to finish creating the same database, and how often to look.
 _LOST_RACE_WAIT_S = 0.25
 _LOST_RACE_STEP_S = 0.01
 
@@ -26,9 +26,9 @@ def open_or_create(factory, read_only: bool = False):
     ``read_only=True`` never creates: there is nothing to open read-only in a path that holds no database, so a missing database
     raises the same ``ArcadeDBError`` as ``open_database``.
 
-    Two processes that call this on the same new path at the same time: one of them creates the database, the other one's create
-    fails, it sees that the database exists now and opens it. The engine allows one process per database, so that open raises the
-    engine's "locked by another process" ``ArcadeDBError`` for as long as the first process keeps the database open.
+    Two processes that call this on the same new path at the same time: one of them creates the database. The other one opens it,
+    or, because the engine allows one process per database, raises the engine's "locked by another process" ``ArcadeDBError`` while
+    the first process still has the database open, which includes the time in which it is still creating it.
     """
     with _LOCK:
         if read_only:
@@ -38,7 +38,15 @@ def open_or_create(factory, read_only: bool = False):
         try:
             return factory.create()
         except ArcadeDBError:
-            # The database may have appeared between exists() and create() (another process won): then open it.
+            # Create once more (#492). The engine makes the database directory with exists() and then mkdirs(), so a process that
+            # another one overtakes between the two gets "Cannot create directory" for a directory that is there now, and the other
+            # process may need longer than any short wait to write the database. The second create finds the directory, and the
+            # engine's database lock decides: it creates, or it raises "locked by another process" or "already exists".
+            pass
+        try:
+            return factory.create()
+        except ArcadeDBError:
+            # The database may have appeared in the meantime (another process won): then open it.
             # Any other failure (a path that is a file, no permission) is still missing a database: raise the create error.
             deadline = time.monotonic() + _LOST_RACE_WAIT_S
             while not factory.exists():
