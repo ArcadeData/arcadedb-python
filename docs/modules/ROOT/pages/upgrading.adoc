@@ -1,6 +1,13 @@
 = Upgrading to 26.12.1
 :description: What behaves differently in 26.12.1 for a program written against 26.11.1 or one of its post releases, and what is new in the two Python packages.
 
+// The title names the release: scripts/release_notes.py links this page from the GitHub Release notes of that release.
+// GitHub shows this file without the attributes of antora.yml, so the two that the page uses are set for GitHub here.
+ifdef::env-github[]
+:native-pkg-name: arcadedb
+:jvm-pkg-name: arcadedb-jvm
+endif::[]
+
 // Sources: the pull requests ArcadeData/arcadedb-python #479 to #483. Pinned by tests/test_auto_transaction_default.py, tests/test_error_codes_table.py, tests/test_error_codes_parity.py and tests/test_lazy_import.py.
 
 Read this page before you move a program from 26.11.1, or from one of its post releases, to 26.12.1. It covers both packages, `{native-pkg-name}` and `{jvm-pkg-name}`. The changes of the engine itself are listed with the https://github.com/ArcadeData/arcadedb/releases[releases of ArcadeDB].

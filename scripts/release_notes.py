@@ -2,7 +2,9 @@
 """Write the notes of the GitHub Release of one tag from the milestone of its version.
 
 The tag is a bare version (docs page "Release"): `A.B.C.devN`, `A.B.C` or `A.B.C.postN`. The notes list merged pull requests grouped
-by label, then the install lines, the engine version and the PyPI pages of the two packages. The pull requests of a `devN` and of a
+by label, then the install lines, the engine version and the PyPI pages of the two packages. The notes of a `devN` and of a final
+release start with a `Changed behaviour` line that links the docs page `upgrading.adoc` as it is in the tag, when the title of that
+page is `Upgrading to A.B.C` for the base of the tag. The pull requests of a `devN` and of a
 final release come from the milestone named after the base `A.B.C`; a `postN` does not use a milestone (see below).
 
 Which pull requests a tag lists:
@@ -53,6 +55,8 @@ SECTIONS = [
     ("Documentation", "documentation"),
 ]
 OTHER = "Other"
+# what behaves differently in a release; the title of the page names the release it is about
+UPGRADE_PAGE = "docs/modules/ROOT/pages/upgrading.adoc"
 
 
 class ApiError(Exception):
@@ -240,6 +244,17 @@ def engine_of(repo, kind, base, ref):
     return None, "dev"
 
 
+def upgrade_page_url(repo, base, tag, ref):
+    """The upgrade page in the tag, or None when the page at `ref` is missing or is about another release than `base`."""
+    data = gh_api(f"repos/{repo}/contents/{UPGRADE_PAGE}?ref={quote(ref, safe='')}")
+    if not data or not data.get("content"):
+        return None
+    text = base64.b64decode(data["content"]).decode()
+    if not re.search(rf"^= Upgrading to {re.escape(base)}[ \t\r]*$", text, re.M):
+        return None
+    return f"https://github.com/{repo}/blob/{tag}/{UPGRADE_PAGE}"
+
+
 def build_notes(repo, tag):
     base, kind, n = parse_tag(tag)
     default_branch = (gh_api(f"repos/{repo}") or {}).get("default_branch", "main")
@@ -281,6 +296,12 @@ def build_notes(repo, tag):
 
     engine, engine_kind = engine_of(repo, kind, base, ref)
     lines = []
+    url = None if kind == "post" else upgrade_page_url(repo, base, tag, ref)
+    if url:
+        lines.append(
+            f"**Changed behaviour:** read [Upgrading to {base}]({url}) before you upgrade."
+        )
+        lines.append("")
     if kind == "dev":
         lines.append(
             f"Pre-release of `{base}`: a preview built from the engine release named below, for trying the next release early."
