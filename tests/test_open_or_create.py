@@ -13,6 +13,7 @@ import time
 import pytest
 
 import arcadedb
+from arcadedb._open_or_create import open_or_create
 from arcadedb.exceptions import ArcadeDBError
 
 ACCEPTED_RACE_OUTCOMES = ("OK", "LOCKED")
@@ -192,9 +193,9 @@ RACER = """
 def test_two_processes_racing_on_a_new_path(tmp_path, round_number):
     """Both processes call the function at the same moment on a path that holds no database.
 
-    Neither may fail with "already exists" or "does not exist". The only other outcome is the engine's lock error, when one process
-    still holds the database as the other one looks (the engine allows one process per database). At least one process gets the
-    database, and the directory it made opens afterwards.
+    Neither may fail with "already exists", "does not exist" or "Cannot create directory" (#492). The only other outcome is the
+    engine's lock error, when one process still holds the database as the other one looks (the engine allows one process per
+    database). At least one process gets the database, and the directory it made opens afterwards.
     """
     path = str(tmp_path / "db")
     go = str(tmp_path / "go")
@@ -220,3 +221,75 @@ def test_two_processes_racing_on_a_new_path(tmp_path, round_number):
     assert arcadedb.database_exists(path)
     with arcadedb.open_or_create_database(path) as db:
         assert db.is_open()
+
+
+class _OvertakenFactory:
+    """The factory of a process that another one overtakes on a new path: ``create()`` raises ``errors`` in turn and then succeeds.
+
+    ``exists()`` stays False until ``create()`` ran ``visible_after`` times, because the other process has made the directory and has
+    not written the database yet (it is False for ever with no ``visible_after``).
+    """
+
+    def __init__(self, *errors, visible_after=None):
+        self._errors = list(errors)
+        self._visible_after = visible_after
+        self.creates = 0
+
+    def exists(self):
+        return self._visible_after is not None and self.creates >= self._visible_after
+
+    def create(self):
+        self.creates += 1
+        if self._errors:
+            raise self._errors.pop(0)
+        return "created"
+
+    def open(self, read_only=False):
+        assert self.exists(), "open() of a path that holds no database"
+        return "opened"
+
+
+def _cannot_create_directory():
+    # the text of the failure in ArcadeData/arcadedb-python#492: the engine checks that the directory is missing and then calls
+    # mkdirs(), which returns False when another process made the directory between the two
+    return ArcadeDBError(
+        "Failed to create database: com.arcadedb.exception.DatabaseOperationException: Cannot create directory 'db'"
+    )
+
+
+def _locked():
+    return ArcadeDBError(
+        "Failed to create database: Database 'db' is locked by another process"
+    )
+
+
+def test_losing_the_directory_to_a_process_that_still_creates_raises_the_lock_error():
+    locked = _locked()
+    factory = _OvertakenFactory(_cannot_create_directory(), locked)
+    with pytest.raises(ArcadeDBError) as raised:
+        open_or_create(factory)
+    assert raised.value is locked
+    assert factory.creates == 2
+
+
+def test_losing_the_directory_alone_does_not_fail_the_call():
+    factory = _OvertakenFactory(_cannot_create_directory())
+    assert open_or_create(factory) == "created"
+    assert factory.creates == 2
+
+
+def test_losing_the_directory_opens_the_database_the_other_process_finished():
+    exists = ArcadeDBError("Failed to create database: Database 'db' already exists")
+    factory = _OvertakenFactory(_cannot_create_directory(), exists, visible_after=2)
+    assert open_or_create(factory) == "opened"
+
+
+def test_a_directory_that_cannot_be_made_still_raises_after_a_second_create():
+    again = _cannot_create_directory()
+    factory = _OvertakenFactory(
+        _cannot_create_directory(), again, _cannot_create_directory()
+    )
+    with pytest.raises(ArcadeDBError, match="Cannot create directory") as raised:
+        open_or_create(factory)
+    assert raised.value is again
+    assert factory.creates == 2

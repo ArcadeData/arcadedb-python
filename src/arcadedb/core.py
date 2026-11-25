@@ -2938,10 +2938,10 @@ def open_or_create_database(
               wait. The same process cannot open a path twice either: close
               the first handle, or share it between threads.
             * Two processes call it on the same new path at once. One creates
-              the database. The other one's create fails, it finds the
-              database and opens it, so it never raises "already exists"; it
-              raises the "locked" error of the case above for as long as the
-              first process keeps the database open.
+              the database. The other one opens it, or raises the "locked"
+              error of the case above while the first process still has the
+              database open, also while it is still creating it. It does not
+              raise "already exists" or "Cannot create directory".
 
     Example:
         >>> with arcadedb.open_or_create_database("./memory") as db:

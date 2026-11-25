@@ -93,7 +93,7 @@ Run it twice: the first run creates the database and prints `1`, the second open
 * `read_only=True` never creates. A path that holds no database raises `ArcadeDBError`, with the same message as `open_database`, and nothing is written.
 * The path is a directory that holds no database (empty, or with other files in it): a database is created inside it and the other files stay untouched, as with `create_database`. The path is a file: it raises `ArcadeDBError` ("Not a directory") and changes nothing.
 * Another process holds the database open: it raises `ArcadeDBError` with the engine's "locked by another process" message and does not wait. See <<locking,Locking>>. The same process cannot hold one path twice either (the engine says "already in use"): keep the first handle and share it between threads.
-* Two processes call it on the same new path at the same moment: one creates the database. The other finds that the database exists now and opens it, so it never fails with "already exists" or "does not exist". It raises the "locked by another process" error while the first process keeps the database open, and works once that one closes it.
+* Two processes call it on the same new path at the same moment: one creates the database. The other opens it, or raises the "locked by another process" error while the first process still has it open, also while that one is still creating it. It does not fail with "already exists", "does not exist" or "Cannot create directory", and it works once the first process closes the database.
 
 === Read-only open
 
