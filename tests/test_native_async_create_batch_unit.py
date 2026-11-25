@@ -12,6 +12,7 @@ No JVM and no native library: the library call is replaced by a recorder, so the
 values and the callbacks of the real library are in test_native_async_create_batch.py.
 """
 
+import contextlib
 import json
 import threading
 import time
@@ -89,6 +90,13 @@ class _Library:
 
 @pytest.fixture
 def library(monkeypatch):
+    with _fake_library(monkeypatch) as fake:
+        yield fake
+
+
+@contextlib.contextmanager
+def _fake_library(monkeypatch):
+    """A recorder in place of the library. No executor made inside hands anything over after the block has ended."""
     fake = _Library()
     # the linger time (how long a collected record waits for the rest of its batch) is out of the way, so "still buffered" is a fact
     monkeypatch.setattr(extras, "_ASYNC_LINGER", 3600.0, raising=False)
@@ -101,7 +109,22 @@ def library(monkeypatch):
     monkeypatch.setattr(bulk, "_usable", lambda: True)
     # a linger thread of its own for each test: the due times of another test (3600 s) are not in this one's way
     monkeypatch.setattr(extras, "_linger", extras._Linger())
-    return fake
+    made = []
+    real_init = extras.NativeAsyncExecutor.__init__
+
+    def init(executor, database):
+        real_init(executor, database)
+        made.append(executor)
+
+    monkeypatch.setattr(extras.NativeAsyncExecutor, "__init__", init)
+    try:
+        yield fake
+    finally:
+        # A test can end, or fail, with a batch still collected. Its linger thread would hand that batch over later, through
+        # whatever extras._call is by then: the recorder of the NEXT test, which would count records it never sent. This runs
+        # before monkeypatch is undone. _stop_linger waits for a hand-over that is running and makes every later one do nothing.
+        for executor in made:
+            executor._stop_linger()
 
 
 @pytest.fixture
@@ -530,6 +553,21 @@ def test_the_order_of_the_calls_holds_across_linger_hand_overs_and_flush_points(
             executor.is_processing()  # a flush point of its own
     executor.wait_completion()
     assert [o[2]["props"]["id"] for o in library.per_record()] == list(range(sent))
+
+
+def test_a_batch_left_collected_by_one_test_never_reaches_the_library_of_the_next(
+    monkeypatch,
+):
+    # ArcadeData/arcadedb-python#451, windows-x64: a test failed with 2 records still collected and a linger time of 0.1 s, and the
+    # order test that ran next waited 10 s for a count that those 2 records had already pushed past
+    with pytest.MonkeyPatch.context() as earlier, _fake_library(earlier):
+        earlier.setattr(extras, "_ASYNC_LINGER", 0.2)
+        left_behind = extras.NativeAsyncExecutor(_Db())
+        for doc in _rows(2):
+            left_behind.create_record(doc)
+    with _fake_library(monkeypatch) as later:
+        time.sleep(0.4)  # past the due time of the batch that was left
+        assert later.log == []
 
 
 def test_a_hand_over_that_blocks_holds_back_no_other_executor(library, monkeypatch):
