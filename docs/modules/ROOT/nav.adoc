@@ -5,6 +5,7 @@
 * xref:quickstart.adoc[Quickstart]
 * How-to
 ** xref:how-to/databases-and-queries.adoc[Databases and queries]
+** xref:how-to/sql-for-sql-users.adoc[ArcadeDB SQL for people who know other SQL]
 ** xref:how-to/transactions.adoc[Transactions]
 ** xref:how-to/errors.adoc[Errors: codes, hints and classes]
 ** xref:how-to/values-and-records.adoc[Values and records]
