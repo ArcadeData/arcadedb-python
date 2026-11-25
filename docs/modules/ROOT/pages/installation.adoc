@@ -261,6 +261,18 @@ export ARCADEDB_NATIVE_ISOLATE_ARGS="-XX:MaxRAM=4g"                 # a memory s
 
 When one of these three is present, the package adds no default. Do not use `-XX:MaxRAMPercentage`. The native image does not accept it, and the isolate then fails to start with `graal_create_isolate failed (rc=22)`. The same variable also takes the engine's `-D` settings: see xref:how-to/logs.adoc[Where the logs go]. For what a native image build supports, see {arcadedb-docs-url}/how-to/operations/native-image[Native image] in the main ArcadeDB docs.
 
+[[native-import-heap]]
+==== A larger initial heap for a large import
+
+A large `IMPORT DATABASE` runs faster when the heap starts larger. Set the initial size before the Python process starts:
+
+[source,bash]
+----
+export ARCADEDB_NATIVE_ISOLATE_ARGS="-Xms1g"
+----
+
+`-Xms` sets the initial size only, so the default maximum stays. In a test of `{native-pkg-name}` 26.11.1.post4, a graph of 400,000 vertices and 2,000,000 edges imported in 72 s instead of 94 s (0.77 times the default, 95% interval 0.76 to 0.77), and a graph of 100,000 vertices in 11.8 s instead of 13.3 s. The cost is memory: the peak of the importing process rose from 824 MiB to 1,172 MiB for the larger graph. The test ran on two cores of one laptop (https://github.com/ArcadeData/arcadedb-python/issues/369[#369]), so measure on your own data.
+
 [[native-limits]]
 === Limits of the native build
 
