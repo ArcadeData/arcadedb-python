@@ -218,6 +218,8 @@ NOTE: This section is about one file of documents. A file of vertices and edges 
 
 `IMPORT DATABASE` runs the same importer from SQL. `IMPORT DATABASE <url>` reads one file, and `IMPORT DATABASE WITH name = value, ...` takes the settings by name. A file of documents loads into the type `Document` unless `documentType` says another. The statement returns one row with `result` and `operation` (`"import database"`).
 
+With the native package, a large import runs faster when the heap starts larger: see xref:installation.adoc#native-import-heap[A larger initial heap for a large import].
+
 The URL is a `file://` URL: `path.resolve().as_uri()` makes one. `as_uri()` writes a space as `%20`, and the engine opens the text after `file://` as a plain path without decoding it. For a folder with a space or another special character in its name, use `import_documents`, which builds the URL without the escaping.
 
 [source,python]
