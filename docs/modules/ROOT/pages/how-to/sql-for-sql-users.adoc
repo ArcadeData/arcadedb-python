@@ -1,0 +1,118 @@
+= ArcadeDB SQL for people who know other SQL
+:description: The differences from other SQL dialects that matter for everyday writes, deletes and queries.
+
+// Pinned by tests/test_docs_sql_for_sql_users_page.py, which runs every block on both packages.
+
+ArcadeDB SQL looks like the SQL you know, with the differences below. The blocks run one after the other against one new database, and each block that prints is followed by its output. A test in the repository runs them that way (`tests/test_docs_sql_for_sql_users_page.py`).
+
+[source,python]
+----
+import arcadedb
+
+db = arcadedb.open_or_create_database("./sqlpage")
+db.command("sql", "CREATE VERTEX TYPE Author IF NOT EXISTS")
+db.command("sql", "CREATE VERTEX TYPE Book IF NOT EXISTS")
+db.command("sql", "CREATE EDGE TYPE Wrote IF NOT EXISTS")
+for name in ["Ann", "Ben", "Cat"]:
+    db.command("sql", "CREATE VERTEX Author SET name = ?", name)
+for title in ["Emma", "Solaris"]:
+    db.command("sql", "CREATE VERTEX Book SET title = ?", title)
+for name, title in [("Ann", "Emma"), ("Ann", "Solaris"), ("Ben", "Solaris"), ("Cat", "Emma")]:
+    db.command(
+        "sql",
+        "CREATE EDGE Wrote FROM (SELECT FROM Author WHERE name = ?) TO (SELECT FROM Book WHERE title = ?)",
+        name,
+        title,
+    )
+
+
+def count(type_name):
+    return db.query("sql", f"SELECT count(*) AS n FROM {type_name}").first().get("n")
+----
+
+== Create only what is missing
+
+Creating a type, property or index that exists raises. Add `IF NOT EXISTS` to schema statements that may run again, as above for types. For a property it goes after the name, for an index after `INDEX`:
+
+[source,python]
+----
+for _ in range(2):
+    db.command("sql", "CREATE PROPERTY Author.name IF NOT EXISTS STRING")
+    db.command("sql", "CREATE INDEX IF NOT EXISTS ON Author (name) NOTUNIQUE")
+----
+
+== Delete with DELETE FROM
+
+Vertices, edges and documents are all deleted with `DELETE FROM <type>`. The parser refuses `DELETE EDGE ...` and `DELETE VERTEX <type> ...`. Deleting a vertex also deletes its edges:
+
+[source,python]
+----
+print(count("Author"), count("Wrote"))
+db.command("sql", "DELETE FROM Author WHERE name = ?", "Cat")
+print(count("Author"), count("Wrote"))
+----
+
+[source,text]
+----
+3 4
+2 3
+----
+
+To delete a link and keep both vertices, delete from the edge type itself. `out` is the vertex where the edge starts and `in` the vertex it points to:
+
+[source,python]
+----
+db.command("sql", "DELETE FROM Wrote WHERE out.name = ? AND in.title = ?", "Ann", "Solaris")
+print(count("Author"), count("Wrote"))
+----
+
+[source,text]
+----
+2 2
+----
+
+Every record has a record id such as `#1:0`, which `get_rid()` returns and `@rid` matches:
+
+[source,python]
+----
+rid = db.query("sql", "SELECT FROM Author WHERE name = ?", "Ben").first().get_rid()
+db.command("sql", "DELETE FROM Author WHERE @rid = ?", rid)
+print(count("Author"), count("Wrote"))
+----
+
+[source,text]
+----
+1 1
+----
+
+== Call methods on values
+
+There is no `lower()` or `upper()` function. Call the method on the value:
+
+[source,python]
+----
+print(db.query("sql", "SELECT name.toUpperCase() AS shout FROM Author WHERE name.toLowerCase() = ?", "ann").to_list())
+----
+
+[source,text]
+----
+[{'shout': 'ANN'}]
+----
+
+== Pass a list as one parameter
+
+A list that is the only argument is read as the list of positional parameters. To compare with a list, give the parameter a name, or wrap the list in another list:
+
+[source,python]
+----
+titles = ["Emma", "Solaris"]
+print(db.query("sql", "SELECT title FROM Book WHERE title IN :titles ORDER BY title", {"titles": titles}).to_list())
+print(db.query("sql", "SELECT title FROM Book WHERE title IN ? ORDER BY title", [titles]).to_list())
+db.close()
+----
+
+[source,text]
+----
+[{'title': 'Emma'}, {'title': 'Solaris'}]
+[{'title': 'Emma'}, {'title': 'Solaris'}]
+----

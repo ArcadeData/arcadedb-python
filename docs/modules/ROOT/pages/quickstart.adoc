@@ -199,6 +199,7 @@ In the `{jvm-pkg-name}` wheels from 26.11.1 the server also serves the Studio we
 == Next steps
 
 * xref:how-to/databases-and-queries.adoc[Databases and queries]: open, drop and check databases, parameters, pagination, SQLScript and openCypher.
+* xref:how-to/sql-for-sql-users.adoc[ArcadeDB SQL for people who know other SQL]: delete records and links, create only what is missing, call methods on values, and pass a list as one parameter.
 * xref:how-to/values-and-records.adoc[Values and records]: which Python types go in and what comes back, datetimes, record objects and the `Schema` API.
 * xref:how-to/import-export.adoc[Importing and exporting data]: load a file, export a database or a query.
 * xref:how-to/dataframes-and-columns.adoc[DataFrames, Arrow and columns]: load and read pandas, Polars, Arrow and numpy data.
