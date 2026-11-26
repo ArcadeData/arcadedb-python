@@ -296,6 +296,36 @@ def test_to_json_text_of_a_projection_row_golden(golden):
     assert texts == GOLDEN_JSON_TEXT
 
 
+# a STRING outside ASCII (two, three and four bytes of UTF-8), the characters an HTML-safe writer would escape, and the characters
+# JSON has to escape, as a value, inside a LIST and as a MAP key and value (#454)
+TEXT = "é € \U0001f600 \u2028\u2029 <&='\" \\ \n\t\x01\x7f"
+GOLDEN_TEXT_ROW = (
+    '{"s":"é € \U0001f600 \\u2028\\u2029 <&=\'\\" \\\\ \\n\\t\\u0001\x7f",'
+    '"l":["é","\U0001f600"],"m":{"clé":"ü"}}'
+)
+
+
+def test_to_json_text_outside_ascii_golden(temp_db):
+    """``Result.to_json()`` writes text outside ASCII as it is on both builds, and escapes the same few characters.
+
+    The native build used to write every character outside ASCII as a ``\\u`` escape (#454).
+    """
+    temp_db.command("sql", "CREATE DOCUMENT TYPE Txt")
+    for name, type_name in [("s", "STRING"), ("l", "LIST"), ("m", "MAP")]:
+        temp_db.command("sql", f"CREATE PROPERTY Txt.{name} {type_name}")
+    temp_db.insert_many(
+        "Txt", [{"s": TEXT, "l": ["é", "\U0001f600"], "m": {"clé": "ü"}}]
+    )
+
+    row = temp_db.query("sql", "SELECT s, l, m FROM Txt").first()
+    assert row.to_json() == GOLDEN_TEXT_ROW
+    assert json.loads(row.to_json())["s"] == TEXT
+
+    record = temp_db.query("sql", "SELECT FROM Txt").first().to_json()
+    assert '"é","\U0001f600"' in record
+    assert "\\u00e9" not in record
+
+
 def test_to_json_of_a_record_row_golden(golden):
     """``Result.to_json()`` of a record row reads back to the same values on both builds, the float32 values as float32.
 
