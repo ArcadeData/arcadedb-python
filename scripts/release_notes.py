@@ -5,7 +5,8 @@ The tag is a bare version (docs page "Release"): `A.B.C.devN`, `A.B.C` or `A.B.C
 by label, then the install lines, the engine version and the PyPI pages of the two packages. The notes of a `devN` and of a final
 release start with a `Changed behaviour` line that links the docs page `upgrading.adoc` as it is in the tag, when the title of that
 page is `Upgrading to A.B.C` for the base of the tag. The pull requests of a `devN` and of a
-final release come from the milestone named after the base `A.B.C`; a `postN` does not use a milestone (see below).
+final release come from the milestone named after the base `A.B.C`; a `postN` does not use a milestone (see below). A pull request
+that changes only files under `.github/`, `tests/` or `scripts/` goes into one collapsed `Internal` block, whatever its labels.
 
 Which pull requests a tag lists:
 
@@ -15,6 +16,10 @@ Which pull requests a tag lists:
 - `A.B.C.postN`     every pull request merged between the previous tag of the same base (`A.B.C` or `A.B.C.post(N-1)`) and the tag, found
                     from the commits of that range, with whatever milestone it has or none: the final release closes the milestone
                     `A.B.C`, so a fix made after it is not in it
+
+A `devN` and a final release also leave out what an earlier release already shipped: the newest final or `postN` tag of an earlier
+base. A pull request is shipped there when its merge commit is in that tag, or when a commit of that `postN` line says it is a
+cherry-pick of the merge commit (`git cherry-pick -x`).
 
 For `devN` and the final release "in a tag" means the merge commit of the pull request is an ancestor of the tag (the GitHub compare API), so a pull request that merges
 after the tag, while the release still runs, is not listed. A tag that does not exist yet (a dry run before the release) is read as the
@@ -55,6 +60,10 @@ SECTIONS = [
     ("Documentation", "documentation"),
 ]
 OTHER = "Other"
+# a pull request whose every file is under one of these is internal: a user of the packages does not see it
+INTERNAL_PATHS = (".github/", "tests/", "scripts/")
+# the line `git cherry-pick -x` adds to a commit message
+PICKED_RE = re.compile(r"\(cherry picked from commit ([0-9a-f]{40})\)")
 # what behaves differently in a release; the title of the page names the release it is about
 UPGRADE_PAGE = "docs/modules/ROOT/pages/upgrading.adoc"
 
@@ -119,6 +128,46 @@ def previous_tag(tag, existing):
         if key < me and (best is None or key > best[0]):
             best = (key, other)
     return best[1] if best else None
+
+
+def previous_release(tag, existing):
+    """The newest final or postN tag of a base before the base of `tag`, or None: what a devN or final release comes after."""
+    def version(base):
+        return tuple(int(part) for part in base.split("."))
+
+    mine = version(parse_tag(tag)[0])
+    best = None
+    for other in existing:
+        m = TAG_RE.match(other)
+        if not m or m.group("kind") == "dev" or version(m.group("base")) >= mine:
+            continue
+        key = (version(m.group("base")), order_key(m.group("kind") or "final", int(m.group("n") or 0)))
+        if best is None or key > best[0]:
+            best = (key, other)
+    return best[1] if best else None
+
+
+def ported_shas(repo, release):
+    """The commits that the `postN` line of `release` carries as cherry-picks, empty for a release that is not a `postN`."""
+    base, kind, _ = parse_tag(release)
+    if kind != "post":
+        return set()
+    shas = set()
+    for commit in compare_commits(repo, base, release):
+        shas.update(PICKED_RE.findall(commit.get("commit", {}).get("message") or ""))
+    return shas
+
+
+def is_internal(repo, number):
+    """True when every file the pull request changes, under its new and its old name, is under one of INTERNAL_PATHS."""
+    files = gh_pages(f"repos/{repo}/pulls/{number}/files")
+    names = [
+        name
+        for entry in files
+        for name in (entry.get("filename"), entry.get("previous_filename"))
+        if name
+    ]
+    return bool(names) and all(name.startswith(INTERNAL_PATHS) for name in names)
 
 
 def section_of(labels):
@@ -255,6 +304,12 @@ def upgrade_page_url(repo, base, tag, ref):
     return f"https://github.com/{repo}/blob/{tag}/{UPGRADE_PAGE}"
 
 
+def pr_line(pr):
+    """One line of the change list."""
+    shown = safe_title(clean_title(pr["title"], pr["number"]))
+    return f"- {shown} (#{pr['number']})"
+
+
 def build_notes(repo, tag):
     base, kind, n = parse_tag(tag)
     default_branch = (gh_api(f"repos/{repo}") or {}).get("default_branch", "main")
@@ -272,6 +327,8 @@ def build_notes(repo, tag):
     prev = previous_tag(tag, [t for t in tags if t != tag])
     milestone = None
     listed = []
+    shipped = None
+    skipped = 0
     if kind == "post":
         if prev:
             listed = range_prs(repo, prev, ref)
@@ -279,10 +336,17 @@ def build_notes(repo, tag):
             print(f"warning: no earlier tag of {base} for {tag}", file=sys.stderr)
     else:
         milestone, prs = milestone_prs(repo, base)
+        shipped = previous_release(tag, tags)
+        ported = ported_shas(repo, shipped) if shipped and prs else set()
         for pr in prs:
             if not is_ancestor(repo, pr["sha"], ref):
                 continue
             if prev and is_ancestor(repo, pr["sha"], prev):
+                continue
+            if shipped and (
+                pr["sha"] in ported or is_ancestor(repo, pr["sha"], shipped)
+            ):
+                skipped += 1
                 continue
             listed.append(pr)
     listed.sort(key=lambda p: p["number"])
@@ -291,8 +355,12 @@ def build_notes(repo, tag):
 
     groups = {title: [] for title, _ in SECTIONS}
     groups[OTHER] = []
+    internal = []
     for pr in listed:
-        groups[section_of(pr["labels"])].append(pr)
+        if is_internal(repo, pr["number"]):
+            internal.append(pr)
+        else:
+            groups[section_of(pr["labels"])].append(pr)
 
     engine, engine_kind = engine_of(repo, kind, base, ref)
     lines = []
@@ -324,6 +392,11 @@ def build_notes(repo, tag):
             scope = "since the previous release"
         lines.append(f"## What changed {scope}")
         lines.append("")
+        if skipped:
+            lines.append(
+                f"What shipped in `{shipped}` or an earlier release is not listed again."
+            )
+            lines.append("")
         if not listed:
             lines.append("No merged pull request.")
             lines.append("")
@@ -332,9 +405,17 @@ def build_notes(repo, tag):
                 continue
             lines.append(f"### {title}")
             lines.append("")
-            for pr in groups[title]:
-                shown = safe_title(clean_title(pr["title"], pr["number"]))
-                lines.append(f"- {shown} (#{pr['number']})")
+            lines.extend(pr_line(pr) for pr in groups[title])
+            lines.append("")
+        if internal:
+            lines.append("<details>")
+            lines.append(
+                f"<summary>Internal: CI, tests, and release tooling only ({len(internal)})</summary>"
+            )
+            lines.append("")
+            lines.extend(pr_line(pr) for pr in internal)
+            lines.append("")
+            lines.append("</details>")
             lines.append("")
 
     lines.append("## Install")
