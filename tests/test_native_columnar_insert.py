@@ -271,7 +271,7 @@ def test_booleans_and_narrow_numpy_dtypes_keep_the_json_paths_types(
         "flag": ids % 3 == 0,
         "small": (ids - 150).astype(np.int32),  # declared INTEGER: crosses as int32
         "single": (ids / 8).astype(np.float32),  # declared FLOAT: crosses as float32
-        "narrow": ids.astype(np.int16),  # undeclared: a Long, as from JSON
+        "narrow": ids.astype(np.int16),  # undeclared: a whole number
         "half": (ids / 4).astype(np.float32),  # undeclared: a Double, as from JSON
     }
     _json_reference(temp_db, "Ref", _rows(columns), monkeypatch)

@@ -483,10 +483,11 @@ def spec_of(packed):
     return (ctypes.c_int64 * len(flat))(*flat)
 
 
-def header_of(rows, commit_every, packed, fid=None, last=()):
+def header_of(rows, commit_every, packed, fid=None, last=(), narrow=False):
     """The JSON header text: row count, commit interval and ``[name, kind, dim]`` per column; with a failure token ``fid`` it also says
     ``"parallel": true``, which hands the records to the async executor (the image then ignores the commit interval and counts the
-    failed records on that token).
+    failed records on that token). ``narrow`` (insert_many) adds ``"narrow": true``: the image then stores a whole number of an
+    int64 column that fits an int as an Integer, as the JVM build does.
     """
     import json
 
@@ -502,6 +503,8 @@ def header_of(rows, commit_every, packed, fid=None, last=()):
     if fid is not None:
         header["parallel"] = True
         header["fid"] = fid
+    if narrow:
+        header["narrow"] = True
     return json.dumps(header)
 
 

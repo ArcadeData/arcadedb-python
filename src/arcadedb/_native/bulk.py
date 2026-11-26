@@ -23,7 +23,7 @@ def _usable():
     )
 
 
-def _send(db, type_name, packed, rows, commit_every, prefix, fid=None):
+def _send(db, type_name, packed, rows, commit_every, prefix, fid=None, narrow=False):
     from .database import _call
 
     spec = columnar.spec_of(packed)
@@ -32,7 +32,7 @@ def _send(db, type_name, packed, rows, commit_every, prefix, fid=None):
         "arcadedb_n_insert_colp",
         db._h,
         lib.b(type_name),
-        lib.b(columnar.header_of(rows, commit_every, packed, fid)),
+        lib.b(columnar.header_of(rows, commit_every, packed, fid, narrow=narrow)),
         spec,
         len(spec),
     )  # `packed` holds the arrays the addresses point into until the call returns
@@ -96,7 +96,9 @@ def insert_rows_columnar(db, type_name, chunk, declared=None):
     if packed is None:
         return False
     rows, cols = packed
-    _send(db, type_name, cols, rows, 0, f"Failed to bulk-insert into '{type_name}'")
+    prefix = f"Failed to bulk-insert into '{type_name}'"
+    # narrow: insert_many stores a whole number that fits an int as an Integer, as the JVM build does; insert_columns keeps Long
+    _send(db, type_name, cols, rows, 0, prefix, narrow=True)
     return True
 
 

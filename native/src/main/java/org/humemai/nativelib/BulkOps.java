@@ -107,7 +107,8 @@ final class BulkOps {
    * LocalDateTime), D (int32 days since the epoch, a LocalDate), n (a decimal as text in the string layout, a BigDecimal) and x (bytes in
    * the string layout, a byte[]), so a column of these is stored as the row path stores it. spec: per column six longs, [data address, data bytes, aux address, aux bytes, null
    * bitmap address, null bitmap bytes]; the bitmap is Arrow's (bit i of byte i/8, least significant first; 1 = present), an address of 0
-   * means no nulls. The memory belongs to the caller for the duration of the call; nothing is kept. Every length is checked here before
+   * means no nulls. A header with "narrow":true (insert_many) stores a whole number of a q column that fits an int as an Integer.
+   * The memory belongs to the caller for the duration of the call; nothing is kept. Every length is checked here before
    * the first document is built, so a wrong table is an exception and nothing is written. Same transaction contract as
    * DocumentBatcher.insertColumns: batch commits and the rollback on failure apply only to a transaction opened here.
    * onError null: the synchronous mode above. Not null (header "parallel":true): every record goes to db.async().createRecord with that
@@ -118,6 +119,7 @@ final class BulkOps {
   private static long insertColumns(final Database db, final String type, final Map<String, Object> h, final long[] spec,
       final ErrorCallback onError) {
     final int commitEvery = ((Number) h.get("commit")).intValue();
+    final boolean narrow = Boolean.TRUE.equals(h.get("narrow"));
     final Table table = Table.of(h, spec);
     final int n = table.n;
     final Object schemaType = db.getSchema().getType(type);
@@ -131,7 +133,7 @@ final class BulkOps {
       try {
         for (; handed < n; handed++) {
           final MutableDocument doc = vertex ? db.newVertex(type) : db.newDocument(type);
-          setRow(doc, handed, table);
+          setRow(doc, handed, table, narrow);
           if (onError instanceof NativeExtras.RecordHooks hooks)
             hooks.submit(async, doc, handed); // an async create_record batch: each record has its own callbacks
           else
@@ -145,7 +147,7 @@ final class BulkOps {
     }
     writeChunks(db, n, commitEvery, i -> {
       final MutableDocument doc = vertex ? db.newVertex(type) : db.newDocument(type);
-      setRow(doc, i, table);
+      setRow(doc, i, table, narrow);
       doc.save();
     });
     return n;
@@ -219,10 +221,98 @@ final class BulkOps {
     }
   }
 
-  /** Sets the properties of row i on doc from the columns. */
-  private static void setRow(final MutableDocument doc, final int i, final Table t) {
+  /**
+   * Sets the properties of row i on doc from the columns. narrowIntegers (the header's "narrow", which insert_many sets): a whole number
+   * that fits an int is stored as an Integer, see {@link #narrowed}; without it the int64 columns stay Long, as insert_columns stores them.
+   */
+  private static void setRow(final MutableDocument doc, final int i, final Table t, final boolean narrowIntegers) {
+    final boolean narrow = narrowIntegers && columnsCarriedByText(t, i);
+    for (int c = 0; c < t.k; c++) {
+      final Object v = t.cell(c, i);
+      doc.set(t.names[c], narrow && t.kinds[c] == 'q' ? narrowed(v) : v);
+    }
+  }
+
+  /**
+   * Whether the JSON text route could have carried row i of the table: it cannot carry a NaN, an infinity or a subnormal float, so Python
+   * sends such a row through INSERT .. CONTENT on its own, which stores its whole numbers as Long. The columns keep that for such a row
+   * (as DocumentBatcher.carriedByText on the JVM build), so what a record stores does not depend on which route carried it.
+   */
+  private static boolean columnsCarriedByText(final Table t, final int i) {
     for (int c = 0; c < t.k; c++)
-      doc.set(t.names[c], t.cell(c, i));
+      if ((t.kinds[c] == 'd' || t.kinds[c] == 'e') && t.cell(c, i) instanceof Number x && !textDouble(x.doubleValue()))
+        return false;
+    return true;
+  }
+
+  /** A double the JSON text keeps as a double: finite, and zero or at least the smallest normal value (Double.MIN_NORMAL). */
+  private static boolean textDouble(final double v) {
+    return Double.isFinite(v) && (v == 0.0 || Math.abs(v) >= Double.MIN_NORMAL);
+  }
+
+  /**
+   * The value a whole number takes through insert_many, as on the JVM build and as the engine's own JSON reader types it
+   * (JSONObject.parseNumber): an Integer when it fits an int, a Long beyond. Any other value is returned as it is. Written with returns,
+   * not a conditional: a conditional of an int and a long would promote both arms to long.
+   */
+  static Object narrowed(final Object v) {
+    if (v instanceof Long l && l >= Integer.MIN_VALUE && l <= Integer.MAX_VALUE)
+      return Integer.valueOf(l.intValue());
+    return v;
+  }
+
+  /** A value of a parsed insert_many row: narrowed, and so are the whole numbers inside its lists and maps (changed in place). */
+  @SuppressWarnings("unchecked")
+  static Object narrowedDeep(final Object v) {
+    if (v instanceof List<?>) {
+      final List<Object> list = (List<Object>) v;
+      for (int k = 0; k < list.size(); k++) {
+        final Object element = list.get(k);
+        final Object stored = narrowedDeep(element);
+        if (stored != element)
+          list.set(k, stored);
+      }
+      return list;
+    }
+    if (v instanceof Map<?, ?>) {
+      for (final Map.Entry<Object, Object> entry : ((Map<Object, Object>) v).entrySet()) {
+        final Object element = entry.getValue();
+        final Object stored = narrowedDeep(element);
+        if (stored != element)
+          entry.setValue(stored);
+      }
+      return v;
+    }
+    return narrowed(v);
+  }
+
+  /**
+   * Whether the JSON text route of the JVM build could have carried this row of a parallel insert_many: no NaN, infinity or subnormal
+   * float anywhere in it, and no date, date-time, Decimal or byte array inside a list or map. The JVM build sends any other row down its
+   * per-row path, which stores its whole numbers as Long.
+   */
+  static boolean rowCarriedByText(final Map<?, ?> row) {
+    for (final Object value : row.values())
+      if (!valueCarriedByText(value, false))
+        return false;
+    return true;
+  }
+
+  private static boolean valueCarriedByText(final Object value, final boolean nested) {
+    if (value instanceof Double d)
+      return textDouble(d);
+    if (nested && (value instanceof LocalDate || value instanceof LocalDateTime || value instanceof BigDecimal || value instanceof byte[]))
+      return false;
+    if (value instanceof List<?> list) {
+      for (final Object element : list)
+        if (!valueCarriedByText(element, true))
+          return false;
+    } else if (value instanceof Map<?, ?> map) {
+      for (final Object element : map.values())
+        if (!valueCarriedByText(element, true))
+          return false;
+    }
+    return true;
   }
 
   /**
@@ -423,7 +513,7 @@ final class BulkOps {
     Json.rows(b, n, row -> {
       final MutableDocument doc = vertex ? db.newVertex(type) : db.newDocument(type);
       for (final Map.Entry<String, Object> e : row.entrySet())
-        doc.set(e.getKey(), e.getValue());
+        doc.set(e.getKey(), narrowedDeep(e.getValue()));
       doc.save();
       count[0]++;
     });
