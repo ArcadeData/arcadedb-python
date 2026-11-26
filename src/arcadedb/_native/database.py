@@ -1162,18 +1162,25 @@ class NativeDatabase:
         this build (the JVM build's is 10,000). Rows that are already committed stay committed if a later chunk fails, so a smaller
         ``commit_every`` keeps fewer rows of a failed load (only the transaction that was open is rolled back).
         """
-        return self._insert_many(type_name, rows, commit_every, parallel)
+        return self._insert_many(type_name, rows, commit_every, parallel, narrow=True)
 
     def _insert_many(
-        self, type_name: str, rows, commit_every: int, parallel: bool, declared=None
+        self,
+        type_name: str,
+        rows,
+        commit_every: int,
+        parallel: bool,
+        declared=None,
+        narrow: bool = False,
     ) -> int:
         """:meth:`insert_many`, with the call's declared property types when an entry that ran before it already has them
         (``declared``: a ``columnar.Declared`` or a dict, see ``columnar.declared_for``). The chunks of the call share one, so the call
-        reads the schema once when a column needs the declared types, not once per chunk; it ends with the call.
+        reads the schema once when a column needs the declared types, not once per chunk; it ends with the call. ``narrow``: the call
+        is insert_many, which stores a whole number that fits an int as an Integer (the paths that fall back to this one do not).
         """
         self._check_not_closed()
         if parallel:
-            return self._insert_many_parallel(type_name, rows)
+            return self._insert_many_parallel(type_name, rows, narrow)
         sql = f"INSERT INTO `{type_name}` CONTENT :row"
         declared = declared_for(self, type_name, declared)
         rows = iter(rows)
@@ -1190,7 +1197,7 @@ class NativeDatabase:
                 chunk = list(itertools.islice(rows, size))
                 if not chunk:
                     break
-                self._insert_chunk(type_name, sql, declared, chunk)
+                self._insert_chunk(type_name, sql, declared, narrow, chunk)
                 n += len(chunk)
                 if not was_active and every > 0 and n % every == 0:
                     self.commit()
@@ -1207,7 +1214,9 @@ class NativeDatabase:
                     pass
             raise
 
-    def _insert_chunk(self, type_name: str, sql: str, declared, chunk) -> None:
+    def _insert_chunk(
+        self, type_name: str, sql: str, declared, narrow: bool, chunk
+    ) -> None:
         """One chunk of ``insert_many`` inside the open transaction; see :meth:`insert_many` for the paths. ``declared`` is the
         ``columnar.Declared`` of the call, shared by its chunks. The chunk comes last: the ingest-integrity tests wrap this seam
         as ``(type_name, *lead, chunk)``.
@@ -1217,30 +1226,33 @@ class NativeDatabase:
         every row is inserted in the order given.
         """
         if lib.INSERT_ROWS:
-            if insert_rows_columnar(self, type_name, chunk, declared):
+            if insert_rows_columnar(self, type_name, chunk, declared, narrow):
                 return
             try:
                 payload = json_bulk_dumps_tagged(chunk)
             except (TypeError, ValueError):
-                self._insert_chunk_runs(type_name, sql, declared, chunk)
+                self._insert_chunk_runs(type_name, sql, declared, narrow, chunk)
                 return
-            self._insert_rows_json(type_name, payload)
+            self._insert_rows_json(type_name, payload, narrow)
             return
         self._insert_chunk_per_row(sql, chunk)
 
-    def _insert_rows_json(self, type_name: str, payload: str) -> None:
+    def _insert_rows_json(self, type_name: str, payload: str, narrow: bool) -> None:
         reply = json.loads(
             lib.call(
                 "arcadedb_n_insert_rows",
                 self._h,
                 lib.b(type_name),
                 lib.b(payload),
+                int(narrow),
             )
         )
         if not reply.get("ok"):
             raise _error(f"Failed to bulk-insert into '{type_name}'", reply)
 
-    def _insert_chunk_runs(self, type_name: str, sql: str, declared, chunk) -> None:
+    def _insert_chunk_runs(
+        self, type_name: str, sql: str, declared, narrow: bool, chunk
+    ) -> None:
         """A chunk with a row the JSON text cannot carry: runs of carriable rows go in bulk, the other rows one statement each, in order."""
         ok = [bulk_row_ok(row) for row in chunk]
         n = len(chunk)
@@ -1254,8 +1266,8 @@ class NativeDatabase:
             start = end
             if not carriable:
                 self._insert_chunk_per_row(sql, run)
-            elif not insert_rows_columnar(self, type_name, run, declared):
-                self._insert_rows_json(type_name, json_bulk_dumps_tagged(run))
+            elif not insert_rows_columnar(self, type_name, run, declared, narrow):
+                self._insert_rows_json(type_name, json_bulk_dumps_tagged(run), narrow)
 
     def _insert_chunk_per_row(self, sql: str, rows) -> None:
         if lib.EXEC_MANY:
@@ -1332,7 +1344,7 @@ class NativeDatabase:
             f"for them before raising)"
         )
 
-    def _insert_many_parallel(self, type_name, rows) -> int:
+    def _insert_many_parallel(self, type_name, rows, narrow=False) -> int:
         """insert_many(parallel=True): chunks go to the async writers; the failure count is read after the final wait."""
         import itertools
 
@@ -1346,7 +1358,8 @@ class NativeDatabase:
                 if not chunk:
                     break
                 try:
-                    tokens.append(extras.insert_parallel(self, type_name, chunk)["fid"])
+                    reply = extras.insert_parallel(self, type_name, chunk, narrow)
+                    tokens.append(reply["fid"])
                 except ArcadeDBError as e:
                     # as the JPype path: the rows handed to the writers before the failure are written whatever this call does
                     raise self._parallel_load_failed(type_name, e, tokens) from e

@@ -1115,8 +1115,11 @@ public final class NativeExtras {
           final boolean vertex = !rows.isEmpty() && isVertexType(db, type);
           for (final Object row : rows) {
             final MutableDocument doc = vertex ? db.newVertex(type) : db.newDocument(type);
-            for (final Map.Entry<String, Object> e : ((Map<String, Object>) row).entrySet())
-              doc.set(e.getKey(), e.getValue());
+            // "narrow" (insert_many): whole numbers are typed as insert_many without parallel types them (BulkOps.narrowed)
+            final Map<String, Object> values = (Map<String, Object>) row;
+            final boolean narrow = Boolean.TRUE.equals(a.get("narrow")) && BulkOps.rowCarriedByText(values);
+            for (final Map.Entry<String, Object> e : values.entrySet())
+              doc.set(e.getKey(), narrow ? BulkOps.narrowedDeep(e.getValue()) : e.getValue());
             ex.createRecord(doc, null, onError);
           }
         } catch (final Throwable t) {

@@ -23,7 +23,7 @@ def _usable():
     )
 
 
-def _send(db, type_name, packed, rows, commit_every, prefix, fid=None):
+def _send(db, type_name, packed, rows, commit_every, prefix, fid=None, narrow=False):
     from .database import _call
 
     spec = columnar.spec_of(packed)
@@ -32,7 +32,7 @@ def _send(db, type_name, packed, rows, commit_every, prefix, fid=None):
         "arcadedb_n_insert_colp",
         db._h,
         lib.b(type_name),
-        lib.b(columnar.header_of(rows, commit_every, packed, fid)),
+        lib.b(columnar.header_of(rows, commit_every, packed, fid, narrow=narrow)),
         spec,
         len(spec),
     )  # `packed` holds the arrays the addresses point into until the call returns
@@ -80,12 +80,13 @@ def insert_columns_parallel(db, type_name, columns, declared=None):
     return db._finish_parallel(type_name, [fid], rows)
 
 
-def insert_rows_columnar(db, type_name, chunk, declared=None):
+def insert_rows_columnar(db, type_name, chunk, declared=None, narrow=False):
     """One ``insert_many`` chunk (a list of dicts with the same keys) through the columnar entry inside the caller's transaction (no
     commit here). Returns True when it was sent, False when the chunk needs the JSON path.
 
     ``declared``: the :class:`columnar.Declared` of the call, so that its chunks read the schema once between them (a chunk on its own
-    reads it when a column needs it).
+    reads it when a column needs it). ``narrow`` (insert_many): a whole number that fits an int is stored as an Integer; the
+    other callers of the row path (insert_columns, the DataFrame paths) leave it off and store Long, as on the JVM build.
     """
     if not _usable():
         return False
@@ -96,7 +97,8 @@ def insert_rows_columnar(db, type_name, chunk, declared=None):
     if packed is None:
         return False
     rows, cols = packed
-    _send(db, type_name, cols, rows, 0, f"Failed to bulk-insert into '{type_name}'")
+    prefix = f"Failed to bulk-insert into '{type_name}'"
+    _send(db, type_name, cols, rows, 0, prefix, narrow=narrow)
     return True
 
 

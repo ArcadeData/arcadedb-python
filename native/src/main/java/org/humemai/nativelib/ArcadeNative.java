@@ -825,14 +825,16 @@ public final class ArcadeNative {
   /**
    * Documents (or vertices of a vertex type) from rows [{property: value},..], one record per row through newDocument/newVertex, set per
    * property and save, as DocumentBatcher.insertManyJson does on the JPype path; no transaction is opened or closed here.
+   * narrow (not 0, which insert_many passes): a whole number that fits an int is stored as an Integer (BulkOps.narrowed).
    */
   @CEntryPoint(name = "arcadedb_n_insert_rows")
-  public static CCharPointer insertRows(final IsolateThread thread, final long h, final CCharPointer type, final CCharPointer rowsJson) {
+  public static CCharPointer insertRows(final IsolateThread thread, final long h, final CCharPointer type, final CCharPointer rowsJson,
+      final int narrow) {
     try {
       final Database db = db(h);
       final String t = str(type);
       final Chars c = chars(rowsJson);
-      return out("{\"ok\":true,\"n\":" + BulkOps.insertRows(db, t, c.b, c.n) + "}");
+      return out("{\"ok\":true,\"n\":" + BulkOps.insertRows(db, t, c.b, c.n, narrow != 0) + "}");
     } catch (final Throwable t) {
       return err(t);
     }

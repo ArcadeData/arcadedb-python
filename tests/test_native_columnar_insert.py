@@ -4,6 +4,9 @@ Needs the native library, so conftest.py collects this file on the native backen
 scripts/check_test_skips.py). Each test loads the same data through the JSON path (``bulk._ENABLED`` off) and through the columnar entry and
 compares the stored records value by value and type by type; a spy on the crossing proves which entry point ran, so a silent fall back
 to JSON cannot pass for the columnar path.
+
+The types compared are the Python types read back. insert_many stores a whole number that fits an int as an Integer and
+insert_columns as a Long (tests/test_insert_many_integer_types.py), and both read back as int.
 """
 
 import ctypes
@@ -271,7 +274,7 @@ def test_booleans_and_narrow_numpy_dtypes_keep_the_json_paths_types(
         "flag": ids % 3 == 0,
         "small": (ids - 150).astype(np.int32),  # declared INTEGER: crosses as int32
         "single": (ids / 8).astype(np.float32),  # declared FLOAT: crosses as float32
-        "narrow": ids.astype(np.int16),  # undeclared: a Long, as from JSON
+        "narrow": ids.astype(np.int16),  # undeclared: a whole number
         "half": (ids / 4).astype(np.float32),  # undeclared: a Double, as from JSON
     }
     _json_reference(temp_db, "Ref", _rows(columns), monkeypatch)

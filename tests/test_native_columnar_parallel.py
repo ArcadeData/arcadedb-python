@@ -6,6 +6,9 @@ rows for ``arcadedb_n_async insert_parallel``. Now the same ``arcadedb_n_insert_
 JVM wheel. Needs the native library, so conftest.py collects this file on the native backend only. Each test loads the same data
 through the row path (the private reference: ``insert_many(parallel=True)`` with dict rows) and through the columns, compares the
 stored records value by value and type by type, and spies on the entry points so a silent fall back cannot pass.
+
+The types compared are the Python types read back. insert_many stores a whole number that fits an int as an Integer and
+insert_columns as a Long (tests/test_insert_many_integer_types.py), and both read back as int.
 """
 
 import numpy as np
@@ -28,9 +31,9 @@ class Spy:
             self.calls.append(name)
             return real_call(name, *args)
 
-        def insert_parallel(database, type_name, rows):
+        def insert_parallel(database, type_name, rows, *flags):
             self.row_chunks += 1
-            return real_rows(database, type_name, rows)
+            return real_rows(database, type_name, rows, *flags)
 
         monkeypatch.setattr(lib, "call", call)
         monkeypatch.setattr(extras, "insert_parallel", insert_parallel)

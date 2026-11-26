@@ -259,7 +259,7 @@ def _load():
             "arcadedb_n_last_error": [P],
             "arcadedb_n_rs_close_many": [P, P, N],
             "arcadedb_n_exec_many": [P, L, S, S, S],
-            "arcadedb_n_insert_rows": [P, L, S, S],
+            "arcadedb_n_insert_rows": [P, L, S, S, N],
             "arcadedb_n_server_start": [P, S],
             "arcadedb_n_server_stop": [P, L],
             "arcadedb_n_server_db": [P, L, S, N],
