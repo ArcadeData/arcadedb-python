@@ -4,6 +4,9 @@ Needs the native library, so conftest.py collects this file on the native backen
 scripts/check_test_skips.py). Each test loads the same data through the JSON path (``bulk._ENABLED`` off) and through the columnar entry and
 compares the stored records value by value and type by type; a spy on the crossing proves which entry point ran, so a silent fall back
 to JSON cannot pass for the columnar path.
+
+The types compared are the Python types read back. insert_many stores a whole number that fits an int as an Integer and
+insert_columns as a Long (tests/test_insert_many_integer_types.py), and both read back as int.
 """
 
 import ctypes

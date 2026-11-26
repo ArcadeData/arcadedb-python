@@ -8,7 +8,7 @@ ifdef::env-github[]
 :jvm-pkg-name: arcadedb-jvm
 endif::[]
 
-// Sources: the pull requests ArcadeData/arcadedb-python #479 to #483, and the changes of issues #454 and #445. Pinned by tests/test_auto_transaction_default.py, tests/test_error_codes_table.py, tests/test_error_codes_parity.py, tests/test_lazy_import.py tests/test_cross_wheel_golden.py and tests/test_insert_many_integer_types.py.
+// Sources: the pull requests ArcadeData/arcadedb-python #479 to #483, and the changes of issues #454 and #445. Pinned by tests/test_auto_transaction_default.py, tests/test_error_codes_table.py, tests/test_error_codes_parity.py, tests/test_lazy_import.py, tests/test_cross_wheel_golden.py and tests/test_insert_many_integer_types.py.
 
 Read this page before you move a program from 26.11.1, or from one of its post releases, to 26.12.1. It covers both packages, `{native-pkg-name}` and `{jvm-pkg-name}`. The changes of the engine itself are listed with the https://github.com/ArcadeData/arcadedb/releases[releases of ArcadeDB].
 
