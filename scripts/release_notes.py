@@ -132,6 +132,7 @@ def previous_tag(tag, existing):
 
 def previous_release(tag, existing):
     """The newest final or postN tag of a base before the base of `tag`, or None: what a devN or final release comes after."""
+
     def version(base):
         return tuple(int(part) for part in base.split("."))
 
@@ -141,7 +142,10 @@ def previous_release(tag, existing):
         m = TAG_RE.match(other)
         if not m or m.group("kind") == "dev" or version(m.group("base")) >= mine:
             continue
-        key = (version(m.group("base")), order_key(m.group("kind") or "final", int(m.group("n") or 0)))
+        key = (
+            version(m.group("base")),
+            order_key(m.group("kind") or "final", int(m.group("n") or 0)),
+        )
         if best is None or key > best[0]:
             best = (key, other)
     return best[1] if best else None

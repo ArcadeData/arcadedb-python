@@ -159,4 +159,6 @@ def test_a_release_with_only_internal_changes_still_lists_them(monkeypatch):
     text = notes.build_notes("o/r", "26.12.1")
     assert "###" not in text
     assert "No merged pull request." not in text
-    assert "<summary>Internal: CI, tests, and release tooling only (5)</summary>" in text
+    assert (
+        "<summary>Internal: CI, tests, and release tooling only (5)</summary>" in text
+    )
