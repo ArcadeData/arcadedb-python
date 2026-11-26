@@ -28,9 +28,9 @@ class Spy:
             self.calls.append(name)
             return real_call(name, *args)
 
-        def insert_parallel(database, type_name, rows):
+        def insert_parallel(database, type_name, rows, *flags):
             self.row_chunks += 1
-            return real_rows(database, type_name, rows)
+            return real_rows(database, type_name, rows, *flags)
 
         monkeypatch.setattr(lib, "call", call)
         monkeypatch.setattr(extras, "insert_parallel", insert_parallel)

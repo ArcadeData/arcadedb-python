@@ -1115,9 +1115,9 @@ public final class NativeExtras {
           final boolean vertex = !rows.isEmpty() && isVertexType(db, type);
           for (final Object row : rows) {
             final MutableDocument doc = vertex ? db.newVertex(type) : db.newDocument(type);
-            // whole numbers are typed as insert_many without parallel types them (BulkOps.narrowed)
+            // "narrow" (insert_many): whole numbers are typed as insert_many without parallel types them (BulkOps.narrowed)
             final Map<String, Object> values = (Map<String, Object>) row;
-            final boolean narrow = BulkOps.rowCarriedByText(values);
+            final boolean narrow = Boolean.TRUE.equals(a.get("narrow")) && BulkOps.rowCarriedByText(values);
             for (final Map.Entry<String, Object> e : values.entrySet())
               doc.set(e.getKey(), narrow ? BulkOps.narrowedDeep(e.getValue()) : e.getValue());
             ex.createRecord(doc, null, onError);

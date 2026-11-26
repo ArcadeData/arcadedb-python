@@ -1268,14 +1268,16 @@ class NativeAsyncExecutor:
                 owner._discard_async_executor(self)
 
 
-def insert_parallel(database, type_name: str, rows) -> dict:
-    """Hand ``rows`` (a list of dicts) to the async writers; returns the failure token for :func:`failures`."""
+def insert_parallel(database, type_name: str, rows, narrow: bool = False) -> dict:
+    """Hand ``rows`` (a list of dicts) to the async writers; returns the failure token for :func:`failures`. ``narrow``
+    (insert_many): a whole number that fits an int is stored as an Integer.
+    """
     return _call(
         "Failed to bulk-insert",
         "arcadedb_n_async",
         database._h,
         b"insert_parallel",
-        lib.b(_enc({"type": type_name, "rows": rows})),
+        lib.b(_enc({"type": type_name, "rows": rows, "narrow": narrow})),
     )
 
 

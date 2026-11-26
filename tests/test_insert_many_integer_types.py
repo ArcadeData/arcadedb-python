@@ -102,3 +102,12 @@ def test_a_declared_type_and_insert_columns_are_not_narrowed(temp_db):
     temp_db.command("sql", "CREATE DOCUMENT TYPE Columns")
     temp_db.insert_columns("Columns", {"id": [0, 1], "n": [5, 6]})
     assert _type_of(temp_db, "Columns", ["id", "n"]) == [["LONG", "LONG"]] * 2
+
+
+@pytest.mark.parametrize("parallel", [False, True], ids=["transaction", "parallel"])
+def test_insert_columns_with_a_nested_column_keeps_long(temp_db, parallel):
+    """A column the native buffers cannot carry sends insert_columns down the row path, which must not change its stored types."""
+    temp_db.command("sql", "CREATE DOCUMENT TYPE Mixed")
+    columns = {"id": [0, 1], "n": [5, 6], "tags": [["a"], ["b", "c"]]}
+    temp_db.insert_columns("Mixed", columns, parallel=parallel)
+    assert _type_of(temp_db, "Mixed", ["id", "n"]) == [["LONG", "LONG"]] * 2

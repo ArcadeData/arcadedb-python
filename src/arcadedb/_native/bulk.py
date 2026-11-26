@@ -80,12 +80,13 @@ def insert_columns_parallel(db, type_name, columns, declared=None):
     return db._finish_parallel(type_name, [fid], rows)
 
 
-def insert_rows_columnar(db, type_name, chunk, declared=None):
+def insert_rows_columnar(db, type_name, chunk, declared=None, narrow=False):
     """One ``insert_many`` chunk (a list of dicts with the same keys) through the columnar entry inside the caller's transaction (no
     commit here). Returns True when it was sent, False when the chunk needs the JSON path.
 
     ``declared``: the :class:`columnar.Declared` of the call, so that its chunks read the schema once between them (a chunk on its own
-    reads it when a column needs it).
+    reads it when a column needs it). ``narrow`` (insert_many): a whole number that fits an int is stored as an Integer; the
+    other callers of the row path (insert_columns, the DataFrame paths) leave it off and store Long, as on the JVM build.
     """
     if not _usable():
         return False
@@ -97,8 +98,7 @@ def insert_rows_columnar(db, type_name, chunk, declared=None):
         return False
     rows, cols = packed
     prefix = f"Failed to bulk-insert into '{type_name}'"
-    # narrow: insert_many stores a whole number that fits an int as an Integer, as the JVM build does; insert_columns keeps Long
-    _send(db, type_name, cols, rows, 0, prefix, narrow=True)
+    _send(db, type_name, cols, rows, 0, prefix, narrow=narrow)
     return True
 
 
