@@ -51,8 +51,8 @@ class TokenSpy:
             self.read.append(token)
             return real_read(database, token)
 
-        def rows(database, type_name, chunk):
-            fid = real_rows(database, type_name, chunk)
+        def rows(database, type_name, chunk, *flags):
+            fid = real_rows(database, type_name, chunk, *flags)
             self.made.append(fid["fid"])
             return fid
 
@@ -142,11 +142,11 @@ def test_an_interrupt_between_the_chunks_of_the_row_path_waits_and_reads_the_tok
     real_rows = extras.insert_parallel
     seen = []
 
-    def second_chunk_interrupted(database, type_name, chunk):
+    def second_chunk_interrupted(database, type_name, chunk, *flags):
         if seen:
             raise KeyboardInterrupt
         seen.append(1)
-        return real_rows(database, type_name, chunk)
+        return real_rows(database, type_name, chunk, *flags)
 
     monkeypatch.setattr(extras, "insert_parallel", second_chunk_interrupted)
     rows = [{"id": i, "txt": "t"} for i in range(25_000)]
