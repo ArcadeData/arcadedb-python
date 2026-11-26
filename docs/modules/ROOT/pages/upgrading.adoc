@@ -8,7 +8,7 @@ ifdef::env-github[]
 :jvm-pkg-name: arcadedb-jvm
 endif::[]
 
-// Sources: the pull requests ArcadeData/arcadedb-python #479 to #483. Pinned by tests/test_auto_transaction_default.py, tests/test_error_codes_table.py, tests/test_error_codes_parity.py and tests/test_lazy_import.py.
+// Sources: the pull requests ArcadeData/arcadedb-python #479 to #483, and the change of issue #454. Pinned by tests/test_auto_transaction_default.py, tests/test_error_codes_table.py, tests/test_error_codes_parity.py, tests/test_lazy_import.py and tests/test_cross_wheel_golden.py.
 
 Read this page before you move a program from 26.11.1, or from one of its post releases, to 26.12.1. It covers both packages, `{native-pkg-name}` and `{jvm-pkg-name}`. The changes of the engine itself are listed with the https://github.com/ArcadeData/arcadedb/releases[releases of ArcadeDB].
 
@@ -36,6 +36,10 @@ See xref:how-to/errors.adoc[Errors: codes, hints and classes].
 === NumPy is imported when it is first needed
 
 `import arcadedb` no longer imports NumPy itself (`{jvm-pkg-name}` can still import it at that point through JPype). A NumPy that is installed but cannot be imported now raises at the first call that needs it. Before, the packages acted as if NumPy were not installed.
+
+=== `{native-pkg-name}` writes text outside ASCII as it is in `Result.to_json()`
+
+Before, `{native-pkg-name}` wrote every character outside ASCII as a `\u` escape. Now it writes the character itself, as `{jvm-pkg-name}` does, and keeps an escape only for control characters, U+2028 and U+2029. The parsed values are the same. Only the text, and so its length, its bytes and a hash of it, differs from what `{native-pkg-name}` returned before.
 
 === Engine 26.12.1
 

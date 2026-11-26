@@ -40,12 +40,20 @@ _XML_LIMIT_HINT = (
     " call only."
 )
 _RID_RE = re.compile(r"#?-?\d+:-?\d+")
+# Result.to_json() writes text as the JVM build does (the engine's writer): a character outside ASCII as it is, and a \u escape only
+# for a control character and for U+2028 and U+2029. json.dumps(ensure_ascii=False) leaves those two as they are, and a lone
+# surrogate too, which has no UTF-8 form, so these three kinds are escaped after it.
+_JSON_TEXT_ESCAPED = re.compile(r"[\u2028\u2029\ud800-\udfff]")
 _FIRST_BATCH = 256
 _EPOCH_DAY_ORDINAL = date(1970, 1, 1).toordinal()
 _NEXT_BATCH = 2048
 _EAGER = 8  # a flag of _exec that never reaches the library: the statement's first rows come back in its own reply
 _wrap_record = None
 _KIND = {"v": "v", "e": "e", "d": "d"}
+
+
+def _json_u_escape(match) -> str:
+    return "\\u%04x" % ord(match.group())
 
 
 def _error(prefix: str, reply: dict) -> ArcadeDBError:
@@ -189,7 +197,10 @@ class NativeResult:
             out["@cat"] = kind
             out["@type"] = type_name
             out["@rid"] = rid
-        return json.dumps(out, default=str, separators=(",", ":"))
+        text = json.dumps(out, default=str, separators=(",", ":"), ensure_ascii=False)
+        if text.isascii():
+            return text
+        return _JSON_TEXT_ESCAPED.sub(_json_u_escape, text)
 
     def __repr__(self) -> str:
         names = list(self._props)
