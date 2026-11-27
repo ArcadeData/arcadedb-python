@@ -629,6 +629,98 @@ mid 4
 
 The `[30, 70)` interval holds the scores 30, 40, 50 and 60. The last query shows that the filter of the `STATS` facet narrows the rows, and the `DISTINCT` facet counts the 4 categories of the records that pass.
 
+[[limits]]
+== Limits of one query
+
+Four settings limit a faceted query. The engine added them on 2026-11-07, so a pre-release of 26.12.1 built before that day does not have them. Where each one is set is on xref:how-to/columnar-index.adoc[The COLUMNAR index and its settings].
+
+[cols="3,1,1,4"]
+|===
+| Setting | Scope | Default | At the limit
+
+| `arcadedb.columnar.maxFacetsPerQuery`
+| server
+| 32
+| A `FACETS` clause with more facets is a parse error.
+
+| `arcadedb.columnar.maxResponseBuckets`
+| server
+| 250,000
+| The facets of one query return at most this many buckets together. They are taken in the order of the clause: a facet that does not fit is `unavailable` with the reason `bucket limit`, and a later one that fits is answered.
+
+| `arcadedb.columnar.hierarchyMaxNodes`
+| database
+| 0 (no limit)
+| A `HIERARCHY` facet over a tree with more nodes (distinct tags) is `unavailable`.
+
+| `arcadedb.columnar.hierarchyMaxDepth`
+| database
+| 0 (no limit)
+| A `HIERARCHY` facet over a tree that is deeper, counted in links from a root, is `unavailable`.
+|===
+
+One facet more than the default allows is refused when the statement is parsed, and 32 facets are answered:
+
+.Needs engine 26.12.1 or later
+[source,python,role=needs-engine-limits]
+----
+from arcadedb import QuerySyntaxError
+
+
+def facet_clause(n):
+    return ", ".join(f"f{i}: category TERMS TOP 1" for i in range(n))
+
+
+try:
+    db.query("sql", f"SELECT id FROM FacetDoc FACETS {facet_clause(33)}").to_list()
+except QuerySyntaxError as e:
+    print(e.code, "arcadedb.columnar.maxFacetsPerQuery" in str(e))
+
+rs = db.query("sql", f"SELECT id FROM FacetDoc FACETS {facet_clause(32)}")
+rs.to_list()
+print(len(rs.facets) - 1)  # every key but meta is a facet
+----
+
+[source,text]
+----
+syntax_error True
+32
+----
+
+The two hierarchy limits have database scope, and the engine reads them when it builds the hierarchy of an index. The block sets one, creates an index over the `Tag` tree of above (4 vertices, 2 links deep), and sets the limit back to 0:
+
+.Needs engine 26.12.1 or later
+[source,python,role=needs-engine-limits]
+----
+metadata = '{"hierarchy": {"vertexType": "Tag", "key": "path", "parentEdge": "ParentOf"}}'
+
+for name, setting, limit in (
+    ("Narrow", "hierarchyMaxNodes", 3),
+    ("Flat", "hierarchyMaxDepth", 1),
+):
+    db.command("sql", f"ALTER DATABASE `arcadedb.columnar.{setting}` {limit}")
+    db.command("sql", f"CREATE DOCUMENT TYPE {name}")
+    db.command("sql", f"CREATE PROPERTY {name}.tags LIST OF STRING")
+    db.command("sql", f"CREATE INDEX ON {name} (tags BY ITEM) COLUMNAR METADATA {metadata}")
+    db.command("sql", f"INSERT INTO {name} SET tags = ['t0/a/x']")
+    rs = db.query("sql", f"SELECT FROM {name} FACETS t: tags HIERARCHY TOP 100")
+    rs.to_list()
+    facet = rs.facets["t"]
+    print(facet["source"])
+    print(facet["reason"])
+    db.command("sql", f"ALTER DATABASE `arcadedb.columnar.{setting}` 0")
+----
+
+[source,text]
+----
+unavailable
+hierarchy of Tag.path has more than 3 nodes (arcadedb.columnar.hierarchyMaxNodes)
+unavailable
+hierarchy of Tag.path has deeper than 1 levels (arcadedb.columnar.hierarchyMaxDepth)
+----
+
+The bucket limit has server scope, so it cannot change while a program runs. The test of this page checks it in a child process that starts the engine with a limit of 3.
+
 [[older-engine]]
 == An older engine
 

@@ -50,6 +50,7 @@ Before, `{native-pkg-name}` stored every whole number that `insert_many` wrote a
 The engine that the 26.12.1 packages carry changes some behaviour that the other pages describe:
 
 * A vector index that `CREATE INDEX ... LSM_VECTOR` makes without `addHierarchy` has the HNSW hierarchy layers; on 26.11.1 and earlier it was a flat graph. `create_vector_index` already asked for the layers. See xref:how-to/vectors.adoc[Vectors].
+* A new `LSM_VECTOR` index with more than 16,384 dimensions is refused, and so is the first vector of that length in an index that takes its dimensions from it. To create a wider index, first run `+ALTER DATABASE `arcadedb.vectorIndex.maxDimensions` 20000+`, with the number that your vectors need. An index that is already stored keeps working. See xref:how-to/vectors.adoc#dimension-limit[The dimension limit].
 * `EXPORT DATABASE` refuses a setting that it does not know and some values that it accepted before: see xref:how-to/import-export.adoc[Importing and exporting data].
 
 Keep a backup of the database directory before you upgrade. With the engine change https://github.com/ArcadeData/arcadedb/pull/12239[ArcadeData/arcadedb#12239], a read-write open labels the database, and 26.11.1 then refuses to open it. The way to prevent the label is on xref:installation.adoc#older-wheel[Open a database with an older wheel].
