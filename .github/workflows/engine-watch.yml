@@ -89,4 +89,4 @@ jobs:
           name: engine-watch-report
           path: ${{ runner.temp }}/engine-watch.md
           if-no-files-found: ignore
-          retention-days: 90
+          retention-days: 30

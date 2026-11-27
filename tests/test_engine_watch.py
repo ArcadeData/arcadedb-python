@@ -461,12 +461,193 @@ def test_a_method_moved_to_a_supertype_or_overridden_is_no_finding():
     assert not [k for k in result if k[2] == "LocalDatabase" and "added" in k[3]]
 
 
-def test_a_new_method_of_an_implementation_class_is_listed_apart():
-    scan = scan_of(changed_engine())
-    apart = [(f.subject, f.detail) for f in scan.findings if f.internal]
-    assert apart == [("LocalDatabase", "void internalOnly()")]
-    removed = next(f for f in scan.findings if f.detail == "void drop(String)")
-    assert removed.used and not removed.internal
+def test_a_new_method_has_a_row_only_on_a_class_the_bindings_name():
+    repo = FakeRepo(
+        {**FIRST, f"{E}/database/Basic.java": BASIC % ""},
+        (
+            "feat: methods (#1)",
+            {
+                # Basic is watched as a supertype of Database, which the bindings name; they do not name Basic
+                f"{E}/database/Basic.java": BASIC % "void onTheSupertype();",
+                f"{E}/database/LocalDatabase.java": LOCAL
+                % "public void begin() { } public void onTheClass() { }",
+            },
+        ),
+    )
+    scan = scan_of(repo)
+    assert [(f.subject, f.detail) for f in scan.findings] == [
+        ("LocalDatabase", "void onTheClass()")
+    ]
+    assert scan.folded == 1
+    body = ew.render(scan)
+    assert "1 more new method names in watched classes" in body
+    assert "onTheSupertype" not in body
+
+
+def test_an_implemented_interface_lists_its_new_abstract_methods_only():
+    hook = "package com.arcadedb.database;\npublic interface Hook { %s }\n"
+    path = f"{E}/database/Hook.java"
+    repo = FakeRepo(
+        {**FIRST, path: hook % "void call();"},
+        (
+            "feat: hook (#1)",
+            {
+                path: hook
+                % "void call(); void required(int n); default void optional() { } static void helper() { }"
+            },
+        ),
+    )
+    used = bindings()
+    used.wrapped.add("com.arcadedb.database.Hook")
+    used.implemented.add("com.arcadedb.database.Hook")
+    scan = ew.Scanner(repo, used, repo.base, repo.head).run()
+    assert [(f.subject, f.detail) for f in scan.findings] == [
+        ("Hook", "void required(int)")
+    ]
+    assert scan.folded == 2
+
+
+def test_used_needs_the_class_and_the_method():
+    basic = f"{E}/database/Basic.java"
+    other = f"{E}/database/Other.java"
+    text = "package com.arcadedb.database;\npublic class Other { %s }\n"
+    returned = database("void begin()", "Other other()")
+    repo = FakeRepo(
+        {
+            **FIRST,
+            f"{E}/database/Database.java": returned,
+            basic: BASIC % "void drop(int n);",
+            other: text % "public void drop(String s) { }",
+        },
+        ("refactor: drop (#1)", {basic: BASIC % "", other: text % ""}),
+    )
+    scan = ew.Scanner(
+        repo, bindings(calls=("other", "drop")), repo.base, repo.head
+    ).run()
+    used = {f.subject: f.used for f in scan.findings}
+    # Basic is above Database, which the bindings name; Other is only returned, so the name alone does not make it used
+    assert used == {"Basic": True, "Other": False}
+
+
+def test_new_and_removed_exception_classes_below_a_named_one_are_reported():
+    package = "package com.arcadedb.exception;\n"
+    need = package + "public class NeedRetryException extends RuntimeException { }\n"
+    listed = package + "public class SchemaException extends RuntimeException { }\n"
+
+    def below(name, parent):
+        return package + f"public class {name} extends {parent} {{ }}\n"
+
+    x = f"{E}/exception"
+    repo = FakeRepo(
+        {
+            **FIRST,
+            f"{x}/NeedRetryException.java": need,
+            f"{x}/SchemaException.java": listed,
+            f"{x}/OldSchemaException.java": below(
+                "OldSchemaException", "SchemaException"
+            ),
+        },
+        (
+            "feat: refusals (#8)",
+            {
+                f"{x}/BusyException.java": below("BusyException", "NeedRetryException"),
+                f"{x}/StillBusyException.java": below(
+                    "StillBusyException", "BusyException"
+                ),
+                f"{x}/UnrelatedException.java": below(
+                    "UnrelatedException", "RuntimeException"
+                ),
+                "server/src/main/java/com/arcadedb/server/Holder.java": "package com.arcadedb.server;\n"
+                "public class Holder { static class Bad extends IllegalArgumentException { } }\n",
+                f"{x}/OldSchemaException.java": None,
+            },
+        ),
+    )
+    used = bindings()
+    used.errors.update(
+        {"com.arcadedb.exception.SchemaException", "java.lang.IllegalArgumentException"}
+    )
+    scan = ew.Scanner(repo, used, repo.base, repo.head).run()
+    got = {
+        (f.change, f.subject, f.detail.rsplit(" ", 1)[-1])
+        for f in scan.findings
+        if f.section == "exceptions"
+    }
+    assert got == {
+        ("new exception", "BusyException", "NeedRetryException"),
+        ("new exception", "StillBusyException", "NeedRetryException"),
+        ("new exception", "Holder.Bad", "IllegalArgumentException"),
+        ("exception removed", "OldSchemaException", "SchemaException"),
+    }
+    assert {f.commit.pull_request for f in scan.findings} == {8}
+
+
+def test_a_removed_class_that_only_the_native_image_configuration_names(tmp_path):
+    config = "native/src/main/resources/META-INF/native-image/org.humemai/x"
+    write(
+        tmp_path,
+        f"{config}/reachability-metadata.json",
+        '{"reflection": [{"type": "com.arcadedb.query.OldStatement"}]}',
+    )
+    write(
+        tmp_path,
+        f"{config}/native-image.properties",
+        "Args = --initialize-at-run-time=com.arcadedb.query.OldHolder\n",
+    )
+    read = ew.read_bindings(tmp_path)
+    names = {"com.arcadedb.query.OldStatement", "com.arcadedb.query.OldHolder"}
+    assert read.configured == names and names <= read.named
+    gone = {
+        f"{E}/query/{n}.java": f"package com.arcadedb.query;\npublic class {n} {{ }}\n"
+        for n in ("OldStatement", "OldHolder")
+    }
+    repo = FakeRepo({**FIRST, **gone}, ("drop (#2)", dict.fromkeys(gone)))
+    used = bindings()
+    used.named.update(read.named)
+    used.configured.update(read.configured)
+    scan = ew.Scanner(repo, used, repo.base, repo.head).run()
+    assert sorted(f.detail for f in scan.findings) == [
+        f"the native image configuration names {n}" for n in sorted(names)
+    ]
+
+
+def test_the_interfaces_the_bindings_implement_are_read_from_the_sources(tmp_path):
+    write(
+        tmp_path,
+        "src/arcadedb/a.py",
+        """
+@jpype.JImplements("com.arcadedb.database.async.OkCallback")
+class A: pass
+@jpype.JImplements(jpype.JClass("com.arcadedb.database.async.ErrorCallback"))
+class B: pass
+""",
+    )
+    write(
+        tmp_path,
+        "src/java/com/arcadedb/python/C.java",
+        """
+package com.arcadedb.python;
+import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.database.Database;
+import com.arcadedb.database.DocumentCallback;
+class C implements ResultSet {
+  Database db;
+  Object o = new DocumentCallback() { public boolean onRecord(Object d) { return true; } };
+}
+""",
+    )
+    assert ew.read_bindings(tmp_path).implemented == {
+        "com.arcadedb.database.async.OkCallback",
+        "com.arcadedb.database.async.ErrorCallback",
+        "com.arcadedb.query.sql.executor.ResultSet",
+        "com.arcadedb.database.DocumentCallback",
+    }
+
+
+def test_the_classes_of_the_table_of_codes_are_read_from_this_repository():
+    errors = ew.read_bindings(ROOT).errors
+    assert "com.arcadedb.exception.NeedRetryException" in errors
+    assert "com.arcadedb.exception.DuplicatedKeyException" in errors
 
 
 def test_a_change_inside_a_method_body_is_no_finding_but_its_pull_request_is_listed():
