@@ -545,6 +545,7 @@ For vector search the JVM package is faster still: see xref:which-package.adoc#v
 
 == Next steps
 
+* xref:how-to/agent-memory.adoc[Agent memory]
 * xref:how-to/databases-and-queries.adoc[Databases and queries]
 * xref:how-to/bulk-loads.adoc[Bulk loads and commit size]
 * {arcadedb-docs-url}/concepts/vector-search[Vector search in the ArcadeDB manual]

@@ -1,0 +1,376 @@
+= Agent memory
+:description: A small agent memory in one database: messages as documents, facts linked in a graph, filtered vector search, update, forget and de-duplicate, and what to expect after a write and as the collection grows.
+
+// Pinned by tests/test_docs_agent_memory_page.py, which runs every block on both packages. The sizes and thresholds in "As the collection grows" are those of the ArcadeDB 26.12.1 sources: LSMVectorIndex (ASYNC_REBUILD_MIN_GRAPH_SIZE, rebuildGraphBeforeSearch, smallGraphRebuildIsDue, computeRebuildThreshold, searchBeam) and the arcadedb.vectorIndex.* settings in GlobalConfiguration.
+
+This page builds the memory of a small agent in one database. The messages of a conversation are documents. The facts that the agent keeps are vertices, linked to the people and things that they mention. Each fact has an embedding for vector search. The statements are SQL and openCypher through `db.command(...)` and `db.query(...)`, as on xref:how-to/databases-and-queries.adoc[Databases and queries].
+
+The blocks on this page run one after the other and open a database in the current directory, and a test in the repository runs them that way (`tests/test_docs_agent_memory_page.py`). Each block that prints something is followed by its output. The embeddings here are vectors of 4 numbers written by hand, so that the output is the same on every run. In your agent they come from your embedding model. NumPy is optional for the bindings, but the blocks use it; add it with `uv add numpy`.
+
+== Create the memory
+
+[source,python]
+----
+import numpy as np
+
+import arcadedb
+
+db = arcadedb.open_or_create_database("./agent_memory")
+
+for statement in [
+    "CREATE DOCUMENT TYPE Message IF NOT EXISTS",
+    "CREATE PROPERTY Message.turn IF NOT EXISTS LONG",
+    "CREATE INDEX IF NOT EXISTS ON Message (turn) NOTUNIQUE",
+    "CREATE VERTEX TYPE Memory IF NOT EXISTS",
+    "CREATE PROPERTY Memory.key IF NOT EXISTS STRING",
+    "CREATE PROPERTY Memory.user IF NOT EXISTS STRING",
+    "CREATE PROPERTY Memory.embedding IF NOT EXISTS ARRAY_OF_FLOATS",
+    "CREATE INDEX IF NOT EXISTS ON Memory (key) UNIQUE",
+    "CREATE INDEX IF NOT EXISTS ON Memory (user) NOTUNIQUE",
+    "CREATE INDEX IF NOT EXISTS ON Memory (embedding) LSM_VECTOR "
+    'METADATA {"dimensions": 4, "similarity": "COSINE"}',
+    "CREATE VERTEX TYPE Entity IF NOT EXISTS",
+    "CREATE PROPERTY Entity.name IF NOT EXISTS STRING",
+    "CREATE INDEX IF NOT EXISTS ON Entity (name) UNIQUE",
+    "CREATE EDGE TYPE Mentions IF NOT EXISTS",
+]:
+    db.command("sql", statement)
+----
+
+Every statement says `IF NOT EXISTS`, so the agent can run this at each start. The unique indexes on `Memory.key` and `Entity.name` are what `UPSERT` needs. The index on `Memory.user` serves the filtered search below. `dimensions` must match the length of your embeddings.
+
+== Store a fact, or update it by key
+
+`remember` writes one fact and its links in one transaction. `UPDATE ... UPSERT` updates the record with that key, or creates it when there is none. The function then replaces the links of the fact: it deletes the old ones, upserts each entity by name, and creates the edge.
+
+[source,python]
+----
+def remember(key, user, text, vector, mentions):
+    def write():
+        db.command(
+            "sql",
+            "UPDATE Memory SET user = ?, text = ?, embedding = ? UPSERT WHERE key = ?",
+            user,
+            text,
+            np.asarray(vector, dtype=np.float32),
+            key,
+        )
+        db.command(
+            "sql",
+            "DELETE FROM (SELECT expand(outE('Mentions')) FROM Memory WHERE key = ?)",
+            key,
+        )
+        for name in mentions:
+            db.command(
+                "sql", "UPDATE Entity SET name = ? UPSERT WHERE name = ?", name, name
+            )
+            db.command(
+                "sql",
+                "CREATE EDGE Mentions FROM (SELECT FROM Memory WHERE key = ?) "
+                "TO (SELECT FROM Entity WHERE name = ?) IF NOT EXISTS",
+                key,
+                name,
+            )
+
+    db.run_in_transaction(write)
+
+
+def counts():
+    return [db.count_type(name) for name in ("Memory", "Entity", "Mentions")]
+
+
+remember("ann-coffee", "ann", "Ann drinks espresso every morning",
+         [0.9, 0.1, 0.0, 0.0], ["Ann", "espresso"])
+remember("ann-running", "ann", "Ann trains for a marathon in May",
+         [0.1, 0.9, 0.0, 0.0], ["Ann", "marathon"])
+remember("ann-travel", "ann", "Ann wants to visit Lisbon",
+         [0.0, 0.0, 0.9, 0.1], ["Ann", "Lisbon"])
+remember("ben-coffee", "ben", "Ben prefers tea to espresso",
+         [0.8, 0.0, 0.0, 0.2], ["Ben", "espresso"])
+remember("ann-standup", "ann", "Ann moved her stand-up to 10:00",
+         [0.0, 0.0, 0.1, 0.9], ["Ann"])
+print(counts())
+----
+
+[source,text]
+----
+[5, 5, 9]
+----
+
+The counts are facts, entities, and links. A second call with the same key updates the fact and adds no record:
+
+[source,python]
+----
+remember("ann-running", "ann", "Ann finished her marathon in May",
+         [0.1, 0.9, 0.0, 0.0], ["Ann", "marathon"])
+print(counts())
+row = db.query("sql", "SELECT text FROM Memory WHERE key = ?", "ann-running").first()
+print(row.get("text"))
+----
+
+[source,text]
+----
+[5, 5, 9]
+Ann finished her marathon in May
+----
+
+`db.run_in_transaction` runs the function again after a conflict with another writer, see xref:how-to/transactions.adoc[Transactions].
+
+== Keep the conversation and read the latest messages
+
+The raw messages need no links, so they are documents. One transaction around the loop commits once (see xref:how-to/transactions.adoc#commit-cost[What a commit costs]). `to_list()` returns each row as a `dict`.
+
+[source,python]
+----
+messages = [
+    "Hi",
+    "I drink espresso every morning",
+    "I run too",
+    "My marathon is in May",
+    "I want to see Lisbon",
+    "Move my stand-up to 10:00",
+    "Thanks",
+]
+with db.transaction():
+    for turn, text in enumerate(messages, start=1):
+        db.command("sql", "INSERT INTO Message SET turn = ?, text = ?", turn, text)
+
+latest = db.query(
+    "sql", "SELECT turn, text FROM Message ORDER BY turn DESC LIMIT 5"
+).to_list()
+for row in latest:
+    print(row)
+----
+
+[source,text]
+----
+{'turn': 7, 'text': 'Thanks'}
+{'turn': 6, 'text': 'Move my stand-up to 10:00'}
+{'turn': 5, 'text': 'I want to see Lisbon'}
+{'turn': 4, 'text': 'My marathon is in May'}
+{'turn': 3, 'text': 'I run too'}
+----
+
+== Search the nearest facts of one user
+
+`vectorNeighbors` returns the `k` records nearest to a query vector, and `where` restricts the search to the records that match, before the top `k` is taken. A lower `distance` is closer.
+
+[source,python]
+----
+def nearest(vector, user, k=3):
+    rows = db.query(
+        "sql",
+        "SELECT key, distance FROM (SELECT expand(vectorNeighbors("
+        "'Memory[embedding]', :vector, :k, {where: {user: :user}}))) "
+        "ORDER BY distance",
+        {"vector": np.asarray(vector, dtype=np.float32), "k": k, "user": user},
+    )
+    return [row.get("key") for row in rows]
+
+
+question = [0.8, 0.3, 0.1, 0.0]
+print(nearest(question, "ann"))
+print(nearest(question, "ben"))
+----
+
+[source,text]
+----
+['ann-coffee', 'ann-running', 'ann-travel']
+['ben-coffee']
+----
+
+`where` is applied during the search, so a user with few facts still gets them when many facts of other users are nearer. The other options of the function, and the Python method `find_nearest`, are on xref:how-to/vectors.adoc#search[Vectors].
+
+== Follow the links
+
+The graph answers questions that similarity does not. Which facts mention espresso, in openCypher:
+
+[source,python]
+----
+rows = db.query(
+    "opencypher",
+    "MATCH (m:Memory)-[:Mentions]->(:Entity {name: $name}) "
+    "RETURN m.key AS memory ORDER BY memory",
+    {"name": "espresso"},
+)
+print([row.get("memory") for row in rows])
+----
+
+[source,text]
+----
+['ann-coffee', 'ben-coffee']
+----
+
+One statement can search by vector and then follow the links of each hit, through the `record` of the hit. Here it takes the two nearest facts of all users:
+
+[source,python]
+----
+rows = db.query(
+    "sql",
+    "SELECT key, distance, record.out('Mentions').name AS mentions FROM "
+    "(SELECT expand(vectorNeighbors('Memory[embedding]', ?, 2))) ORDER BY distance",
+    np.asarray(question, dtype=np.float32),
+)
+for row in rows:
+    print(row.get("key"), sorted(row.get("mentions")))
+----
+
+[source,text]
+----
+ann-coffee ['Ann', 'espresso']
+ben-coffee ['Ben', 'espresso']
+----
+
+== Forget an entity
+
+`forget` deletes the facts that mention an entity, and then the entity, in one transaction. It deletes such a fact also when the fact mentions others too, so change the function if your agent should keep those. Deleting a vertex deletes its edges (see xref:how-to/sql-for-sql-users.adoc#delete-with-delete-from[Delete with DELETE FROM]).
+
+[source,python]
+----
+def forget(name):
+    def delete():
+        about = db.query(
+            "sql", "SELECT expand(in('Mentions')) FROM Entity WHERE name = ?", name
+        )
+        keys = [row.get("key") for row in about]
+        db.command("sql", "DELETE FROM Memory WHERE key IN :keys", {"keys": keys})
+        db.command("sql", "DELETE FROM Entity WHERE name = ?", name)
+
+    db.run_in_transaction(delete)
+
+
+forget("Ben")
+print(counts())
+print(nearest(question, "ben"))
+----
+
+[source,text]
+----
+[4, 4, 7]
+[]
+----
+
+== Remove duplicate facts
+
+An agent can store one fact twice under two keys. Group the facts by user and text, collect the keys of each group, keep the first key, and delete the rest:
+
+[source,python]
+----
+remember("ann-coffee-again", "ann", "Ann drinks espresso every morning",
+         [0.9, 0.1, 0.0, 0.0], ["Ann", "espresso"])
+print(counts())
+
+groups = db.query(
+    "sql", "SELECT user, text, list(key) AS ids FROM Memory GROUP BY user, text"
+).to_list()
+extra = [key for group in groups for key in sorted(group["ids"])[1:]]
+db.command("sql", "DELETE FROM Memory WHERE key IN :keys", {"keys": extra})
+print(extra)
+print(counts())
+----
+
+[source,text]
+----
+[5, 4, 9]
+['ann-coffee-again']
+[4, 4, 7]
+----
+
+== What to expect right after a write
+
+A search that starts after a transaction has committed sees what the transaction wrote. A new fact is found, a changed embedding is searched with its new value, and a deleted fact is gone, as `forget` showed. You do not call a rebuild or a refresh.
+
+[source,python]
+----
+remember("ann-decaf", "ann", "Ann switched to decaf", question, ["Ann"])
+print(nearest(question, "ann", k=1))
+
+remember("ann-decaf", "ann", "Ann switched to decaf", [0.0, 0.0, 0.0, 1.0], ["Ann"])
+print(nearest(question, "ann", k=1))
+----
+
+[source,text]
+----
+['ann-decaf']
+['ann-coffee']
+----
+
+This holds for committed writes. A search from another thread or task sees them too: see xref:how-to/vectors.adoc#agents-that-write-as-they-go[Agents that write as they go], which also shows how to choose the moment of a rebuild, and xref:how-to/asyncio.adoc[asyncio: AsyncDatabase] for an agent written with `async def`. Several agents in one process share one `Database`, see xref:how-to/concurrency.adoc#threads[Concurrency, processes and crashes].
+
+== As the collection grows
+
+A vector index holds a graph. Vectors written since the graph was built wait beside it and are compared with the query one by one, until a rebuild puts them into the graph. `get_stats()` shows after how many changes that happens:
+
+[source,python]
+----
+index = db.schema.get_vector_index("Memory", "embedding")
+stats = index.get_stats()
+print(db.count_type("Memory"), stats["effectiveMutationsThreshold"])
+----
+
+[source,text]
+----
+5 100
+----
+
+The threshold is 100 changes, or one fifth of the vectors in the graph when that is more (the fifth counts up to 50,000). With the default settings of ArcadeDB 26.12.1, the size of an index also changes how a rebuild runs and how widely a search looks:
+
+[cols="1,3,2",options="header"]
+|===
+| Vectors in the index | Rebuild after writes | Default search width for `k` results
+
+| under 1,000
+| A search that finds the threshold reached rebuilds before it answers. After 15 seconds without a write, any pending change is rebuilt in the background.
+| `max(k, 100)`
+
+| 1,000 to 9,999
+| In the background, while searches keep answering. It starts at the threshold, or earlier when searches spend much of their time on the waiting vectors.
+| `max(k, 100)`
+
+| 10,000 or more
+| As above.
+| `max(2k, 100)`
+|===
+
+A type has one index for each bucket, and one bucket by default. The first build of a graph runs in the search that needs it, and after a reopen the first search loads the saved graph (see xref:how-to/vectors.adoc#rebuild-the-graph[Rebuild the graph]). To trade speed for recall, pass `efSearch` in the options of `vectorNeighbors`.
+
+=== When the graph index pays off
+
+A search that is narrowed to one user can do little work in the graph: when the `where` keeps few records and the filtered property has an index, the engine scores those records directly (see xref:how-to/vectors.adoc#filtered-search[Filtered search]).
+
+For a search over the whole collection, this page gives no size from which the graph is faster than reading every record. That depends on the dimensions, the hardware, `k` and `efSearch`, and it was not measured for this page. Compare the two on your own data. The first statement below reads every record, so its answer is exact and its cost grows with the collection. The second uses the index:
+
+[source,python]
+----
+query = np.asarray(question, dtype=np.float32)
+exact = db.query(
+    "sql",
+    "SELECT key, vectorCosineSimilarity(embedding, ?) AS similarity "
+    "FROM Memory ORDER BY similarity DESC LIMIT 3",
+    query,
+)
+indexed = db.query(
+    "sql",
+    "SELECT key, distance FROM "
+    "(SELECT expand(vectorNeighbors('Memory[embedding]', ?, 3))) ORDER BY distance",
+    query,
+)
+print([row.get("key") for row in exact])
+print([row.get("key") for row in indexed])
+db.close()
+----
+
+[source,text]
+----
+['ann-coffee', 'ann-running', 'ann-travel']
+['ann-coffee', 'ann-running', 'ann-travel']
+----
+
+Time both at the size you expect to reach, and count how many of the exact keys the index returns.
+
+== Next steps
+
+* xref:how-to/vectors.adoc[Vectors]
+* xref:how-to/transactions.adoc[Transactions]
+* xref:how-to/asyncio.adoc[asyncio: AsyncDatabase]
+* xref:how-to/bulk-loads.adoc[Bulk loads and commit size]
