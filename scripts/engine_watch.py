@@ -7,7 +7,11 @@ reports only differences of what the engine offers, never of how it is written:
 - the public methods, constructors, enum constants and nested types of the Java classes the bindings wrap. The list of classes is
   derived on every run from the sources of this repository: each engine class that `src/arcadedb` names in `JClass`, `JImplements`
   or `JPackage`, each one that `src/java` and `native/src` import or spell out, the supertypes of those classes, and the engine
-  types returned by a method whose name the bindings call;
+  types returned by a method whose name the bindings call. A new method has a row of its own only when it is abstract and on
+  an interface the bindings implement, or on a class they name; the others are one count;
+- the exception classes that descend from a class named in `src/arcadedb/exceptions.py`, or from `NeedRetryException`: new
+  ones and removed ones, whatever their module. Such a class changes the code an error gets, or whether it is retried;
+- the engine classes that the native image configuration (`reachability-metadata.json`, `.properties`) names and that are gone;
 - the settings of `GlobalConfiguration` (new, removed, renamed key, scope, type, default value, allowed values, deprecated);
 - the index types (`Schema.INDEX_TYPE`);
 - the SQL statements and keywords (the ANTLR grammar) and the SQL functions and methods (the two default factories).
@@ -40,6 +44,7 @@ import argparse
 import dataclasses
 import datetime
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -86,6 +91,11 @@ FIXED_FILES = [
 BRIDGE_PACKAGE = "com.arcadedb.python"
 PYTHON_SOURCES = ["src/arcadedb"]
 JAVA_SOURCES = ["src/java", "native/src/main/java"]
+# The files of the native image that name engine classes (reflection metadata and builder arguments).
+NATIVE_CONFIG = "native/src/main/resources/META-INF/native-image"
+EXCEPTIONS_SOURCE = "src/arcadedb/exceptions.py"
+NEED_RETRY = "com.arcadedb.exception.NeedRetryException"
+CLASS_NAME = re.compile(r"com\.arcadedb(?:\.[a-z_]\w*)*\.[A-Z]\w*(?:\$\w+)*")
 
 
 class WatchError(Exception):
@@ -172,6 +182,7 @@ class Method:
 class Flags:
     override: bool = False
     deprecated: bool = False
+    abstract: bool = False  # an implementation has to supply it
 
 
 @dataclasses.dataclass
@@ -373,7 +384,8 @@ class _JavaParser:
             k = close + 1
             while k < end and self.t[k] not in ("{", ";"):
                 k = self.match[k] + 1 if self.t[k] in OPENERS else k + 1
-            i = (self.match[k] + 1) if self.at(k) == "{" else k + 1
+            has_body = self.at(k) == "{"
+            i = (self.match[k] + 1) if has_body else k + 1
             clause = self.t[close + 1 : k]
             if "throws" in clause:
                 clause = split_arguments(clause[clause.index("throws") + 1 :])
@@ -402,8 +414,13 @@ class _JavaParser:
             )
             static = "static" in modifiers
             method = Method(name, params, type_text(returns), static, throws)
+            abstract = "abstract" in modifiers or (
+                in_interface
+                and not has_body
+                and not modifiers & {"default", "static", "private"}
+            )
             declared.methods[method] = Flags(
-                "Override" in annotations, "Deprecated" in annotations
+                "Override" in annotations, "Deprecated" in annotations, abstract
             )
 
 
@@ -712,29 +729,6 @@ class Engine:
                     return found
         return None
 
-    def implements(self, path: str, type_name: str) -> bool:
-        """True for a class that implements an engine interface, itself or through a superclass."""
-        file = self.parsed(path)
-        declared = file.types.get(type_name) if file else None
-        if not declared or declared.kind != "class":
-            return False
-        queue, seen = [(path, declared)], set()
-        while queue:
-            at, current = queue.pop()
-            here = self.parsed(at)
-            for above in current.supers:
-                target = at if above in here.types else self.resolve(above, here)
-                if not target or (target, above) in seen:
-                    continue
-                seen.add((target, above))
-                for candidate in self.parsed(target).types.values():
-                    if candidate.name.split(".")[-1] != above.split(".")[-1]:
-                        continue
-                    if candidate.kind == "interface":
-                        return True
-                    queue.append((target, candidate))
-        return False
-
     def inherited(
         self, path: str, type_name: str, name: str, params: str
     ) -> tuple[str, str] | None:
@@ -796,12 +790,73 @@ class Bindings:
     named: set[str]  # every engine class name written anywhere, also in a string
     calls: set[str]  # method names called with `.name(`
     text: str  # all sources, to say whether a setting or a function is named
+    # engine types the bindings implement (`JImplements`, `implements`, an anonymous class)
+    implemented: set[str] = dataclasses.field(default_factory=set)
+    configured: set[str] = dataclasses.field(
+        default_factory=set
+    )  # named in NATIVE_CONFIG
+    errors: set[str] = dataclasses.field(
+        default_factory=set
+    )  # classes that exceptions.py decides by
+
+
+def implemented_by(file: JavaFile, tokens: list[str]) -> set[str]:
+    """The engine types that a Java file of the bindings implements or extends, as full names."""
+    written = [name for declared in file.types.values() for name in declared.supers]
+    for n, token in enumerate(tokens):
+        if token != "new":
+            continue
+        # `new Name<Args>(...) {` is an anonymous class: read the name, skip the arguments, and look for the body
+        at, angle, parts = n + 1, 0, []
+        while at < len(tokens) and tokens[at] not in ("(", "[", ";"):
+            if tokens[at] == "<":
+                angle += 1
+            elif tokens[at] == ">":
+                angle -= 1
+            elif not angle:
+                parts.append(tokens[at])
+            at += 1
+        if tokens[at : at + 1] != ["("]:
+            continue  # an array
+        depth = 0
+        while at < len(tokens):
+            depth += {"(": 1, ")": -1}.get(tokens[at], 0)
+            at += 1
+            if not depth:
+                break
+        if tokens[at : at + 1] == ["{"]:
+            written.append("".join(parts))
+    found: set[str] = set()
+    for name in written:
+        if name.startswith("com.arcadedb."):
+            found.add(name)
+            continue
+        first, dot, rest = name.partition(".")
+        exact = [i for i in file.imports if i.endswith("." + first)]
+        packages = [i[:-2] for i in file.imports if i.endswith(".*")]
+        for full in exact or [f"{package}.{first}" for package in packages]:
+            if full.startswith("com.arcadedb."):
+                found.add(full + dot + rest)
+    return found
+
+
+def error_classes(root: Path) -> set[str]:
+    """The Java classes that the table of codes in exceptions.py names; that file imports the standard library only."""
+    path = root / EXCEPTIONS_SOURCE
+    if not path.is_file():
+        return set()
+    spec = importlib.util.spec_from_file_location("_engine_watch_exceptions", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return {name for rule in module._RULES for name in rule.java}
 
 
 def read_bindings(root: Path) -> Bindings:
     wrapped: set[str] = set()
     named: set[str] = set()
     calls: set[str] = set()
+    implemented: set[str] = set()
+    configured: set[str] = set()
     texts = []
     python = [p for d in PYTHON_SOURCES for p in sorted((root / d).rglob("*.py"))]
     java = [p for d in JAVA_SOURCES for p in sorted((root / d).rglob("*.java"))]
@@ -809,10 +864,14 @@ def read_bindings(root: Path) -> Bindings:
         text = path.read_text(encoding="utf-8", errors="replace")
         texts.append(text)
         calls.update(re.findall(r"\.([A-Za-z_]\w*)\s*\(", text))
-        named.update(
-            re.findall(r"com\.arcadedb(?:\.[a-z_]\w*)*\.[A-Z]\w*(?:\$\w+)*", text)
-        )
+        named.update(CLASS_NAME.findall(text))
         if path.suffix == ".py":
+            implemented.update(
+                re.findall(
+                    r"""(?:JImplements|JProxy)\(\s*(?:(?:jpype\.)?JClass\(\s*)?["'](com\.arcadedb\.[\w.$]+)["']""",
+                    text,
+                )
+            )
             wrapped.update(
                 re.findall(
                     r"""J(?:Class|Implements)\(\s*["'](com\.arcadedb\.[\w.$]+)["']""",
@@ -828,6 +887,7 @@ def read_bindings(root: Path) -> Bindings:
             )
             continue
         tokens = java_tokens(text)
+        implemented.update(implemented_by(parse_java(text), tokens))
         wildcard = []
         n = 0
         while n < len(tokens):
@@ -854,7 +914,21 @@ def read_bindings(root: Path) -> Bindings:
     def engine_only(names: set[str]) -> set[str]:
         return {n for n in names if not n.startswith(BRIDGE_PACKAGE + ".")}
 
-    return Bindings(engine_only(wrapped), engine_only(named), calls, "\n".join(texts))
+    for path in sorted((root / NATIVE_CONFIG).rglob("*")):
+        if path.suffix in (".json", ".properties"):
+            configured.update(
+                CLASS_NAME.findall(path.read_text(encoding="utf-8", errors="replace"))
+            )
+
+    return Bindings(
+        engine_only(wrapped),
+        engine_only(named | configured),
+        calls,
+        "\n".join(texts),
+        engine_only(implemented),
+        engine_only(configured),
+        error_classes(root),
+    )
 
 
 def watched_files(engine: Engine, bindings: Bindings) -> dict[str, str]:
@@ -894,12 +968,27 @@ def watched_files(engine: Engine, bindings: Bindings) -> dict[str, str]:
     return why
 
 
+def with_supertypes(engine: Engine, paths: set[str]) -> set[str]:
+    """The files of `paths`, and of every type above a type that one of them holds."""
+    found, queue = set(paths), list(paths)
+    while queue:
+        file = engine.parsed(queue.pop())
+        for declared in file.types.values() if file else []:
+            for above in declared.supers:
+                target = engine.resolve(above, file)
+                if target and target not in found:
+                    found.add(target)
+                    queue.append(target)
+    return found
+
+
 # ---------------------------------------------------------------------------------------------------------------------------------
 # The comparison.
 
 SECTIONS = [
     ("broke", "Removed or changed in classes the bindings use"),
     ("added", "New in classes the bindings use"),
+    ("exceptions", "Exception classes under the ones the bindings name"),
     ("settings", "Settings (GlobalConfiguration)"),
     ("index", "Index types"),
     ("sql", "SQL statements, keywords, functions, and methods"),
@@ -915,8 +1004,6 @@ class Finding:
     path: str
     used: bool = False
     commit: Commit | None = None
-    # A new method of a class that implements an engine interface, whose name the bindings do not call: listed apart.
-    internal: bool = False
 
     @property
     def key(self) -> str:
@@ -936,6 +1023,7 @@ class Scan:
     watched: dict[str, str]
     commits: list[Commit]
     releases: list[dict] = dataclasses.field(default_factory=list)
+    folded: int = 0  # new methods that have no row of their own
 
     @property
     def digest(self) -> str:
@@ -957,6 +1045,10 @@ class Scanner:
             for path in commit.files:
                 self.by_file.setdefault(path, []).append(commit)
         self.findings: list[Finding] = []
+        self.folded = 0
+        self.direct: set[str] = set()
+        self.reached: set[str] = set()
+        self.implemented: set[str] = set()
 
     def engine(self, rev: str) -> Engine:
         if rev not in self.engines:
@@ -985,12 +1077,10 @@ class Scanner:
             self.cache[digest] = parse_java(text)
         return self.cache[digest]
 
-    def add(
-        self, section, change, subject, detail, path, value, used=False, internal=False
-    ) -> None:
+    def add(self, section, change, subject, detail, path, value, used=False) -> None:
         commit = self.introduced(path, value)
         self.findings.append(
-            Finding(section, change, subject, detail, path, used, commit, internal)
+            Finding(section, change, subject, detail, path, used, commit)
         )
 
     def named(self, *words: str) -> bool:
@@ -1106,7 +1196,8 @@ class Scanner:
             value = lambda rev, p=path, t=name, m=method_name: self._overloads(  # noqa: E731
                 rev, p, t, m
             )
-            used = (
+            # used only when both match: the bindings name this class (or one below it) and the method
+            used = path in self.reached and (
                 self.named(name.split(".")[-1])
                 if method_name == "<init>"
                 else method_name in self.bindings.calls
@@ -1119,8 +1210,16 @@ class Scanner:
                 self.add("broke", "removed", name, detail, path, value, used)
             else:
                 detail = "; ".join(new_forms)
-                internal = not used and self.new.implements(path, name)
-                self.add("added", "new", name, detail, path, value, used, internal)
+                if path in self.implemented and now.kind == "interface":
+                    listed = any(
+                        now.methods[m].abstract for m in came if m.name == method_name
+                    )
+                else:
+                    listed = path in self.direct
+                if listed:
+                    self.add("added", "new", name, detail, path, value, used)
+                else:
+                    self.folded += 1
         for method, flags in now.methods.items():
             before = was.methods.get(method)
             if before and flags.deprecated and not before.deprecated:
@@ -1133,7 +1232,7 @@ class Scanner:
                     lambda rev, p=path, t=name, m=method.name: self._overloads(
                         rev, p, t, m
                     ),
-                    method.name in self.bindings.calls,
+                    path in self.reached and method.name in self.bindings.calls,
                 )
 
     def enum_constants(self, path, name, was: JavaType, now: JavaType) -> None:
@@ -1150,7 +1249,7 @@ class Scanner:
                     path,
                     lambda rev, p=path, t=name, c=constant: c
                     in getattr(self.java_at(rev, p).types.get(t), "constants", {}),
-                    used=self.named(constant),
+                    used=path in self.reached and self.named(constant),
                 )
 
     def references(self) -> None:
@@ -1162,11 +1261,83 @@ class Scanner:
                     "broke",
                     "class removed or moved",
                     name.rsplit(".", 1)[-1],
-                    f"the bindings name {name}",
+                    (
+                        f"the native image configuration names {name}"
+                        if name in self.bindings.configured
+                        else f"the bindings name {name}"
+                    ),
                     path,
                     lambda rev, p=path: self.repo.read(rev, p) is None,
                     used=True,
                 )
+
+    # -- exception classes ----------------------------------------------------------------------------------------------------------
+
+    def exception_classes(self, engine: Engine, paths: list[str]) -> dict:
+        """Full name -> (file, type, the named class above it) for each type of `paths` below a class of the table of codes."""
+        targets = self.bindings.errors | {NEED_RETRY}
+        outside = {t.rsplit(".", 1)[-1]: t for t in targets if t.startswith("java.")}
+
+        def above(path: str, type_name: str, seen: set) -> str | None:
+            file = engine.parsed(path)
+            declared = file.types.get(type_name) if file else None
+            for written in declared.supers if declared else []:
+                target = (
+                    path if written in file.types else engine.resolve(written, file)
+                )
+                if target is None:
+                    if written.rsplit(".", 1)[-1] in outside:
+                        return outside[written.rsplit(".", 1)[-1]]
+                    continue
+                parent = engine.parsed(target)
+                for candidate in parent.types.values():
+                    if candidate.name.split(".")[-1] != written.split(".")[-1]:
+                        continue
+                    full = f"{parent.package}.{candidate.name}"
+                    if full in targets:
+                        return full
+                    if full not in seen:
+                        seen.add(full)
+                        found = above(target, candidate.name, seen)
+                        if found:
+                            return found
+            return None
+
+        classes = {}
+        for path in paths:
+            file = engine.parsed(path)
+            for type_name, declared in file.types.items() if file else []:
+                if declared.kind == "class":
+                    root = above(path, type_name, set())
+                    if root:
+                        classes[f"{file.package}.{type_name}"] = (path, type_name, root)
+        return classes
+
+    def exceptions(self, watched: set[str]) -> None:
+        """New and removed exception classes below a named one. Only a file that a commit touched can hold one."""
+        touched = sorted(
+            p for p in self.by_file if p.endswith(".java") and "/src/main/java/" in p
+        )
+        before = self.exception_classes(self.old, touched)
+        after = self.exception_classes(self.new, touched)
+        for change, full in [("new exception", n) for n in set(after) - set(before)] + [
+            ("exception removed", n) for n in set(before) - set(after)
+        ]:
+            path, type_name, root = (after if full in after else before)[full]
+            # a watched class that is gone has its finding already
+            if full not in after and path in watched and self.new.parsed(path) is None:
+                continue
+            self.add(
+                "exceptions",
+                change,
+                type_name,
+                f"{full}, below {root.rsplit('.', 1)[-1]}",
+                path,
+                lambda rev, p=path, t=type_name: getattr(
+                    self.java_at(rev, p).types.get(t), "supers", None
+                ),
+                used=full not in after and self.named(type_name.split(".")[-1]),
+            )
 
     # -- settings, index types, SQL -------------------------------------------------------------------------------------------------
 
@@ -1360,8 +1531,24 @@ class Scanner:
         watched = {**old, **new}
         if not any(p.endswith("/Database.java") for p in watched):
             raise WatchError("the list of wrapped classes does not even hold Database")
+        # the classes the bindings name, and with them (for "used") the types above those
+        named = {p for p, why in watched.items() if why == "named by the bindings"}
+        self.direct = named
+        self.reached = with_supertypes(self.old, named) | with_supertypes(
+            self.new, named
+        )
+        interfaces = {
+            path
+            for engine in (self.old, self.new)
+            for name in self.bindings.implemented
+            if (path := engine.path_of(name))
+        }
+        self.implemented = with_supertypes(self.old, interfaces) | with_supertypes(
+            self.new, interfaces
+        )
         self.classes(set(watched))
         self.references()
+        self.exceptions(set(watched))
         self.settings()
         self.index_types()
         self.sql()
@@ -1369,7 +1556,6 @@ class Scanner:
         self.findings.sort(
             key=lambda f: (
                 order[f.section],
-                f.internal,
                 not f.used,
                 f.subject,
                 f.change,
@@ -1394,6 +1580,7 @@ class Scanner:
             others,
             watched,
             self.commits,
+            folded=self.folded,
         )
 
 
@@ -1453,40 +1640,11 @@ def state_marker(scan: Scan) -> str:
     return f"<!-- engine-watch-state {json.dumps(state, sort_keys=True)} -->"
 
 
-def internal_block(
-    found: list[Finding], scan: Scan, full: str, brief: bool
-) -> list[str]:
-    """The new methods of implementation classes, one line for each class: they are rarely something to wrap."""
-    lines = [
-        "",
-        f"<details><summary>{len(found)} more new methods are in implementation classes (a class behind an engine interface), under names the bindings do not call</summary>",
-        "",
-    ]
-    if brief:
-        lines.append(f"They are listed in {full}.")
-    else:
-        by_class: dict[tuple[str, str], list[Finding]] = {}
-        for finding in found:
-            by_class.setdefault((finding.subject, finding.path), []).append(finding)
-        for (subject, path), members in by_class.items():
-            names = []
-            for finding in members:
-                name = re.search(r"([\w$]+)\(", finding.detail)
-                names.append(
-                    f"{code(name.group(1) if name else finding.detail, 80)} ({upstream_link(finding.commit, scan.base, scan.head, short=True)})"
-                )
-            lines.append(
-                f"- {code(subject)} ({file_link(path, scan, False)}): {', '.join(names)}"
-            )
-    return lines + ["", "</details>"]
-
-
 def render(
     scan: Scan,
     run_url: str = "",
     rows: int | None = None,
     other_rows: int | None = None,
-    brief: bool = False,
 ) -> str:
     base, head = scan.base[:9], scan.head[:9]
     count = len(scan.findings)
@@ -1507,11 +1665,10 @@ def render(
         found = [f for f in scan.findings if f.section == section]
         lines.append(f"| {title} | {len(found)} | {sum(f.used for f in found)} |")
     for section, title in SECTIONS:
-        found = [f for f in scan.findings if f.section == section]
-        if not found:
+        listed = [f for f in scan.findings if f.section == section]
+        fold = section == "added" and scan.folded
+        if not listed and not fold:
             continue
-        listed = [f for f in found if not f.internal]
-        apart = [f for f in found if f.internal]
         shown = listed if rows is None else listed[:rows]
         lines += ["", f"## {title}"]
         if shown:
@@ -1523,8 +1680,11 @@ def render(
             lines += [finding_row(f, scan) for f in shown]
         if len(listed) > len(shown):
             lines += ["", f"{len(listed) - len(shown)} more rows are in {full}."]
-        if apart:
-            lines += internal_block(apart, scan, full, brief)
+        if fold:
+            lines += [
+                "",
+                f"Not listed: {scan.folded} more new method names in watched classes (neither abstract on an interface the bindings implement, nor on a class they name).",
+            ]
     if scan.others:
         shown_others = (
             scan.others if other_rows is None else scan.others[: other_rows or 0]
@@ -1562,20 +1722,19 @@ def render(
 
 def fit(scan: Scan, run_url: str = "", limit: int = BODY_LIMIT) -> str:
     """The text of the issue, cut down until GitHub takes it: first the other pull requests, then the rows of each section."""
-    for rows, others, brief in (
-        (None, None, False),
-        (None, 100, False),
-        (None, 30, False),
-        (None, 0, False),
-        (None, 0, True),
-        (150, 0, True),
-        (80, 0, True),
-        (50, 0, True),
-        (30, 0, True),
-        (15, 0, True),
-        (5, 0, True),
+    for rows, others in (
+        (None, None),
+        (None, 100),
+        (None, 30),
+        (None, 0),
+        (150, 0),
+        (80, 0),
+        (50, 0),
+        (30, 0),
+        (15, 0),
+        (5, 0),
     ):
-        body = render(scan, run_url, rows, others, brief)
+        body = render(scan, run_url, rows, others)
         if len(body) <= limit:
             return body
     raise WatchError(f"the issue text is longer than {limit} characters")
