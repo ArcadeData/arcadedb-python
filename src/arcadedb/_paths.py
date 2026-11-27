@@ -12,10 +12,13 @@ from pathlib import Path
 
 
 def absolute_path(path) -> str:
-    """``path`` (a ``str`` or a path object) as an absolute path, a relative one taken from ``os.getcwd()``.
+    """``path`` (a ``str``, a path object, or a Java string) as an absolute ``str``, a relative one taken from ``os.getcwd()``.
 
-    An absolute path and an empty one (which the engine refuses) come back as they are.
+    An absolute path and an empty one (which the engine refuses) keep their text.
     """
+    if hasattr(path, "getClass"):
+        # the JVM build: a string that a Java call returned stays a Java object, which os.fspath does not take
+        path = str(path)
     text = os.fspath(path)
     # on Windows a path such as "\\data" names no drive, so it still depends on the current one
     complete = os.path.isabs(text) and (os.name != "nt" or os.path.splitdrive(text)[0])
