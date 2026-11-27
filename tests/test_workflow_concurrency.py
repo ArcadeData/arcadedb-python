@@ -36,7 +36,12 @@ def _evaluate(expression: str, context: dict[str, str]):
         return template.format(*values)
 
     translated = re.sub(
-        r"github\.([a-z_.]+)", lambda m: repr(context.get(m.group(1), "")), expression
+        r"inputs\.([a-z-]+)",
+        lambda m: repr(context.get(f"inputs.{m.group(1)}", "")),
+        expression,
+    )
+    translated = re.sub(
+        r"github\.([a-z_.]+)", lambda m: repr(context.get(m.group(1), "")), translated
     )
     translated = translated.replace("&&", " and ").replace("||", " or ")
     # only literals, operators and format() are left; nothing else may run
@@ -44,7 +49,14 @@ def _evaluate(expression: str, context: dict[str, str]):
     return eval(translated, {"__builtins__": {}, "format": fmt})  # nosec B307
 
 
-def _run(workflow: str, event: str, ref: str, run_id: str = "1", pr: str = ""):
+def _run(
+    workflow: str,
+    event: str,
+    ref: str,
+    run_id: str = "1",
+    pr: str = "",
+    engine_snapshot: bool = False,
+):
     group, cancel = _concurrency(WORKFLOWS[workflow].read_text(encoding="utf-8"))
     context = {
         "event_name": event,
@@ -52,8 +64,26 @@ def _run(workflow: str, event: str, ref: str, run_id: str = "1", pr: str = ""):
         "ref_type": "tag" if ref.startswith("refs/tags/") else "branch",
         "run_id": run_id,
         "event.pull_request.number": pr,
+        "inputs.engine-snapshot": engine_snapshot,
     }
     return _evaluate(group, context), bool(_evaluate(cancel, context))
+
+
+def test_the_weekly_engine_snapshot_run_and_the_nightly_run_never_cancel_each_other():
+    # test-native-snapshot.yml calls test-native.yml: both runs are scheduled, so only the input tells them apart
+    nightly = _run("test-native", "schedule", "refs/heads/main", "1")
+    weekly = _run(
+        "test-native", "schedule", "refs/heads/main", "2", engine_snapshot=True
+    )
+    assert weekly[0] != nightly[0]
+    by_hand = _run(
+        "test-native",
+        "workflow_dispatch",
+        "refs/heads/main",
+        "3",
+        engine_snapshot=True,
+    )
+    assert by_hand[0] != nightly[0] and by_hand[1] is False
 
 
 @pytest.mark.parametrize("workflow", sorted(WORKFLOWS))

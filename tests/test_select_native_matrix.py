@@ -235,6 +235,20 @@ def test_a_release_needs_a_marker_from_every_leg_of_the_python_version_job():
     assert "INFORMATIONAL for now" not in test_native
 
 
+def test_the_weekly_engine_snapshot_run_calls_the_native_workflow_once_a_week_and_is_reported():
+    workflows = ROOT / ".github" / "workflows"
+    weekly = (workflows / "test-native-snapshot.yml").read_text(encoding="utf-8")
+    crons = re.findall(r'^\s+- cron: "([^"]+)"', weekly, re.M)
+    # one schedule, on one day of the week: the runners are shared with upstream
+    assert len(crons) == 1 and crons[0].split()[4].isdigit(), crons
+    assert "uses: ./.github/workflows/test-native.yml" in weekly
+    assert re.search(r"^      engine-snapshot: true$", weekly, re.M)
+    # a called workflow starts no workflow_run of its own, so the report listens for the name of the caller
+    name = re.search(r"^name: (.+)$", weekly, re.M).group(1)
+    report = (workflows / "report-red-main.yml").read_text(encoding="utf-8")
+    assert f'\n      - "{name}"\n' in report
+
+
 def test_the_linux_legs_build_in_the_manylinux_container_of_the_tag_and_the_workflow_gates_that_floor():
     linux = {k: leg for k, leg in sel.PLATFORMS.items() if leg["kind"] == "linux"}
     assert set(linux) == {"linux-x86_64", "linux-aarch64"}

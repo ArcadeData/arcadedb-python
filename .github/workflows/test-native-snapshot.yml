@@ -1,0 +1,32 @@
+# Once a week, the native build against upstream's current engine snapshot.
+#
+# Between releases test-native.yml links DEV_ENGINE, the newest engine release, so an engine change that breaks the native image or the
+# parity suite would first show after the next release. test-jvm.yml already runs every night against upstream's newest snapshot. This
+# workflow calls test-native.yml with `engine-snapshot: true`: the floating A.B.C-SNAPSHOT of the base of DEFAULT_VERSION (a pin that
+# scripts/bump_engine.py moves after each release), on the legs of a pull request (linux-x86_64 only, no example). It is weekly and on
+# one platform because the runners are shared with ArcadeData/arcadedb. It publishes nothing. report-red-main.yml opens the issue
+# "Full CI is red on main: Test native (engine snapshot)" when it is red.
+#
+# REMOVE WHEN: test-native.yml itself links upstream's snapshot between releases.
+name: Test native (engine snapshot)
+
+on:
+  schedule:
+    - cron: "40 4 * * 6" # Saturday, after the nightly runs of the other workflows have started
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    name: Native, engine snapshot
+    uses: ./.github/workflows/test-native.yml
+    # issues: write is for the `crash-report` job of test-native.yml alone. A called workflow cannot hold more permission than its caller
+    # gives it, so without this line the run would refuse to start; the called workflow's own `permissions: contents: read` keeps every
+    # other job read-only.
+    permissions:
+      contents: read
+      issues: write
+    with:
+      engine-snapshot: true
