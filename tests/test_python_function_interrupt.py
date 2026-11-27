@@ -57,21 +57,17 @@ def test_sigint_during_a_query_that_calls_python_is_a_keyboard_interrupt(
     interrupted = 0
     for delay in (0.05, 0.09, 0.13, 0.17, 0.21, 0.25, 0.29, 0.33):
         timer = threading.Timer(delay, os.kill, (os.getpid(), signal.SIGINT))
-        timer.start()
+        # everything from start() on is inside this try: an escaped signal would stop the whole test run (#512)
         try:
-            db.query("sql", "SELECT sum(plus_one(n)) AS s FROM T").first()
-            outcome = "completed"
+            try:
+                timer.start()
+                db.query("sql", "SELECT sum(plus_one(n)) AS s FROM T").first()
+            finally:
+                timer.cancel()
+                timer.join()
+            time.sleep(0.05)  # a signal sent just after the end is delivered here
         except KeyboardInterrupt:
-            outcome = "interrupted"
             interrupted += 1
-        finally:
-            timer.cancel()
-            timer.join()
-        if outcome == "completed":
-            try:  # a signal sent just after the end is delivered here, still a KeyboardInterrupt
-                time.sleep(0.05)
-            except KeyboardInterrupt:
-                interrupted += 1
         # the database works as before
         assert db.count_type("T") == 300_000
     assert interrupted >= 1
@@ -123,21 +119,16 @@ with tempfile.TemporaryDirectory() as directory:
     interrupted = 0
     for delay in (0.05, 0.15, 0.25, 0.35, 0.45, 0.55):
         timer = threading.Timer(delay, os.kill, (os.getpid(), signal.SIGINT))
-        timer.start()
         try:
-            db.query("sql", "SELECT sum(plus_one(n)) AS s FROM T").first()
-            done = True
-        except KeyboardInterrupt:
-            done = False
-            interrupted += 1
-        finally:
-            timer.cancel()
-            timer.join()
-        if done:
             try:
-                time.sleep(0.05)
-            except KeyboardInterrupt:
-                interrupted += 1
+                timer.start()
+                db.query("sql", "SELECT sum(plus_one(n)) AS s FROM T").first()
+            finally:
+                timer.cancel()
+                timer.join()
+            time.sleep(0.05)
+        except KeyboardInterrupt:
+            interrupted += 1
         assert db.count_type("T") == 150_000
     db.close()
     print("interrupted", interrupted)
