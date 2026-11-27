@@ -141,12 +141,10 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # The platform x Python legs of this run (scripts/select_matrix.py). A pull request runs
-      # the fast tier, which has NO example leg: the examples are the slowest jobs (20 to 30
-      # minutes), so they run on a push to main, in the nightly run and on a manual run. The
-      # matrix is then empty, `run` is false, the rest of this job and the two jobs below are
-      # skipped, and the summary job says so and stays green. A pull request that changes the
-      # examples or their runner runs the leg of linux/amd64 on the newest Python
-      # (pull_request_examples). A pull request with the label ci:full, and one Dependabot
+      # the fast tier, which has NO example leg, also when it changes the examples: the examples
+      # are the slowest jobs (20 to 30 minutes), so they run on a push to main, in the nightly run
+      # and on a manual run. The matrix is then empty, `run` is false, the rest of this job and
+      # the three jobs below are skipped. A pull request with the label ci:full, and one Dependabot
       # opened, runs the legs of a push to main (pull_request_full). scripts/ci_tier.py decides:
       # it reads the labels again from the API, so a re-run after adding the label is enough.
       # The wheel matrix is the platforms of those legs, one build each: the wheel is
@@ -596,19 +594,20 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
-  # Summary job that checks every leg this run started, and the one check that always reports for this workflow.
-  # - The run has example legs (`run` is true): green only when the build and the example legs both ended with "success". They are
-  #   matrix jobs, so the result is one word for the whole matrix whatever the number of legs; a leg that failed, was cancelled or
-  #   never started (its build failed) makes it something else, and this job red.
-  # - The run has no example leg on purpose (`run` is false: a pull request, the fast tier): green only when the first job
-  #   succeeded and both jobs were skipped.
-  # - Anything else is red: the first job failed, `run` is empty, or a job that should have been skipped ran.
+  # Summary job that checks every leg this run started: green only when the first job, the build and the example legs all ended with
+  # "success". They are matrix jobs, so the result is one word for the whole matrix whatever the number of legs; a leg that failed,
+  # was cancelled or never started (its build failed) makes it something else, and this job red. So is a first job that failed or
+  # that left `run` empty.
+  # A run with no example leg on purpose (`run` is false: a pull request, the fast tier) skips this job too: it has nothing to check
+  # and would wait for a runner of its own.
   test-examples-summary:
     name: Examples Test Summary
     needs: [download-jars, build, test-examples]
     runs-on: ubuntu-latest
     # Skipped (not red) when the matrix was skipped for a draft PR.
-    if: always() && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
+    if: >-
+      always() && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
+      && needs.download-jars.outputs.run != 'false'
     steps:
       - name: Check test results
         shell: bash
@@ -622,11 +621,7 @@ jobs:
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "first job: $PLAN, example legs in this run: ${RUN:-unknown}, build: $BUILD, examples: $LEGS"
 
-          if [ "$PLAN" = success ] && [ "$RUN" = false ] && [ "$BUILD" = skipped ] && [ "$LEGS" = skipped ]; then
-            echo "⏭️ **No example leg in this run**" >> "$GITHUB_STEP_SUMMARY"
-            echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "A pull request runs the examples only when it changes them or their runner, or carries the label ci:full. A push to main, the nightly run and a manual run run them on every platform." >> "$GITHUB_STEP_SUMMARY"
-          elif [ "$PLAN" = success ] && [ "$RUN" = true ] && [ "$BUILD" = success ] && [ "$LEGS" = success ]; then
+          if [ "$PLAN" = success ] && [ "$RUN" = true ] && [ "$BUILD" = success ] && [ "$LEGS" = success ]; then
             echo "✅ **Every leg of this run passed example testing!**" >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
             echo "All examples ran successfully on every leg this run started, against one wheel built for each platform. The jobs of this run list its legs." >> "$GITHUB_STEP_SUMMARY"

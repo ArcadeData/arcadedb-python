@@ -3,6 +3,8 @@
 
   python native/wheel/parity_wheel.py --repo <checkout> --python <venv python with the wheel installed> --out parity-native.tsv
 
+--shard I/N runs one shard of the files (scripts/shard_tests.py): a pull request cuts the suite into N jobs that run side by side.
+
 A run per test file in its own process (a hang or crash costs one file), junit XML per file, then one table:
 passed / failed / error / NOTYET (the test needs a Java-object API, reported by tests/conftest.py as a skip whose reason starts
 with NOTYET, raised as NotOnNativeYet) / NA-JVM (a row of NATIVE_NA_JVM_TESTS: the test reaches into the JVM on purpose) / other skips / TIMEOUT-or-crash. Files in tests/conftest.py's NATIVE_NOT_APPLICABLE are not collected (JVM-only).
@@ -20,6 +22,7 @@ counts those tests as flaky_race=N, the log prints a ::warning:: for each, and t
 import argparse
 import ast
 import glob
+import importlib.util
 import json
 import os
 import shutil
@@ -51,6 +54,11 @@ def parse_args(argv=None):
         help="taskset core list (Linux only; ignored where taskset does not exist)",
     )
     p.add_argument("--files", default="")
+    p.add_argument(
+        "--shard",
+        default="",
+        help="run only the files of shard I/N (scripts/shard_tests.py), after the other filters",
+    )
     p.add_argument(
         "--max-notyet",
         type=int,
@@ -168,6 +176,16 @@ def total_row(tot):
     )
 
 
+def shard_of(repo, files, shard):
+    """The files of the shard "I/N" of `files` (paths), by scripts/shard_tests.py of the checkout."""
+    path = os.path.join(repo, "scripts", "shard_tests.py")
+    spec = importlib.util.spec_from_file_location("shard_tests", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    keep = set(module.select([os.path.basename(f) for f in files], shard, "native"))
+    return [f for f in files if os.path.basename(f) in keep]
+
+
 def main(argv=None):
     a = parse_args(argv)
     pkg = os.path.abspath(a.repo)
@@ -192,6 +210,10 @@ def main(argv=None):
     if a.files:
         want = set(a.files.split(","))
         files = [f for f in files if os.path.basename(f) in want]
+    if a.shard:
+        whole = len(files)
+        files = shard_of(pkg, files, a.shard)
+        print(f"SHARD {a.shard}: {len(files)} of {whole} test files", flush=True)
     env = dict(os.environ, PYTHONUNBUFFERED="1")
     env.pop(
         "PYTHONPATH", None

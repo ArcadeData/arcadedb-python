@@ -2,11 +2,14 @@
 Shared pytest fixtures and configuration for ArcadeDB tests.
 """
 
+import functools
+import importlib.util
 import os
 import re
 import shutil
 import sys
 import threading
+from pathlib import Path
 
 import pytest
 
@@ -292,6 +295,44 @@ NATIVE_NA_JVM_TESTS = {
 
 def _native():
     return BACKEND == "native"
+
+
+# `--shard I/N` runs one shard of the test files (scripts/shard_tests.py): a pull request cuts the suite of the JVM build into
+# N jobs that run side by side. The files of the other shards are not collected, so nothing is reported as skipped. The native
+# parity harness (native/wheel/parity_wheel.py) does not use this option: it picks the files of a shard itself.
+def pytest_addoption(parser):
+    parser.addoption(
+        "--shard",
+        default="",
+        help="run one shard of the test files, I/N (scripts/shard_tests.py)",
+    )
+
+
+_TESTS_DIR = Path(__file__).resolve().parent
+
+
+@functools.lru_cache(maxsize=None)
+def _shard_files(shard):
+    """The names of the test files of the shard "I/N"."""
+    path = _TESTS_DIR.parent / "scripts" / "shard_tests.py"
+    spec = importlib.util.spec_from_file_location("shard_tests", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    names = [p.name for p in _TESTS_DIR.glob("test_*.py")]
+    try:
+        return frozenset(module.select(names, shard, BACKEND))
+    except ValueError as err:
+        raise pytest.UsageError(f"--shard: {err}") from None
+
+
+def pytest_ignore_collect(collection_path, config):
+    shard = config.getoption("--shard", default="")
+    name = collection_path.name
+    is_test_file = name.startswith("test_") and name.endswith(".py")
+    if not shard or not is_test_file or collection_path.parent != _TESTS_DIR:
+        return None
+    # None, not False: the other rules (collect_ignore above) still apply to a file of this shard
+    return None if name in _shard_files(shard) else True
 
 
 def pytest_collection_modifyitems(config, items):

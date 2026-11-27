@@ -251,14 +251,17 @@ jobs:
       arcadedb-tag: ${{ steps.jars.outputs.arcadedb-tag }}
       matrix: ${{ steps.matrix.outputs.matrix }}
       wheel-matrix: ${{ steps.matrix.outputs.wheel-matrix }}
+      # "true" for a pull request of the fast tier: its test leg is sharded and the summary job does not run
+      fast-pr: ${{ steps.matrix.outputs.fast-pr }}
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # The platform x Python legs of this run (scripts/select_matrix.py). A pull request runs
-      # the fast tier (linux/amd64 only); every other event runs the legs of the full tier. The
-      # organisation shares one runner cap with ArcadeData/arcadedb, so a pull request does not
-      # wait for the macOS and Windows runners. A pull request with the label ci:full, and one
+      # the fast tier (linux/amd64 on the newest Python, in two shards that run side by side, so
+      # that its checks finish in about 10 minutes); every other event runs the legs of the full
+      # tier. The organisation shares one runner cap with ArcadeData/arcadedb, so a pull request
+      # does not wait for the macOS and Windows runners. A pull request with the label ci:full, and one
       # Dependabot opened, runs the legs of a push to main: scripts/ci_tier.py turns its event
       # into pull_request_full (it reads the labels again from the API, so a re-run after adding
       # the label is enough).
@@ -284,6 +287,8 @@ jobs:
           echo "$wheel_matrix"
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
           echo "wheel-matrix=$wheel_matrix" >> "$GITHUB_OUTPUT"
+          if [ "$EVENT_NAME" = pull_request ]; then fast_pr=true; else fast_pr=false; fi
+          echo "fast-pr=$fast_pr" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
@@ -448,7 +453,7 @@ jobs:
   # Third job: install the wheel of the platform into each Python and run the suite. Nothing is built here: the wheel is the file the
   # build job made (py3-none-<platform tag>), so each Python is tested against the same file that is published.
   test:
-    name: Test arcadedb (${{ matrix.platform }}, Python ${{ matrix.python-version }})
+    name: Test arcadedb (${{ matrix.platform }}, Python ${{ matrix.python-version }}${{ matrix.shard && format(', shard {0}', matrix.shard) || '' }})
     runs-on: ${{ matrix.runs-on }}
     needs: [download-jars, build]
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
@@ -457,10 +462,10 @@ jobs:
       fail-fast: false
       # Chosen by the "Select the test matrix" step of download-jars from the event that
       # started the run (scripts/select_matrix.py holds the platform and Python lists):
-      # linux/amd64 on the oldest and the newest Python on a pull request (the fast tier), 10 legs
+      # linux/amd64 on the newest Python, in shards, on a pull request (the fast tier), 10 legs
       # on a push to main and the nightly run, the full 4 platforms x 4 Pythons on a release and a manual run.
       # Every leg carries platform, runs-on and python-version, so the job names stay
-      # "Test arcadedb (<platform>, Python <version>)".
+      # "Test arcadedb (<platform>, Python <version>)"; a sharded leg also carries shard ("I/N") and suffix.
       matrix: ${{ fromJSON(needs.download-jars.outputs.matrix) }}
 
     steps:
@@ -502,8 +507,9 @@ jobs:
       # work: a manylinux_2_28 container (glibc 2.28, AlmaLinux 8, the oldest system the Linux wheels are tagged for).
       # uv (like pip) refuses a wheel tagged above 2.28 there, so a JRE that raises the floor again fails here as well as in
       # scripts/verify_wheel_platform_tag.py. The wheel's own JRE does the work: no Java in the container.
+      # Once for a sharded leg: every shard installs the same wheel, so the first one checks it.
       - name: Install and run the wheel in manylinux_2_28 (Linux only)
-        if: startsWith(matrix.platform, 'linux/')
+        if: startsWith(matrix.platform, 'linux/') && (!matrix.shard || startsWith(matrix.shard, '1/'))
         shell: bash
         env:
           PLATFORM: ${{ matrix.platform }}
@@ -550,6 +556,8 @@ jobs:
         shell: bash
         env:
           PYVER: ${{ matrix.python-version }}
+          # "I/N" on a sharded leg (tests/conftest.py then collects the files of that shard only); empty = the whole suite
+          SHARD: ${{ matrix.shard }}
         run: |
           echo "🧪 Testing arcadedb (with bundled JRE)..."
 
@@ -571,7 +579,7 @@ jobs:
           # to the console on Windows by default (ARCADEDB_LOG_CONSOLE, src/arcadedb/_logdir.py),
           # which removes the cause; tests/test_log_redirect.py redirects fd 1 and 2 on purpose.
           set +e  # Don't exit on test failures
-          "${UVRUN[@]}" python -m pytest tests/ -v --tb=short --color=yes --junitxml=test-results.xml
+          "${UVRUN[@]}" python -m pytest tests/ -v --tb=short --color=yes --junitxml=test-results.xml --shard="$SHARD"
           PYTEST_EXIT_CODE=$?
           set -e
 
@@ -762,21 +770,25 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: test-results-${{ matrix.platform == 'linux/amd64' && 'linux-amd64' || matrix.platform == 'linux/arm64' && 'linux-arm64' || matrix.platform == 'darwin/amd64' && 'darwin-amd64' || matrix.platform == 'darwin/arm64' && 'darwin-arm64' || matrix.platform == 'windows/amd64' && 'windows-amd64' || 'windows-arm64' }}-py${{ matrix.python-version }}
+          name: test-results-${{ matrix.platform == 'linux/amd64' && 'linux-amd64' || matrix.platform == 'linux/arm64' && 'linux-arm64' || matrix.platform == 'darwin/amd64' && 'darwin-amd64' || matrix.platform == 'darwin/arm64' && 'darwin-arm64' || matrix.platform == 'windows/amd64' && 'windows-amd64' || 'windows-arm64' }}-py${{ matrix.python-version }}${{ matrix.suffix }}
           path: |
             pytest-output.txt
             .coverage
           retention-days: 7
 
   # Summary job that checks every leg this run started. `build` and `test` are matrices, so the result of each is "success" only when
-  # every leg of it passed, whatever their number: 1 build and 2 test legs on a pull request (the fast tier), 4 and 10 or 16 on the
-  # other events. A leg that failed, was cancelled or never started (its build failed) makes the result something else, and this job red.
+  # every leg of it passed, whatever their number: 4 build and 10 or 16 test legs. A leg that failed, was cancelled or never started
+  # (its build failed) makes the result something else, and this job red.
+  # A pull request of the fast tier skips it: it would wait for a runner of its own after the last leg (up to 8 minutes on a busy
+  # day), and every leg of that run is a check of the pull request already. It still runs when the first job failed (no output).
   test-summary:
     name: Test Summary
-    needs: [build, test]
+    needs: [download-jars, build, test]
     runs-on: ubuntu-24.04
     # Skipped (not red) when the matrix was skipped for a draft PR.
-    if: always() && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
+    if: >-
+      always() && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
+      && needs.download-jars.outputs.fast-pr != 'true'
     steps:
       - name: Check test results
         run: |
@@ -790,7 +802,7 @@ jobs:
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "**Package**: arcadedb" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "**Legs**: a pull request runs linux/amd64 only (the fast tier). A push to main, the nightly run, a manual run and a pull request with the label ci:full run every platform. The jobs of this run list its legs." >> $GITHUB_STEP_SUMMARY
+            echo "**Legs**: a push to main, the nightly run, a manual run, a release and a pull request with the label ci:full run every platform. The jobs of this run list its legs." >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "ℹ️ **Note**: Some platform/Python combinations are excluded from testing on every event:" >> $GITHUB_STEP_SUMMARY
             echo "- Windows ARM64 (GitHub-hosted windows-11-arm runners exist, but jpype1 1.7.1 ships no win_arm64 wheel and GraalVM CE 25.4.4.1.1 has no Windows ARM64 build, so neither package can be built there)" >> $GITHUB_STEP_SUMMARY

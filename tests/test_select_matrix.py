@@ -53,13 +53,17 @@ sm = _load()
 
 
 def _pairs(matrix):
+    """The platform x Python pairs of the legs; the shards of one pair count once."""
     legs = matrix["include"]
-    pairs = [(leg["platform"], leg["python-version"]) for leg in legs]
-    assert len(pairs) == len(set(pairs)), "a leg is listed twice"
+    listed = [
+        (leg["platform"], leg["python-version"], leg.get("shard")) for leg in legs
+    ]
+    assert len(listed) == len(set(listed)), "a leg is listed twice"
     for leg in legs:
-        assert set(leg) == {"platform", "runs-on", "python-version"}
+        keys = {"platform", "runs-on", "python-version"}
+        assert set(leg) in (keys, keys | {"shard", "suffix"})
         assert leg["runs-on"] == PLATFORMS[leg["platform"]]
-    return set(pairs)
+    return {(platform, python) for platform, python, _shard in listed}
 
 
 @pytest.mark.parametrize("event", NON_PULL_REQUEST_EVENTS)
@@ -95,11 +99,15 @@ def test_jvm_tests_every_platform_and_python_for_a_release_a_dispatch_and_any_ot
 
 
 def test_a_pull_request_runs_the_fast_tier_of_the_jvm_tests():
-    # linux/amd64 only, the oldest and the newest Python: no macOS, Windows or arm64 runner is waited for
-    assert _pairs(sm.select("jvm", "pull_request")) == {
-        ("linux/amd64", "3.11"),
-        ("linux/amd64", "3.14"),
-    }
+    # one platform and one Python, the newest (#517): no macOS, Windows or arm64 runner is waited for
+    assert _pairs(sm.select("jvm", "pull_request")) == {("linux/amd64", "3.14")}
+    # in shards that run side by side, every one from 1 to N
+    legs = sm.select("jvm", "pull_request")["include"]
+    count = sm.PULL_REQUEST_SHARDS
+    assert count > 1
+    assert [(leg["shard"], leg["suffix"]) for leg in legs] == [
+        (f"{i}/{count}", f"-shard{i}") for i in range(1, count + 1)
+    ]
     assert sm.select_wheels("jvm", "pull_request") == {
         "include": [{"platform": "linux/amd64", "runs-on": "ubuntu-24.04"}]
     }
@@ -124,23 +132,26 @@ def test_jvm_builds_one_wheel_for_each_platform_whatever_the_python(event):
     }
 
 
-def test_pull_request_examples_matrix():
-    # the fast tier has no example leg and builds no wheel for one: the examples are the slowest jobs
+def test_a_pull_request_has_no_example_leg():
+    # the fast tier has no example leg and builds no wheel for one, whatever the pull request changes: the examples are the
+    # slowest jobs
     assert sm.select("examples", "pull_request") == {"include": []}
     assert sm.select_wheels("examples", "pull_request") == {"include": []}
-    # a pull request that changes the examples or their runner (scripts/ci_tier.py): the newest Python on linux/amd64, one build
-    pairs = _pairs(sm.select("examples", "pull_request_examples"))
-    assert pairs == {("linux/amd64", "3.14")}
-    assert sm.select_wheels("examples", "pull_request_examples") == {
-        "include": [{"platform": "linux/amd64", "runs-on": "ubuntu-24.04"}]
-    }
-    # its unit tests are those of every pull request
-    assert sm.select("jvm", "pull_request_examples") == sm.select("jvm", "pull_request")
 
 
-def test_the_examples_workflow_skips_its_jobs_when_the_matrix_is_empty_and_the_summary_knows_it():
-    # An empty matrix is an error for a job. The first job says whether the run has legs, the two jobs that take the matrix are
-    # skipped when it has none, and the summary is green for exactly that case (the bash is run in the pull request of issue 442).
+@pytest.mark.parametrize(
+    "event", ["push", "schedule", "release", "workflow_dispatch", "pull_request_full"]
+)
+@pytest.mark.parametrize("workflow", ["jvm", "examples"])
+def test_only_the_fast_tier_is_sharded(workflow, event):
+    # main, the nightly run, a manual run and a release run each suite whole, in one job for each leg
+    assert all("shard" not in leg for leg in sm.select(workflow, event)["include"])
+
+
+def test_the_examples_workflow_skips_its_jobs_when_the_matrix_is_empty_and_the_summary_with_them():
+    # An empty matrix is an error for a job. The first job says whether the run has legs, and the two jobs that take the matrix are
+    # skipped when it has none, as is the summary: it has nothing to check. A first job that failed leaves `run` empty, so the
+    # summary runs and is red.
     text = WORKFLOWS["examples"].read_text(encoding="utf-8")
     one_line = subprocess.run(  # nosec B603 - fixed argument list, no untrusted input
         [sys.executable, "-I", str(SCRIPT_PATH), "examples", "--event", "pull_request"],
@@ -160,7 +171,8 @@ def test_the_examples_workflow_skips_its_jobs_when_the_matrix_is_empty_and_the_s
         condition = job.split("    if: ", 1)[1].split("\n", 1)[0]
         assert condition.endswith("&& needs.download-jars.outputs.run == 'true'")
     assert "needs: [download-jars, build, test-examples]" in summary
-    assert "if: always() &&" in summary
+    assert "always() &&" in summary
+    assert "&& needs.download-jars.outputs.run != 'false'\n" in summary
     for line in (
         "PLAN: ${{ needs.download-jars.result }}",
         "RUN: ${{ needs.download-jars.outputs.run }}",
@@ -269,6 +281,17 @@ def test_the_jvm_workflow_builds_each_platform_once_and_tests_that_wheel():
     assert 'scripts/select_matrix.py jvm --event "$EVENT_NAME" --wheels' in text
     assert "matrix: ${{ fromJSON(needs.download-jars.outputs.wheel-matrix) }}" in text
     build, test = text.split("\n  build:\n")[1].split("\n  test:\n")
+    # a sharded leg hands its shard to pytest and names its artifact after it
+    assert '--shard="$SHARD"' in test and "SHARD: ${{ matrix.shard }}" in test
+    assert "py${{ matrix.python-version }}${{ matrix.suffix }}" in test
+    # the summary of a pull request of the fast tier would be one more job to wait for; a failed first job still runs it
+    summary = test.split("\n  test-summary:\n")[1]
+    assert "needs: [download-jars, build, test]" in summary
+    assert "&& needs.download-jars.outputs.fast-pr != 'true'\n" in summary
+    assert (
+        'if [ "$EVENT_NAME" = pull_request ]; then fast_pr=true; else fast_pr=false; fi'
+        in text
+    )
     # no Python in the build matrix, and the test job builds nothing: it installs the wheel the build job uploaded
     assert "python-version: ${{ matrix.python-version }}" not in build
     assert (

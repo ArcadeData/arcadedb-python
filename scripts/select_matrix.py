@@ -3,14 +3,14 @@
 
 The wheels support four platforms and four Python versions.
 
-CI has two tiers. A pull request runs the fast tier: linux/amd64 only and no example legs, so it does not wait for
-the macOS and Windows runners the organisation shares with ArcadeData/arcadedb, nor for the examples (the slowest
-jobs). Every other event runs the full tier, and a pull request that asks for it (the label `ci:full`, or a
-Dependabot author; scripts/ci_tier.py decides and passes the event `pull_request_full`) runs the legs of a push to
-main. A pull request that changes the examples or their runner gets the event `pull_request_examples`: the fast
-tier and the example leg of linux/amd64.
+CI has two tiers. A pull request runs the fast tier: one platform (linux/amd64), one Python (the newest) and no
+example legs, so that its checks finish in about 10 minutes (ArcadeData/arcadedb-python#517) and it does not wait
+for the macOS and Windows runners the organisation shares with ArcadeData/arcadedb. Every other event runs the full
+tier, and a pull request that asks for it (the label `ci:full`, or a Dependabot author; scripts/ci_tier.py decides
+and passes the event `pull_request_full`) runs the legs of a push to main.
 
-- `jvm` (test-jvm.yml) runs 2 legs on a pull request (linux/amd64, the oldest and the newest Python), 10 legs on
+- `jvm` (test-jvm.yml) runs one leg on a pull request (linux/amd64, the newest Python), cut into
+  PULL_REQUEST_SHARDS shards that run side by side (scripts/shard_tests.py), 10 legs on
   a push to main and the nightly schedule, and all 16 for a release (release-jvm.yml calls the workflow with
   `release: true`, which test-jvm.yml passes as the event `release`) and a manual dispatch. The JVM wheel is one
   file for each platform (py3-none-<platform>, built once by the `build` job), so a Python version is a test leg,
@@ -19,8 +19,7 @@ tier and the example leg of linux/amd64.
   platform shows on any version of it. What is published, and a run started by hand before a release, gets every
   combination, like test-native.yml.
 - `examples` (test-python-examples.yml) runs no leg on a pull request (the matrix is empty and the workflow skips
-  its jobs), the newest Python on linux/amd64 on a pull request that changes the examples, and every combination
-  (16 legs) on every other event.
+  its jobs), also when it changes the examples, and every combination (16 legs) on every other event.
 
 The selection fails open to the full matrix: an event name this script does not know runs everything, never less
 (for `jvm` too: only a pull request, a push and the nightly schedule get fewer than 16 legs).
@@ -33,9 +32,10 @@ usage:
 
 `--event` defaults to $GITHUB_EVENT_NAME. The output is one line of JSON for
 `strategy.matrix`: {"include": [{"platform": ..., "runs-on": ..., "python-version": ...}, ...]}, and with
-`--wheels` {"include": [{"platform": ..., "runs-on": ...}, ...]}.
-The names of the jobs stay "Test arcadedb (<platform>, Python <version>)", so the history of a
-check is comparable before and after the selection.
+`--wheels` {"include": [{"platform": ..., "runs-on": ...}, ...]}. A sharded leg (a pull request) also has
+"shard" ("I/N", for pytest --shard) and "suffix" ("-shardI", for the name of its artifact).
+The names of the jobs stay "Test arcadedb (<platform>, Python <version>)", with ", shard I/N" after the Python
+on a sharded leg.
 """
 
 from __future__ import annotations
@@ -76,26 +76,22 @@ JVM_LEGS = {
 # script does not know) runs every platform x Python combination, so the selection fails open.
 JVM_REDUCED_EVENTS = ("push", "schedule")
 
-# The fast tier: the legs of a pull request, linux/amd64 only (ArcadeData/arcadedb-python#442). The other
-# platforms run after the merge (the push to main) and every night, and before the merge when the pull request
-# carries the label `ci:full`.
+# The fast tier: the legs of a pull request, one platform (linux/amd64) and one Python, the newest
+# (ArcadeData/arcadedb-python#517). The other Pythons and platforms run after the merge (the push to main) and every
+# night, and before the merge when the pull request carries the label `ci:full`.
 #
-# jvm: the oldest and the newest Python, the ends of the range.
+# jvm: the newest Python, in shards that run side by side, so that no job of a pull request is long.
 # examples: no leg. The examples are the slowest jobs (about 20 to 30 minutes: they build the vectors of a dataset
-# and run 30 scripts), so they run in the full tier. A pull request that changes the examples or their runner
-# (the event `pull_request_examples`, scripts/ci_tier.py) runs them on the newest Python; their platform-specific
-# code (`os.name == "nt"` branches in examples 07 to 12) and the per-platform steps of the workflow (a CPU torch
-# index on macOS, UTF-8 on Windows) are covered by the full tier.
+# and run 30 scripts), so they run in the full tier only, also for a pull request that changes them; their
+# platform-specific code (`os.name == "nt"` branches in examples 07 to 12) and the per-platform steps of the
+# workflow (a CPU torch index on macOS, UTF-8 on Windows) are covered there too.
 FAST_PLATFORM = "linux/amd64"
 PULL_REQUEST_LEGS = {
-    "jvm": {FAST_PLATFORM: (OLDEST, NEWEST)},
+    "jvm": {FAST_PLATFORM: (NEWEST,)},
     "examples": {},
 }
-PULL_REQUEST_EXAMPLES = "pull_request_examples"
-PULL_REQUEST_EXAMPLES_LEGS = {
-    "jvm": PULL_REQUEST_LEGS["jvm"],
-    "examples": {FAST_PLATFORM: (NEWEST,)},
-}
+# The shards of the one unit-test leg of a pull request: the suite takes about 9 minutes in one job.
+PULL_REQUEST_SHARDS = 2
 # The event scripts/ci_tier.py passes for a pull request that asks for the full tier: the legs of a push to main.
 PULL_REQUEST_FULL = "pull_request_full"
 
@@ -110,6 +106,14 @@ def _legs(per_platform: dict[str, tuple[str, ...]]) -> list[dict[str, str]]:
     ]
 
 
+def _sharded(legs: list[dict[str, str]], count: int) -> list[dict[str, str]]:
+    return [
+        {**leg, "shard": f"{i}/{count}", "suffix": f"-shard{i}"}
+        for leg in legs
+        for i in range(1, count + 1)
+    ]
+
+
 def select(workflow: str, event: str) -> dict[str, list[dict[str, str]]]:
     """The `strategy.matrix` of `workflow` ("jvm" or "examples") for `event`."""
     if workflow not in WORKFLOWS:
@@ -119,9 +123,8 @@ def select(workflow: str, event: str) -> dict[str, list[dict[str, str]]]:
     if event == PULL_REQUEST_FULL:
         event = "push"
     if event == "pull_request":
-        return {"include": _legs(PULL_REQUEST_LEGS[workflow])}
-    if event == PULL_REQUEST_EXAMPLES:
-        return {"include": _legs(PULL_REQUEST_EXAMPLES_LEGS[workflow])}
+        legs = _legs(PULL_REQUEST_LEGS[workflow])
+        return {"include": _sharded(legs, PULL_REQUEST_SHARDS)}
     if workflow == "jvm" and event in JVM_REDUCED_EVENTS:
         return {"include": _legs(JVM_LEGS)}
     return {"include": _legs({platform: PYTHONS for platform in RUNNERS})}
