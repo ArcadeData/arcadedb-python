@@ -3,7 +3,8 @@
 # A pull request runs only the fast tier (Linux x86-64, #443), so a failure that only macOS, Windows, arm64 or an example leg shows is first seen
 # on `main` after the merge. The badges in the README show it, but nobody has to look at them. This workflow is the push that does not wait for a look.
 #
-# It reacts to the end of `Test JVM (arcadedb-jvm)`, `Test native (arcadedb)` and `Test Python Examples`, and only when the run was
+# It reacts to the end of `Test JVM (arcadedb-jvm)`, `Test native (arcadedb)`, `Test native (engine snapshot)` (the weekly native run
+# against upstream's engine snapshot) and `Test Python Examples`, and only when the run was
 #   - on `main` (a push, the nightly schedule, or a manual run on `main`) and from this repository: never a pull request, and the
 #     release workflows are other workflows (a workflow that another one calls does not start a `workflow_run` of its own);
 #   - red: the run ended as `failure`, `timed_out` or `startup_failure`. A run that was `cancelled` is not red, because a newer push to `main` cancels
@@ -32,6 +33,7 @@ on:
     workflows:
       - "Test JVM (arcadedb-jvm)"
       - "Test native (arcadedb)"
+      - "Test native (engine snapshot)"
       - "Test Python Examples"
     types: [completed]
 

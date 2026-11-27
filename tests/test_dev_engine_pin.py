@@ -22,17 +22,13 @@ import dev_engine_pin as pin_mod  # noqa: E402
 PIN = pin_mod.load_pin()
 
 
-def _plan_step() -> str:
+def _plan_step(name: str = "Resolve the version and the engine") -> str:
     lines = (
         (ROOT / ".github/workflows/test-native.yml")
         .read_text(encoding="utf-8")
         .splitlines()
     )
-    start = next(
-        i
-        for i, ln in enumerate(lines)
-        if ln.strip() == "- name: Resolve the version and the engine"
-    )
+    start = next(i for i, ln in enumerate(lines) if ln.strip() == f"- name: {name}")
     run = next(i for i in range(start, len(lines)) if lines[i].strip() == "run: |")
     indent = len(lines[run + 1]) - len(lines[run + 1].lstrip())
     body = []
@@ -43,7 +39,9 @@ def _plan_step() -> str:
     return "\n".join(body) + "\n"
 
 
-def _run_plan(tmp_path, version, engine="", release="true", maven_engine=""):
+def _run_plan(
+    tmp_path, version, engine="", release="true", maven_engine="", snapshot=""
+):
     out = tmp_path / "out"
     out.write_text("")
     env = {
@@ -52,6 +50,7 @@ def _run_plan(tmp_path, version, engine="", release="true", maven_engine=""):
         "INPUT_ENGINE": engine,
         "INPUT_RELEASE": release,
         "INPUT_MAVEN_ENGINE": maven_engine,
+        "INPUT_ENGINE_SNAPSHOT": snapshot,
         "DEV_ENGINE": "26.11.1",
         "DEFAULT_VERSION": "26.12.1.dev0",
         "GITHUB_OUTPUT": str(out),
@@ -129,6 +128,49 @@ def test_a_manual_dev_run_may_still_link_any_snapshot(tmp_path):
 def test_a_manual_final_run_still_refuses_a_snapshot(tmp_path):
     r, _ = _run_plan(tmp_path, "26.12.1", engine="26.12.1-SNAPSHOT", release="false")
     assert r.returncode != 0
+
+
+def test_the_weekly_run_links_the_floating_snapshot_of_the_default_version(tmp_path):
+    # test-native-snapshot.yml passes no version and no engine, only engine-snapshot
+    r, out = _run_plan(tmp_path, "", release="false", snapshot="true")
+    assert r.returncode == 0, r.stderr
+    assert "version=26.12.1.dev0\n" in out
+    assert "engine=26.12.1-SNAPSHOT\n" in out
+    # floating: Maven resolves the newest deploy, not the timestamped snapshot of a dev release
+    assert "maven-engine=26.12.1-SNAPSHOT\n" in out
+
+
+def test_a_run_without_the_weekly_input_still_links_the_engine_release(tmp_path):
+    r, out = _run_plan(tmp_path, "", release="false", snapshot="false")
+    assert r.returncode == 0, r.stderr
+    assert "engine=26.11.1\n" in out and "SNAPSHOT" not in out
+
+
+def test_the_weekly_run_is_never_skipped_and_builds_one_platform(tmp_path):
+    out = tmp_path / "out"
+    out.write_text("")
+    env = {
+        "PATH": "/usr/bin:/bin:/usr/local/bin",
+        "EVENT": "schedule",
+        "RELEASE": "false",
+        "LEGS": "",
+        "ENGINE_SNAPSHOT": "true",
+        "GITHUB_OUTPUT": str(out),
+    }
+    r = subprocess.run(  # nosec B603 B607
+        ["bash", "-c", _plan_step("Choose the legs")],
+        env=env,
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert r.returncode == 0, r.stderr
+    lines = dict(line.split("=", 1) for line in out.read_text().splitlines())
+    assert lines["run"] == "true"
+    assert [leg["key"] for leg in json.loads(lines["build"])] == ["linux-x86_64"]
+    assert [leg["python"] for leg in json.loads(lines["test"])] == ["3.12"]
+    assert json.loads(lines["examples"]) == []
 
 
 def _hashes(**changes):

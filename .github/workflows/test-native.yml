@@ -11,6 +11,7 @@
 #   nightly        all four platforms, Python 3.12 and 3.14, but only when something besides docs changed in the last 25 hours (a full run on Mondays)
 #   dispatch       all four platforms, Python 3.12 and 3.14
 #   workflow_call  from release-native.yml with `release: true`: all four platforms, Python 3.11 to 3.14
+#   weekly         from test-native-snapshot.yml with `engine-snapshot: true`: the legs of a pull request against upstream's engine snapshot
 # This workflow never publishes: it has no id-token permission and no environment.
 #
 # Beside the full parity runs, the `pyver` job installs the already built linux-x86_64 wheel (py3-none: no rebuild) into the Pythons the full
@@ -68,13 +69,19 @@ on:
     paths: *native_paths
   schedule:
     - cron: "40 3 * * *"
-  # Called by release-native.yml on a version tag.
+  # Called by release-native.yml on a version tag, and weekly by test-native-snapshot.yml.
   workflow_call:
     inputs:
       version:
-        description: "Wheel version to build (PEP 440: A.B.C.devN, A.B.C or A.B.C.postN); the release passes the tag"
-        required: true
+        description: "Wheel version to build (PEP 440: A.B.C.devN, A.B.C or A.B.C.postN); the release passes the tag; empty = DEFAULT_VERSION"
+        required: false
+        default: ""
         type: string
+      engine-snapshot:
+        description: "Link the floating A.B.C-SNAPSHOT of the base of a devN version, on the legs of a pull request (the weekly run)"
+        required: false
+        default: false
+        type: boolean
       engine:
         description: "Engine release (Maven Central) the image links; empty = the release segment of a final version, else the newest release"
         required: false
@@ -117,13 +124,15 @@ on:
 # The group names the workflow literally: github.workflow is the CALLER's name in a workflow_call, and the group of release-native.yml
 # must differ from this one or the two would wait for each other.
 #
+# The weekly engine-snapshot run has a group of its own, so it and the nightly run (both scheduled) never cancel each other.
 # Per event: a pull request has one group per PR; a push to main and the nightly schedule each have their own group (a newer run
 # supersedes an older one); a workflow_dispatch has a group of its own per run, so a manual run and a push can never cancel each other
 # (they used to share the ref of main); a run for a tag (the release calls this workflow, and github.event_name is then the caller's
 # push) is never cancelled, a half-done release is worse than a queued one.
 concurrency:
   group: >-
-    ${{ github.event_name == 'pull_request' && format('test-native-{0}', github.event.pull_request.number)
+    ${{ inputs.engine-snapshot && format('test-native-snapshot-{0}', github.ref)
+    || github.event_name == 'pull_request' && format('test-native-{0}', github.event.pull_request.number)
     || github.event_name == 'workflow_dispatch' && format('test-native-dispatch-{0}', github.run_id)
     || github.event_name == 'schedule' && 'test-native-schedule'
     || format('test-native-{0}', github.ref) }}
@@ -172,6 +181,7 @@ jobs:
           INPUT_ENGINE: ${{ inputs.engine }}
           INPUT_MAVEN_ENGINE: ${{ inputs.maven-engine }}
           INPUT_RELEASE: ${{ inputs.release }}
+          INPUT_ENGINE_SNAPSHOT: ${{ inputs.engine-snapshot }}
         run: |
           set -euo pipefail
           version="${INPUT_VERSION:-$DEFAULT_VERSION}"
@@ -193,6 +203,9 @@ jobs:
               # Maven resolves the pinned TIMESTAMPED snapshot, not the floating A.B.C-SNAPSHOT: upstream deploys a new snapshot most days
               pin_snapshot="$(printf '%s\n' "$pin_env" | sed -n 's/^SNAPSHOT=//p')"
               [ -n "$pin_snapshot" ] || { echo "::error::no snapshot in the pin" >&2; exit 1; }
+            elif [ "${INPUT_ENGINE_SNAPSHOT:-}" = true ]; then
+              # the weekly run (test-native-snapshot.yml): upstream's current snapshot of this base, floating
+              engine="$base-SNAPSHOT"
             else
               engine="${INPUT_ENGINE:-$DEV_ENGINE}"
             fi
@@ -228,6 +241,7 @@ jobs:
           EVENT: ${{ github.event_name }}
           RELEASE: ${{ inputs.release }}
           LEGS: ${{ inputs.legs }}
+          ENGINE_SNAPSHOT: ${{ inputs.engine-snapshot }}
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
@@ -244,7 +258,9 @@ jobs:
           if [ "$RELEASE" = true ]; then event=release; fi
           # a manual run may ask for the legs of a pull request (one platform, one Python): the runner cap is shared with upstream
           if [ "$EVENT" = workflow_dispatch ] && [ "${LEGS:-full}" = pull-request ]; then event=pull_request; fi
-          if [ "$EVENT" = "schedule" ]; then
+          # the weekly engine-snapshot run: one platform, one Python, and never skipped (what changes is upstream, not this repository)
+          if [ "${ENGINE_SNAPSHOT:-}" = true ]; then event=pull_request; fi
+          if [ "$EVENT" = "schedule" ] && [ "${ENGINE_SNAPSHOT:-}" != true ]; then
             changed="$(git log --since='25 hours ago' --format=%h -- src native tests scripts examples pyproject.toml .github/workflows/test-native.yml | wc -l)"
             monday="$(date -u +%u)"
             if [ "$changed" = 0 ] && [ "$monday" != 1 ]; then
