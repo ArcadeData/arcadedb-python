@@ -69,7 +69,7 @@ Name the setting in the statement or in the call when you compare results or nee
 [[dimension-limit]]
 === The dimension limit
 
-From engine 26.12.1, a new `LSM_VECTOR` index can have at most 16,384 dimensions. The engine added the limit on 2026-11-21, so a pre-release of 26.12.1 built before that day does not have it. A wider index is refused with `ArcadeDBError`, and an index that takes its dimensions from its first vector (`sizeOnFirstVector`) refuses that vector. To raise the limit, set `arcadedb.vectorIndex.maxDimensions` for the database before you create the index. An index that is already stored keeps working when the limit is below its size.
+From engine 26.12.1, a new `LSM_VECTOR` index can have at most 16,384 dimensions. The engine added the limit on 2026-11-21, so a pre-release of 26.12.1 built before that day does not have it. A wider index is refused with `ArcadeDBError`, and an index that takes its dimensions from its first vector (openCypher `CREATE VECTOR INDEX` without `vector.dimensions`) refuses that vector. To raise the limit, set `arcadedb.vectorIndex.maxDimensions` for the database before you create the index. An index that is already stored keeps working when the limit is below its size.
 
 .Needs engine 26.12.1 or later
 [source,python,role=needs-engine-limits]
@@ -102,11 +102,10 @@ vector = np.ones(16385, dtype=np.float32)
 db.command("sql", "INSERT INTO Wide SET v = ?", vector)
 print(len(wide.find_nearest(vector, k=1)))
 
-db.command("sql", "CREATE DOCUMENT TYPE Later")
-db.command("sql", "CREATE PROPERTY Later.v ARRAY_OF_FLOATS")
-db.command("sql", 'CREATE INDEX ON Later (v) LSM_VECTOR METADATA {"sizeOnFirstVector": true}')
+# no vector.dimensions: this index takes them from its first vector
+db.command("opencypher", "CREATE VECTOR INDEX later_v FOR (n:Later) ON n.v")
 try:
-    db.command("sql", "INSERT INTO Later SET v = ?", vector)
+    db.command("sql", "CREATE VERTEX Later SET v = ?", vector)
 except ArcadeDBError as e:
     print("refused:", setting in str(e))
 
