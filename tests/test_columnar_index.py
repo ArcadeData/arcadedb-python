@@ -96,6 +96,15 @@ SERVER_SETTINGS = [
     "arcadedb.columnar.parallelMinMatches",
     "arcadedb.columnar.topMax",
 ]
+# the limits that came into 26.12.1 after its first snapshots (ArcadeData/arcadedb#11395 and #11399), with their defaults
+LIMIT_DATABASE_SETTINGS = {
+    "arcadedb.columnar.hierarchyMaxNodes": "0",
+    "arcadedb.columnar.hierarchyMaxDepth": "0",
+}
+LIMIT_SERVER_SETTINGS = {
+    "arcadedb.columnar.maxFacetsPerQuery": "32",
+    "arcadedb.columnar.maxResponseBuckets": "250000",
+}
 
 
 @pytest.fixture
@@ -540,6 +549,33 @@ class TestColumnarSettings:
             assert key not in settings, key
         assert _text(settings[GROUP_BY_KEY]["default"]) == "true"
         assert _text(settings[GROUP_BY_KEY]["value"]) == "true"
+
+    def test_the_limits_of_a_faceted_query_have_the_documented_scopes_and_defaults(
+        self, test_db
+    ):
+        settings = _settings(test_db)
+        version = str(
+            test_db.query("sql", "SELECT version() AS v").first().get("v")
+        ).split()[0]
+        if "arcadedb.columnar.hierarchyMaxNodes" not in settings:
+            # an engine before 26.12.1, or a snapshot of it from before the limits
+            assert (
+                _engine_version(test_db) < FACETS_SINCE or "SNAPSHOT" in version
+            ), version
+            with pytest.raises(Exception, match="not found"):
+                _alter(test_db, "arcadedb.columnar.hierarchyMaxNodes", 3)
+            return
+
+        for key, default in LIMIT_DATABASE_SETTINGS.items():
+            assert _text(settings[key]["default"]) == default, key
+            _alter(test_db, key, 7)
+            assert _text(_settings(test_db)[key]["value"]) == "7", key
+        for key, default in LIMIT_SERVER_SETTINGS.items():
+            assert key not in settings, key
+            with pytest.raises(Exception) as refused:
+                _alter(test_db, key, default)
+            assert "SERVER scope" in str(refused.value), key
+            assert "cannot be set per database" in str(refused.value), key
 
     def test_settings_of_the_jvm_and_of_a_server_are_not_database_settings(
         self, test_db

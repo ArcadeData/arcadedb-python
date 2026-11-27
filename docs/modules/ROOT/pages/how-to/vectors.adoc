@@ -66,6 +66,63 @@ NONE True
 
 Name the setting in the statement or in the call when you compare results or need the same index from both paths. `"quantization": "INT8"` and `"addHierarchy": true` in the `METADATA` give the method's index; `quantization=None` in the call gives the statement's (and `add_hierarchy=False` on 26.11.1 and earlier, where the statement builds a flat graph). Do not take `INT8` as the best choice from its being the method's default: check recall and speed on your own data.
 
+[[dimension-limit]]
+=== The dimension limit
+
+From engine 26.12.1, a new `LSM_VECTOR` index can have at most 16,384 dimensions. The engine added the limit on 2026-11-21, so a pre-release of 26.12.1 built before that day does not have it. A wider index is refused with `ArcadeDBError`, and an index that takes its dimensions from its first vector (`sizeOnFirstVector`) refuses that vector. To raise the limit, set `arcadedb.vectorIndex.maxDimensions` for the database before you create the index. An index that is already stored keeps working when the limit is below its size.
+
+.Needs engine 26.12.1 or later
+[source,python,role=needs-engine-limits]
+----
+from arcadedb import ArcadeDBError
+
+setting = "arcadedb.vectorIndex.maxDimensions"
+create = (
+    "CREATE INDEX ON Wide (v) LSM_VECTOR "
+    'METADATA {"dimensions": 16385, "similarity": "COSINE"}'
+)
+db.command("sql", "CREATE DOCUMENT TYPE Wide")
+db.command("sql", "CREATE PROPERTY Wide.v ARRAY_OF_FLOATS")
+for attempt in (
+    lambda: db.command("sql", create),
+    lambda: db.create_vector_index("Wide", "v", dimensions=16385),
+):
+    try:
+        attempt()
+    except ArcadeDBError as e:
+        print("refused:", setting in str(e))
+
+db.command("sql", f"ALTER DATABASE `{setting}` 20000")
+db.command("sql", create)
+wide = db.schema.get_vector_index("Wide", "v")
+print(wide.get_metadata()["dimensions"])
+
+db.command("sql", f"ALTER DATABASE `{setting}` 16384")  # the index stays
+vector = np.ones(16385, dtype=np.float32)
+db.command("sql", "INSERT INTO Wide SET v = ?", vector)
+print(len(wide.find_nearest(vector, k=1)))
+
+db.command("sql", "CREATE DOCUMENT TYPE Later")
+db.command("sql", "CREATE PROPERTY Later.v ARRAY_OF_FLOATS")
+db.command("sql", 'CREATE INDEX ON Later (v) LSM_VECTOR METADATA {"sizeOnFirstVector": true}')
+try:
+    db.command("sql", "INSERT INTO Later SET v = ?", vector)
+except ArcadeDBError as e:
+    print("refused:", setting in str(e))
+
+db.command("sql", "DROP TYPE Wide UNSAFE")
+db.command("sql", "DROP TYPE Later UNSAFE")
+----
+
+[source,text]
+----
+refused: True
+refused: True
+16385
+1
+refused: True
+----
+
 == Insert vectors
 
 A vector is a property value like any other. Bind it as a parameter of `INSERT`. A NumPy `float32` array crosses into the engine as one buffer. A list of Python floats also works, and a list that is the only parameter of a statement is read as the whole parameter list, so give a vector as a list only next to other parameters or by name. The details are in xref:how-to/databases-and-queries.adoc#a-query-vector[A query vector].
