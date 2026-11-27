@@ -169,8 +169,16 @@ def test_the_weekly_run_is_never_skipped_and_builds_one_platform(tmp_path):
     lines = dict(line.split("=", 1) for line in out.read_text().splitlines())
     assert lines["run"] == "true"
     assert [leg["key"] for leg in json.loads(lines["build"])] == ["linux-x86_64"]
-    assert [leg["python"] for leg in json.loads(lines["test"])] == ["3.12"]
+    # the legs of a pull request: one Python, the newest, in shards, and no pyver or example leg
+    assert [(leg["python"], leg["shard"]) for leg in json.loads(lines["test"])] == [
+        ("3.14", "1/3"),
+        ("3.14", "2/3"),
+        ("3.14", "3/3"),
+    ]
+    assert json.loads(lines["pyver"]) == []
     assert json.loads(lines["examples"]) == []
+    # but not a pull request: it reads no cached library, and the report job of the crashes runs
+    assert lines["fast-pr"] == "false"
 
 
 def _hashes(**changes):
