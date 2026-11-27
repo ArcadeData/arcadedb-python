@@ -547,7 +547,7 @@ class NativeVectorIndex(_BaseVectorIndex):
         return super().get_size()
 
     def get_stats(self):
-        """The engine's live counters of the primary bucket index, from its ``schema:index:<name>`` row (the row's own columns left out)."""
+        """The engine's live counters of the primary bucket index, from its ``schema:index:<name>`` row (:func:`_index_counters`)."""
         bucket = self._live_info()["bucket"]
         rows = self._database.query(
             "sql",
@@ -557,7 +557,7 @@ class NativeVectorIndex(_BaseVectorIndex):
             raise ArcadeDBError(
                 f"Failed to read vector index stats: no index {bucket!r}"
             )
-        return {k: v for k, v in rows[0].items() if k not in _INDEX_ROW_COLUMNS}
+        return _index_counters(rows[0])
 
     def get_metadata(self):
         """The engine's configuration of the index: what this session created and what an index opened from disk carries, defaults included."""
@@ -576,7 +576,18 @@ class NativeVectorIndex(_BaseVectorIndex):
         return str(self._live_info()["quantization"] or "NONE")
 
 
-# the descriptive columns of a schema:index row; every other column is a counter of IndexInternal.getStats()
+def _index_counters(row):
+    """The counters of a ``schema:index:<name>`` row, as the JVM build returns them from ``IndexInternal.getStats()``.
+
+    That is a map of longs, so a counter is an integer column that does not describe the index. A column of any other type is
+    the engine describing the index, also one a later engine adds (26.12.1 added the ``metadata`` map).
+    """
+    return {
+        k: v for k, v in row.items() if type(v) is int and k not in _INDEX_ROW_COLUMNS
+    }
+
+
+# the descriptive columns of a schema:index row (an integer one among them would pass for a counter)
 _INDEX_ROW_COLUMNS = frozenset(
     {
         "name",

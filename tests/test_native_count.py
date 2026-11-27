@@ -294,7 +294,7 @@ def _facets_after_to_list(db):
     rs = db.query("sql", FACETS_Q)
     rows = rs.to_list()
     assert len(rows) == ROWS
-    facets = rs.facets()
+    facets = rs.facets
     assert facets is not None
     return facets
 
@@ -313,7 +313,7 @@ def test_count_then_facets_of_a_facets_query_returns_the_facets(db, foreign):
     foreign.reset()
     assert rs.count() == ROWS
     assert "arcadedb_n_count" not in foreign.names  # the statement was read row by row
-    assert rs.facets() == expected
+    assert rs.facets == expected
 
 
 def test_a_statement_that_mentions_facets_is_counted_row_by_row(db, foreign):

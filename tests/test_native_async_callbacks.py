@@ -83,7 +83,10 @@ def _submit_every_kind(db, executor, seen):
 
 def test_wait_completion_gives_back_the_ids_of_every_kind_of_call(graph_db):
     baseline = _size()
-    executor = graph_db.async_executor()
+    # One worker, because every call must succeed here. With more, several workers write the same page of Item and a batch can
+    # lose the race: engine 26.12.1 refuses one whose worker also read that page (ArcadeData/arcadedb#11671,
+    # test_concurrency.py), and a batch with a create_record is not run again.
+    executor = graph_db.async_executor().set_parallel_level(1)
     seen = []
     for _ in range(ROUNDS):
         _submit_every_kind(graph_db, executor, seen)
