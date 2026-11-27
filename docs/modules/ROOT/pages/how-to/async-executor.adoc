@@ -19,6 +19,8 @@ The blocks on this page run one after the other against one empty database, and 
 
 Each worker of the executor opens a transaction of its own and commits it after `commit_every` operations, and at `wait_completion()`. You open no transaction for it. At parallel level 1 there is one worker, and every statement of the next block is stored once `wait_completion()` returns.
 
+With two or more workers, two of these transactions can write to the same page, and the one that commits second can lose. The engine merges inserts that do not collide. It runs the `command` calls of a losing transaction again, up to `arcadedb.txRetries` times, but not when that transaction also holds a record or edge write such as `create_record` or `new_edge`. A transaction that cannot commit is rolled back, and the failure, a `ConflictError`, goes to the `on_error` handler and to the error callbacks of its commands and records. From engine 26.12.1, reads count too (ArcadeData/arcadedb#11671): if a `query` or `scan_type` reads a page that the transaction of its worker wrote, and another worker commits to that page first, the transaction is refused. So at parallel level 2 or higher, give every write an `error_callback`, and use parallel level 1 where every call must succeed and no other thread writes the same types.
+
 [source,python]
 ----
 db.command("sql", "CREATE DOCUMENT TYPE Item")

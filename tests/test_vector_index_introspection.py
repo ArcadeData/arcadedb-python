@@ -82,12 +82,41 @@ class TestGetStats:
         _insert(temp_db, UNIT_VECTORS)
 
         stats = index.get_stats()
-        assert all(
-            v is None or isinstance(v, (int, float, bool, str)) for v in stats.values()
-        )
+        # the engine's counters are longs, so both wheels hand out plain ints
+        assert {k: v for k, v in stats.items() if type(v) is not int} == {}
         # a schema:index row also names the index and describes it; get_stats is the counters only
-        for descriptive in ("name", "indexType", "typeName", "properties", "fileId"):
+        for descriptive in (
+            "name",
+            "indexType",
+            "typeName",
+            "properties",
+            "fileId",
+            "metadata",
+        ):
             assert descriptive not in stats
+
+    def test_the_native_filter_keeps_only_the_counters_of_an_index_row(self):
+        """A ``schema:index:<name>`` row as engine 26.12.1 writes it: it has the ``metadata`` map beside the counters
+        (ArcadeData/arcadedb#13097). The row is written here, so the test says the same on every engine and needs no library.
+        """
+        from arcadedb._native.schema_objects import _index_counters
+
+        counters = {"totalVectors": 3, "dimensions": 3, "asyncRebuildInProgress": 0}
+        described = {
+            "name": "Doc_0_1",
+            "indexType": "LSM_VECTOR",
+            "typeName": "Doc",
+            "properties": [["embedding"]],
+            "keyTypes": ["ARRAY_OF_FLOATS"],
+            "unique": False,
+            "automatic": True,
+            "fileId": 3,
+            "size": "64KB",
+            "associatedBucketId": 1,
+            "metadata": {"dimensions": 3, "addHierarchy": True},
+            "aColumnOfALaterEngine": ["x"],
+        }
+        assert _index_counters({**described, **counters}) == counters
 
     def test_searches_move_the_search_counter(self, temp_db):
         _make_type(temp_db)

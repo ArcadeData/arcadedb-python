@@ -13,6 +13,7 @@ import shutil
 import subprocess  # nosec B404
 import sys
 import textwrap
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from statistics import mean
@@ -178,6 +179,55 @@ def test_sequential_access(cleanup_db):
     print(f"   📊 Total messages: {count}")
     print("   ✅ Sequential access works perfectly!")
     db3.close()
+
+
+def _engine_version(db):
+    """The engine's x.y.z through SQL ``SELECT version()``; a SNAPSHOT or a build suffix is dropped."""
+    raw = str(db.query("sql", "SELECT version() AS v").first().get("v"))
+    parts = [
+        int(p) if p.isdigit() else 0
+        for p in raw.split()[0].split("-")[0].split(".")[:3]
+    ]
+    return tuple(parts + [0] * (3 - len(parts)))
+
+
+@pytest.mark.parametrize("reads_the_page", [False, True])
+def test_a_commit_that_read_a_page_another_transaction_changed(temp_db, reads_the_page):
+    """Two transactions insert into the same page, and the one that commits second is merged, unless it also read that page.
+
+    From engine 26.12.1 (ArcadeData/arcadedb#11671) a transaction that has written a page reads its own copy of it, so a scan
+    after another commit to the page decided on stale rows, and its commit is refused with ``ConflictError``. Older engines
+    merge it. Blind inserts merge on both.
+    """
+    temp_db.command("sql", "CREATE DOCUMENT TYPE Item")
+    with temp_db.transaction():
+        temp_db.command("sql", "INSERT INTO Item SET n = 0")
+    other_errors = []
+
+    def insert_in_another_transaction():
+        try:
+            with temp_db.transaction():
+                temp_db.command("sql", "INSERT INTO Item SET n = 2")
+        except Exception as exc:  # pragma: no cover - reported by the assert below
+            other_errors.append(exc)
+
+    refused = reads_the_page and _engine_version(temp_db) >= (26, 12, 1)
+    temp_db.begin()
+    temp_db.command("sql", "INSERT INTO Item SET n = 1")
+    other = threading.Thread(target=insert_in_another_transaction)
+    other.start()
+    other.join()
+    assert other_errors == []
+    if reads_the_page:
+        temp_db.query("sql", "SELECT FROM Item").to_list()
+    if refused:
+        with pytest.raises(arcadedb.ConflictError):
+            temp_db.commit()
+    else:
+        temp_db.commit()
+
+    stored = sorted(r.get("n") for r in temp_db.query("sql", "SELECT n FROM Item"))
+    assert stored == ([0, 2] if refused else [0, 1, 2])
 
 
 def test_concurrent_access_limitation(cleanup_db):
