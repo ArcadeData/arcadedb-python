@@ -39,8 +39,8 @@ def _blocks():
 
 def test_the_page_has_its_blocks():
     blocks = _blocks()
-    assert len(blocks) == 3
-    assert sum(1 for _, out in blocks if out is not None) == 3
+    assert len(blocks) == 4
+    assert sum(1 for _, out in blocks if out is not None) == 4
 
 
 def test_every_block_runs_in_order_and_prints_what_the_page_says(temp_db):

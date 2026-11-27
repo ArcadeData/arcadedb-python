@@ -89,6 +89,11 @@ One row for each code. A row with more than one engine exception matches any of 
 |===
 | Code | Class | Engine exception | Hint
 
+| `partial_commit`
+| `PartialCommitError`
+| `TransactionException`
+| Part of the work is already committed: check what was applied before you run any of it again, because a rerun of the whole block applies that part a second time.
+
 | `duplicate_key`
 | `DuplicateKeyError`
 | `DuplicatedKeyException`
@@ -185,7 +190,56 @@ The causes without a subclass (`database_read_only`, `query_not_idempotent`, `mi
 
 == Which error to retry
 
-`ConflictError` is the one that a retry can fix: another transaction changed the same data first. Run the whole transaction again, or let `db.run_in_transaction(fn)` do it, as described on xref:how-to/transactions.adoc[Transactions] and xref:how-to/concurrency.adoc[Concurrency, processes and crashes]. A `DuplicateKeyError` is not a conflict: the same statement fails again until the value changes.
+`ConflictError` is the one that a retry can fix: another transaction changed the same data first. Run the whole transaction again, or let `db.run_in_transaction(fn)` do it, as described on xref:how-to/transactions.adoc[Transactions] and xref:how-to/concurrency.adoc[Concurrency, processes and crashes]. A `DuplicateKeyError` is not a conflict: the same statement fails again until the value changes. A `PartialCommitError` is a conflict that a retry must not repeat.
+
+[[partial-commit]]
+== A block that already committed part of its work
+
+A statement with a `BATCH n` boundary, or `db.commit()` followed by `db.begin()` inside the block, stores part of the block's work before the block ends. If the block then loses a conflict, running it again would apply that part twice. So `db.run_in_transaction(fn)` and `with db.transaction():` raise `PartialCommitError` instead of `ConflictError`, and `run_in_transaction` does not call `fn` again, also when it had retries left. Check what is stored, then decide what to run again.
+
+[source,python]
+----
+import threading
+
+from arcadedb import PartialCommitError
+
+db.command("sql", "CREATE DOCUMENT TYPE Counter")
+with db.transaction():
+    db.command("sql", "INSERT INTO Counter SET n = 0")
+
+
+def other_writer():
+    with db.transaction():
+        db.command("sql", "UPDATE Counter SET n = n + 100")
+
+
+def step():
+    db.command("sql", "INSERT INTO Memory SET key = 'b'")
+    db.commit()  # the new record is stored from here on
+    db.begin()
+    db.command("sql", "UPDATE Counter SET n = n + 1")
+    writer = threading.Thread(target=other_writer)
+    writer.start()
+    writer.join()  # it commits first, so the commit of this block conflicts
+
+
+try:
+    db.run_in_transaction(step)
+except PartialCommitError as e:
+    print(e.code)
+    stored = db.query("sql", "SELECT count(*) AS c FROM Memory WHERE key = 'b'")
+    print(stored.first().get("c"))
+----
+
+[source,text]
+----
+partial_commit
+1
+----
+
+* The error is not a `ConflictError`. The conflict is its `__context__`, not its `__cause__`, so a retry loop that follows the cause chain does not find it, and an outer `run_in_transaction` does not repeat the block either.
+* A `DuplicateKeyError` after such a commit keeps its class, and the block is not run again.
+* Engine 26.12.1 refuses the same case in its own retry loops, a `COMMIT RETRY` block of a SQL script for example, with a `TransactionException`. When it reaches Python as an `ArcadeDBError`, it has the class and the code above. `e.cause` is that exception's name, and `None` when the packages raise the error themselves. An older engine raises the conflict from those loops.
 
 == What differs between the packages
 

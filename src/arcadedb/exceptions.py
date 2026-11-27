@@ -334,6 +334,16 @@ class ConflictError(ArcadeDBError):
     code = "conflict"
 
 
+class PartialCommitError(ArcadeDBError):
+    """A block lost a conflict after part of its work was committed, so running it again applies that part twice (``partial_commit``).
+
+    Not a :class:`ConflictError`, and the conflict is not its ``__cause__``, so that no retry loop runs the block again. When
+    ``run_in_transaction`` or ``with db.transaction():`` raise it, the conflict is its ``__context__``.
+    """
+
+    code = "partial_commit"
+
+
 class SchemaError(ArcadeDBError):
     """A type, property or index is missing, exists already, or refuses the change (``type_not_found``, ``already_exists``, ``schema``)."""
 
@@ -384,6 +394,16 @@ _HINT_SCHEMA = (
 # produces, collected by running both builds (tests/test_error_codes_table.py holds a literal for every row). A row with a
 # ``message`` and no ``java`` is for a failure that the Python layer raises itself or that one build words differently.
 _RULES = (
+    # first: the engine wraps this refusal in a timeout when a COMMIT RETRY block ran out of time, and the half that is committed
+    # matters more than the deadline
+    _Rule(
+        "partial_commit",
+        PartialCommitError,
+        "Part of the work is already committed: check what was applied before you run any of it again, because a rerun of the "
+        "whole block applies that part a second time.",
+        java=(_E + "TransactionException",),
+        message=re.compile(r"committed part of its work before failing"),
+    ),
     _Rule(
         "duplicate_key",
         DuplicateKeyError,
@@ -547,6 +567,32 @@ del _rule
 _CLASS_IN_TEXT = re.compile(
     r"\b((?:com|org|java)\.(?:[A-Za-z0-9_$]+\.)*[A-Za-z0-9_$]*(?:Exception|Error))\b"
 )
+
+
+def _partial_commit_error(block, conflict):
+    """The ``PartialCommitError`` for a ``block`` that lost ``conflict`` after it had committed part of its work (#504).
+
+    The engine's own retry loops raise a ``TransactionException`` with this wording for the same refusal (engine 26.12.1), so
+    ``_RULES`` gives the two the same class and code. The caller raises the result while it handles ``conflict`` and without
+    ``from``: the conflict stays visible as ``__context__``, and nothing that follows the cause chain to decide on a retry
+    (``_retry_verdict``) finds it.
+    """
+    chain = _java_chain_of(conflict)
+    if chain:
+        conflicts = _RULE_OF_CODE["conflict"].java
+        name, message = next(
+            (link for link in chain if link[0] in conflicts), chain[-1]
+        )
+    else:
+        name, message = type(conflict).__name__, str(conflict)
+    text = (
+        f"{block} committed part of its work before failing with {name.rsplit('.', 1)[-1]} ({message}). It is not retried, "
+        "because a replay would apply the already committed part a second time: check what was applied before running it again"
+    )
+    error = PartialCommitError(text)
+    # what a wrapper that re-raises this error classifies it by: the exception the engine raises for the same refusal
+    error._chain = ((_E + "TransactionException", text),)
+    return error
 
 
 def _classify(text, chain=()):

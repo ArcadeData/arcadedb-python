@@ -14,7 +14,9 @@
 package com.arcadedb.python;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Record;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.query.sql.executor.ResultSet;
 
@@ -92,11 +94,15 @@ public final class DbCalls {
   }
 
   /**
-   * The transaction stack of {@code db} as one number, {@code nestedTransactions * 2 + (active ? 1 : 0)}: the
-   * {@code isTransactionActive()} and {@code getNestedTransactions()} of the mark {@code run_in_transaction} and
-   * {@code with db.transaction()} take before {@code begin()} (#9970, #9813), in one crossing instead of two.
+   * The transaction state of {@code db} as one number: bit 0 is {@code isTransactionActive()}, bits 1 to 31
+   * {@code getNestedTransactions()} and bits 32 to 62 the commit count of the thread's transaction context (its low 31 bits).
+   * The first two are the mark {@code run_in_transaction} and {@code with db.transaction()} take before {@code begin()}
+   * (#9970, #9813); the count tells a {@code with} block whether it committed part of its work (ArcadeData/arcadedb-python#504).
+   * One crossing for all three.
    */
   public static long stackMark(final Database db) {
-    return ((long) db.getNestedTransactions() << 1) | (db.isTransactionActive() ? 1L : 0L);
+    final TransactionContext tx = ((DatabaseInternal) db).getTransactionIfExists();
+    final long commits = tx == null ? 0L : tx.getCommitCount();
+    return (commits & 0x7FFFFFFFL) << 32 | (db.getNestedTransactions() & 0x7FFFFFFFL) << 1 | (db.isTransactionActive() ? 1L : 0L);
   }
 }

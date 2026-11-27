@@ -37,6 +37,7 @@ import org.graalvm.nativeimage.c.type.CTypeConversion;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -48,6 +49,13 @@ public final class ArcadeNative {
   private static final Map<Long, ResultSet> RESULT_SETS = new ConcurrentHashMap<>();
   private static final Map<Long, ArcadeDBServer> SERVERS = new ConcurrentHashMap<>();
   static final AtomicLong IDS = new AtomicLong(1);
+
+  /**
+   * Per thread, the context that a begin inside a transaction pushed, by database handle and depth ({@link #blockKey}). A commit
+   * pops that context, so its commit count, which tells whether the block committed part of its work
+   * (ArcadeData/arcadedb-python#504), can only be read from here. Written by op 4 of arcadedb_n_tx, read and removed by op 5.
+   */
+  private static final ThreadLocal<Map<Long, TransactionContext>> NESTED_BLOCKS = ThreadLocal.withInitial(HashMap::new);
 
   static {
     // The image carries no GraalVM polyglot languages by design, so the engine's polyglot registration can only find none and
@@ -160,6 +168,7 @@ public final class ArcadeNative {
       else
         db.close();
       DBS.remove(h);
+      NESTED_BLOCKS.get().keySet().removeIf(key -> key >>> 32 == h);
       return OK();
     } catch (final Throwable t) {
       return err(t);
@@ -186,7 +195,9 @@ public final class ArcadeNative {
   }
 
   /**
-   * op 0 begin, 1 commit, 2 rollback, 3 mark. Returns the transaction state after the call as one non-negative long: bit 0 is
+   * op 0 begin, 1 commit, 2 rollback, 3 mark, 4 mark and remember the current context for its depth, 5 | depth &lt;&lt; 8 the commit
+   * count of the context remembered for that depth, in the commit bits of the result and with the other bits 0 (the entry is
+   * dropped; 0 when there is none). Ops 0 to 4 return the transaction state after the call as one non-negative long: bit 0 is
    * isTransactionActive, bits 1 to 31 the nesting depth, bits 32 to 62 the low 31 bits of the commit count of the thread's
    * transaction context (callers compare two counts for equality). -1 on error: the error text is then read with
    * arcadedb_n_last_error on the same thread, as for arcadedb_n_cmd. No reply text, so no malloc, no arcadedb_free and no JSON
@@ -196,10 +207,18 @@ public final class ArcadeNative {
   public static long tx(final IsolateThread thread, final long h, final int op) {
     try {
       final Database db = db(h);
-      switch (op) {
+      switch (op & 0xFF) {
       case 0 -> db.begin();
       case 1 -> db.commit();
       case 2 -> db.rollback();
+      case 4 -> {
+        if (db instanceof DatabaseInternal internal)
+          NESTED_BLOCKS.get().put(blockKey(h, (txState(db) >>> 1) & 0x7FFFFFFFL), internal.getTransactionIfExists());
+      }
+      case 5 -> {
+        final TransactionContext block = NESTED_BLOCKS.get().remove(blockKey(h, op >>> 8));
+        return block == null ? 0L : (block.getCommitCount() & 0x7FFFFFFFL) << 32;
+      }
       default -> {
       }
       }
@@ -208,6 +227,10 @@ public final class ArcadeNative {
       LAST_ERROR.set(errorJson(t));
       return -1;
     }
+  }
+
+  private static long blockKey(final long h, final long depth) {
+    return h << 32 | depth;
   }
 
   private static long txState(final Database db) {

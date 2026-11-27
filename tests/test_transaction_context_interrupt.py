@@ -39,8 +39,14 @@ class _FakeDatabase:
     def commit(self):
         self.active = False
 
-    def _transaction_stack_mark(self):
-        return self.active, self.depth
+    def _transaction_marks(self):
+        return (self.active, self.depth), 0
+
+    def _commit_witness(self, mark, commits):
+        return None
+
+    def _partial_commit_refusal(self, failure, witness, block):
+        return None
 
     def _end_transactions_opened_since(self, mark):
         was_active, depth_before = mark

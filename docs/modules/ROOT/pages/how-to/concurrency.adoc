@@ -144,7 +144,7 @@ The check costs on the write side only. A laptop A/B on the native wheel (10 cle
 [[retry-loop]]
 === A retry loop for REPEATABLE_READ
 
-`db.transaction()` cannot retry, because a `with` block cannot run twice. This loop is the one the probe used for the last row of the table.
+`db.transaction()` cannot retry, because a `with` block cannot run twice. This loop is the one the probe used for the last row of the table. It does not see a commit inside `fn` (a `BATCH n` boundary, or `db.commit()`) and would apply that part again, so use it only for an `fn` that commits nothing itself. `run_in_transaction` refuses such a repeat with xref:how-to/errors.adoc#partial-commit[`PartialCommitError`].
 
 [source,python]
 ----

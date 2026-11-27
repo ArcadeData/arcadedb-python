@@ -191,6 +191,23 @@ def conflict_of_two_transactions(db):
         raise errors[0]
 
 
+def conflict_after_a_commit_in_the_block(db):
+    _insert(db)
+
+    def other_writer():
+        with db.transaction():
+            db.command("sql", "UPDATE T SET k = 2 WHERE id = 1")
+
+    with db.transaction():
+        db.command("sql", "INSERT INTO T SET id = 2")
+        db.commit()  # stored from here on: the block must not be run again
+        db.begin()
+        db.command("sql", "UPDATE T SET k = 3 WHERE id = 1")
+        writer = threading.Thread(target=other_writer)
+        writer.start()
+        writer.join(timeout=60)
+
+
 def unknown_type_in_query(db):
     db.query("sql", "SELECT FROM Nope").to_list()
 
@@ -405,6 +422,13 @@ SCENARIOS = [
         "QueryTimeoutError",
         "timeout",
         E + "TimeoutException",
+    ),
+    # the packages raise this one themselves, so no Java class decides it
+    (
+        on_a_database(conflict_after_a_commit_in_the_block),
+        "PartialCommitError",
+        "partial_commit",
+        None,
     ),
     (
         on_a_database(conflict_of_two_transactions),

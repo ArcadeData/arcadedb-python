@@ -22,6 +22,33 @@ E = "com.arcadedb.exception."
 # (id, text of the error, Java chain (outermost first), expected class, expected code, expected cause)
 CASES = [
     (
+        "partial_commit",
+        "Command failed: com.arcadedb.exception.TransactionException: COMMIT RETRY block committed part of its work before failing with ConcurrentModificationException (changed). It is not retried",
+        [
+            (
+                E + "TransactionException",
+                "COMMIT RETRY block committed part of its work before failing with ConcurrentModificationException (changed). It is not retried",
+            )
+        ],
+        "PartialCommitError",
+        "partial_commit",
+        E + "TransactionException",
+    ),
+    (
+        "partial_commit_inside_a_timeout",
+        "Command failed: com.arcadedb.exception.TimeoutException: COMMIT RETRY gave up after 1 of 5 attempts",
+        [
+            (E + "TimeoutException", "COMMIT RETRY gave up after 1 of 5 attempts"),
+            (
+                E + "TransactionException",
+                "COMMIT RETRY block committed part of its work before failing with ConcurrentModificationException (changed). It is not retried",
+            ),
+        ],
+        "PartialCommitError",
+        "partial_commit",
+        E + "TransactionException",
+    ),
+    (
         "duplicate_key",
         "Command failed: com.arcadedb.exception.DuplicatedKeyException: Duplicated key [1] found on index 'T[id]' already assigned to record #1:0",
         [
@@ -483,6 +510,7 @@ def test_the_subclasses_are_public_and_under_the_base_class():
         "DatabaseLockedError",
         "DatabaseNotFoundError",
         "DuplicateKeyError",
+        "PartialCommitError",
         "QuerySyntaxError",
         "QueryTimeoutError",
         "RecordNotFoundError",
@@ -521,6 +549,34 @@ def test_a_wrapper_around_a_classified_error_keeps_the_class_and_does_not_repeat
         assert shown.count("[duplicate_key]") == 1
         assert shown.endswith("Failed to commit transaction: " + text)
         assert outer.args == ("Failed to commit transaction: " + text,)
+
+
+def test_the_refusal_of_a_rerun_is_not_a_conflict_and_a_wrapper_keeps_its_class():
+    """``run_in_transaction`` builds this error itself (#504): it names the conflict, and no class name in it decides again."""
+    message = "Concurrent modification on page 0"
+    conflict = ArcadeDBError._classified(
+        f"Failed to commit transaction: {E}ConcurrentModificationException: {message}",
+        [(E + "ConcurrentModificationException", message)],
+    )
+    refusal = exceptions._partial_commit_error("run_in_transaction block", conflict)
+    assert (type(refusal).__name__, refusal.code, refusal.cause) == (
+        "PartialCommitError",
+        "partial_commit",
+        None,
+    )
+    assert str(refusal).startswith(f"[partial_commit] {refusal.hint} ")
+    assert (
+        "run_in_transaction block committed part of its work before failing with ConcurrentModificationException "
+        f"({message})"
+    ) in str(refusal)
+    assert not isinstance(refusal, exceptions.ConflictError)
+    try:
+        try:
+            raise refusal
+        except ArcadeDBError as e:
+            raise ArcadeDBError(f"Failed to store the step: {e}") from e
+    except exceptions.PartialCommitError as outer:
+        assert str(outer).count("[partial_commit]") == 1
 
 
 def test_a_statement_that_a_syntax_error_echoes_does_not_decide_the_code():

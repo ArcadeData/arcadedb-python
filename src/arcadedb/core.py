@@ -31,7 +31,7 @@ from .callbacks import (
     raise_pending_interrupt,
     register_event,
 )
-from .exceptions import ArcadeDBError, _retry_verdict
+from .exceptions import ArcadeDBError, _partial_commit_error, _retry_verdict
 from .graph import Document, Edge, Vertex
 from .graph_batch import GraphBatch
 from .importer import ImportResult
@@ -98,6 +98,9 @@ _SCALAR_PARAM_TYPES = frozenset((int, float, str, bool, type(None)))
 
 
 _JArray = jpype.JArray
+
+# The witness of a ``with db.transaction():`` block whose begin() reused the thread's transaction context (see _commit_witness)
+_REUSED_CONTEXT = object()
 
 # Resolved on first use, once the JVM is up (see _db_calls and _object_array).
 _DB_CALLS = None
@@ -716,10 +719,13 @@ class Database:
         genuine duplicate fails the same way every time, and one retry covers
         the duplicate raised by racing a concurrent commit. A block that
         already made part of its work durable (a statement with a ``BATCH``
-        boundary) is never re-run: the conflict is raised, because a replay
-        would apply that part twice. The ``with db.transaction():`` context
-        manager cannot retry (a ``with`` block can't be re-entered), so use
-        this for contended multi-threaded writes.
+        boundary, or ``commit()`` and ``begin()`` inside ``fn``) is never
+        re-run, because a replay would apply that part twice: a conflict is
+        raised as ``PartialCommitError``, which is not a ``ConflictError``, on
+        the last attempt too (a ``DuplicatedKeyError`` is raised as it is).
+        The ``with db.transaction():`` context manager raises the same error,
+        but cannot retry (a ``with`` block can't be re-entered), so use this
+        for contended multi-threaded writes.
 
         A refusal's wait is capped by ``arcadedb.network.retryAfterMaxWait``
         per attempt, so a call can block for up to ``retries`` times that cap
@@ -770,7 +776,18 @@ class Database:
                     self._end_transactions_opened_since(mark)
                 except Exception:  # nosec B110 - best-effort rollback before retry
                     pass
-                if attempt >= retries or not isinstance(e, Exception):
+                if not isinstance(e, Exception):
+                    raise
+                # #7916, #504: the rollback above cannot take back what a BATCH
+                # boundary or a commit() inside fn already committed, and a replay
+                # would apply it twice. A conflict after such a commit is not
+                # retryable for anyone, on the last attempt too.
+                refusal = self._partial_commit_refusal(
+                    e, (tx_at_start, commits_at_start), "run_in_transaction block"
+                )
+                if refusal is not None:
+                    raise refusal
+                if attempt >= retries:
                     raise
                 # By Java TYPE, as LocalDatabase.transaction() decides. The
                 # message used to be searched for two class names, so every
@@ -784,9 +801,8 @@ class Database:
                     if duplicated_key_retried:
                         raise
                     duplicated_key_retried = True
-                # #7916: the rollback above cannot take back what a BATCH
-                # boundary already committed, and a replay would apply it twice
-                # and report clean success.
+                # a duplicated key after a commit is raised as it is, as the engine
+                # does: nobody is told to retry it, and it is not replayed here
                 if self._partially_committed(tx_at_start, commits_at_start):
                     raise
                 _time.sleep(max(backoff_s * (attempt + 1), retry_after_ms / 1000.0))
@@ -799,17 +815,56 @@ class Database:
         The pair is what _end_transactions_opened_since needs to tell the levels a
         begin() pushed from the ones the caller already held.
         """
+        return self._transaction_marks()[0]
+
+    def _transaction_marks(self):
+        """The stack mark ``(active, depth)``, and the commit count of the thread's transaction context (its low 31 bits)."""
         calls = _db_calls()
         if calls is not None:
-            # both numbers in ONE crossing: this runs before every begin() of
+            # all three numbers in ONE crossing: this runs before every begin() of
             # ``with db.transaction()`` and of run_in_transaction
             self._check_not_closed()
             try:
                 packed = int(calls.stackMark(self._java_db))
             except Exception as e:
                 raise ArcadeDBError(f"Failed to check transaction status: {e}") from e
-            return bool(packed & 1), packed >> 1
-        return self.is_transaction_active(), self._java_db.getNestedTransactions()
+            return (bool(packed & 1), (packed >> 1) & 0x7FFFFFFF), packed >> 32
+        mark = self.is_transaction_active(), self._java_db.getNestedTransactions()
+        return mark, self._transaction_commit_mark()[1] & 0x7FFFFFFF
+
+    def _commit_witness(self, mark, commits):
+        """What ``with db.transaction():`` compares against to see a commit inside the block, taken right after its begin().
+
+        Outside a transaction, begin() reuses the thread's context, so the commit count read with the mark is its count at the
+        start and nothing is asked here (``_REUSED_CONTEXT``: the context is looked up when the block has failed). Inside one,
+        begin() pushed a context of its own, which a commit pops: it is held from here on.
+        """
+        if mark[0]:
+            return self._transaction_commit_mark()
+        return _REUSED_CONTEXT, commits
+
+    def _partial_commit_refusal(self, failure, witness, block):
+        """The ``PartialCommitError`` to raise instead of ``failure``: a conflict of a block that committed part of its work.
+
+        None for every other failure, and for a block that committed nothing.
+        """
+        if _retry_verdict(failure)[0] != "need_retry":
+            return None
+        tx_at_start, commits_at_start = witness
+        if tx_at_start is _REUSED_CONTEXT:
+            try:
+                tx_at_start = self._java_db.getTransactionIfExists()
+                partial = (
+                    tx_at_start is not None
+                    and int(tx_at_start.getCommitCount()) & 0x7FFFFFFF
+                    != commits_at_start
+                )
+            except Exception:  # no witness: the conflict is raised as it is
+                _warn_no_commit_witness("count")
+                return None
+        else:
+            partial = self._partially_committed(tx_at_start, commits_at_start)
+        return _partial_commit_error(block, failure) if partial else None
 
     def _end_transactions_opened_since(self, mark):
         """Roll back every transaction level opened since ``mark``, and no other.

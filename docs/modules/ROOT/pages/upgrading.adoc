@@ -8,7 +8,7 @@ ifdef::env-github[]
 :jvm-pkg-name: arcadedb-jvm
 endif::[]
 
-// Sources: the pull requests ArcadeData/arcadedb-python #479 to #483, and the changes of issues #454 and #445. Pinned by tests/test_auto_transaction_default.py, tests/test_error_codes_table.py, tests/test_error_codes_parity.py, tests/test_lazy_import.py, tests/test_cross_wheel_golden.py and tests/test_insert_many_integer_types.py.
+// Sources: the pull requests ArcadeData/arcadedb-python #479 to #483, and the changes of issues #454, #445 and #504. Pinned by tests/test_run_in_transaction_partial_commit.py, tests/test_auto_transaction_default.py, tests/test_error_codes_table.py, tests/test_error_codes_parity.py, tests/test_lazy_import.py, tests/test_cross_wheel_golden.py and tests/test_insert_many_integer_types.py.
 
 Read this page before you move a program from 26.11.1, or from one of its post releases, to 26.12.1. It covers both packages, `{native-pkg-name}` and `{jvm-pkg-name}`. The changes of the engine itself are listed with the https://github.com/ArcadeData/arcadedb/releases[releases of ArcadeDB].
 
@@ -44,6 +44,15 @@ Before, `{native-pkg-name}` wrote every character outside ASCII as a `\u` escape
 === `{native-pkg-name}` stores a whole number from `insert_many` as `{jvm-pkg-name}` does
 
 Before, `{native-pkg-name}` stored every whole number that `insert_many` wrote as a `Long`. Now it stores an `Integer` when the number fits 32 bits, also inside a list or a dict, and a `Long` beyond that, as `{jvm-pkg-name}` does. A property that the type declares keeps its declared type, the values that Python reads back are the same, and records that are already stored do not change. Code that asks for the stored type, for example with the SQL method `type()`, can see `INTEGER` where it saw `LONG`. See xref:how-to/bulk-loads.adoc[Bulk loads and commit size].
+
+=== A conflict after a block committed part of its work raises `PartialCommitError`
+
+Before, `db.run_in_transaction(fn)` and `with db.transaction():` raised `ConflictError` when a block lost a conflict after a `BATCH n` boundary, or a `commit()` inside it, had stored part of its work. The hint said to run the transaction again, which applied that part a second time. Now they raise `PartialCommitError` with the code `partial_commit`, which is not a `ConflictError`.
+
+* Code that catches `ConflictError` to retry no longer catches this case. Catch `PartialCommitError`, check what is stored, and decide what to run again.
+* A block that committed nothing behaves as before.
+
+See xref:how-to/errors.adoc#partial-commit[A block that already committed part of its work].
 
 === Engine 26.12.1
 

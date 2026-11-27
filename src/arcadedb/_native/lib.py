@@ -545,7 +545,8 @@ def cmd(handle, flags, language, command, params, buf, count, first) -> int:
 def tx(handle, op) -> int:
     """``arcadedb_n_tx``: op 0 begin, 1 commit, 2 rollback, 3 mark. Returns the transaction state after the call as one int (bit 0
     ``active``, bits 1 to 31 ``depth``, bits 32 to 62 ``commits``, as ``ArcadeNative.tx`` writes it), or -1 for an error (read it
-    with :func:`last_error`). One foreign call: no reply text to copy, free or decode.
+    with :func:`last_error`). One foreign call: no reply text to copy, free or decode. Ops 4 and 5 remember and read the context
+    of a block that begins inside a transaction (see ``ArcadeNative.tx``).
     """
     lib = _lib or _load()
     t = _local.__dict__.get("thread")

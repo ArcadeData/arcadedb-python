@@ -24,7 +24,14 @@ import arcadedb as arcadedb
 from arcadedb import ArcadeDBError
 from arcadedb._native import lib
 
-_OPS = {0: "begin", 1: "commit", 2: "rollback", 3: "mark"}
+_OPS = {
+    0: "begin",
+    1: "commit",
+    2: "rollback",
+    3: "mark",
+    4: "remember",
+    5: "nested-commits",
+}
 _DEPTH_MASK = 0x7FFFFFFF
 
 
@@ -42,7 +49,7 @@ class _Crossings:
         real_call = lib.call
 
         def counting_tx(handle, op):
-            self.calls.append(_OPS[op])
+            self.calls.append(_OPS[op & 0xFF])
             return real_tx(handle, op)
 
         def counting_call(name, *args):
@@ -240,6 +247,33 @@ def test_a_transaction_never_reads_a_reply_text(db, monkeypatch):
     db.rollback()
     assert db.run_in_transaction(lambda: 1) == 1
     assert taken == []
+
+
+def test_a_nested_block_costs_one_crossing_for_its_witness(db, crossings):
+    # a block inside a transaction has a context of its own, which its commit pops: the library remembers it (#504)
+    with db.transaction():
+        crossings.reset()
+        db.run_in_transaction(lambda: None)
+        with db.transaction():
+            pass
+    assert crossings.calls[:-1] == ["mark", "begin", "remember", "commit"] * 2
+
+
+def test_a_nested_conflict_reads_the_witness_once(db, crossings):
+    attempts = []
+
+    def fn():
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise _need_retry()
+
+    with db.transaction():
+        crossings.reset()
+        db.run_in_transaction(fn, backoff_s=0)
+        assert crossings.calls == [
+            *["mark", "begin", "remember", "mark", "rollback", "nested-commits"],
+            *["mark", "begin", "remember", "commit"],
+        ]
 
 
 # -- what the marks are for: the same results at the lower count
