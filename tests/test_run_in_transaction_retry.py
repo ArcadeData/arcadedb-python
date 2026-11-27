@@ -21,6 +21,7 @@ import pytest
 
 import arcadedb
 from arcadedb import ArcadeDBError
+from arcadedb.exceptions import _retry_verdict
 
 
 def _java(name):
@@ -206,9 +207,13 @@ def test_a_block_that_committed_part_of_its_work_is_not_replayed(db):
             )
         )
 
-    with pytest.raises(ArcadeDBError, match="ConcurrentModificationException"):
+    with pytest.raises(
+        arcadedb.PartialCommitError, match="ConcurrentModificationException"
+    ) as raised:
         db.run_in_transaction(fn, retries=5, backoff_s=0)
     assert len(attempts) == 1
+    # no retry loop finds the conflict behind the refusal: it is not in the cause chain
+    assert _retry_verdict(raised.value) == (None, 0)
     assert (
         db.query("sql", "SELECT count(*) AS c FROM R WHERE v = 2").first().get("c") == 0
     )

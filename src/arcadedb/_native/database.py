@@ -12,7 +12,7 @@ from typing import Any, Dict, Iterator, List, Optional
 from .. import _columnar
 from .._open_or_create import open_or_create
 from .._params import refuse_surplus_positionals
-from ..exceptions import ArcadeDBError
+from ..exceptions import ArcadeDBError, _partial_commit_error
 from ..transactions import TransactionContext
 from ..type_conversion import bulk_row_ok, json_bulk_dumps_tagged
 from . import interrupts, lib, needs_jvm
@@ -69,6 +69,18 @@ def _error(prefix: str, reply: dict) -> ArcadeDBError:
     )  # a Ctrl-C in a Python function is a KeyboardInterrupt chained from this error
 
 
+def _is_conflict(failure) -> bool:
+    """Whether a conflict that a rerun could absorb is ``failure`` or sits in its cause chain, as ``_retry_verdict`` looks for one."""
+    seen = set()
+    while failure is not None and id(failure) not in seen:
+        seen.add(id(failure))
+        reply = getattr(failure, "native", None)
+        if reply and reply.get("retry"):
+            return reply["retry"] == "need_retry"
+        failure = failure.__cause__
+    return False
+
+
 def _read_error(reply: dict) -> ArcadeDBError:
     chain = reply.get("chain") or []
     exc = ArcadeDBError._classified(
@@ -91,6 +103,12 @@ def _call(prefix: str, name: str, *args) -> dict:
 # decode): bit 0 is ``active``, bits 1 to 31 the nesting ``depth``, bits 32 to 62 the ``commits`` of the transaction context (its low 31
 # bits: callers compare two of them for equality). Callers read the fields inline: ``state & 1``, ``(state >> 1) & 0x7FFFFFFF``,
 # ``state >> 32``. -1 is an error: its text, the ``{"ok":false,...}`` reply of every other entry point, is ``lib.last_error()``.
+
+# The two operations beside begin (0), commit (1), rollback (2) and mark (3), for a block that begins inside a caller's transaction
+_REMEMBER_NESTED = 4  # remember the context begin() pushed, for its depth
+_NESTED_COMMITS = (
+    5  # ``| depth << 8``: that context's commit count, in the ``commits`` field
+)
 
 
 def _first_row(database, reply: dict):
@@ -1005,12 +1023,51 @@ class NativeDatabase:
         return bool(self._tx_state(3, "Failed to check transaction status") & 1)
 
     def _transaction_stack_mark(self):
-        state = self._tx_state(3, "Failed to read the transaction state")
-        return bool(state & 1), (state >> 1) & 0x7FFFFFFF
+        return self._transaction_marks()[0]
 
-    def _transaction_commit_mark(self):
-        """The commit count of the current transaction (the witness that a BATCH boundary published part of its work)."""
-        return self._tx_state(3, "Failed to read the transaction state") >> 32
+    def _transaction_marks(self):
+        """The stack mark ``(active, depth)``, and the commit count of the thread's transaction context, in one crossing."""
+        state = self._tx_state(3, "Failed to read the transaction state")
+        return (bool(state & 1), (state >> 1) & 0x7FFFFFFF), state >> 32
+
+    def _commit_witness(self, mark, commits):
+        """What tells later whether a block committed part of its work, taken right after its begin(): ``(depth, commits)``.
+
+        Outside a transaction, begin() reuses the thread's context: ``(0, commits)``, its commit count at the start. Inside one,
+        begin() pushed a context of its own, which a commit pops, so the library is asked to remember it (one more crossing)
+        and ``depth`` names it.
+        """
+        if not mark[0]:
+            return 0, commits
+        state = self._tx_state(_REMEMBER_NESTED, "Failed to read the transaction state")
+        return (state >> 1) & 0x7FFFFFFF, 0
+
+    def _partially_committed(self, witness, state=None) -> bool:
+        """Whether the block of ``witness`` published part of its work. ``state``: the transaction state after the unwind, when
+        the caller has it. Only the READ may fail quietly (no witness: not partial, as before the witness existed).
+        """
+        depth, commits_at_start = witness
+        try:
+            if depth:
+                state = self._tx_state(
+                    _NESTED_COMMITS | depth << 8, "Failed to read the transaction state"
+                )
+            elif state is None:
+                state = self._tx_state(3, "Failed to read the transaction state")
+        except ArcadeDBError:
+            return False
+        return state >> 32 != commits_at_start
+
+    def _partial_commit_refusal(self, failure, witness, block, state=None):
+        """The ``PartialCommitError`` to raise instead of ``failure``: a conflict of a block that committed part of its work.
+
+        None for every other failure, and for a block that committed nothing.
+        """
+        if witness is None or not _is_conflict(failure):
+            return None
+        if not self._partially_committed(witness, state):
+            return None
+        return _partial_commit_error(block, failure)
 
     def _unwind_opened_since(self, mark):
         """Roll back every level opened since ``mark``, and no other; returns ``(state, first_error)``.
@@ -1051,14 +1108,15 @@ class NativeDatabase:
         """``fn`` inside a transaction, retried on NeedRetry conflicts (see the JPype ``Database.run_in_transaction``).
 
         Three crossings on the happy path: the mark before begin (what this call owns), begin (its reply is the commit-count
-        witness) and commit. The mark must stay before begin: a mark read after it would count the level begin pushed as the caller's.
+        witness) and commit; inside a caller's transaction, one more for the witness. The mark must stay before begin: a mark
+        read after it would count the level begin pushed as the caller's.
         """
         duplicated_key_retried = False
         for attempt in range(retries + 1):
             mark = self._transaction_stack_mark()
-            commits_at_start = None
+            witness = None
             try:
-                commits_at_start = self._begin_state() >> 32
+                witness = self._commit_witness(mark, self._begin_state() >> 32)
                 result = fn()
                 self.commit()
                 return result
@@ -1068,7 +1126,16 @@ class NativeDatabase:
                     state, _ = self._unwind_opened_since(mark)
                 except Exception:  # nosec B110
                     pass
-                if attempt >= retries or not isinstance(e, Exception):
+                if not isinstance(e, Exception):
+                    raise
+                # the rollback above cannot take back what a BATCH boundary or a commit() inside fn already made durable, and a
+                # replay would apply it twice: such a conflict is not retryable for anyone, on the last attempt too (#504)
+                refusal = self._partial_commit_refusal(
+                    e, witness, "run_in_transaction block", state
+                )
+                if refusal is not None:
+                    raise refusal
+                if attempt >= retries:
                     raise
                 reply = getattr(e, "native", None) or {}
                 kind = reply.get("retry")
@@ -1078,19 +1145,10 @@ class NativeDatabase:
                     if duplicated_key_retried:
                         raise
                     duplicated_key_retried = True
-                if commits_at_start is not None:
-                    # the rollback above cannot take back what a BATCH boundary or a commit() inside the block already made
-                    # durable, and a replay would apply it twice. Only the READ of the witness may fail quietly (no witness:
-                    # retry, as before); the raise sits outside that try, or its own except would swallow it.
-                    try:
-                        commits_now = (
-                            state >> 32
-                            if state is not None
-                            else self._transaction_commit_mark()
-                        )
-                    except ArcadeDBError:
-                        commits_now = commits_at_start
-                    if commits_now != commits_at_start:
+                    # a duplicated key after a commit is raised as it is, as the engine does, and not replayed
+                    if witness is not None and self._partially_committed(
+                        witness, state
+                    ):
                         raise
                 _time.sleep(
                     max(backoff_s * (attempt + 1), reply.get("retry_ms", 0) / 1000.0)

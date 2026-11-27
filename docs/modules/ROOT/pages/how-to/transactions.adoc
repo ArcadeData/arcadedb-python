@@ -365,6 +365,8 @@ print(db.run_in_transaction(add_account))
 added
 ----
 
+A repeat is safe only when the failed attempt left nothing behind. A statement with a `BATCH n` boundary, or `db.commit()` followed by `db.begin()` inside the block, stores part of the work. When such a block loses a conflict, `run_in_transaction` does not call `fn` again and raises `PartialCommitError`, not `ConflictError`, on the last attempt too. A `with db.transaction():` block raises the same error in this case. Check what is stored before you run any of it again: see xref:how-to/errors.adoc#partial-commit[A block that already committed part of its work].
+
 [[graph-batch]]
 == GraphBatch inside a transaction
 
