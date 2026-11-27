@@ -1,10 +1,13 @@
 """Every Python block of the Antora page ``docs/modules/ROOT/pages/how-to/agent-memory.adoc`` runs, and prints what the page says.
 
-The blocks of the page are chained on purpose: they run in the order of the page, in one namespace. The page opens its own database
-under the current directory, so the run happens in a temporary directory. A block that is followed by a ``[source,text]`` block must
-print exactly that text, a block without one must print nothing, and every block that differs is reported, not only the first. The
-other tests call the functions that the page defines on more data than the page uses, and pin what its text says. The tests use no
-Java object, so they run on the JVM build and the native build alike.
+The blocks of the page are chained on purpose: they run in the order of the page, in one namespace. A block that is followed by a
+``[source,text]`` block must print exactly that text, a block without one must print nothing, and every block that differs is
+reported, not only the first. The other tests call the functions that the page defines on more data than the page uses, and pin what
+its text says. The tests use no Java object, so they run on the JVM build and the native build alike.
+
+The page opens ``./agent_memory``. The tests put an absolute path of their own in that place and do not change the working
+directory: after ``os.chdir`` a relative database path did not name one directory on either build (a later test opened the database
+of an earlier one, or one without its types), as if the engine keeps the working directory that it started in.
 """
 
 import contextlib
@@ -27,6 +30,8 @@ PAGE = (
     / "how-to"
     / "agent-memory.adoc"
 )
+PAGE_PATH = '"./agent_memory"'
+DATABASE = "__database_path__"  # the namespace key of a test's path for the page
 
 # a Python listing, then (optionally, directly after it) the text listing with its output
 BLOCK_RE = re.compile(
@@ -45,10 +50,12 @@ def _blocks():
 
 
 @pytest.fixture
-def page(tmp_path, monkeypatch):
+def page(tmp_path):
     """The namespace that the blocks of the page run in. Its database is closed afterwards."""
-    monkeypatch.chdir(tmp_path)  # the page opens ./agent_memory
-    namespace = {"__name__": "agent_memory_page"}
+    namespace = {
+        "__name__": "agent_memory_page",
+        DATABASE: str(tmp_path / "agent_memory"),
+    }
     yield namespace
     db = namespace.get("db")
     if db is not None and db.is_open():
@@ -56,6 +63,7 @@ def page(tmp_path, monkeypatch):
 
 
 def _run_block(namespace, number, code):
+    code = code.replace(PAGE_PATH, repr(namespace[DATABASE]))
     captured = io.StringIO()
     compiled = compile(code, f"agent-memory.adoc python block {number}", "exec")
     with contextlib.redirect_stdout(captured):
@@ -78,7 +86,7 @@ def _run_page(namespace):
 def _reopened(namespace):
     """The whole page, then its database open again: the functions of the page use the name ``db``."""
     _run_page(namespace)
-    namespace["db"] = arcadedb.open_database("./agent_memory")
+    namespace["db"] = arcadedb.open_database(namespace[DATABASE])
     return namespace["db"]
 
 
@@ -96,6 +104,8 @@ def test_the_page_has_its_blocks():
     blocks = _blocks()
     assert len(blocks) >= 10
     assert sum(1 for _, out in blocks if out is not None) >= 9
+    # the one place where the tests put their own path
+    assert sum(code.count(PAGE_PATH) for code, _ in blocks) == 1
 
 
 def test_every_block_runs_in_order_and_prints_what_the_page_says(page):
@@ -105,9 +115,10 @@ def test_every_block_runs_in_order_and_prints_what_the_page_says(page):
 def test_the_first_block_runs_again_at_the_next_start(page):
     first = _blocks()[0][0]
     _run_block(page, 1, first)
+    page["db"].command("sql", "INSERT INTO Message SET turn = 1, text = 'kept'")
     page["db"].close()
     _run_block(page, 1, first)
-    assert page["db"].count_type("Memory") == 0
+    assert page["db"].count_type("Message") == 1
 
 
 def test_remember_replaces_every_link_of_a_fact(page):
