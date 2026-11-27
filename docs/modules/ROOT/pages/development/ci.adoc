@@ -116,6 +116,25 @@ These workflows follow ArcadeData/arcadedb and need no secret. Issues and pull r
 
 To close a release, close its milestone and open the next one with its due date: `assign-milestone.yml` picks the open milestone that is due first.
 
+== Engine changes to review
+
+The workflow `engine-watch.yml` reports what changed in the upstream engine (ArcadeData/arcadedb) that may need a change in the bindings, in one issue titled "Engine changes to review". It runs `scripts/engine_watch.py`, a script that needs only the standard library, git and `gh api`, and no LLM API.
+
+* It runs on Monday at 05:23 UTC. On the other days it runs at the same time and does nothing unless upstream published a release in the last 48 hours (a release of another repository cannot start a workflow). It also runs by hand: with `dry_run` it writes nothing to GitHub and puts the full text into the job summary, and only such a run accepts `since` and `until` to choose the range.
+* It reports public methods, constructors, enum constants and nested types that were added, removed, changed or deprecated in the classes the bindings wrap, `GlobalConfiguration` settings, index types, and SQL statements, keywords, functions and methods. Each line names the upstream pull request or commit and the file. Other merged pull requests that touched the same files are listed in a collapsed block and never open an issue on their own.
+* A new method has a row of its own only when it is abstract and on an interface the bindings implement, or on a class they name. All other new methods are one count.
+* One section lists new and removed exception classes below a class that `exceptions.py` names, or below `NeedRetryException`.
+* It also reports an engine class that is gone and that the native image configuration (`reachability-metadata.json` and the `.properties` files) names.
+* The column "Used" means only that the sources of the bindings hold the name, so check it before you rely on it. For a method, the class (or a type below it) and the method name must both match.
+* The list of wrapped classes is derived from the sources on every run: `JClass`, `JImplements` and `JPackage` in `src/arcadedb`, the imports and full names in `src/java` and `native/src/main/java`, their supertypes, and the engine types returned by methods under names the bindings call.
+* The mark, the last reviewed engine commit, is a hidden comment in the issue, so nothing is committed to the repository. Only issues written by `github-actions[bot]` are read. Before the first issue the scan starts at `4a91847a1` (2026-11-06).
+* When nothing relevant changed, nothing is written.
+* It does not see a change of behavior inside a method, openCypher, a wire protocol, or a class that the bindings do not reach.
+* It holds `contents: read` and `issues: write` only, has no pull request trigger, and reads the engine without building or running it. Upstream links go through `redirect.github.com`, so the issue leaves no "mentioned this" line on upstream pull requests.
+* An issue text that is too long for GitHub is cut. The full text is in the job summary and in the run artifact `engine-watch-report`, which is kept for 30 days.
+
+To handle the issue, decide for each line whether the bindings need a change, open an issue for each one that does, then close the issue. Closing it marks its newest engine commit as reviewed, and the next run starts there. While it stays open, a run rewrites its text with everything since the mark and adds a comment when there is something new. Do not edit the hidden comment.
+
 == Native build
 
 The workflow `test-native.yml` builds the native image of the `arcadedb` package and runs the test suite against the installed wheel. It does not follow the table above. It never publishes; `release-native.yml` calls it on a version tag.
