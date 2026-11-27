@@ -806,20 +806,25 @@ def implemented_by(file: JavaFile, tokens: list[str]) -> set[str]:
     for n, token in enumerate(tokens):
         if token != "new":
             continue
-        end, depth, parts = n + 1, 0, []
-        while end < len(tokens) and tokens[end] not in (";", "["):
-            if tokens[end] == "(" and depth == 0:
-                break
-            depth += {"<": 1, ">": -1}.get(tokens[end], 0)
-            if depth == 0 and tokens[end] != ">":
-                parts.append(tokens[end])
-            end += 1
-        while end < len(tokens) and tokens[end] in ("(", ")") or depth:
-            depth += {"(": 1, ")": -1}.get(tokens[end], 0)
-            end += 1
+        # `new Name<Args>(...) {` is an anonymous class: read the name, skip the arguments, and look for the body
+        at, angle, parts = n + 1, 0, []
+        while at < len(tokens) and tokens[at] not in ("(", "[", ";"):
+            if tokens[at] == "<":
+                angle += 1
+            elif tokens[at] == ">":
+                angle -= 1
+            elif not angle:
+                parts.append(tokens[at])
+            at += 1
+        if tokens[at : at + 1] != ["("]:
+            continue  # an array
+        depth = 0
+        while at < len(tokens):
+            depth += {"(": 1, ")": -1}.get(tokens[at], 0)
+            at += 1
             if not depth:
                 break
-        if end < len(tokens) and tokens[end] == "{":  # an anonymous class
+        if tokens[at : at + 1] == ["{"]:
             written.append("".join(parts))
     found: set[str] = set()
     for name in written:
