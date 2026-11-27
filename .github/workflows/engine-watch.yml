@@ -1,0 +1,92 @@
+# Opens or updates the issue "Engine changes to review": what changed in the upstream engine (ArcadeData/arcadedb) that may need a
+# change in the bindings. scripts/engine_watch.py does all of it with git and the GitHub API: no model and no API key. The script's
+# docstring says what it compares; the docs page development/ci.adoc says how the issue is handled.
+#
+# When it runs
+#   weekly    Monday 05:23 UTC: from the mark to the newest commit of the engine.
+#   daily     the other days at 05:23 UTC: only when upstream published a release in the last 48 hours. A release of another
+#             repository cannot start a workflow, so this run looks. 48 hours, so that a late or dropped run loses no release; a
+#             second look at the same changes writes nothing.
+#   dispatch  by hand. With `dry_run` nothing is written and the full text goes to the job summary; `since` and `until` pick a range
+#             to look at, in a dry run only.
+#
+# The mark (the engine commit a run starts from) is a hidden comment in the issue itself, so nothing is committed to the repository:
+# closing the issue marks its newest engine commit as reviewed. Only issues of this workflow's token are read.
+#
+# Security: it runs from the default branch only (no pull request trigger), holds `contents: read` and `issues: write` and nothing
+# else, and treats upstream text as data: the engine is cloned and read, never built or run.
+name: Engine changes to review
+
+on:
+  schedule:
+    - cron: "23 5 * * 1" # weekly
+    - cron: "23 5 * * 0,2-6" # the other days: after an upstream release only
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Write nothing to GitHub; the text goes to the job summary"
+        type: boolean
+        default: false
+      since:
+        description: "Dry run only: engine commit or release tag to start from (default: the mark)"
+        type: string
+        required: false
+      until:
+        description: "Dry run only: engine commit or release tag to stop at (default: main)"
+        type: string
+        required: false
+
+permissions: {}
+
+# One scan at a time, so two runs never open the issue twice.
+concurrency:
+  group: engine-watch
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    name: Scan the upstream engine
+    if: github.repository == 'ArcadeData/arcadedb-python'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      issues: write # open, update, and comment on the one issue
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+        with:
+          version: "0.12.0"
+          enable-cache: false
+
+      - name: Compare the engine with the mark
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SCHEDULE: ${{ github.event.schedule }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          SINCE: ${{ inputs.since }}
+          UNTIL: ${{ inputs.until }}
+        run: |
+          set -euo pipefail
+          report="$RUNNER_TEMP/engine-watch.md"
+          args=(--clone "$RUNNER_TEMP/arcadedb.git" --report "$report")
+          if [ "$SCHEDULE" = "23 5 * * 0,2-6" ]; then args+=(--if-released-within 48); fi
+          if [ "$DRY_RUN" != true ]; then args+=(--publish); fi
+          if [ -n "$SINCE" ]; then args+=(--since "$SINCE"); fi
+          if [ -n "$UNTIL" ]; then args+=(--until "$UNTIL"); fi
+          uv run --no-project --python 3.12 python -I scripts/engine_watch.py "${args[@]}"
+          if [ -f "$report" ]; then cat "$report" >> "$GITHUB_STEP_SUMMARY"; fi
+
+      - name: Keep the full report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: engine-watch-report
+          path: ${{ runner.temp }}/engine-watch.md
+          if-no-files-found: ignore
+          retention-days: 90
