@@ -2,6 +2,7 @@
 
 from typing import Any, Dict, Optional
 
+from .._paths import absolute_path
 from ..exceptions import ArcadeDBError
 from . import lib
 from .database import NativeDatabase, _call
@@ -19,7 +20,7 @@ class NativeServer:
         config: Optional[Dict[str, Any]] = None,
     ):
         self._config = config or {}
-        self._root_path = root_path
+        self._root_path = absolute_path(root_path)
         self._root_password = root_password
         self._h = 0
         self._started = False

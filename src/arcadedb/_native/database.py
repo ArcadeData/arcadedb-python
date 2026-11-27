@@ -12,6 +12,7 @@ from typing import Any, Dict, Iterator, List, Optional
 from .. import _columnar
 from .._open_or_create import open_or_create
 from .._params import refuse_surplus_positionals
+from .._paths import absolute_path
 from ..exceptions import ArcadeDBError, _partial_commit_error
 from ..transactions import TransactionContext
 from ..type_conversion import bulk_row_ok, json_bulk_dumps_tagged
@@ -2075,7 +2076,7 @@ class NativeDatabaseFactory:
                 "jvm_kwargs %s ignored: the native backend has no JVM",
                 sorted(jvm_kwargs),
             )
-        self._path = os.fspath(path)
+        self._path = absolute_path(path)
 
     def create(self) -> NativeDatabase:
         return NativeDatabase._opened(
