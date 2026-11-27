@@ -19,9 +19,27 @@ spec.loader.exec_module(sel)
 def test_pull_request_builds_one_platform_and_tests_one_python():
     chosen = sel.select("pull_request")
     assert [b["key"] for b in chosen["build"]] == ["linux-x86_64"]
-    assert [(t["key"], t["python"]) for t in chosen["test"]] == [
-        ("linux-x86_64", "3.12")
+    # one Python, the newest the full suite runs on (#517), in shards that run side by side, every one from 1 to N
+    count = sel.PULL_REQUEST_SHARDS
+    assert count > 1
+    assert [
+        (t["key"], t["python"], t["shard"], t["suffix"]) for t in chosen["test"]
+    ] == [
+        ("linux-x86_64", "3.14", f"{i}/{count}", f"-shard{i}")
+        for i in range(1, count + 1)
     ]
+    assert chosen["pyver"] == [] and chosen["examples"] == []
+
+
+def test_only_the_fast_tier_is_sharded():
+    for event in (
+        "pull_request_full",
+        "push",
+        "schedule",
+        "workflow_dispatch",
+        "release",
+    ):
+        assert all("shard" not in leg for leg in sel.select(event)["test"]), event
 
 
 def test_a_pull_request_that_asks_for_the_full_tier_runs_the_legs_of_a_push_to_main():
@@ -36,16 +54,14 @@ def test_the_workflow_asks_ci_tier_for_the_event_and_skips_an_empty_python_versi
     assert tier < plan.index('scripts/select_native_matrix.py "$event"')
     # a change to the script that picks the tier starts this workflow
     assert '      - "scripts/ci_tier.py"\n' in workflow.split("\njobs:\n", 1)[0]
-    # the fast tier has no example leg, and an empty matrix is an error: the job is skipped then, and the summary expects that
+    # the fast tier has no example leg, and an empty matrix is an error: the job is skipped then, and the summary with it
     assert sel.select("pull_request")["examples"] == []
-    assert (
-        "needs.plan.outputs.examples != '[]'"
-        in _job(workflow, "examples").split("steps:", 1)[0]
-    )
-    summary = _job(workflow, "examples-summary")
-    assert "LEGS: ${{ needs.plan.outputs.examples }}" in summary
-    assert """if [ "$LEGS" = '[]' ]; then want=skipped; fi""" in summary
-    assert '[ "$RESULT" = "$want" ]' in summary
+    for name in ("examples", "examples-summary"):
+        assert (
+            "needs.plan.outputs.examples != '[]'"
+            in _job(workflow, name).split("steps:", 1)[0]
+        ), name
+    assert '[ "$RESULT" = success ]' in _job(workflow, "examples-summary")
     # the same guard on the pyver job, which no other job needs
     assert (
         "needs.plan.outputs.pyver != '[]'"
@@ -106,11 +122,8 @@ def test_the_script_prints_github_output_lines():
         "examples",
     ]
     assert json.loads(out[0].split("=", 1)[1])[0]["key"] == "linux-x86_64"
-    # the fast tier: the pyver subset on the oldest and the newest Python, and no example leg (the text the workflow compares with '[]')
-    assert [leg["python"] for leg in json.loads(out[2].split("=", 1)[1])] == [
-        "3.11",
-        "3.14",
-    ]
+    # the fast tier: no pyver leg and no example leg (the text the workflow compares with '[]')
+    assert out[2] == "pyver=[]"
     assert out[3] == "examples=[]"
     full = subprocess.run(  # nosec B603 - fixed argv, no shell
         [sys.executable, str(SCRIPT), "pull_request_full"],
@@ -134,13 +147,8 @@ def _pyver(event):
 
 
 def test_the_python_version_job_covers_what_the_full_parity_run_leaves_out():
-    # a pull request (the fast tier) runs the parity suite on 3.12 and the subset on the ends of the supported range; 3.13, 3.15 and
-    # the free-threaded build wait for the full tier
-    for event in ("pull_request", "pull_request_examples"):
-        assert _pyver(event) == [
-            ("3.11", False, True, True),
-            ("3.14", False, True, True),
-        ]
+    # a pull request (the fast tier) runs one Python, the parity suite on 3.14: every other Python waits for the full tier
+    assert _pyver("pull_request") == []
     # the selection itself still knows what one full Python leaves out: the other three Pythons, 3.15 (no jpype1 wheel yet) and the
     # free-threaded one
     assert [
@@ -148,8 +156,8 @@ def test_the_python_version_job_covers_what_the_full_parity_run_leaves_out():
         for leg in sel.pyver_legs(sel.PULL_REQUEST_PYTHONS)
     ] == [
         ("3.11", False, True, True),
+        ("3.12", False, True, True),
         ("3.13", False, True, True),
-        ("3.14", False, True, True),
         ("3.15", False, True, False),
         ("3.14t", True, False, True),
     ]
@@ -262,14 +270,8 @@ def test_the_linux_legs_build_in_the_manylinux_container_of_the_tag_and_the_work
 
 
 def test_the_examples_job_runs_on_the_parity_pythons_3_12_and_3_14_of_every_platform_it_builds():
-    # a pull request has no example leg, unless it changes the examples or their runner (scripts/ci_tier.py): then one, on the parity Python
+    # a pull request of the fast tier has no example leg
     assert sel.select("pull_request")["examples"] == []
-    pr = sel.select("pull_request_examples")["examples"]
-    assert [(leg["key"], leg["python"]) for leg in pr] == [("linux-x86_64", "3.12")]
-    for key in ("build", "test", "pyver"):
-        assert (
-            sel.select("pull_request_examples")[key] == sel.select("pull_request")[key]
-        )
     for event in (
         "pull_request_full",
         "push",
@@ -281,6 +283,75 @@ def test_the_examples_job_runs_on_the_parity_pythons_3_12_and_3_14_of_every_plat
         assert {leg["key"] for leg in legs} == set(sel.ALL_PLATFORMS), event
         assert {leg["python"] for leg in legs} == {"3.12", "3.14"}, event
         assert len(legs) == 2 * len(sel.ALL_PLATFORMS), event
+
+
+def _step(job, name):
+    """The text of one named step of a job."""
+    return job.split(f"      - name: {name}\n", 1)[1].split("\n      - ", 1)[0]
+
+
+def test_only_a_pull_request_of_the_fast_tier_restores_the_library_and_a_release_never_touches_the_cache():
+    workflow = (ROOT / ".github" / "workflows" / "test-native.yml").read_text()
+    plan = _job(workflow, "plan")
+    assert (
+        'if [ "$EVENT" = pull_request ] && [ "$event" = pull_request ] && [ "${ENGINE_SNAPSHOT:-}" != true ]; then fast_pr=true;'
+        in plan
+    )
+    build = _job(workflow, "build")
+    restore = _step(build, "Restore the native library")
+    assert "needs.plan.outputs.fast-pr == 'true'" in restore
+    assert "!endsWith(needs.plan.outputs.maven-engine, '-SNAPSHOT')" in restore
+    assert "restore-keys" not in restore.split("uses:", 1)[1]
+    save = _step(build, "Save the native library")
+    assert "!inputs.release" in save
+    assert "!endsWith(needs.plan.outputs.maven-engine, '-SNAPSHOT')" in save
+    # restore and save use the one key and the one pair of directories
+    for step in (restore, save):
+        assert "key: ${{ steps.library-key.outputs.key }}" in step
+        assert "${{ runner.temp }}/lib\n" in step
+        assert "${{ runner.temp }}/m2\n" in step
+    # a cache hit skips the image build and nothing else of the gates; the library is saved after every gate
+    assert "steps.library.outputs.cache-hit != 'true'" in _step(
+        build, "Build the native image in manylinux_2_28"
+    )
+    assert build.index("Gate: twine check") < build.index("Save the native library")
+    assert workflow.count("actions/cache/restore@") == 1
+    assert workflow.count("actions/cache/save@") == 1
+
+
+def test_the_key_of_the_cached_library_covers_every_file_the_image_is_built_from():
+    # native/wheel/ only packs the wheel, which every run builds from its own checkout; everything else under native/ decides
+    # what the image is
+    workflow = (ROOT / ".github" / "workflows" / "test-native.yml").read_text()
+    key = _step(_job(workflow, "build"), "Key of the native library")
+    hashed = key.split("hashFiles(", 1)[1].split(")", 1)[0]
+    patterns = re.findall(r"'([^']+)'", hashed)
+    for part in (
+        "matrix.key",
+        "needs.plan.outputs.maven-engine",
+        "matrix.graalvm_sha256",
+        "matrix.xmx",
+        "matrix.ni_extra",
+    ):
+        assert part in key, part
+    assert ".github/workflows/test-native.yml" in patterns
+    native = ROOT / "native"
+    sources = [native / "pom.xml", native / "mvnw"] + [
+        p
+        for d in (".mvn", "src", "scripts")
+        for p in (native / d).rglob("*")
+        if p.is_file()
+    ]
+    for path in sources:
+        name = path.relative_to(ROOT).as_posix()
+        assert any(
+            name == p or (p.endswith("/**") and name.startswith(p[:-2]))
+            for p in patterns
+        ), name
+    # a new directory or file directly under native/ must be added to the key (or to this list, when the build does not read it)
+    known = {".gitignore", ".mvn", "mvnw", "mvnw.cmd", "pom.xml", "scripts", "src"}
+    built = {"target", "reports"}
+    assert {p.name for p in native.iterdir()} - built <= known | {"wheel"}
 
 
 def test_the_examples_job_installs_the_wheel_of_the_build_job_and_shares_the_runner_with_the_jvm_job():

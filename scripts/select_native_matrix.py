@@ -2,14 +2,15 @@
 """Choose the legs of the native test workflow (.github/workflows/test-native.yml) for one event.
 
 A native image build takes about 5 to 30 minutes per platform and the ArcadeData organisation shares a runner cap with
-upstream ArcadeDB, so a pull request (the fast tier) builds one platform (linux-x86_64), runs the parity suite on one Python (3.12) and the
-`pyver` subset on the oldest and the newest Python (3.11, 3.14), and only when native paths changed (the workflow's `paths` filter). It runs
-no example leg, unless it changes the examples or their runner (the event `pull_request_examples`, scripts/ci_tier.py). Push to main, the nightly run and a dispatch build all four
+upstream ArcadeDB, so a pull request (the fast tier) builds one platform (linux-x86_64) and runs the parity suite on one Python, the
+newest (3.14), cut into PULL_REQUEST_SHARDS shards that run side by side (scripts/shard_tests.py), and only when native paths changed
+(the workflow's `paths` filter). It runs no `pyver` leg and no example leg: its checks are meant to finish in about 10 minutes
+(ArcadeData/arcadedb-python#517). Push to main, the nightly run and a dispatch build all four
 platforms and test Python 3.12 and 3.14 on each. A release (release-native.yml calls the workflow with `release: true`) tests every
 supported Python (3.11 to 3.14) on all four. A pull request that asks for the full tier (the label `ci:full`, or a Dependabot author;
 scripts/ci_tier.py decides and passes the event `pull_request_full`) runs the legs of a push to main.
 
-usage: select_native_matrix.py EVENT     EVENT: pull_request | pull_request_examples | pull_request_full | push | schedule | workflow_dispatch | release
+usage: select_native_matrix.py EVENT     EVENT: pull_request | pull_request_full | push | schedule | workflow_dispatch | release
 
 Prints `build=<json>`, `test=<json>`, `pyver=<json>` and `examples=<json>` lines (GITHUB_OUTPUT format). Publishing is not decided here:
 release-native.yml does it. `pyver` is the cheap Python-version job (see PYVER_NOTE): a subset of the tests against the built
@@ -105,9 +106,11 @@ FREE_THREADED_PYTHONS = ["3.14t"]
 PYVER_NOTE = "gates a release: release-native.yml requires a native-passed-pyver-py<version> marker for each leg of a release"
 
 PULL_REQUEST_PLATFORMS = ["linux-x86_64"]
-PULL_REQUEST_PYTHONS = ["3.12"]
-# The legs of the `pyver` job on a pull request: the oldest and the newest supported Python.
-PULL_REQUEST_PYVER = [ALL_PYTHONS[0], ALL_PYTHONS[-1]]
+# The newest Python the full parity suite runs on (3.15 has no jpype1 wheel yet and gets the `pyver` subset in the full tier).
+PULL_REQUEST_PYTHONS = [ALL_PYTHONS[-1]]
+# The shards of the parity run of a pull request: the suite takes about 9 minutes in one job, and after a native image build
+# (about 11 minutes, when the pull request changes the library) the shards must be short.
+PULL_REQUEST_SHARDS = 3
 MAIN_PYTHONS = ["3.12", "3.14"]
 # The Pythons of the `examples` job (the examples of examples/ against the installed wheel): the parity Pythons of a push, the nightly run and a
 # dispatch. A release runs the parity suite on every supported Python, but the examples only on these two.
@@ -131,7 +134,7 @@ def pyver_legs(covered: list[str]) -> list[dict]:
 def select(event: str) -> dict:
     if event == "pull_request_full":
         event = "push"
-    if event in ("pull_request", "pull_request_examples"):
+    if event == "pull_request":
         platforms, pythons = PULL_REQUEST_PLATFORMS, PULL_REQUEST_PYTHONS
     elif event in ("push", "schedule", "workflow_dispatch"):
         platforms, pythons = ALL_PLATFORMS, MAIN_PYTHONS
@@ -152,14 +155,20 @@ def select(event: str) -> dict:
     ]
     examples = [leg for leg in test if leg["python"] in EXAMPLES_PYTHONS]
     pyver = pyver_legs(pythons)
-    if event in ("pull_request", "pull_request_examples"):
-        # The fast tier: the Python-version subset on the ends of the supported range only (the parity suite runs the Python between
-        # them). 3.13, 3.15 and the free-threaded 3.14t run on main, every night and for a release (where 3.15 and 3.14t are a gate).
-        pyver = [leg for leg in pyver if leg["python"] in PULL_REQUEST_PYVER]
     if event == "pull_request":
-        # The examples are the slowest job (about 20 minutes): the full tier runs them, and a pull request only when it changes them.
-        # test-native.yml skips the job when this list is empty.
-        examples = []
+        # The fast tier is one platform and one Python: the other Pythons (the `pyver` job) and the examples, the slowest job (about
+        # 20 minutes), run on main, every night, on a manual run and for a release (where 3.15 and 3.14t are a gate).
+        # test-native.yml skips a job when its list is empty.
+        pyver, examples = [], []
+        test = [
+            {
+                **leg,
+                "shard": f"{i}/{PULL_REQUEST_SHARDS}",
+                "suffix": f"-shard{i}",
+            }
+            for leg in test
+            for i in range(1, PULL_REQUEST_SHARDS + 1)
+        ]
     return {
         "build": build,
         "test": test,
@@ -174,7 +183,6 @@ def main(argv: list[str] | None = None) -> int:
         "event",
         choices=[
             "pull_request",
-            "pull_request_examples",
             "pull_request_full",
             "push",
             "schedule",

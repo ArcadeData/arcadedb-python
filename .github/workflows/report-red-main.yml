@@ -1,7 +1,7 @@
 # Opens or updates one issue when a test workflow is red on `main` or in a nightly run (ArcadeData/arcadedb-python#447).
 #
-# A pull request runs only the fast tier (Linux x86-64, #443), so a failure that only macOS, Windows, arm64 or an example leg shows is first seen
-# on `main` after the merge. The badges in the README show it, but nobody has to look at them. This workflow is the push that does not wait for a look.
+# A pull request runs only the fast tier (Linux x86-64, one Python, #443 and #517), so a failure that only macOS, Windows, arm64, another
+# Python or an example leg shows is first seen on `main` after the merge. The badges in the README show it, but nobody has to look at them. This workflow is the push that does not wait for a look.
 #
 # It reacts to the end of `Test JVM (arcadedb-jvm)`, `Test native (arcadedb)`, `Test native (engine snapshot)` (the weekly native run
 # against upstream's engine snapshot) and `Test Python Examples`, and only when the run was
