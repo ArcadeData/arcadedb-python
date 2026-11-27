@@ -24,6 +24,7 @@ import jpype
 from ._logging import get_logger
 from ._open_or_create import open_or_create as _open_or_create
 from ._params import refuse_surplus_positionals
+from ._paths import absolute_path
 from .callbacks import (
     EventHandle,
     FunctionRegistration,
@@ -2854,7 +2855,8 @@ class DatabaseFactory:
     ):
         """
         Args:
-            path: Database path
+            path: Database path. A relative path is taken from the current
+                directory (``os.getcwd()``) at the time the factory is made.
             jvm_kwargs: Optional JVM args passed to start_jvm()
                 Example: {"heap_size": "8g"}
         """
@@ -2863,7 +2865,7 @@ class DatabaseFactory:
 
         JavaDatabaseFactory = jpype.JClass("com.arcadedb.database.DatabaseFactory")
 
-        self._java_factory = JavaDatabaseFactory(path)
+        self._java_factory = JavaDatabaseFactory(absolute_path(path))
 
     def create(self) -> Database:
         """Create a new database."""
@@ -2918,7 +2920,7 @@ def create_database(
     """Create a new database at the given path.
 
     Args:
-        path: Database path
+        path: Database path; a relative one is taken from the current directory
         jvm_kwargs: Optional JVM args passed to start_jvm()
             Example: {"heap_size": "8g"}
     """
@@ -2937,7 +2939,7 @@ def open_database(
     """Open an existing database at the given path.
 
     Args:
-        path: Database path
+        path: Database path; a relative one is taken from the current directory
         jvm_kwargs: Optional JVM args passed to start_jvm()
             Example: {"heap_size": "8g"}
         read_only: Open the database read-only. Writes and schema changes raise
@@ -2971,7 +2973,7 @@ def open_or_create_database(
     ``open_database`` are unchanged.
 
     Args:
-        path: Database path
+        path: Database path; a relative one is taken from the current directory
         jvm_kwargs: Optional JVM args passed to start_jvm() (ignored with a
             warning by the native package, which has no JVM)
         read_only: Open the database read-only. It never creates: a path that
@@ -3010,6 +3012,6 @@ def open_or_create_database(
 
 
 def database_exists(path: str) -> bool:
-    """Check if a database exists at the given path."""
+    """Check if a database exists at the given path (a relative one is taken from the current directory)."""
     factory = DatabaseFactory(path)
     return factory.exists()

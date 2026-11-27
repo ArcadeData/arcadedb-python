@@ -37,7 +37,7 @@ for statement in [
     db.command("sql", statement)
 ----
 
-Every statement says `IF NOT EXISTS`, so the agent can run this at each start. If your program changes its working directory (`os.chdir`), give the database an absolute path. The unique indexes on `Memory.key` and `Entity.name` are what `UPSERT` needs. The index on `Memory.user` serves the filtered search below. `dimensions` must match the length of your embeddings.
+Every statement says `IF NOT EXISTS`, so the agent can run this at each start. A relative path such as `./agent_memory` is taken from the current directory of your program at the time of the call, so give an absolute path if the agent must find the same memory wherever it is started. The unique indexes on `Memory.key` and `Entity.name` are what `UPSERT` needs. The index on `Memory.user` serves the filtered search below. `dimensions` must match the length of your embeddings.
 
 == Store a fact, or update it by key
 

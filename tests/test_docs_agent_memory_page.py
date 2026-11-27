@@ -6,8 +6,7 @@ reported, not only the first. The other tests call the functions that the page d
 its text says. The tests use no Java object, so they run on the JVM build and the native build alike.
 
 The page opens ``./agent_memory``. The tests put an absolute path of their own in that place and do not change the working
-directory: after ``os.chdir`` a relative database path did not name one directory on either build (a later test opened the database
-of an earlier one, or one without its types), as if the engine keeps the working directory that it started in.
+directory (tests/test_relative_paths.py covers a relative path after ``os.chdir``).
 """
 
 import contextlib

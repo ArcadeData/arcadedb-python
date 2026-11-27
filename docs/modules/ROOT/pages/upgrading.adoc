@@ -54,6 +54,10 @@ Before, `db.run_in_transaction(fn)` and `with db.transaction():` raised `Conflic
 
 See xref:how-to/errors.adoc#partial-commit[A block that already committed part of its work].
 
+=== A relative path is taken from the current directory
+
+Before, a relative database path, or a relative `root_path` of `ArcadeDBServer`, did not name one directory once your program had changed its directory with `os.chdir`, because the engine resolved a part of the path against the directory in which it had started. For example, `database_exists` could answer `False` for a database that you had just created, and a second database with the same relative path in another directory was refused as already in use. Now both packages take a relative path from the current directory at the time of the call. `db.get_database_path()` and the error messages show the absolute path, also when you passed a relative one. See xref:how-to/databases-and-queries.adoc[Databases and queries].
+
 === Engine 26.12.1
 
 The engine that the 26.12.1 packages carry changes some behaviour that the other pages describe:

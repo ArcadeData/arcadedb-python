@@ -52,9 +52,9 @@ print("Exists after drop:", arcadedb.database_exists("./myapp"))
 
 [source,text]
 ----
-Created at: ./mydb
+Created at: /path/to/workdir/mydb
 Exists: True
-DatabaseExistsError: [database_exists] A database already exists at this path: open it with `open_database(path)`, or choose another path. Failed to create database: com.arcadedb.exception.DatabaseOperationException: Database './mydb' already exists
+DatabaseExistsError: [database_exists] A database already exists at this path: open it with `open_database(path)`, or choose another path. Failed to create database: com.arcadedb.exception.DatabaseOperationException: Database '/path/to/workdir/mydb' already exists
 Name: mydb
 Alice
 Transaction active: False
@@ -67,6 +67,7 @@ Notes on the script:
 
 * `create_database(path)` creates the directory and opens the database for reading and writing. It raises `DatabaseExistsError` (a subclass of `ArcadeDBError`, with the code `database_exists`) if the path already holds a database, as the third output line shows. The codes of all errors are on xref:how-to/errors.adoc[Errors: codes, hints and classes].
 * `open_database(path)` opens an existing database. `database_exists(path)` tells the two cases apart.
+* A relative path such as `./mydb` is taken from the current directory of your program (`os.getcwd()`) at the time of the call, so it follows `os.chdir`. A `DatabaseFactory` and a server (`root_path`) keep the directory that was current when you made them. `db.get_database_path()` and the error messages show the absolute path: `/path/to/workdir` in the output above stands for the directory the script ran in.
 * `open_or_create_database(path)` opens the database when it exists and creates it when it does not, so a script that keeps its data in one database runs the same way the first time and every time after. See <<open-or-create>>.
 * `with` closes the database when the block ends, also when an exception leaves it. On close, active transactions roll back. You can call `db.close()` yourself, inside `try`/`finally`, but the context manager is the recommended way.
 * `db.drop()` deletes all files of the database. It cannot be undone.

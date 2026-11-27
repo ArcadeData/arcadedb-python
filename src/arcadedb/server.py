@@ -11,6 +11,7 @@ from typing import Any, Dict, Optional, Type
 
 import jpype
 
+from ._paths import absolute_path
 from .core import Database
 from .exceptions import ArcadeDBError
 from .jvm import start_jvm
@@ -78,7 +79,9 @@ class ArcadeDBServer:
         Initialize ArcadeDB server.
 
         Args:
-            root_path: Root directory for databases (default: ./databases)
+            root_path: Root directory for databases (default: ./databases). A
+                relative path is taken from the current directory when the
+                server is made.
             root_password: Root user password (optional, recommended for
                 production)
             config: Optional configuration dictionary with keys like:
@@ -133,6 +136,7 @@ class ArcadeDBServer:
         JavaArcadeDBServer = jpype.JClass("com.arcadedb.server.ArcadeDBServer")
 
         self._config = config or {}
+        root_path = absolute_path(root_path)
         self._root_path = root_path
         self._root_password = root_password
         self._java_server: Any = None
